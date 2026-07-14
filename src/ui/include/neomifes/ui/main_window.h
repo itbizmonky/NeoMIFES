@@ -38,8 +38,12 @@ public:
     // Convenience: schedules WM_CLOSE so the message loop exits gracefully.
     void requestClose() noexcept;
 
-private:
+    // Win32 WNDPROC entry point. Public because it is registered as the
+    // window class's lpfnWndProc from a free helper in main_window.cpp; do
+    // not call it from application code.
     static LRESULT CALLBACK wndProcTrampoline(HWND, UINT, WPARAM, LPARAM) noexcept;
+
+private:
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
