@@ -155,7 +155,18 @@ jobs:
           $files += Get-ChildItem -Recurse -Path tests -Include *.cpp
           if ($files.Count -eq 0) { throw "no sources found" }
           $tidy = "C:\Program Files\LLVM\bin\clang-tidy.exe"
+
+          # clang-cl (LLVM 19) does not recognise several MSVC-specific
+          # /Zc:* flags CMake bakes into compile_commands.json (e.g.
+          # /Zc:__STDC__, /Zc:preprocessor, /Zc:throwingNew) and emits
+          # clang-diagnostic-unused-command-line-argument ERRORS, which
+          # aborts the run. We only need warnings from OUR source, not
+          # from cross-compiler flag reconciliation, so silence these.
+          $extraArgs = @(
+            '--extra-arg=-Wno-unused-command-line-argument'
+          )
+
           foreach ($f in $files) {
-            & $tidy -p build/debug --quiet $f.FullName
+            & $tidy -p build/debug --quiet @extraArgs $f.FullName
             if ($LASTEXITCODE -ne 0) { throw "clang-tidy failed on $($f.FullName)" }
           }
