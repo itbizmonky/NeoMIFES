@@ -113,8 +113,13 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     MainWindow window;
     MainWindowConfig cfg{};
 
-    // In measurement mode, capture the first-paint timing then request close.
+    // In measurement mode, capture both timing markers via hooks so their
+    // ordering matches the actual UI event sequence (window created ->
+    // first paint), rather than the order in which we return from create().
     if (args.mode != LaunchMode::Normal) {
+        cfg.onWindowCreated = [&profile](HWND) {
+            profile.windowCreatedNs = PerfClock::nanosSinceProcessStart();
+        };
         cfg.onFirstPaint = [&profile, &window](HWND) {
             profile.firstPaintNs = PerfClock::nanosSinceProcessStart();
             const auto mem = currentProcessMemory();
@@ -127,7 +132,6 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     if (!window.create(hInstance, cfg)) {
         return 1;
     }
-    profile.windowCreatedNs = PerfClock::nanosSinceProcessStart();
 
     const int rc = runMessageLoop();
 

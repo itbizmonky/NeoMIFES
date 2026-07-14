@@ -66,6 +66,14 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
         return false;
     }
 
+    // Fire the "window created" hook here - after CreateWindowExW has
+    // returned (WM_NCCREATE / WM_CREATE done) but before ShowWindow queues
+    // the first WM_PAINT. This preserves the temporal ordering
+    // windowCreatedNs <= firstPaintNs that --measure-startup relies on.
+    if (config.onWindowCreated) {
+        config.onWindowCreated(m_hwnd);
+    }
+
     if (config.showOnCreate) {
         ::ShowWindow(m_hwnd, SW_SHOWNORMAL);
         ::UpdateWindow(m_hwnd);  // Force synchronous WM_PAINT so first-paint timing is deterministic.

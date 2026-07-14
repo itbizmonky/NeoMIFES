@@ -14,6 +14,11 @@ struct MainWindowConfig {
     int  initialWidth       = 1200;
     int  initialHeight      = 800;
     bool showOnCreate       = true;
+    // Optional: invoked on the UI thread AFTER CreateWindowExW returns but
+    // BEFORE ShowWindow/UpdateWindow. Callers use this to sample the
+    // "window created" timestamp without racing against the first WM_PAINT
+    // (which UpdateWindow dispatches synchronously).
+    std::function<void(HWND)> onWindowCreated;
     // Optional: invoked once, on the UI thread, right after the first WM_PAINT
     // completes. Used by --measure-startup to sample the "first-paint" timestamp.
     std::function<void(HWND)> onFirstPaint;
