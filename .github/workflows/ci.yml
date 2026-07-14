@@ -81,16 +81,37 @@ jobs:
 
       - name: Startup PoC (report only, no hard fail)
         if: matrix.preset == 'release'
+        continue-on-error: true
         shell: pwsh
         run: |
+          # NeoMIFES.exe is a Windows subsystem GUI process. Running it with
+          # `& $exe` under pwsh does not populate $LASTEXITCODE reliably (the
+          # process detaches from the caller's console), so use Start-Process
+          # -Wait -PassThru to get the real ExitCode.
           $exe = Get-ChildItem -Recurse -Path build/release -Filter NeoMIFES.exe |
                  Select-Object -First 1
+          if (-not $exe) { throw "NeoMIFES.exe not found under build/release" }
+
           $out = Join-Path $env:RUNNER_TEMP "startup.json"
-          & $exe.FullName --measure-startup $out
-          if ($LASTEXITCODE -ne 0) { throw "NeoMIFES --measure-startup returned $LASTEXITCODE" }
-          Write-Host "----- startup profile -----"
-          Get-Content $out
-          Write-Host "----- end profile -----"
+          if (Test-Path $out) { Remove-Item $out -Force }
+
+          Write-Host "Launching $($exe.FullName) --measure-startup $out"
+          $proc = Start-Process -FilePath $exe.FullName `
+                                -ArgumentList @('--measure-startup', $out) `
+                                -Wait -PassThru
+          Write-Host ("Exit code: {0}" -f $proc.ExitCode)
+
+          if (Test-Path $out) {
+            Write-Host "----- startup profile -----"
+            Get-Content $out
+            Write-Host "----- end profile -----"
+          } else {
+            Write-Host "!! startup.json was not produced"
+          }
+
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "!! non-zero exit; leaving step as soft failure"
+          }
 
       - name: Upload compile_commands.json
         if: matrix.preset == 'debug'
