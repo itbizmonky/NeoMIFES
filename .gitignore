@@ -1,0 +1,41 @@
+# ---- Build outputs ----
+/build/
+/out/
+/install/
+/_deps/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+compile_commands.json
+
+# ---- IDE / editor ----
+.vs/
+.vscode/
+*.user
+*.suo
+*.aps
+*.pch
+*.idb
+*.pdb
+*.ilk
+*.exp
+*.log
+
+# ---- MSVC / debugger ----
+*.tlog
+enc_temp_folder/
+
+# ---- ASan / crash dumps ----
+*.dmp
+DumpFile-*.txt
+
+# ---- Windows ----
+Thumbs.db
+Desktop.ini
+
+# ---- macOS / Linux (in case) ----
+.DS_Store
+
+# ---- Local scratch ----
+scratchpad/

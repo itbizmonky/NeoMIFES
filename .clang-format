@@ -1,0 +1,36 @@
+---
+Language:        Cpp
+BasedOnStyle:    Google
+Standard:        c++20
+ColumnLimit:     100
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+AccessModifierOffset: -4
+PointerAlignment: Left
+DerivePointerAlignment: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: false
+BreakConstructorInitializers: BeforeColon
+BreakBeforeBraces: Attach
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+FixNamespaceComments: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex:           '^<windows\.h>$'
+    Priority:        1
+  - Regex:           '^<[A-Za-z0-9_]+>$'         # C++ std headers, e.g. <vector>
+    Priority:        2
+  - Regex:           '^<gtest/.*>$'
+    Priority:        3
+  - Regex:           '^<benchmark/.*>$'
+    Priority:        3
+  - Regex:           '^"neomifes/.*"$'
+    Priority:        4
+  - Regex:           '.*'
+    Priority:        5
+NamespaceIndentation: None
+SpacesBeforeTrailingComments: 2

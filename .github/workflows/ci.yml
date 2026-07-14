@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_GENERATOR: Ninja
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.preset }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [debug, release]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Show toolchain versions
+        shell: pwsh
+        run: |
+          cl.exe /Bv || Write-Host "cl.exe --Bv exited non-zero (expected)"
+          cmake --version
+          ninja --version
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Run unit tests
+        shell: pwsh
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+
+      - name: Benchmark smoke run
+        shell: pwsh
+        run: |
+          # Every google-benchmark binary we ship should run once with a short
+          # min-time. This step surfaces "the toolchain built the binary but it
+          # crashes on startup" faster than waiting for a full bench matrix.
+          $benchExes = @(
+            'neomifes_util_bench.exe',
+            'neomifes_document_bench.exe'
+          )
+          $missing = @()
+          foreach ($name in $benchExes) {
+            $exe = Get-ChildItem -Recurse -Path build/${{ matrix.preset }} `
+                   -Filter $name | Select-Object -First 1
+            if (-not $exe) {
+              $missing += $name
+              continue
+            }
+            Write-Host "----- running $name -----"
+            & $exe.FullName --benchmark_min_time=0.01s
+            if ($LASTEXITCODE -ne 0) { throw "$name returned $LASTEXITCODE" }
+          }
+          if ($missing.Count -gt 0) {
+            throw ("benchmark binaries not found: " + ($missing -join ', '))
+          }
+
+      - name: Startup PoC (report only, no hard fail)
+        if: matrix.preset == 'release'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Path build/release -Filter NeoMIFES.exe |
+                 Select-Object -First 1
+          $out = Join-Path $env:RUNNER_TEMP "startup.json"
+          & $exe.FullName --measure-startup $out
+          if ($LASTEXITCODE -ne 0) { throw "NeoMIFES --measure-startup returned $LASTEXITCODE" }
+          Write-Host "----- startup profile -----"
+          Get-Content $out
+          Write-Host "----- end profile -----"
+
+      - name: Upload compile_commands.json
+        if: matrix.preset == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands
+          path: build/debug/compile_commands.json
+          if-no-files-found: error
+
+  static-analysis:
+    name: clang-tidy
+    runs-on: windows-2022
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Install LLVM (clang-tidy)
+        shell: pwsh
+        run: |
+          choco install llvm --version=19.1.5 --no-progress -y
+          & "C:\Program Files\LLVM\bin\clang-tidy.exe" --version
+
+      - name: Configure (Debug, for compile_commands.json)
+        shell: pwsh
+        run: cmake --preset debug
+
+      - name: Run clang-tidy on project sources
+        shell: pwsh
+        run: |
+          $files = @()
+          $files += Get-ChildItem -Recurse -Path src   -Include *.cpp
+          $files += Get-ChildItem -Recurse -Path tests -Include *.cpp
+          if ($files.Count -eq 0) { throw "no sources found" }
+          $tidy = "C:\Program Files\LLVM\bin\clang-tidy.exe"
+          foreach ($f in $files) {
+            & $tidy -p build/debug --quiet $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "clang-tidy failed on $($f.FullName)" }
+          }
