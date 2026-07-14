@@ -37,7 +37,7 @@ using neomifes::platform::PerfClock;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
 
-enum class LaunchMode {
+enum class LaunchMode : std::uint8_t {
     Normal,
     MeasureStartup,
     MeasureMemory,
@@ -67,7 +67,10 @@ LaunchArgs parseArgs() noexcept {
             ++i;
         }
     }
-    ::LocalFree(argv);
+    // LocalFree takes HLOCAL (== HANDLE == void*); casting LPWSTR* directly
+    // is a multi-level pointer conversion that clang-tidy flags. Route via
+    // an explicit reinterpret_cast to acknowledge the intent.
+    ::LocalFree(reinterpret_cast<HLOCAL>(argv));
     return args;
 }
 

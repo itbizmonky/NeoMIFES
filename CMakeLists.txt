@@ -14,6 +14,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# CMake >=3.28 auto-enables C++20 module scanning for MSVC. That produces
+# `@...obj.modmap` compile flags in compile_commands.json which clang-tidy
+# (LLVM 19) cannot parse and rejects with a hard error. We do not use
+# `import std;` / `import` yet (CLAUDE.md sec.4 "段階採用"), so disable
+# scanning until we adopt modules for real - at which point the tooling
+# story also needs revisiting.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # Prefer folder view in IDEs
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
