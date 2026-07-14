@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-14 (Phase 2a 完了時)
+> **最終更新:** 2026-07-14 (Phase 2b1 完了時)
 > **次回開いたら最初にこのファイルを読むこと。**
 
 ---
@@ -10,10 +10,12 @@
 | 項目 | 状態 |
 |---|---|
 | Phase 0 (要件確認・設計書・自己レビュー) | ✅ 完了 |
-| Phase 0.5 (ビルド基盤 / CI / 静的解析) | ✅ 完了 |
-| Phase 1 (Win32 骨組み + 起動 0.3s/20MB PoC) | ✅ 完了 |
-| **Phase 2a (Document Engine API + MVP 実装 + テスト網羅)** | ✅ **完了** |
-| **Phase 2b (RB-tree + Lazy Decode + mmap + 1GB ベンチ)** | ⏭️ **次回着手** |
+| Phase 0.5 (ビルド基盤 / CI / 静的解析) | ✅ 完了 (CI green 達成) |
+| Phase 1 (Win32 骨組み + 起動 0.3s/20MB PoC) | ✅ 完了 (CI 実測 22ms) |
+| Phase 2a (Document Engine API + MVP 実装 + テスト網羅) | ✅ 完了 |
+| **Phase 2b1 (B-1 pieceView + B-2 AddBuffer チャンク化)** | ✅ **完了** |
+| **Phase 2b2 (PieceTree 本体実装 - ADR-006)** | ⏭️ **次回着手** |
+| Phase 2b3 (OriginalBuffer mmap + Lazy Decode + 1GB bench) | 予定 |
 
 ---
 
@@ -46,46 +48,60 @@ git push -u origin main
 
 ---
 
-## 3. Phase 2b の着手手順
+## 3. Phase 2b2 の着手手順 (次回)
 
 **目標 (Phase 2 全体 DoD):** 1GB ファイル読込ベンチ通過。
 
-### 3.1 参照する Issue (優先度順)
-1. [`docs/issues/piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) — vector → RB-tree + 順序統計
-2. [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) — Original の mmap + Lazy Decode
+### 3.1 参照する意思決定
+1. [**ADR-006**](../decisions/ADR-006-piece-tree-implementation.md) — Path-Copying Persistent RB-Tree を採用 (path-copying vs mutable+RCU 等の比較・却下理由あり)
+2. [`docs/issues/piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) — 完了条件と計算量目標
+3. [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) — Phase 2b3 で対応
 
-### 3.2 想定される作成物
+### 3.2 Phase 2b1 完了済 (前セッション)
+- ✅ `BufferSnapshot::pieceView(const Piece&)` API 追加、LineIndex を O(N²) → O(N) 化
+- ✅ `AddBuffer` を append-only チャンク deque 化 — pointer stability 確立、スレッド安全性ホール解消
+- ✅ 単体テスト 6 ケース追加 (`document_add_buffer_test` 拡充 + `document_buffer_snapshot_test` 新設)
+- ✅ 既存 31 単体テストは公開 API 据え置きで green を維持
+
+### 3.3 Phase 2b2 で作る予定 (次回)
 ```
 src/document/
-  ├── include/neomifes/document/piece_tree.h      # 新規: RB-tree ノード
-  └── src/piece_tree.cpp                          # 新規
+  ├── include/neomifes/document/piece_tree_node.h  # 新規: immutable RB-tree ノード
+  ├── include/neomifes/document/piece_tree.h       # 新規: 公開 API (snapshot生成)
+  └── src/piece_tree.cpp                           # 新規: RB 回転 + 順序統計 + path-copy
 
+# 差し替え (公開ヘッダは 1 行も変えない)
+src/document/src/piece_table.cpp                 # vector → PieceTree 経由に
+src/document/src/line_index.cpp                  # tree 集約 (subtreeNewlineCount) から O(log n) 導出
+
+tests/unit/
+  └── document_piece_tree_test.cpp               # RB 平衡 / 順序統計 / 永続性
+```
+
+### 3.4 Phase 2b3 (mmap + 1GB bench)
+```
 src/platform/
   ├── include/neomifes/platform/file_mapping.h   # 新規: mmap RAII
   └── src/file_mapping.cpp                       # 新規
 
-# 差し替え (公開ヘッダは据え置き)
-src/document/src/piece_table.cpp                 # vector → RB-tree 経由に
-src/document/src/original_buffer.cpp             # 全読み込み → mmap + LRU
-src/document/src/line_index.cpp                  # tree 集約から派生
+src/document/src/original_buffer.cpp             # 全読み込み → mmap + LRU デコードキャッシュ
 src/document/src/file_loader.cpp                 # mmap 経路を使う
 
 tests/unit/
-  ├── document_piece_tree_test.cpp               # 回転・平衡
   └── platform_file_mapping_test.cpp             # RAII
 
 tests/bench/
   └── document_load_1gb_bench.cpp                # 1GB モック生成 → load
 ```
 
-### 3.3 Phase 2b の完了条件 (Issue に明記済)
+### 3.5 Phase 2b 全体の完了条件
 - `PieceTable::insert` < 500ns 中央値
 - `PieceTable::snapshot` < 100ns
 - 1GB UTF-8 load ≤ 2s、Working Set 増分 ≤ 30MB
-- 既存 31 単体テスト + 2000 反復プロパティテスト全 green を維持
+- 既存 単体テスト + プロパティテスト全 green を維持
 - プロパティテストの反復数を 20,000 に増やして 0 fail
 
-### 3.4 Phase 2b 完了時に片付ける Phase 1 宿題
+### 3.6 Phase 2b 完了時に片付ける Phase 1 宿題
 1. **`.clang-tidy` の `WarningsAsErrors: '*'`** に切替 (Phase 0.5 P05-4)
 2. **Named Mutex 単一インスタンス化** (basic §2.3)
 3. **CI に clang-cl UBSan ジョブ追加** (self-review R4)
@@ -134,12 +150,12 @@ tests/bench/
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 2b (RB-tree + Lazy Decode + 1GB ベンチ) に着手せよ
+Phase 2b2 (ADR-006 準拠の Piece Tree 実装 + PieceTable 差し替え) に着手せよ
 ```
 
 または段階的に:
 ```
-まず piece_table_rb_tree.md の Issue に着手し、
-既存の 31 単体テスト + プロパティテストを維持したまま
-PieceTable を RB-tree に差し替えよ
+まず piece_tree_node.h / piece_tree.h の設計を提示し、
+承認後に実装 → 既存 37 単体テスト + プロパティテストを維持したまま
+PieceTable の内部だけを差し替えよ
 ```

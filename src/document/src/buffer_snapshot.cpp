@@ -19,6 +19,12 @@ BufferSnapshot::BufferSnapshot(std::shared_ptr<const OriginalBuffer> original,
     }
 }
 
+std::u16string_view BufferSnapshot::pieceView(const Piece& p) const noexcept {
+    return (p.source == PieceSource::Add)
+               ? (m_add      ? m_add     ->view(p.offset, p.length) : std::u16string_view{})
+               : (m_original ? m_original->view(p.offset, p.length) : std::u16string_view{});
+}
+
 std::u16string BufferSnapshot::extract(TextRange range) const {
     if (range.start >= range.end || range.start >= m_totalLength) {
         return {};

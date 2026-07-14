@@ -18,11 +18,12 @@ void LineIndex::build(const BufferSnapshot& snapshot) {
         // Only pieces that contain at least one '\n' need to be scanned. The
         // cached count on the Piece struct lets us skip large runs cheaply.
         if (p.newlineCount > 0) {
-            // MVP: materialise the piece and rescan. Phase 2b will iterate the
-            // underlying buffer directly (no allocation, no copy).
-            const std::u16string owned = snapshot.extract({cursor, cursor + p.length});
-            for (std::size_t i = 0; i < owned.size(); ++i) {
-                if (owned[i] == u'\n') {
+            // Directly walk the piece's backing buffer - no allocation and no
+            // O(N) re-walk of the piece list (unlike the previous MVP path
+            // which went through BufferSnapshot::extract).
+            const std::u16string_view v = snapshot.pieceView(p);
+            for (std::size_t i = 0; i < v.size(); ++i) {
+                if (v[i] == u'\n') {
                     m_lineStarts.push_back(cursor + i + 1);
                 }
             }

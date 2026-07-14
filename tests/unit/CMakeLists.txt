@@ -4,6 +4,7 @@ add_executable(neomifes_unit_tests
     platform_perf_clock_test.cpp
     platform_process_metrics_test.cpp
     document_add_buffer_test.cpp
+    document_buffer_snapshot_test.cpp
     document_piece_table_test.cpp
     document_line_index_test.cpp
     document_property_test.cpp

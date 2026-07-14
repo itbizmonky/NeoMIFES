@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "neomifes/document/piece.h"
@@ -36,6 +37,16 @@ public:
     // Materialises the given range as a UTF-16 string. Empty on out-of-range.
     // Cost: proportional to range length + number of pieces the range spans.
     [[nodiscard]] std::u16string extract(TextRange range) const;
+
+    // Returns a UTF-16 view of the piece's own text (its full [offset,
+    // offset+length) slice inside the correct backing buffer). O(1); no
+    // allocation. Behaviour is defined only for pieces that belong to
+    // THIS snapshot's piece list; passing an unrelated Piece is UB.
+    //
+    // This is the intended primitive for O(N) traversal helpers such as
+    // LineIndex. Prefer this over extract() when scanning by piece,
+    // because extract() re-walks the full piece list from cursor=0.
+    [[nodiscard]] std::u16string_view pieceView(const Piece& p) const noexcept;
 
     // Access to the immutable piece list for tests / benchmarks / debug.
     [[nodiscard]] const std::vector<Piece>& pieces() const noexcept { return m_pieces; }

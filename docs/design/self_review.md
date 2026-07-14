@@ -8,6 +8,8 @@
 ## 更新履歴
 
 - **v1.1 (2026-07-14):** ユーザー確認 (4 項目) + 技術決定 (4 項目) 反映。F-1 〜 F-4 の全項目に対応。ADR-001〜005 発行。要件カバレッジ 82% → 100% 到達。
+- **v1.2 (2026-07-14):** Phase 1 完了時 (R1 起動 0.3s の計測基盤達成、R10 は Phase 2b 引継ぎ)。
+- **v1.3 (2026-07-14):** Phase 2a 完了 (Document Engine MVP、31 単体テスト + 2000 反復プロパティテスト)、Phase 2b1 完了 (B-1 pieceView / B-2 AddBuffer チャンク化)。ADR-006 (Path-Copying RB-Tree) 発行。R10 実装形態を確定。
 
 判定記号: ✅ 充足 / ⚠️ 要補強 / ❌ 未対応
 
@@ -234,9 +236,10 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 
 | # | リスク | 深刻度 | 対応期限 | 状態 |
 |---|---|---|---|---|
-| R1 | 起動 0.3s の実現可能性 | 高 | Phase 1 PoC | 🟡 **計測基盤 Phase 1 で構築完了**。絶対値の達成は Phase 3 以降で継続追跡 |
+| R1 | 起動 0.3s の実現可能性 | 高 | Phase 1 PoC | 🟢 **CI 実測 22ms** (0.3s 目標の 7%)。Phase 3 で Direct2D 化後に再測定 |
 | R6 | AI プラグインの API キー漏洩・プロセス分離の是非 | 中 | Phase 9 前に再評価 | 未着手 |
-| R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2 で PoC + Fuzz テスト | 未着手 |
+| R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b で PoC + Fuzz テスト | 🟡 **設計確定** (ADR-006 + [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md))。実装は Phase 2b 後半 |
+| R11 (NEW) | Piece Tree の永続化 (path-copying) の実装複雑性 | 中 | Phase 2b で 20K 反復プロパティテスト | 🟡 **設計確定** ([ADR-006](../decisions/ADR-006-piece-tree-implementation.md))、実装は Phase 2b 中盤 |
 | — | libgit2 ライセンス | 低 | Phase 11 前 |
 | — | LSP クライアント方式 | 低 | Phase 11 |
 | — | tree-sitter 併用時期 | 低 | Phase 7 後 |
