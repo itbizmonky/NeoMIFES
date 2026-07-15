@@ -81,10 +81,15 @@ $tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64
 - [x] OriginalBuffer の mmap + Lazy Decode コア実装・テスト
 - [x] SEH によるネットワークドライブ例外対策
 
-### 3.4 Phase 2b 完了時に片付ける Phase 1 宿題 (未着手、Phase 3 以降で回収)
-1. **`.clang-tidy` の `WarningsAsErrors: '*'`** に切替 (Phase 0.5 P05-4)
-2. **Named Mutex 単一インスタンス化** (basic §2.3)
-3. **CI に clang-cl UBSan ジョブ追加** (self-review R4)
+### 3.4 Phase 3 着手前ハウスキーピング (2026-07-15 レビューで期限確定)
+
+以下 3 件は Phase 0.5/1 から「次のフェーズで」と繰り返し先送りされてきた技術的負債。**Phase 3 で Direct2D/DirectWrite の実装コードを1行も書く前に**、この3件だけを片付ける小さなセッション/コミットとして先に消化すること (先送りをこれ以上繰り返さないための確定事項、CLAUDE.md §6/§11 参照)。
+
+1. **`.clang-tidy` の `WarningsAsErrors: '*'`** に切替 (Phase 0.5 P05-4)。切替後に既存コードで新規警告が出ないか確認 — もし出た場合はその場で個別に直すか、正当な理由があれば `NOLINT` する
+2. **Named Mutex 単一インスタンス化** (basic_design §2.3)。`src/app/main.cpp` の `wWinMain` に `CreateMutexW` チェックを追加する小さな変更、Rendering Engine 本体とは独立なのでこのタイミングで完結できる
+3. **CI に clang-cl UBSan ジョブ追加** (self-review R4)。`.github/workflows/ci.yml` に新規ジョブを1本追加するのみ、既存ジョブへの影響なし
+
+3件とも Rendering Engine の内部実装とは独立しているため、Direct2D コード着手前に完結させても手戻りが発生しない。
 
 ---
 
@@ -131,14 +136,16 @@ $tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
+まず §3.4 のハウスキーピング3件 (WarningsAsErrors切替/Named Mutex/UBSanジョブ) を片付けてから、
 Phase 3 (Rendering Engine: Direct2D/DirectWrite 初期化 + 60fps スクロール確認) に着手せよ。
 着手前に CLAUDE.md §7 の Phase 3 DoD と要件定義書の該当節を確認すること。
 ```
 
-Phase 3 着手前に確認すべきこと:
-1. `docs/design/basic_design.md` / `detailed_design.md` の Rendering Engine 節が Phase 2 の実装 (PieceTree ベースの `BufferSnapshot`) と整合しているか (設計時点では vector ベースの Piece 前提だった可能性があるため差分確認)
-2. §3.4 の Phase 1 宿題 (WarningsAsErrors 切替 / Named Mutex / UBSan ジョブ) を Phase 3 着手前 or 並行して着手するか、ユーザーに確認
+Phase 3 着手手順:
+1. ✅ (2026-07-15 完了) `basic_design.md`/`detailed_design.md` の Document Engine 記述と Phase 2 実装 (PieceTree ベースの ADR-007 アーキテクチャ) の整合性チェック — ズレを発見し修正済み ([`self_review.md`](../design/self_review.md) v1.6 参照)
+2. **まず §3.4 のハウスキーピング3件を片付ける** (WarningsAsErrors切替/Named Mutex/UBSanジョブ)。Rendering Engine 本体とは独立なので、Direct2D コードを書く前に完結させる
 3. Phase 3 は新規レイヤ (`src/render/`) の追加になるため、CMakeLists 構成 (Direct2D/DirectWrite の COM ライブラリリンク) を最初に固める
+4. `detailed_design.md` §4.3 に追記した「`PieceTable::snapshot()` はフレームごとに呼ばない」ガードレールを実装レベルで守ること — `RenderPipeline` は Document の変更通知を受けたときだけ snapshot を再取得し、通常フレームではキャッシュを再利用する設計にする
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

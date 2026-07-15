@@ -71,7 +71,7 @@
 | IO Watcher | ファイル変更監視 (`ReadDirectoryChangesW`) |
 
 - **UI ↔ Worker 間通信** は Lock-free MPSC キュー + `PostMessageW` (WM_APP+n)。
-- コア共有データ (ドキュメント) は **RCU 風スナップショット** で読み取り並列化 (詳細設計参照)。
+- コア共有データ (ドキュメント) は **スナップショットの複製共有** で読み取り並列化する: 変更は `PieceTable` (排他所有) が行い、読み取り側は取得済みの独立コピー (`BufferSnapshot`) だけを参照するため書き込みと競合しない (詳細設計 §3.1 参照)。当初検討していた RCU / persistent tree 方式 ([ADR-006](../decisions/ADR-006-piece-tree-implementation.md)) は実装コスト・性能リスクの観点から [ADR-007](../decisions/ADR-007-piece-tree-mutable-rb.md) で撤回し、Mutable RB-Tree + 都度コピーのスナップショット方式に確定した (Phase 2b2/2b3 で実装済み)。
 
 ---
 

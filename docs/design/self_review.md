@@ -1,8 +1,8 @@
-# NeoMIFES 設計セルフレビュー v1.5
+# NeoMIFES 設計セルフレビュー v1.6
 
 > 対象: [`CLAUDE.md`](../../CLAUDE.md) / [`basic_design.md`](basic_design.md) / [`detailed_design.md`](detailed_design.md) / [`docs/decisions/`](../decisions/)
 > 初回レビュー日: 2026-07-14
-> 最終更新日: 2026-07-15 (Phase 2b2 完了後の包括レビュー)
+> 最終更新日: 2026-07-15 (Phase 2b 完了 + Phase 3 着手前レビュー)
 > レビュー観点: (A) 要件充足性 / (B) 設計整合性 / (C) 性能目標達成可能性 / (D) リスク / (E) 実装可能性
 >
 > ⚠️ **§A〜§G は Phase 0 (要件確認・初回設計) 時点のスナップショットとして保存されている歴史的記録。**
@@ -15,6 +15,7 @@
 - **v1.3 (2026-07-14):** Phase 2a 完了 (Document Engine MVP、31 単体テスト + 2000 反復プロパティテスト)、Phase 2b1 完了 (B-1 pieceView / B-2 AddBuffer チャンク化)。ADR-006 (Path-Copying RB-Tree) 発行。R10 実装形態を確定。
 - **v1.4 (2026-07-15):** Phase 2b2 完了 (Step 1: PieceTree insert/split、Step 2: eraseRange CLRS 13.4 + PieceTable 内部差し替え)。ADR-006 を ADR-007 (Mutable RB-Tree) が Supersede — path-copying は実装コスト・性能目標未達リスクにより撤回。プロパティテスト 20,000 反復化。R11 (Piece Tree 永続化複雑性) を解消側に更新。新たに判明した制約: LineIndex の O(log n) 化は tree 設計上不可能と判明し撤回 ([`line_index_o_log_n.md`](../issues/line_index_o_log_n.md))。
 - **v1.5 (2026-07-15):** Phase 2b2 完了後の包括レビュー。ドキュメント鮮度の不整合を多数発見・修正 (本ファイルのタイトル版数ズレ、§G/§I の陳腐化、RESUME_HERE.md の古い `git init` 指示、Issue の完了条件チェック漏れ)。**CI ベンチマーク実測値を初めて確認** (§H 参照) — `PieceTable::insert` 276ns で目標 500ns を達成、`snapshot` は 1000 piece 規模でのみ確認 (100K piece 規模は未検証)。再発防止のため CLAUDE.md に「セッション終了時チェックリスト」を新設。
+- **v1.6 (2026-07-15):** Phase 2b3 (Step 1: mmap+Lazy Decode コア、Step 2: SEH + load bench + 実測値) 完了、Phase 2b (2a+2b1+2b2+2b3) 全体の DoD 達成。Phase 3 着手前の包括レビューで **`detailed_design.md` §3.1 (Document Engine) と `basic_design.md` の該当箇所が ADR-006 (Superseded) 時代の設計のまま凍結されていた**問題を発見・修正 — 実装済みの ADR-007 アーキテクチャ (Mutable RB-Tree、O(n) snapshot、単一mmapビュー、128KiB AddBufferチャンク、永久デコードキャッシュ) に更新し、§4.3 に「snapshot()はフレームごとに呼ばない」という Phase 3 設計ガードレールを追記。§G'/§H/§I' を Phase 2b 完了状態に更新。
 
 判定記号: ✅ 充足 / ⚠️ 要補強 / ❌ 未対応
 
@@ -239,27 +240,33 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 - **性能達成可能性:** 起動 0.3s が依然最難関。Lazy Decode 導入によりメモリ 20MB 目標のリスクは大幅低減
 - **推奨判断:** **Phase 0.5 (CI/ビルド整備) 着手可**。Phase 1 着手前に「起動 0.3s / メモリ 20MB」の PoC ゲートを設ける必要あり。
 
-### G'. 総合評価 (v1.5 現在)
+### G'. 総合評価 (v1.6 現在)
 
-- **進行状況:** Phase 0 〜 Phase 2b2 完了。CI (Debug/Release/clang-tidy) は継続的に green
+- **進行状況:** Phase 0 〜 Phase 2b (2a+2b1+2b2+2b3) 完了。CI (Debug/Release/clang-tidy) は継続的に green。本セッションからローカル実機 (Visual Studio Community 2026) での push前ビルド検証が確立
 - **要件カバレッジ:** 100% (設計レベル)。実装は Document Engine (Phase 2) まで完了、Rendering 以降 (Phase 3+) は未着手
 - **性能目標の実測状況:**
   - 起動時間: 🟢 CI 実測 22ms (目標 300ms の 7%)
   - `PieceTable::insert`: 🟢 CI 実測 243〜276ns (Release、目標 500ns 未満を達成)
-  - `PieceTable::snapshot`: 🟡 **100K piece 規模で実測 1.196ms、目標 1ms を約20%超過** ([`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) 参照)。1000 piece 規模からの線形外挿 (0.35ms 予測) は大きく外れており、外挿に頼らず実測することの重要性を示す事例となった。ブロッカーではないが Phase 2b3 完了後に再評価予定
-  - メモリ 20MB / 10GB ファイル / 60fps / 100万 Undo: 未実測 (該当実装が Phase 2b3 以降)
-- **設計整合性:** Piece Tree の実装形態は ADR-006 → ADR-007 で方針転換したが、Public API は不変のまま実装差し替えで完了 — 当初の「ヘッダは変えない」設計方針が実際に機能した好例
-- **推奨判断:** **Phase 2b3 (mmap + Lazy Decode + 1GB bench) 着手可**。着手前に §H の R10/C-1 (UTF-8 チャンク境界分割) を設計に織り込むこと。
+  - `PieceTable::snapshot`: 🟡 **100K piece 規模で実測 1.196ms (CI) / 1.481ms (ローカル)、目標 1ms を約20〜48%超過** ([`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) 参照)。低優先度残タスクとして受容。**Phase 3 設計への影響として、`detailed_design.md` §4.3 に「snapshot()をフレームごとに呼ばない」ガードレールを追記した** (本レビューで対応)
+  - Working Set 増分 (open直後): 🟢 `privateWorkingSetBytes` で実測 0.078MB(100MB)/0.46MB(1GB)、目標30MB未満を大幅クリア
+  - 1GB ファイル load: 🟡 ローカル実測 2031ms、目標2.0sを約1.5%超過。ディスクI/O律速でデコード戦略非依存と判断し低優先度で受容
+  - メモリ20MB(空ドキュメント) / 60fps / 100万Undo: 未実測 (該当実装がPhase 3以降)
+- **設計整合性:** Piece Tree の実装形態は ADR-006 → ADR-007 で方針転換したが、Public API は不変のまま実装差し替えで完了 — 当初の「ヘッダは変えない」設計方針が実際に機能した好例。**一方で `detailed_design.md`/`basic_design.md` の Document Engine 記述が ADR-007 実装後も ADR-006 時代のコード例のまま放置されていたことが Phase 3 着手前レビューで発覚し、本セッションで修正した** (§I' 参照) — ADR/Issueの更新だけでは不十分で、参照される設計書本体も同期させる必要があるという教訓
+- **推奨判断:** **Phase 3 (Rendering Engine: Direct2D/DirectWrite) 着手可**。§H の残技術的負債 (WarningsAsErrors切替/Named Mutex/UBSan CI) は RESUME_HERE.md で着手タイミングを確定済み。
 
-## H. 残リスク一覧 (v1.4 Phase 2b2 完了時更新)
+## H. 残リスク一覧 (v1.6 Phase 2b 完了時更新)
 
 | # | リスク | 深刻度 | 対応期限 | 状態 |
 |---|---|---|---|---|
 | R1 | 起動 0.3s の実現可能性 | 高 | Phase 1 PoC | 🟢 **CI 実測 22ms** (0.3s 目標の 7%)。Phase 3 で Direct2D 化後に再測定 |
 | R6 | AI プラグインの API キー漏洩・プロセス分離の是非 | 中 | Phase 9 前に再評価 | 未着手 |
-| R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b3 で実装 + テスト | 🟡 設計確定 ([`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md))。**Phase 2b3 が次回の主対象** |
-| R11 | Piece Tree の delete 実装複雑性 | 中 | Phase 2b2 | 🟢 **解消**。ADR-006 (path-copying) は実装難度・性能未達リスクにより ADR-007 (mutable RB) に置換。CLRS 13.4 実装 + 20K 反復プロパティテスト + RB invariant テストで検証済み (CI 確認待ち) |
-| R12 (NEW) | LineIndex の O(log n) 化不可能と判明 | 低 | 実用上は許容 | 🟡 **仕様として受容**。tree 集約は piece 内改行位置を持たないため原理的に不可。現状の O(N) 再構築 + O(log n) クエリを維持。将来必要になれば [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) の案で対応 |
+| R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b3 で実装 + テスト | 🟢 **解消**。mmap + 64KiBチェックポイント索引 + 永久デコードキャッシュ + SEH例外対策を実装、93テストで検証済み、CI green ([`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md)) |
+| R11 | Piece Tree の delete 実装複雑性 | 中 | Phase 2b2 | 🟢 **解消**。ADR-006 (path-copying) は実装難度・性能未達リスクにより ADR-007 (mutable RB) に置換。CLRS 13.4 実装 + 20K 反復プロパティテスト + RB invariant テストで検証済み |
+| R12 | LineIndex の O(log n) 化不可能と判明 | 低 | 実用上は許容 | 🟡 **仕様として受容**。tree 集約は piece 内改行位置を持たないため原理的に不可。現状の O(N) 再構築 + O(log n) クエリを維持。将来必要になれば [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) の案で対応 |
+| R13 (NEW) | `PieceTable::snapshot()` の O(n) コスト (~1.2ms@100K piece) を Phase 3 のフレーム描画設計が見落とすリスク | 中 | Phase 3 設計時 | 🟢 **本レビューで対応**。`detailed_design.md` §3.1/§4.3 に「snapshot()はフレームごとに呼ばない、Document変更通知でのみ再取得」というガードレールを明記 |
+| R14 (NEW) | 設計書 (basic/detailed_design.md) がADR更新後も同期されず、実装済みアーキテクチャと矛盾したまま放置されるリスク | 中 | 各フェーズ完了時 | 🟡 **一度顕在化・修正**。Phase 2b3完了時点でDocument Engine節がADR-006時代のまま3セッション分放置されていた (本レビューで発見・修正)。CLAUDE.md §11 のチェックリストに「ADR更新時は参照される設計書本体も同期確認する」を明示的に含めるかは今後の課題として残す |
+| 1GB load ≤2s | ベンチ目標を約1.5%超過 | 低 | Phase 2b3 | 🟡 ローカル実測2031ms。ディスクI/O律速でデコード戦略非依存、10GBでも比例悪化のみと想定 |
+| snapshot ≤1ms@100K | ベンチ目標を約20〜48%超過 | 低 | Phase 2b2/3 | 🟡 低優先度残タスク。R13対応によりPhase 3設計への実害は抑制済み |
 | — | libgit2 ライセンス | 低 | Phase 11 前 |
 | — | LSP クライアント方式 | 低 | Phase 11 |
 | — | tree-sitter 併用時期 | 低 | Phase 7 後 |
@@ -272,8 +279,10 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 4. ✅ Phase 0.5 完了 — CMake / GitHub Actions / clang-tidy / ASan / googletest / google-benchmark 全て稼働
 5. ✅ Phase 1 完了 — 起動 0.3s / メモリ 20MB は独立 PoC ドキュメント新設ではなく `--measure-startup`/`--measure-memory` CLI フラグとして実装 (`docs/phase_reports/phase_1_report.md` 参照。当時想定していた `docs/pocs/` ディレクトリは新設しなかった)
 
-### I'. 次アクション (v1.5 現在)
+### I'. 次アクション (v1.6 現在)
 
-1. **次:** Phase 2b3 (OriginalBuffer mmap + Lazy Decode + 1GB load bench) — 詳細は [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) 参照
-2. Phase 2b3 着手前に `document_piece_table_bench.cpp` へ 100K piece 規模のケースを追加し、snapshot 目標を外挿でなく実測で検証する
-3. Phase 2b 完了時点で `docs/phase_reports/phase_2b_report.md` を1本発行し、2b1〜2b3 をまとめて総括する (CLAUDE.md §11 のフェーズレポート運用ルール参照)
+1. ✅ Phase 2b3 (OriginalBuffer mmap + Lazy Decode + 1GB load bench + SEH) 完了
+2. ✅ `docs/phase_reports/phase_2b_report.md` 発行 (2b1〜2b3 統合)
+3. ✅ Phase 3 着手前レビューで `detailed_design.md`/`basic_design.md` の Document Engine 記述を ADR-007 実態に同期、Rendering Engine 節に snapshot コストのガードレールを追記
+4. **次:** Phase 3 (Rendering Engine: Direct2D/DirectWrite 初期化 + 60fps スクロール確認) — 詳細は [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) 参照
+5. R14 (設計書同期漏れ) の再発防止策 (CLAUDE.md §11 への追記要否) はユーザーと相談の上で判断

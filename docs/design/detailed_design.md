@@ -101,6 +101,8 @@ __declspec(dllexport) void nmfs_plugin_shutdown(void);
 
 ### 3.1 Piece Table 設計
 
+> **実装確定 (ADR-007、Phase 2b2/2b3 で実装済み):** 当初検討していた Path-Copying Persistent RB-Tree ([ADR-006](../decisions/ADR-006-piece-tree-implementation.md)、**Superseded**) は実装コストと性能リスクの観点から採用を見送り、**Mutable Red-Black Tree + 都度コピーの Piece-Vector Snapshot** ([ADR-007](../decisions/ADR-007-piece-tree-mutable-rb.md)) を採用した。以下は実測値を伴う実装済みアーキテクチャを反映している (旧 RCU/persistent tree 案のコード例ではない)。
+
 ```cpp
 namespace neomifes::document {
 
@@ -113,59 +115,66 @@ struct Piece {
     std::uint32_t newlineCnt; // このピース内の改行数 (LineIndex 用)
 };
 
-// Piece の並びは Red-Black Tree (順序統計木) で保持
-// → O(log n) で任意オフセット/行番号にアクセス
+// Piece の並びは Mutable Red-Black Tree (順序統計木、CLRS 13.3/13.4 準拠) で保持。
+// ノードは std::unique_ptr で親から所有 (PieceTable が排他)。詳細は piece_tree.h。
+class PieceTree { /* insert/erase O(log n)。subtreeLength/subtreeNewlines/subtreeCount を集約保持 */ };
+
 class PieceTable {
 public:
     void insert(TextPos pos, std::u16string_view text);
     void erase(TextRange range);
     [[nodiscard]] std::u16string extract(TextRange range) const;
 
-    // スナップショット (RCU 風): ツリーの immutable コピーを共有
-    [[nodiscard]] std::shared_ptr<const PieceTree> snapshot() const;
+    // スナップショット: tree を in-order 走査して std::vector<Piece> にコピーし
+    // BufferSnapshot でラップして返す。O(n pieces) — O(1) ではない (下記参照)
+    [[nodiscard]] std::shared_ptr<const BufferSnapshot> snapshot() const;
 
 private:
-    std::shared_ptr<const OriginalBuffer> m_original;  // メモリマップ元
-    std::shared_ptr<AddBuffer>            m_addBuffer; // append-only
-    std::atomic<std::shared_ptr<PieceTree>> m_tree;    // RCU 対象
-    LineIndex                             m_lineIndex;
+    std::shared_ptr<const OriginalBuffer> m_original;  // メモリマップ元 (読み取り専用)
+    std::shared_ptr<AddBuffer>            m_add;       // append-only チャンク列 (snapshot と共有)
+    PieceTree                             m_tree;      // mutable、PieceTable が排他所有
 };
 
 } // namespace
 ```
 
-**性能要件**
-- 挿入/削除: O(log n)、n = piece 数
-- 位置 → 行番号: O(log n)
-- 行番号 → 位置: O(log n)
-- スナップショット取得: O(1) (共有ポインタ複製)
+**性能要件 (実測値、2026-07-15 時点。詳細は [`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md))**
+- 挿入: O(log n)、CI実測 243〜276ns (Release) — 目標 <500ns を達成
+- 削除: O(log n + k)、k = 削除対象ピース数
+- 位置 → 行番号 / 行番号 → 位置: **O(N) 再構築 + O(log n) 二分探索**。tree 集約からの O(log n) 直接算出は原理的に不可能と判明 (理由は §3.2 参照)
+- スナップショット取得: **O(n pieces)**、tree の in-order 走査 + vector コピー。目標 ≤1ms @ 100K piece に対し実測 1.2〜1.5ms (約20〜48%超過、低優先度の残タスクとして受容)。**snapshot は毎フレーム/毎キー入力で呼ぶ想定ではなく**、LineIndex 再構築・検索・自動保存等の低頻度呼び出しでの利用を前提とする設計 — **§4 Rendering Engine はフレームごとに snapshot() を呼ばず、Document からの変更通知を受けたときだけ再取得してキャッシュすること** (この前提を崩すと 100K piece 規模のドキュメントで 1 フレームあたり ~1.2ms をコピーだけで消費し、16.6ms 予算の約7%を奪う)
 
 **巨大ファイル対応**
-- 原本は `CreateFileMappingW` + `MapViewOfFileEx` でビュー化 (1GB ずつマップ、LRU で解放)
-- Add Buffer は 64MB チャンクの deque。編集を append しかしないので断片化なし
+- 原本は `CreateFileW` + `CreateFileMappingW` + `MapViewOfFile` で **ファイル全体を単一ビューとしてマップ** (x64 の仮想アドレス空間は10GB級ファイルでも十分足りるため、1GBずつの LRU 分割マップは過剰設計と判断し不採用)
+- Add Buffer は **128KiB チャンク** の `deque`。編集を append しかしないので断片化なし、pointer stability も保証 (snapshot 後も既存の view が無効化されない)
 
 **Lazy Decode (原本の非UTF-16保持)**
 
-- 10GB ファイルを起動時に UTF-16 全変換するとメモリが 2 倍膨張し 20MB 目標に反する。原本は**生バイトのまま**保持し、UTF-16 化は「表示/検索/編集」の対象になったチャンク単位で行う。
+- 10GB ファイルを起動時に UTF-16 全変換するとメモリが 2 倍膨張し 20MB 目標に反する。原本は**生バイトのまま**保持し、UTF-16 化は「表示/検索/編集」の対象になった範囲が実際に要求された時点で行う。
 ```cpp
 class OriginalBuffer {
 public:
-    // 原本の生バイトを返す (memory-mapped view)
-    std::span<const std::byte> rawBytes(std::uint64_t byteOffset, std::size_t len) const;
+    // [offset, offset+length) の UTF-16 ビューを返す。MemoryMapped モードでは
+    // 初回アクセス時にデコードしてキャッシュし (以降は同一範囲の再デコードなし)、
+    // 追い出しは行わない (理由は lazy_decode_mmap.md 参照 — u16string_view を返す
+    // 現行APIでは、追い出すと既存 view が dangling になるため)
+    [[nodiscard]] std::u16string_view view(std::uint64_t offset, std::uint64_t length) const;
 
-    // 指定バイト範囲を UTF-16 にデコードして返す (キャッシュ済みなら参照返し)
-    const std::u16string_view decodeUtf16(std::uint64_t byteOffset, std::size_t len,
-                                          encoding::Encoding enc);
+    [[nodiscard]] std::uint64_t size() const noexcept;
+    [[nodiscard]] std::uint32_t newlineCount() const noexcept;  // 初回スキャンで事前計算済み、O(1)
 
 private:
-    encoding::Encoding                     m_encoding;
-    util::LRUCache<ChunkKey, std::u16string> m_decodeCache;  // 64KB × 上限 N チャンク
+    platform::FileMapping   m_mapping;      // ファイル全体を単一ビューでマップ
+    std::vector<Checkpoint> m_checkpoints;  // 64KiBごとの (バイトオフセット, CUオフセット) 対
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::unique_ptr<std::u16string>>
+                             m_decodeCache; // (offset,length) キー、追い出しなし
 };
 ```
-- **Piece.offset は Add / Original どちらのソースでも UTF-16 CU オフセット** で統一する (Phase 2a 実装済)。Original 側は `OriginalBuffer` の内部でバイトオフセット ↔ CU オフセットのマッピングを保持し、外から見える offset は必ず CU。これにより PieceTable / BufferSnapshot / LineIndex は source を意識せず一様なアドレス空間で動作する。
-- **編集された範囲は Add Buffer に UTF-16 で入る**ため二度目以降のアクセスは高速。
-- **改行インデックスの初期構築も生バイト上で行う** (改行文字 `\n` / `\r` は UTF-8/Shift-JIS/EUC-JP のいずれもマルチバイト先頭バイトと衝突しない ASCII なので安全)。
-- UTF-16LE/BE 原本は 2 バイト単位で走査する専用パス。
+- **Piece.offset は Add / Original どちらのソースでも UTF-16 CU オフセット** で統一する。Original 側は `OriginalBuffer` の内部でバイトオフセット ↔ CU オフセットのマッピング (チェックポイント索引) を保持し、外から見える offset は必ず CU。これにより PieceTable / BufferSnapshot / LineIndex は source を意識せず一様なアドレス空間で動作する
+- **チェックポイントは常に完全なコードポイント境界にのみ記録される** — マルチバイト UTF-8 文字がチャンク境界で分断されることは、単なる注意ではなくアルゴリズムの不変条件として構造的に起こり得ない
+- **改行数は初回のバイトレベルストリームスキャンで事前計算**され `newlineCount()` として O(1) で取得可能。`PieceTable` のコンストラクタはこれを使うため、ファイルを開いただけでは UTF-16 デコードが一切走らない (laziness の核)
+- **現状 UTF-8 (BOM可) 専用**。UTF-16LE/BE・Shift-JIS 等への対応は Phase 6 (Encoding Engine) で拡張予定 — それまでは `encoding::Encoding` パラメータは存在しない
+- ネットワークドライブ切断等による `EXCEPTION_IN_PAGE_ERROR` は SEH (`__try`/`__except`) で捕捉し `IoFailure` に変換する (Phase 2b3 Step 2 で実装済み。MSVC の「`__try` を含む関数はオブジェクトアンワインドを持てない」制約のため、リスクのある呼び出しはプリミティブ型ローカルのみを持つ小さなトランポリン関数に隔離している)
 
 ### 3.2 LineIndex
 
@@ -174,28 +183,35 @@ class LineIndex {
 public:
     [[nodiscard]] std::uint64_t lineToOffset(std::uint64_t line) const;
     [[nodiscard]] std::uint64_t offsetToLine(std::uint64_t offset) const;
-    void onPieceInserted(const Piece&);
-    void onPieceErased(const Piece&);
+    void rebuild(const BufferSnapshot&);  // O(N) 全再構築、次回クエリ時に遅延実行
 private:
-    // 各 Piece の改行数を集約する順序統計木 (Piece Tree と一体化)
+    std::vector<std::uint64_t> m_lineStartOffsets;  // 二分探索対象
 };
 ```
 
-- 遅延構築: ファイル全体をスキャンせず、可視領域先行 + バックグラウンド埋め
-- 10GB ファイルでも初期表示は先頭 N ページのみで着色可能
+> **設計変更 (Phase 2b2 Step 2 で判明、撤回済み):** 当初は「Piece Tree の順序統計集約と一体化し O(log n) 化する」計画だったが、**原理的に不可能**と判明した。集約が保持するのは piece 内の改行**総数**のみで、任意オフセット以前の改行数を答えるには piece 内の改行の**実際の位置**が必要 — これは tree が持たないテキスト内容 (buffer) を見なければ分からない。詳細と将来案は [`line_index_o_log_n.md`](../issues/line_index_o_log_n.md)。
+>
+> 代わりに Phase 2a 以来の設計 (Document 変更後、次回クエリ時に遅延で O(N) 全再構築 → 以後は O(log n) 二分探索) を維持する。10GB 級ファイルでは全行の offset 一覧 (8byte/行) を保持するため、行数が極端に多いファイルではメモリ量に注意 — 将来ボトルネックが実測されたら per-piece newline-offset 配列方式等を再評価する
 
 ### 3.3 FileLoader
 
 ```cpp
-class FileLoader {
-public:
-    struct LoadOptions { bool memoryMap = true; std::size_t detectHeadBytes = 65536; };
-    struct LoadResult  { std::unique_ptr<OriginalBuffer> buf; Encoding enc; LineEnding le; bool bom; };
+enum class LoadError { NotFound, PermissionDenied, IoFailure, InvalidUtf8, TooLarge, Unknown };
 
-    static neomifes::util::Result<LoadResult, IoError>
-        load(const std::filesystem::path&, LoadOptions);
+struct LoadResult {
+    std::unique_ptr<Document> document;
+    bool                      hadBom     = false;
+    std::uint64_t             byteLength = 0;
 };
+
+// UTF-8 (BOM可) ファイルを読み込み Document を構築する。同期 API。
+// maxBytes はデフォルト 512MiB (誤ってバイナリを開いてもメモリを食い潰さないための上限)
+[[nodiscard]] std::variant<LoadResult, LoadError>
+    loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes = 512ULL * 1024 * 1024);
 ```
+
+- ファイル本体は `OriginalBuffer::openMemoryMapped` (mmap) 経由で扱う。`FileLoader` 自身は BOM 検出のための先頭3バイトだけを個別に `_wfopen_s`/`fread` で読む (mmap 全体を作ってから3バイトだけ見るより単純)
+- 非同期化 (Worker 経由) は将来検討。現状は同期 API のみ
 
 ---
 
@@ -236,6 +252,7 @@ private:
 - 1 行のレイアウト生成: < 50µs
 - キャッシュヒット時の 1 行描画: < 5µs
 - フルフレーム描画予算: 16.6ms / 60fps
+- **`PieceTable::snapshot()` はフレームごとに呼ばない。** 実測 O(n pieces) (100K piece規模で1.2〜1.5ms、§3.1参照) のため、毎フレーム呼ぶと大きめのドキュメントで frame budget の約7%をコピーだけで消費する。`RenderPipeline` は Document からの変更通知を受けたときだけ snapshot を再取得してキャッシュし、通常フレームでは既存キャッシュを再利用すること
 
 ---
 

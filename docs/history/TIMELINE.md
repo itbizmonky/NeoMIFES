@@ -20,6 +20,7 @@
 - [Session 12: Phase 2b2 完了後の包括レビュー + プロセス改善](#session-12-2026-07-15-phase-2b2-完了後の包括レビュー--プロセス改善)
 - [Session 13: Phase 2b3 Step 1 (mmap + Lazy Decode コア)](#session-13-2026-07-15-phase-2b3-step-1-mmap--lazy-decode-コア)
 - [Session 14: Phase 2b3 Step 2 (SEH + load bench + Phase 2b 完了)](#session-14-2026-07-15-phase-2b3-step-2-seh--load-bench--phase-2b-完了)
+- [Session 15: Phase 3 着手前レビュー (設計書のADR同期漏れ発見・修正)](#session-15-2026-07-15-phase-3-着手前レビュー-設計書のadr同期漏れ発見修正)
 
 ---
 
@@ -319,5 +320,31 @@
 **Phase 2b (2b1+2b2+2b3) 完了条件:** 全項目達成 (snapshot 1ms・1GB load 2s の 2 項目はわずかな超過を低優先度残タスクとして受容、他は全て目標クリア)。
 
 **次回 (Phase 3):** Rendering Engine (Direct2D/DirectWrite) 着手。詳細は RESUME_HERE.md §6 参照。
+
+## Session 15 (2026-07-15): Phase 3 着手前レビュー (設計書のADR同期漏れ発見・修正)
+
+**目標:** ユーザーの指示「Phase3に移る前にレビュー者となって全体計画レビューをしてください」に基づき、Phase 2b完了後・Phase 3着手前の包括的なレビューを実施する。
+
+**発見した問題 (深刻度順):**
+
+1. **🔴 重大: `detailed_design.md` §3.1 (Document Engine) が ADR-006 (Superseded) 時代の設計のまま凍結されていた。** ADR-007 で「Mutable RB-Tree + 都度コピーのPiece-Vector Snapshot」に方針転換し Phase 2b2/2b3 で実装済みにもかかわらず、設計書のコード例は旧案 (`std::atomic<std::shared_ptr<PieceTree>>`、"RCU風"、`snapshot() は O(1)`、原本を1GBずつLRUマップ、AddBufferは64MBチャンク、`OriginalBuffer`に`encoding`パラメータ) のままだった。`basic_design.md` L74 の「RCU風スナップショット」も同根。3セッション (Phase 2b1〜2b3) にわたって誰も気づかず放置されていた
+2. **実害のリスク:** §4.2「レンダリング戦略」はフレームごとにDocumentへアクセスする設計だが、§3.1の「snapshot()はO(1)」という誤った記述により、Phase 3の設計者(未来のセッション)がフレームごとにsnapshot()を呼ぶ実装を無自覚に選ぶ恐れがあった。実際の snapshot() コストは100K piece規模で1.2〜1.5ms — 16.6ms/60fpsのフレーム予算の約7%を消費する。§4.3にはこのコストへの言及が皆無だった
+3. **🟡 中: `self_review.md` §G'/§H/§I' が Phase 2b2完了時点(v1.5)のまま。** Phase 2b3 Step1+2の完了、MSVC実機ビルド訂正、SEH/ロードベンチの実測値が未反映。皮肉にも、これはSession 12でCLAUDE.md §11を新設する原因になった問題パターンの再発だった (§11のチェック対象に基本/詳細設計書自体が入っていなかったための抜け漏れ)
+4. **`piece_table_rb_tree.md` の状態表記が「bench直接検証待ち」のまま** — その検証は既に完了済みだった
+5. **🟢 低: Phase 0.5/1から3フェーズ持ち越しの技術的負債3件** (WarningsAsErrors切替、Named Mutex単一インスタンス化、clang-cl UBSanジョブ) が「次のフェーズで」と際限なく先送りされ続けていることを確認 (実装自体は未着手のまま、放置しても即座の実害はないが期限が曖昧化していた)
+
+**ユーザーの判断:** 4択 (全て対応 / 重大+中のみ / 重大のみ / 記録のみ) を提示し、**「全て対応」**を選択。
+
+**対応内容:**
+- [`detailed_design.md`](../design/detailed_design.md) §3.1〜3.3・§4.3 を ADR-007 実装の実態 (mutable RB-tree、O(n) snapshot実測値、単一mmapビュー、128KiB AddBufferチャンク、永久デコードキャッシュ、UTF-8限定、SEH対策、実際のFileLoader API) に全面書き換え。§4.3に「`snapshot()`はフレームごとに呼ばない」というPhase3向けガードレールを明記
+- [`basic_design.md`](../design/basic_design.md) L74 の「RCU風」記述を実態 (スナップショット複製共有) に修正、ADR-006→ADR-007の方針転換を明記
+- [`self_review.md`](../design/self_review.md) → v1.6。§G'/§H/§I' をPhase 2b完了状態に更新。新規リスク R13 (snapshot コストのPhase3設計への影響、本レビューで対応済みと記録) / R14 (設計書がADR更新後も同期されないリスク、本レビューで一度顕在化・修正したことを記録)
+- [`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) 状態表記を「完全解消」に修正、ローカル実測値(1.481ms)も追記
+- **[`CLAUDE.md`](../../CLAUDE.md) §11 に新規チェック項目追加:** 「ADRを新規発行・Superseded化したら、参照している設計書本体のコード例も同じセッション内で同期させる」。§6 の `WarningsAsErrors` 記述も「Phase 2b完了時に切替」という期限が実際に到来したことを反映し、「Phase 3着手時(Direct2Dコード追加前)」に確定
+- [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.4 を「Phase 3着手前ハウスキーピング」として再構成 — 技術的負債3件を Direct2D コード着手前に片付ける小さな先行タスクとして期限を確定 (これ以上の先送りを防ぐ)
+
+**教訓:** ADRやIssueドキュメントを正しく更新していても、それらが説明している設計原則を記述した基本/詳細設計書の**コード例本体**は別途同期させないと古いまま残る。ドキュメント鮮度チェックは「Issueのチェックボックス」だけでなく「設計書のコード例」まで対象を広げる必要がある。
+
+**次回 (Phase 3):** まず RESUME_HERE.md §3.4 のハウスキーピング3件を消化してから、Rendering Engine (Direct2D/DirectWrite) に着手する。
 
 <!-- 次セッションはここに追記 -->

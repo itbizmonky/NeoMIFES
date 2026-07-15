@@ -151,7 +151,7 @@ NeoMIFES/
 
 - ビルド: **CMake 3.28+ + MSVC v143 (VS 17.13+)**、Ninja ジェネレータ。開発機には Visual Studio Community 2026 (MSVC 19.50/14.50) が実際にインストール済み — ローカルビルド手順は [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) §2 参照
 - C++ 標準: `/std:c++latest` (実質 C++23)
-- 警告: `/W4 /permissive- /Zc:__cplusplus`、現状 `WarningsAsErrors: ''` (Phase 2b 完了時に `'*'` へ切替予定、self_review R4 参照)
+- 警告: `/W4 /permissive- /Zc:__cplusplus`、現状 `WarningsAsErrors: ''`。Phase 2b は完了済みだが切替は未実施 — **Phase 3 着手時 (Direct2D/DirectWrite 実装コード追加前) に切替を行う**方針に確定 (self_review R4 / `docs/handoff/RESUME_HERE.md` §3.4 参照。「次のフェーズで」を繰り返して先送りし続けないため、着手タイミングを明記した)
 - サニタイザ: Debug ビルドで `/fsanitize=address` (`asan` プリセット)
 - 静的解析: clang-tidy (LLVM、VS にバンドル)。MSVC `/analyze` は未導入
 - テスト: **GoogleTest 1.15.2** / ベンチは **google/benchmark 1.9.1** (共に FetchContent)
@@ -215,6 +215,7 @@ NeoMIFES/
 - [ ] **[`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) の末尾にセッションサマリを追記する** (既存ルール、本ファイル冒頭参照)。
 - [ ] **複数セッションにまたがる親フェーズ (例: Phase 2b 全体) が完了したら、`docs/phase_reports/` に正式レポートを1本発行する。** サブステップ (2b1, 2b2 等) ごとに乱立させず、TIMELINE.md のセッション記録で代替し、親フェーズ完了時にまとめる。
 - [ ] **(2026-07-15 追加) コード変更を push する前に、必ずローカルでビルド・テスト・clang-tidy を実行する。** この開発機には Visual Studio Community 2026 (MSVC 19.50) が実際にインストールされている (`docs/handoff/RESUME_HERE.md` §2 の手順参照)。「MSVC が無いので CI 任せ」という思い込みで push→CI失敗→修正を繰り返さない。過去にこの思い込みで `FILE_SHARE_DELETE` 漏れや Clang 非互換コードなど、ローカルで数十秒で見つけられたはずのバグを CI 往復 (数分〜十数分/回) で発見していた。
+- [ ] **(2026-07-15 追加) ADR を新規発行・Superseded 化したら、それを参照している `basic_design.md`/`detailed_design.md` のコード例・記述も同じセッション内で同期させる。** Issue や ADR 自体は正しく更新していても、設計書本体のコード例 (クラス定義・API シグネチャ・性能値) が古い設計のまま放置されるケースが実際に発生した (ADR-007 採用後も `detailed_design.md` §3.1 が ADR-006 時代の `RCU`/`std::atomic<shared_ptr<PieceTree>>`/`O(1) snapshot` のコード例のままだった、Phase 3 着手前レビューで3セッション分放置されていたことが判明)。ADR を書いたら「この決定を説明しているコード例が設計書のどこかに残っていないか」を `grep` で確認する。
 
 ---
 
