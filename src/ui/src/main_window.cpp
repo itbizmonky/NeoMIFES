@@ -9,8 +9,8 @@ namespace {
 // Registration is one-shot per process. RegisterClassExW returns 0 if the class
 // is already registered under the same HINSTANCE, so we swallow that case.
 bool ensureWindowClass(HINSTANCE hInstance) noexcept {
-    static bool s_registered = false;
-    if (s_registered) {
+    static bool sRegistered = false;
+    if (sRegistered) {
         return true;
     }
     WNDCLASSEXW wc{};
@@ -30,7 +30,7 @@ bool ensureWindowClass(HINSTANCE hInstance) noexcept {
             return false;
         }
     }
-    s_registered = true;
+    sRegistered = true;
     return true;
 }
 

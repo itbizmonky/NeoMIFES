@@ -1,5 +1,6 @@
 #include "neomifes/document/file_loader.h"
 
+#include <array>
 #include <cstdio>
 
 #include "neomifes/document/document.h"
@@ -55,8 +56,8 @@ loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes) {
     if (::_wfopen_s(&fp, path.c_str(), L"rb") != 0 || fp == nullptr) {
         return LoadError::PermissionDenied;
     }
-    unsigned char bomBuf[3] = {};
-    const std::size_t bomRead = std::fread(bomBuf, 1, 3, fp);
+    std::array<unsigned char, 3> bomBuf{};
+    const std::size_t bomRead = std::fread(bomBuf.data(), 1, bomBuf.size(), fp);
     (void)std::fclose(fp);
     const bool hadBom = (bomRead == 3
                         && bomBuf[0] == 0xEF && bomBuf[1] == 0xBB && bomBuf[2] == 0xBF);

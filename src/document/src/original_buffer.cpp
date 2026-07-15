@@ -22,6 +22,10 @@ namespace neomifes::document {
 
 namespace {
 
+// A tight, already-reviewed bit-level UTF-8 decode loop; splitting it would
+// scatter the surrogate-pair/overshoot invariants documented above across
+// functions rather than reduce actual complexity.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 std::uint64_t decodeUtf8Run(std::span<const std::byte> bytes,
                             std::uint64_t startByte,
                             std::uint64_t maxCodeUnits,
@@ -63,7 +67,7 @@ std::uint64_t decodeUtf8Run(std::span<const std::byte> bytes,
             break;
         }
 
-        const std::uint32_t cuThisChar = (cp > 0xFFFF) ? 2u : 1u;
+        const std::uint32_t cuThisChar = (cp > 0xFFFF) ? 2U : 1U;
         if (codeUnitsProduced + cuThisChar > maxCodeUnits) {
             break;  // would overshoot the requested count - stop before it
         }
@@ -145,7 +149,7 @@ bool OriginalBuffer::scanUtf8(std::span<const std::byte> bytes,
     totalCu = 0;
     totalNewlines = 0;
     checkpoints.clear();
-    checkpoints.push_back({0, 0});
+    checkpoints.push_back(Checkpoint{.byteOffset = 0, .cuOffset = 0});
 
     std::uint64_t i = 0;
     std::uint64_t lastCheckpointByte = 0;
@@ -190,7 +194,7 @@ bool OriginalBuffer::scanUtf8(std::span<const std::byte> bytes,
         i += extra + 1;
 
         if (i - lastCheckpointByte >= checkpointBytes) {
-            checkpoints.push_back({i, totalCu});
+            checkpoints.push_back(Checkpoint{.byteOffset = i, .cuOffset = totalCu});
             lastCheckpointByte = i;
         }
     }
@@ -281,7 +285,7 @@ std::u16string_view OriginalBuffer::viewMemoryMapped(std::uint64_t offset,
                                                       std::uint64_t length) const {
     const auto key = std::make_pair(offset, length);
     {
-        std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
+        const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
         const auto it = m_decodeCache.find(key);
         if (it != m_decodeCache.end()) {
             return {it->second->data(), it->second->size()};
@@ -289,7 +293,12 @@ std::u16string_view OriginalBuffer::viewMemoryMapped(std::uint64_t offset,
     }
 
     // Find the nearest checkpoint at or before `offset` (checkpoints[0] =
-    // {0,0} guarantees this is never empty-range).
+    // {0,0} guarantees this is never empty-range). std::ranges::upper_bound's
+    // indirect_strict_weak_order constraint would require the comparator to
+    // also accept (Checkpoint, Checkpoint) and (Checkpoint, uint64_t), not
+    // just the (uint64_t, Checkpoint) direction actually used here; satisfying
+    // that would mean adding unused overloads purely to appease the concept.
+    // NOLINTNEXTLINE(modernize-use-ranges)
     const auto cpIt = std::upper_bound(
         m_checkpoints.begin(), m_checkpoints.end(), offset,
         [](std::uint64_t cu, const Checkpoint& c) noexcept { return cu < c.cuOffset; });
@@ -327,7 +336,7 @@ std::u16string_view OriginalBuffer::viewMemoryMapped(std::uint64_t offset,
         return {};
     }
 
-    std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
+    const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
     const auto [insertedIt, inserted] = m_decodeCache.try_emplace(key, std::move(decoded));
     return {insertedIt->second->data(), insertedIt->second->size()};
 }

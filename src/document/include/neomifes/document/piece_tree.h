@@ -139,7 +139,7 @@ private:
     // Removes `node` from the tree (standard CLRS RB-DELETE, adapted for
     // unique_ptr ownership) and runs eraseFixup if needed. Decrements
     // m_pieceCount and refreshes aggregates on the affected ancestor chain.
-    void eraseNode(PieceTreeNode* node);
+    void eraseNode(PieceTreeNode* z);
 
     // Returns the node whose OWN piece begins exactly at absolute position
     // `pos`. `pos` must be an existing boundary; returns nullptr only if the

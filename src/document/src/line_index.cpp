@@ -38,7 +38,7 @@ LineNumber LineIndex::offsetToLine(TextPos pos) const noexcept {
         return 0;
     }
     // Find the greatest line-start offset <= pos.
-    auto it = std::upper_bound(m_lineStarts.begin(), m_lineStarts.end(), pos);
+    auto it = std::ranges::upper_bound(m_lineStarts, pos);
     if (it == m_lineStarts.begin()) {
         return 0;
     }

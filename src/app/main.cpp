@@ -42,6 +42,10 @@ using neomifes::ui::MainWindowConfig;
 
 // Fixed name (not a random GUID) so every launch of this build targets the
 // same mutex. "Local\" keeps it session-scoped rather than machine-global.
+// A string-literal-initialized C array decays to const wchar_t* for free at
+// every call site (CreateMutexW wants LPCWSTR); std::array would need
+// .data() everywhere for no safety benefit on a fixed, never-indexed literal.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, hicpp-avoid-c-arrays, modernize-avoid-c-arrays)
 constexpr wchar_t kSingleInstanceMutexName[] = L"Local\\NeoMIFES_SingleInstance_9F1B2C3D_4E5F_4A6B_8C7D_1234567890AB";
 
 // Named-mutex single-instance check (basic_design.md sec.2.3). Only the

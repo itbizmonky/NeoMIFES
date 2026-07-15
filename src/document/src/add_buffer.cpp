@@ -9,7 +9,7 @@ void AddBuffer::ensureCapacity(std::size_t needed) {
         return;
     }
     if (!m_chunks.empty()) {
-        Chunk& back = m_chunks.back();
+        const Chunk& back = m_chunks.back();
         const std::size_t remaining = back.data.capacity() - back.data.size();
         if (remaining >= needed) {
             return;
@@ -52,6 +52,10 @@ std::u16string_view AddBuffer::view(std::uint64_t offset,
     // Binary search for the chunk whose [startOffset, startOffset + used)
     // contains `offset`. Chunks are strictly ordered by startOffset and never
     // move, so upper_bound / -1 is stable across any concurrent append.
+    // (heterogeneous comparator doesn't satisfy std::ranges::upper_bound's
+    // indirect_strict_weak_order full-symmetry requirement - see the
+    // identical case in original_buffer.cpp's viewMemoryMapped.)
+    // NOLINTNEXTLINE(modernize-use-ranges)
     auto it = std::upper_bound(
         m_chunks.begin(), m_chunks.end(), offset,
         [](std::uint64_t o, const Chunk& c) noexcept {

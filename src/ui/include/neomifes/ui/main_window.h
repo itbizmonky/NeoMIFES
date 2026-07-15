@@ -11,7 +11,9 @@
 namespace neomifes::ui {
 
 // Shared with the single-instance check in src/app/main.cpp (FindWindowW), so
-// it lives here rather than duplicated as a file-local constant.
+// it lives here rather than duplicated as a file-local constant. See the
+// identical C-array justification on kSingleInstanceMutexName in main.cpp.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, hicpp-avoid-c-arrays, modernize-avoid-c-arrays)
 inline constexpr wchar_t kWindowClassName[] = L"NeoMIFES.MainWindow";
 
 struct MainWindowConfig {

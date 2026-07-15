@@ -1,5 +1,6 @@
 #include "neomifes/document/piece_tree.h"
 
+#include <algorithm>
 #include <cassert>
 #include <utility>
 
@@ -216,9 +217,7 @@ void PieceTree::insertAt(TextPos pos, const Piece& piece) {
 
     // Clamp pos to totalLength() to give "append" semantics for out-of-range.
     const auto total = m_root->subtreeLength;
-    if (pos > total) {
-        pos = total;
-    }
+    pos = std::min(pos, total);
 
     // Walk to find the parent slot for the new node.
     PieceTreeNode* parent = nullptr;
@@ -326,6 +325,12 @@ PieceTreeNode* treeMinimum(PieceTreeNode* n) noexcept {
 
 }  // namespace
 
+// CLRS 13.4 RB-DELETE-FIXUP verbatim (4 structural cases x 2 mirrored sides);
+// splitting it would break the textbook correspondence this implementation
+// deliberately preserves for auditability, and it is covered by 20,000-
+// iteration property tests plus dedicated RB-invariant tests (see
+// document_piece_tree_test.cpp).
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void PieceTree::eraseFixup(PieceTreeNode* x, PieceTreeNode* xParent) {
     while (x != m_root.get() && (x == nullptr || x->color == RbColor::Black)) {
         assert(xParent != nullptr);  // unreachable otherwise: see loop guard above
@@ -413,7 +418,7 @@ void PieceTree::eraseNode(PieceTreeNode* z) {
     if (z->left == nullptr || z->right == nullptr) {
         // At most one child: transplant z with that child (possibly null).
         std::unique_ptr<PieceTreeNode>& zSlot = slotOf(z);
-        std::unique_ptr<PieceTreeNode>  zOwned = std::move(zSlot);
+        const std::unique_ptr<PieceTreeNode> zOwned = std::move(zSlot);
         std::unique_ptr<PieceTreeNode>  childOwned =
             zOwned->left ? std::move(zOwned->left) : std::move(zOwned->right);
 
@@ -438,7 +443,7 @@ void PieceTree::eraseNode(PieceTreeNode* z) {
             xParentRaw = y;
 
             std::unique_ptr<PieceTreeNode>& zSlot  = slotOf(z);
-            std::unique_ptr<PieceTreeNode>  zOwned = std::move(zSlot);
+            const std::unique_ptr<PieceTreeNode> zOwned = std::move(zSlot);
             std::unique_ptr<PieceTreeNode>  yOwned = std::move(zOwned->right);  // == y
 
             // y keeps its existing right child (x) untouched; it inherits
@@ -469,7 +474,7 @@ void PieceTree::eraseNode(PieceTreeNode* z) {
 
             // Now detach z and give y z's left/right children + color.
             std::unique_ptr<PieceTreeNode>& zSlot  = slotOf(z);
-            std::unique_ptr<PieceTreeNode>  zOwned = std::move(zSlot);
+            const std::unique_ptr<PieceTreeNode> zOwned = std::move(zSlot);
 
             yOwned->right = std::move(zOwned->right);
             if (yOwned->right) {
@@ -635,7 +640,7 @@ std::optional<PieceTree::PieceLookup> PieceTree::pieceContainingStrictly(TextPos
             if (rel == leftLen) {
                 return std::nullopt;  // pos lands exactly on this piece's start
             }
-            return PieceLookup{cur->piece, foundPieceStart};
+            return PieceLookup{.piece = cur->piece, .pieceStart = foundPieceStart};
         } else {
             subtreeStart += leftLen + cur->piece.length;
             rel          -= leftLen + cur->piece.length;
@@ -686,6 +691,10 @@ std::uint64_t PieceTree::totalNewlines() const noexcept {
 
 namespace {
 
+// NOLINTBEGIN(misc-no-recursion) - recursion depth is bounded by the tree's
+// black-height, O(log n) for a balanced RB-tree, so stack usage is not a
+// practical concern at any document size this project targets (10GB file /
+// 100K+ pieces is still only ~34 levels deep).
 void collectInOrder(const PieceTreeNode* n, std::vector<Piece>& out) {
     if (n == nullptr) {
         return;
@@ -694,6 +703,7 @@ void collectInOrder(const PieceTreeNode* n, std::vector<Piece>& out) {
     out.push_back(n->piece);
     collectInOrder(n->right.get(), out);
 }
+// NOLINTEND(misc-no-recursion)
 
 }  // namespace
 
@@ -718,46 +728,59 @@ struct ValidateResult {
     std::size_t   subtreeCount;
 };
 
+constexpr ValidateResult kInvalidResult{
+    .ok = false, .blackHeight = 0, .subtreeLength = 0, .subtreeNewlines = 0, .subtreeCount = 0};
+
+// See collectInOrder's recursion-depth justification above; the same O(log n)
+// bound applies here.
+// NOLINTNEXTLINE(misc-no-recursion)
 ValidateResult validateNode(const PieceTreeNode* n, const PieceTreeNode* expectedParent) {
     if (n == nullptr) {
-        return {true, 1, 0, 0, 0};  // nil considered black -> contributes 1 to black-height
+        // nil considered black -> contributes 1 to black-height.
+        return ValidateResult{
+            .ok = true, .blackHeight = 1, .subtreeLength = 0, .subtreeNewlines = 0, .subtreeCount = 0};
     }
 
     // Parent pointer consistency.
     if (n->parent != expectedParent) {
-        return {false, 0, 0, 0, 0};
+        return kInvalidResult;
     }
 
     // No red-red on the parent-child edge.
     if (n->color == RbColor::Red && expectedParent != nullptr
         && expectedParent->color == RbColor::Red) {
-        return {false, 0, 0, 0, 0};
+        return kInvalidResult;
     }
 
     const auto lv = validateNode(n->left.get(),  n);
-    if (!lv.ok) return {false, 0, 0, 0, 0};
+    if (!lv.ok) {
+        return kInvalidResult;
+    }
     const auto rv = validateNode(n->right.get(), n);
-    if (!rv.ok) return {false, 0, 0, 0, 0};
+    if (!rv.ok) {
+        return kInvalidResult;
+    }
 
     // Uniform black-height.
     if (lv.blackHeight != rv.blackHeight) {
-        return {false, 0, 0, 0, 0};
+        return kInvalidResult;
     }
 
     // Aggregate consistency.
     const auto expectedLen   = n->piece.length       + lv.subtreeLength   + rv.subtreeLength;
     const auto expectedNL    = n->piece.newlineCount + lv.subtreeNewlines + rv.subtreeNewlines;
     const auto expectedCount = std::size_t{1}       + lv.subtreeCount    + rv.subtreeCount;
-    if (n->subtreeLength   != expectedLen)   return {false, 0, 0, 0, 0};
-    if (n->subtreeNewlines != expectedNL)    return {false, 0, 0, 0, 0};
-    if (n->subtreeCount    != expectedCount) return {false, 0, 0, 0, 0};
+    if (n->subtreeLength   != expectedLen)   { return kInvalidResult; }
+    if (n->subtreeNewlines != expectedNL)    { return kInvalidResult; }
+    if (n->subtreeCount    != expectedCount) { return kInvalidResult; }
 
     const int selfBlack = (n->color == RbColor::Black) ? 1 : 0;
-    return {true,
-            lv.blackHeight + selfBlack,
-            expectedLen,
-            expectedNL,
-            expectedCount};
+    return ValidateResult{
+        .ok = true,
+        .blackHeight = lv.blackHeight + selfBlack,
+        .subtreeLength = expectedLen,
+        .subtreeNewlines = expectedNL,
+        .subtreeCount = expectedCount};
 }
 
 }  // namespace

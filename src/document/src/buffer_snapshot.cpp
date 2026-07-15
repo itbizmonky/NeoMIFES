@@ -20,9 +20,10 @@ BufferSnapshot::BufferSnapshot(std::shared_ptr<const OriginalBuffer> original,
 }
 
 std::u16string_view BufferSnapshot::pieceView(const Piece& p) const {
-    return (p.source == PieceSource::Add)
-               ? (m_add      ? m_add     ->view(p.offset, p.length) : std::u16string_view{})
-               : (m_original ? m_original->view(p.offset, p.length) : std::u16string_view{});
+    if (p.source == PieceSource::Add) {
+        return m_add ? m_add->view(p.offset, p.length) : std::u16string_view{};
+    }
+    return m_original ? m_original->view(p.offset, p.length) : std::u16string_view{};
 }
 
 std::u16string BufferSnapshot::extract(TextRange range) const {
@@ -52,7 +53,7 @@ std::u16string BufferSnapshot::extract(TextRange range) const {
         const std::uint64_t withinPiece  = overlapStart - pieceStart;
         const std::uint64_t take         = overlapEnd - overlapStart;
 
-        std::u16string_view chunk =
+        const std::u16string_view chunk =
             (p.source == PieceSource::Add)
                 ? m_add     ->view(p.offset + withinPiece, take)
                 : m_original->view(p.offset + withinPiece, take);

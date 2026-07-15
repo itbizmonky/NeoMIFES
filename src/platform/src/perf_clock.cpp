@@ -19,6 +19,14 @@ LARGE_INTEGER qpcFrequency() noexcept {
     return freq;
 }
 
+// Deliberate mutable global (CLAUDE.md normally forbids these): the QPC
+// counter at process start must be captured via an explicit markProcessStart()
+// call at a caller-chosen instant (the first line of wWinMain), not lazily on
+// first read - a magic-static (like qpcFrequency() above) would instead
+// capture the WRONG instant (whenever nanosSinceProcessStart() happens to be
+// called first). File-local (anonymous namespace) and atomic, so the blast
+// radius is contained to this one write-once/read-many timing value.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables, readability-identifier-naming)
 std::atomic<std::int64_t> g_processStartCounter{0};
 
 }  // namespace

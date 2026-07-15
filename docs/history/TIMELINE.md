@@ -22,6 +22,7 @@
 - [Session 14: Phase 2b3 Step 2 (SEH + load bench + Phase 2b 完了)](#session-14-2026-07-15-phase-2b3-step-2-seh--load-bench--phase-2b-完了)
 - [Session 15: Phase 3 着手前レビュー (設計書のADR同期漏れ発見・修正)](#session-15-2026-07-15-phase-3-着手前レビュー-設計書のadr同期漏れ発見修正)
 - [Session 16: Phase 3着手前ハウスキーピング (Named Mutex + UBSan CI)](#session-16-2026-07-16-phase-3着手前ハウスキーピング-named-mutex--ubsan-ci)
+- [Session 17: WarningsAsErrors有効化 (src/限定)](#session-17-2026-07-16-warningsaserrors有効化-src限定)
 
 ---
 
@@ -366,5 +367,27 @@
 **教訓:** 「小さなハウスキーピング」に見えたタスクが2件とも、実際にやってみると想定より深い技術的複雑性 (323件の警告、CRT/ランタイムライブラリのABI不整合、標準ライブラリ自体のUBSan非互換性) を持っていた。事前に「小さいはず」と決めつけず、着手してみて分かった実際のスコープに応じて、進める/止めて確認するを判断する必要がある — 特にCI設定変更は「動くようになるまでローカルで検証してからでないとpushしない」という既存ルールの重要性を再確認した。
 
 **次回:** WarningsAsErrors切替のスコープ (全323件対応 / 一部除外して段階導入 / 別Issueとして正式に切り出す等) をユーザーと相談してから、Phase 3 (Rendering Engine) 本体に着手する。
+
+## Session 17 (2026-07-16): WarningsAsErrors有効化 (src/限定)
+
+**目標:** Session 16 で保留した3件目のハウスキーピング (`.clang-tidy` の `WarningsAsErrors: '*'` 切替) に、ユーザーへのスコープ確認を経て着手する。
+
+**ユーザー判断:** 「323件全部即直す」「src/のみ先に切替」「Issueとして切り出し見送り」「その他」の4択を提示し、**「src/のみ先に切替」**を選択。
+
+**実施内容:**
+1. `src/` の47件を1件ずつ精査して対応:
+   - 実質的な改善: `const` 化 (不要な非const参照・ロック変数)、designated initializer 化 (`TextRange`/`Checkpoint`/`PieceLookup`/`ValidateResult`)、`2u`→`2U` 等の大文字リテラルサフィックス、`if (a>b) a=b;` → `std::min` 書き換え、`unsigned char[3]` → `std::array<unsigned char,3>`、ヘッダ/cpp間の引数名不一致修正 (`eraseNode`)
+   - 理由付き `NOLINT`: CLRS準拠のRB木アルゴリズム (`decodeUtf8Run`・`eraseFixup` の cognitive-complexity超過、`collectInOrder`・`validateNode` の recursion警告) は「教科書との対応関係を壊さない」「20,000反復プロパティテスト等で既に検証済み」を理由に分割しない判断。Win32文字列リテラル用のC配列2箇所 (`kWindowClassName`/`kSingleInstanceMutexName`) も同様
+   - `perf_clock.cpp` の `g_processStartCounter`: CLAUDE.mdが原則禁止する「グローバル可変状態」に該当するが、`markProcessStart()`は呼び出し側が選んだ瞬間を明示的に記録する必要があり (遅延初期化のmagic staticでは違う瞬間を捉えてしまう)、意図的な例外として理由をコメントで明示しNOLINT
+   - MSVC STLヘッダ (`xfilesystem_abi.h`) 内部由来の `clang-analyzer-optin.core.EnumCastOutOfRange` 誤検知は `.clang-tidy` のチェック除外リストに追加
+2. **`NOLINTNEXTLINE` 誤用のデバッグ:** 最初にNOLINTコメントを追加した際、コメントブロックの「途中」に置いてしまい (`NOLINTNEXTLINE` の直後に説明文が続く形)、`NOLINTNEXTLINE` が実際の宣言ではなく次のコメント行だけを抑制してしまうミスを複数箇所で発生させた。再スキャンで6件の「消えていない」警告として発覚し、全て「NOLINT注釈は対象行の直前 (説明コメントより後) に置く」形に修正して解消。**教訓: 複数行コメント + NOLINTNEXTLINE を組み合わせる際は、NOLINT注釈を必ずコード行の直前(最後)に置くこと**
+3. `src/` を0警告まで削減したことを確認 (フルスキャンで再検証)
+4. **`WarningsAsErrors` のスコープ限定に関する技術的発見:** clang-tidy の `InheritParentConfig: true` は `WarningsAsErrors` を文字列連結でマージするため、「親='\*' + 子='\''」による無効化オーバーライドは機能しない (`'*,'` になり実質「全部」のまま)。逆に「親='' + 子='\*'」の一方向加算は正しく機能する。この非対称性に気づかず最初 `tests/.clang-tidy` で無効化しようとして失敗し (`--dump-config` で実際の有効値を確認して発覚)、方針を反転して `src/.clang-tidy` で有効化する方式に変更して解決
+5. ローカルで CI の `static-analysis` ジョブと同じロジック (全31ファイルに対する個別 clang-tidy 実行 + 終了コード確認) を再現し、**全ファイル PASS** を確認
+6. Debug/Release 両方で全93テストが green であることを再確認
+
+**成果物:** [`src/.clang-tidy`](../../src/.clang-tidy) 新規 (`InheritParentConfig: true` + `WarningsAsErrors: '*'`)。ルートの `.clang-tidy` は `WarningsAsErrors: ''` のまま維持 (tests/ に適用される)。`tests/` の276件は別途の低優先度フォローアップとして先送り。
+
+**次回 (Phase 3):** Rendering Engine (Direct2D/DirectWrite) に着手。
 
 <!-- 次セッションはここに追記 -->

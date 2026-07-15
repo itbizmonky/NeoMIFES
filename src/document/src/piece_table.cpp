@@ -47,7 +47,7 @@ void PieceTable::ensureBoundary(TextPos pos) {
     const Piece& piece      = lookup->piece;
     const TextPos withinLen = pos - lookup->pieceStart;
 
-    std::u16string_view leftView =
+    const std::u16string_view leftView =
         (piece.source == PieceSource::Add)
             ? m_add     ->view(piece.offset, withinLen)
             : m_original->view(piece.offset, withinLen);
@@ -61,9 +61,7 @@ void PieceTable::insert(TextPos pos, std::u16string_view text) {
         return;
     }
     const auto total = m_tree.totalLength();
-    if (pos > total) {
-        pos = total;
-    }
+    pos = std::min(pos, total);
 
     ensureBoundary(pos);
 
@@ -94,7 +92,7 @@ void PieceTable::erase(TextRange range) {
     ensureBoundary(range.start);
     ensureBoundary(end);
 
-    m_tree.eraseRange({range.start, end});
+    m_tree.eraseRange(TextRange{.start = range.start, .end = end});
 }
 
 void PieceTable::replace(TextRange range, std::u16string_view text) {

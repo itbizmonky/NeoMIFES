@@ -1,0 +1,12 @@
+---
+# Enables WarningsAsErrors for src/ (production code) only. The root
+# .clang-tidy keeps WarningsAsErrors: '' as the default (applies to tests/
+# and everything else) because a project-wide scan on 2026-07-16 found 276
+# pre-existing warnings under tests/ - most structural to the Google
+# Benchmark macro API (BM_ naming convention, globals the BENCHMARK() macro
+# itself generates) rather than fixable in test code. src/ was cleaned to
+# zero warnings the same session (see docs/handoff/RESUME_HERE.md sec.3.4),
+# so it can safely gate on warnings-as-errors; tests/ stays warn-only until
+# that backlog is triaged separately.
+InheritParentConfig: true
+WarningsAsErrors: '*'

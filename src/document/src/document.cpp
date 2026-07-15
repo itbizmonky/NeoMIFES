@@ -27,7 +27,7 @@ void Document::replaceRange(TextRange range, std::u16string_view text) {
 
 std::u16string Document::toU16String() const {
     auto snap = m_pieceTable.snapshot();
-    return snap->extract({0, snap->length()});
+    return snap->extract(TextRange{.start = 0, .end = snap->length()});
 }
 
 void Document::ensureLineIndex() {
