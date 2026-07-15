@@ -10,6 +10,10 @@
 
 namespace neomifes::ui {
 
+// Shared with the single-instance check in src/app/main.cpp (FindWindowW), so
+// it lives here rather than duplicated as a file-local constant.
+inline constexpr wchar_t kWindowClassName[] = L"NeoMIFES.MainWindow";
+
 struct MainWindowConfig {
     int  initialWidth       = 1200;
     int  initialHeight      = 800;

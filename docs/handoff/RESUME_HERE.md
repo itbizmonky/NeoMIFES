@@ -81,15 +81,13 @@ $tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64
 - [x] OriginalBuffer の mmap + Lazy Decode コア実装・テスト
 - [x] SEH によるネットワークドライブ例外対策
 
-### 3.4 Phase 3 着手前ハウスキーピング (2026-07-15 レビューで期限確定)
+### 3.4 Phase 3 着手前ハウスキーピング (2026-07-15 レビューで期限確定 → 2026-07-16 に2/3完了)
 
-以下 3 件は Phase 0.5/1 から「次のフェーズで」と繰り返し先送りされてきた技術的負債。**Phase 3 で Direct2D/DirectWrite の実装コードを1行も書く前に**、この3件だけを片付ける小さなセッション/コミットとして先に消化すること (先送りをこれ以上繰り返さないための確定事項、CLAUDE.md §6/§11 参照)。
+Phase 0.5/1 から「次のフェーズで」と繰り返し先送りされてきた技術的負債3件。**Phase 3 で Direct2D/DirectWrite の実装コードを1行も書く前に**片付ける方針で着手。
 
-1. **`.clang-tidy` の `WarningsAsErrors: '*'`** に切替 (Phase 0.5 P05-4)。切替後に既存コードで新規警告が出ないか確認 — もし出た場合はその場で個別に直すか、正当な理由があれば `NOLINT` する
-2. **Named Mutex 単一インスタンス化** (basic_design §2.3)。`src/app/main.cpp` の `wWinMain` に `CreateMutexW` チェックを追加する小さな変更、Rendering Engine 本体とは独立なのでこのタイミングで完結できる
-3. **CI に clang-cl UBSan ジョブ追加** (self-review R4)。`.github/workflows/ci.yml` に新規ジョブを1本追加するのみ、既存ジョブへの影響なし
-
-3件とも Rendering Engine の内部実装とは独立しているため、Direct2D コード着手前に完結させても手戻りが発生しない。
+1. ✅ **(2026-07-16 完了) Named Mutex 単一インスタンス化** (basic_design §2.3)。`src/app/main.cpp` に `claimSingleInstance()` を追加 — `CreateMutexW` で多重起動を検出し、既存ウィンドウを `FindWindowW`+`SetForegroundWindow` でフォアグラウンド化する。**IPC 経由のコマンドライン引数委譲は未実装** (basic_design §2.3 が想定する完全な形は SessionManager が必要で Phase 4+ まで存在しないため、今回は意図的に見送り — 投機的実装をしない CLAUDE.md ルール#3 に基づく判断)。`--measure-startup`/`--measure-memory` モードはこのチェックの対象外 (CI/PoCハーネスが複数プロセスを立てても影響しないように)。ローカルで実プロセス2重起動を確認済み (2番目のプロセスが即exit、1番目は継続動作)
+2. ✅ **(2026-07-16 完了) CI に clang-cl UBSan ジョブ追加** (self-review R4)。当初「YAML追加のみ」の想定だったが、実際は clang-cl 用の CMake 設定 (`ubsan` プリセット新設、CRT を `/MD`→`/MT` static release に切替、`-fno-sanitize=alignment` で Microsoft STL/UCRT 由来の誤検知を除外) が必要と判明。ローカルで clang-cl ビルド+93テスト全pass を確認してから `.github/workflows/ci.yml` に `ubsan` ジョブを追加。詳細は [`cmake/Sanitizers.cmake`](../../cmake/Sanitizers.cmake) のコメント参照
+3. ⏭️ **`.clang-tidy` の `WarningsAsErrors: '*'`** に切替 (Phase 0.5 P05-4) — **保留中、ユーザー判断待ち**。実態調査の結果、現在 `src/` で47件・`tests/` で276件、**合計323件**の既存clang-tidy警告があると判明 (単純な切替は静的解析CIジョブを即座に赤くする)。多くは Google Benchmark のマクロパターンに起因する構造的に「直せない」警告 (`BM_` 命名規約、`BENCHMARK()` マクロが生成するグローバル変数など) だが、全体の切り分け・スコープ決定にはユーザー判断が必要。詳細は次回セッション冒頭でユーザーに提示すること
 
 ---
 

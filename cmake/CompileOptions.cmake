@@ -24,6 +24,17 @@ if(MSVC)
         /Zc:__STDC__
     )
 
+    # clang-cl (used for the UBSan build, see Sanitizers.cmake) rejects several
+    # of the MSVC-only /Zc:* flags above as "unused command line argument" -
+    # with /WX that becomes a hard error. CI's clang-tidy job already works
+    # around the same issue via --extra-arg=-Wno-unused-command-line-argument;
+    # this is the equivalent for an actual clang-cl *compile*, not just analysis.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(neomifes_compile_options INTERFACE
+            -Wno-unused-command-line-argument
+        )
+    endif()
+
     if(NEOMIFES_WARN_AS_ERROR)
         target_compile_options(neomifes_compile_options INTERFACE /WX)
     endif()

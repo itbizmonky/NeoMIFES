@@ -6,8 +6,6 @@ namespace neomifes::ui {
 
 namespace {
 
-constexpr wchar_t kWindowClassName[] = L"NeoMIFES.MainWindow";
-
 // Registration is one-shot per process. RegisterClassExW returns 0 if the class
 // is already registered under the same HINSTANCE, so we swallow that case.
 bool ensureWindowClass(HINSTANCE hInstance) noexcept {

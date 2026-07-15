@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <string_view>
 
+#include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
 #include "neomifes/ui/main_window.h"
@@ -33,9 +34,46 @@ namespace {
 
 using neomifes::app::StartupProfile;
 using neomifes::platform::currentProcessMemory;
+using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
+using neomifes::ui::kWindowClassName;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
+
+// Fixed name (not a random GUID) so every launch of this build targets the
+// same mutex. "Local\" keeps it session-scoped rather than machine-global.
+constexpr wchar_t kSingleInstanceMutexName[] = L"Local\\NeoMIFES_SingleInstance_9F1B2C3D_4E5F_4A6B_8C7D_1234567890AB";
+
+// Named-mutex single-instance check (basic_design.md sec.2.3). Only the
+// detection + "activate the existing window" half is implemented here — the
+// command-line-handoff-via-IPC half described in basic_design.md requires a
+// SessionManager that does not exist yet (Phase 4+), so it is deliberately
+// not built speculatively. Returns true if THIS process should proceed to
+// create its own window; false if an existing instance was found and
+// activated instead (caller should exit without creating a window).
+//
+// `mutexHolder` receives ownership of the mutex handle so it stays alive for
+// the process lifetime (a second launch must still detect this one).
+[[nodiscard]] bool claimSingleInstance(KernelHandle& mutexHolder) noexcept {
+    HANDLE h = ::CreateMutexW(nullptr, FALSE, kSingleInstanceMutexName);
+    mutexHolder = KernelHandle{h};
+    if (h == nullptr) {
+        // Mutex creation failing is not fatal to launching normally - treat
+        // as "no other instance detected" rather than blocking startup.
+        return true;
+    }
+    if (::GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existing = ::FindWindowW(kWindowClassName, nullptr);
+        if (existing != nullptr) {
+            if (::IsIconic(existing)) {
+                ::ShowWindow(existing, SW_RESTORE);
+            }
+            ::SetForegroundWindow(existing);
+        }
+        return false;
+    }
+    return true;
+}
 
 enum class LaunchMode : std::uint8_t {
     Normal,
@@ -110,6 +148,15 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     profile.winMainEnterNs = 0;  // by definition, zero relative to markProcessStart()
 
     const LaunchArgs args = parseArgs();
+
+    // Single-instance check applies to real user launches only. --measure-startup
+    // / --measure-memory are PoC/CI harness invocations that intentionally spawn
+    // fresh isolated processes for benchmarking; gating those on this check would
+    // make CI runs flaky if two measurement runs ever overlapped.
+    KernelHandle singleInstanceMutex;
+    if (args.mode == LaunchMode::Normal && !claimSingleInstance(singleInstanceMutex)) {
+        return 0;
+    }
 
     enableHighDpi();
 

@@ -21,6 +21,7 @@
 - [Session 13: Phase 2b3 Step 1 (mmap + Lazy Decode コア)](#session-13-2026-07-15-phase-2b3-step-1-mmap--lazy-decode-コア)
 - [Session 14: Phase 2b3 Step 2 (SEH + load bench + Phase 2b 完了)](#session-14-2026-07-15-phase-2b3-step-2-seh--load-bench--phase-2b-完了)
 - [Session 15: Phase 3 着手前レビュー (設計書のADR同期漏れ発見・修正)](#session-15-2026-07-15-phase-3-着手前レビュー-設計書のadr同期漏れ発見修正)
+- [Session 16: Phase 3着手前ハウスキーピング (Named Mutex + UBSan CI)](#session-16-2026-07-16-phase-3着手前ハウスキーピング-named-mutex--ubsan-ci)
 
 ---
 
@@ -346,5 +347,24 @@
 **教訓:** ADRやIssueドキュメントを正しく更新していても、それらが説明している設計原則を記述した基本/詳細設計書の**コード例本体**は別途同期させないと古いまま残る。ドキュメント鮮度チェックは「Issueのチェックボックス」だけでなく「設計書のコード例」まで対象を広げる必要がある。
 
 **次回 (Phase 3):** まず RESUME_HERE.md §3.4 のハウスキーピング3件を消化してから、Rendering Engine (Direct2D/DirectWrite) に着手する。
+
+## Session 16 (2026-07-16): Phase3着手前ハウスキーピング (Named Mutex + UBSan CI)
+
+**目標:** Session 15 で期限を確定した Phase 3 着手前ハウスキーピング3件 (WarningsAsErrors切替/Named Mutex/UBSan CIジョブ) にユーザーの「実施せよ」指示で着手する。
+
+**WarningsAsErrors切替:** 実施前に `.clang-tidy` の `WarningsAsErrors: '*'` を単純に切り替えると何が起きるか実態調査したところ、**`src/` で47件・`tests/` で276件、合計323件**の既存clang-tidy警告が判明。単純な切替は静的解析CIジョブを即座に壊す規模と判断し、この項目のみ保留してユーザー判断を仰ぐことにした (「実施せよ」の指示があっても、想定外に大きなブラストレディウスが判明した時点で確認を挟むべきというCLAUDE.mdルール#3/#9の適用)。
+
+**Named Mutex単一インスタンス化:** `src/app/main.cpp` に `claimSingleInstance()` を実装。`CreateMutexW` で多重起動を検出し、既存ウィンドウを `FindWindowW` (`kWindowClassName` を `main_window.h` に公開昇格) + `SetForegroundWindow` でフォアグラウンド化。basic_design §2.3 が想定する「コマンドライン引数をIPCで先行プロセスへ委譲」は SessionManager 不在(Phase 4+ 実装予定)のため意図的に見送り — 投機的実装をしないというCLAUDE.mdルール#3の判断。`--measure-startup`/`--measure-memory` モードは対象外とし、CI/PoCハーネストの複数プロセス起動に影響しないようにした。ローカルで実プロセスを2重起動して動作確認済み (2番目が即exit、1番目は継続動作)。
+
+**clang-cl UBSan CIジョブ:** 「YAML追加のみ」の想定に反し、実際にはCMake側の相応の対応が必要と判明した:
+1. clang-cl使用時、既存の `/Zc:preprocessor` 等MSVC専用フラグが「未使用引数」として `/WX` によりエラー化 → `CompileOptions.cmake` に clang-cl 検出時の `-Wno-unused-command-line-argument` 追加 (CIのclang-tidyジョブが既に同じ問題に同じ対処をしていたのと同根)
+2. clang-cl バンドルのUBSanランタイム (`clang_rt.ubsan_standalone_cxx-x86_64.lib`) が **静的リリースCRT (`/MT`)** でビルドされており、プロジェクトのデフォルト (`/MDd`, Debug動的CRT) とは `_ITERATOR_DEBUG_LEVEL`・`RuntimeLibrary` 双方で不整合 → 新設した `ubsan` プリセットで `CMAKE_MSVC_RUNTIME_LIBRARY: MultiThreaded` を強制、`/RTC1` も同時に除去 (ASanの既存対応と同パターン)
+3. 上記を修正した後、実際にUBSanが**Microsoft STL/UCRT自体の内部実装**(`wchar.h`のwcslen高速パス的な非アライン読み込み)を誤検知として大量に検出することが判明 → `-fno-sanitize=alignment` のみ除外し、他のUBSanチェックは維持
+
+ローカルで clang-cl ビルド (`cmake --preset ubsan`) → 全93テストpass を確認してから `.github/workflows/ci.yml` に `ubsan` ジョブを追加 (`build-and-test` に依存、`choco install llvm` で clang-cl を調達 — 既存の `static-analysis` ジョブと同じ調達パターン)。
+
+**教訓:** 「小さなハウスキーピング」に見えたタスクが2件とも、実際にやってみると想定より深い技術的複雑性 (323件の警告、CRT/ランタイムライブラリのABI不整合、標準ライブラリ自体のUBSan非互換性) を持っていた。事前に「小さいはず」と決めつけず、着手してみて分かった実際のスコープに応じて、進める/止めて確認するを判断する必要がある — 特にCI設定変更は「動くようになるまでローカルで検証してからでないとpushしない」という既存ルールの重要性を再確認した。
+
+**次回:** WarningsAsErrors切替のスコープ (全323件対応 / 一部除外して段階導入 / 別Issueとして正式に切り出す等) をユーザーと相談してから、Phase 3 (Rendering Engine) 本体に着手する。
 
 <!-- 次セッションはここに追記 -->

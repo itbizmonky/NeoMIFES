@@ -121,6 +121,41 @@ jobs:
           path: build/debug/compile_commands.json
           if-no-files-found: error
 
+  ubsan:
+    name: UBSan (clang-cl)
+    runs-on: windows-2022
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Install LLVM (clang-cl)
+        shell: pwsh
+        run: |
+          choco install llvm --version=19.1.5 --no-progress -y
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "C:\Program Files\LLVM\bin\clang-cl.exe" --version
+
+      - name: Configure (ubsan preset)
+        shell: pwsh
+        run: cmake --preset ubsan
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset ubsan
+
+      - name: Run tests under UBSan
+        shell: pwsh
+        run: ctest --preset ubsan --output-on-failure
+
   static-analysis:
     name: clang-tidy
     runs-on: windows-2022

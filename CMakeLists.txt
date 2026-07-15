@@ -48,9 +48,10 @@ endif()
 # -----------------------------------------------------------------------------
 # Project options
 # -----------------------------------------------------------------------------
-option(NEOMIFES_BUILD_TESTS   "Build unit tests and benchmarks" ON)
-option(NEOMIFES_ENABLE_ASAN   "Enable AddressSanitizer"          OFF)
-option(NEOMIFES_WARN_AS_ERROR "Treat compile warnings as errors" ON)
+option(NEOMIFES_BUILD_TESTS   "Build unit tests and benchmarks"        ON)
+option(NEOMIFES_ENABLE_ASAN   "Enable AddressSanitizer"                 OFF)
+option(NEOMIFES_ENABLE_UBSAN  "Enable UndefinedBehaviorSanitizer (clang-cl only)" OFF)
+option(NEOMIFES_WARN_AS_ERROR "Treat compile warnings as errors"        ON)
 
 # -----------------------------------------------------------------------------
 # Shared cmake helpers

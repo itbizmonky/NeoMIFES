@@ -52,12 +52,25 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "NEOMIFES_ENABLE_ASAN": "ON"
       }
+    },
+    {
+      "name": "ubsan",
+      "displayName": "Debug + UndefinedBehaviorSanitizer (clang-cl)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "NEOMIFES_ENABLE_UBSAN": "ON",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+      }
     }
   ],
   "buildPresets": [
     { "name": "debug",   "configurePreset": "debug"   },
     { "name": "release", "configurePreset": "release" },
-    { "name": "asan",    "configurePreset": "asan"    }
+    { "name": "asan",    "configurePreset": "asan"    },
+    { "name": "ubsan",   "configurePreset": "ubsan"   }
   ],
   "testPresets": [
     {
@@ -75,6 +88,12 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "ubsan",
+      "configurePreset": "ubsan",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     }
