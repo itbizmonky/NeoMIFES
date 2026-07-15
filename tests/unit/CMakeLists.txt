@@ -6,6 +6,7 @@ add_executable(neomifes_unit_tests
     document_add_buffer_test.cpp
     document_buffer_snapshot_test.cpp
     document_piece_table_test.cpp
+    document_piece_tree_test.cpp
     document_line_index_test.cpp
     document_property_test.cpp
     document_file_loader_test.cpp

@@ -185,4 +185,31 @@
 
 ---
 
+## Session 10 (2026-07-15): Phase 2b2 Step 1 (PieceTree 追加 / insert + split)
+
+**背景:** ADR-007 で mutable RB tree を採用。実装は 2 段階に分割:
+- Step 1 (このセッション): PieceTree クラスを新規追加、insert + splitPieceAt + validate + テストのみ。PieceTable / LineIndex の差し替えはしない
+- Step 2 (次回): erase + line queries + PieceTable/LineIndex 内部差し替え
+
+環境制約 (ローカルビルド不可) 下でリスクを最小化するための段階分割。
+
+**成果物:**
+- [`src/document/include/neomifes/document/piece_tree.h`](../../src/document/include/neomifes/document/piece_tree.h) — `PieceTreeNode` + `PieceTree` API
+- [`src/document/src/piece_tree.cpp`](../../src/document/src/piece_tree.cpp) — CLRS 13.3 準拠 RB insert + rotate + fixup + splitPieceAt + collectPieces + validate
+- [`tests/unit/document_piece_tree_test.cpp`](../../tests/unit/document_piece_tree_test.cpp) — 11 ケース (empty / single / append 500 / prepend 500 / alternating 200 / newline aggregate / split × 2 / stress 800 / move / order preservation / clamp)
+
+**設計選択:**
+- ノード所有権: 親から子へ `std::unique_ptr` (rotate 時は unique_ptr slot 単位で明示的 move 転送)
+- 集約フィールド: `subtreeLength` / `subtreeNewlines` / `subtreeCount` — rotate 直後に必ず `updateAggregate` 呼出、insert 経路で `updateAggregatesUpward`
+- `validate()`: RB 3 不変条件 (root black / no red-red / uniform black height) + parent 整合性 + 集約整合性を bottom-up 再計算で検証
+- splitPieceAt は「1 ノードの piece を短縮 + 右半分を新ノードとして boundary 挿入」に還元 — insertAt が既にあれば実装が最小
+
+**意図的な非対応 (Step 2 で):**
+- `eraseRange` (RB delete + double-black fixup)
+- `offsetToLine` / `lineToOffset` (tree 集約経由の O(log n))
+- PieceTable / LineIndex 内部差し替え
+- property test 20K 反復化
+
+**RESUME_HERE.md 更新:** Step 1 完了、Step 2 が次回着手対象。
+
 <!-- 次セッションはここに追記 -->

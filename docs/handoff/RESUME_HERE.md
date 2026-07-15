@@ -13,8 +13,9 @@
 | Phase 0.5 (ビルド基盤 / CI / 静的解析) | ✅ 完了 (CI green 達成) |
 | Phase 1 (Win32 骨組み + 起動 0.3s/20MB PoC) | ✅ 完了 (CI 実測 22ms) |
 | Phase 2a (Document Engine API + MVP 実装 + テスト網羅) | ✅ 完了 |
-| **Phase 2b1 (B-1 pieceView + B-2 AddBuffer チャンク化)** | ✅ **完了** |
-| **Phase 2b2 (PieceTree 本体実装 - ADR-006)** | ⏭️ **次回着手** |
+| Phase 2b1 (B-1 pieceView + B-2 AddBuffer チャンク化) | ✅ 完了 |
+| **Phase 2b2 Step 1 (PieceTree 追加: insert + split + validate + テスト)** | ✅ **完了** (PieceTable 差し替え無し、既存 38 テスト影響ゼロ) |
+| **Phase 2b2 Step 2 (erase + line queries + PieceTable/LineIndex 内部差し替え)** | ⏭️ **次回着手** |
 | Phase 2b3 (OriginalBuffer mmap + Lazy Decode + 1GB bench) | 予定 |
 
 ---
@@ -164,16 +165,19 @@ tests/bench/
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 2b2 (ADR-007 準拠の Mutable RB-Tree 実装 + PieceTable 差し替え) に着手せよ。
-G1〜G10 のガードレールを守り、既存 37 単体テストの変更なし green を厳守
+Phase 2b2 Step 2 に着手せよ。PieceTree.erase (CLRS 13.4) と
+offsetToLine / lineToOffset を追加し、PieceTable と LineIndex の
+内部を PieceTree に差し替えよ。既存 45+ 単体テストの変更なし green を厳守。
 ```
 
-または段階的に:
-```
-まず piece_tree_node.h の struct 設計 + subtree aggregate 更新方針を提示し、
-承認後に insert 系だけ実装 → 既存 37 テスト green を CI で確認してから
-delete 実装に進め
-```
+Step 2 の具体的作業:
+1. `PieceTree::eraseRange(TextRange)` — CLRS 13.4 delete + double-black fixup + aggregate 維持
+2. `PieceTree::offsetToLine(TextPos)` — subtreeNewlines を辿って O(log n)
+3. `PieceTree::lineToOffset(LineNumber)` — 同じく O(log n)
+4. `PieceTree::validate` を eraseRange 経路にも通す (property test で担保)
+5. `src/document/src/piece_table.cpp` — 内部 `std::vector<Piece>` を `PieceTree` に差し替え
+6. `src/document/src/line_index.cpp` — tree 集約経由の O(log n) 実装に差し替え
+7. property test の反復数を 2000 → 20,000 に拡張 (ADR-007 の DoD)
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

@@ -6,6 +6,7 @@ add_library(neomifes_document STATIC
     src/line_index.cpp
     src/original_buffer.cpp
     src/piece_table.cpp
+    src/piece_tree.cpp
 )
 add_library(neomifes::document ALIAS neomifes_document)
 
