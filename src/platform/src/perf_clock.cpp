@@ -30,7 +30,7 @@ PerfClock::time_point PerfClock::now() noexcept {
     // ns = counter * 1e9 / freq. Split to avoid 64-bit overflow for very large counters.
     const auto whole = counter.QuadPart / freq;
     const auto frac  = counter.QuadPart % freq;
-    const auto ns    = whole * 1'000'000'000LL + (frac * 1'000'000'000LL) / freq;
+    const auto ns    = (whole * 1'000'000'000LL) + ((frac * 1'000'000'000LL) / freq);
     return time_point{duration{ns}};
 }
 
@@ -51,7 +51,7 @@ std::int64_t PerfClock::nanosSinceProcessStart() noexcept {
     const auto freq  = qpcFrequency().QuadPart;
     const auto whole = delta / freq;
     const auto frac  = delta % freq;
-    return whole * 1'000'000'000LL + (frac * 1'000'000'000LL) / freq;
+    return (whole * 1'000'000'000LL) + ((frac * 1'000'000'000LL) / freq);
 }
 
 }  // namespace neomifes::platform

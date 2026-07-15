@@ -10,7 +10,10 @@ bool StartupProfile::writeJson(const std::filesystem::path& out) const {
         return false;
     }
     // Field names match the schema consumed by tests/integration/startup_measure_test.
-    std::fprintf(fp,
+    // fprintf / fclose return values are cast to void because a partial write here
+    // still surfaces as an integration-test failure downstream (the JSON reader
+    // rejects a malformed file). Silences cert-err33-c without hiding real bugs.
+    (void)std::fprintf(fp,
         "{\n"
         "  \"winMainEnterNs\": %lld,\n"
         "  \"windowCreatedNs\": %lld,\n"
@@ -25,7 +28,7 @@ bool StartupProfile::writeJson(const std::filesystem::path& out) const {
         static_cast<long long>(measuredExitNs),
         static_cast<unsigned long long>(workingSetBytesAtFirstPaint),
         static_cast<unsigned long long>(privateWorkingSetBytesAtFirstPaint));
-    std::fclose(fp);
+    (void)std::fclose(fp);
     return true;
 }
 

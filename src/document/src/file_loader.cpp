@@ -95,7 +95,9 @@ loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes) {
 
     std::vector<char> raw(static_cast<std::size_t>(size));
     const std::size_t got = std::fread(raw.data(), 1, raw.size(), fp);
-    std::fclose(fp);
+    // Read-only stream; fclose failure cannot lose data and any short read
+    // already surfaces via the `got != raw.size()` check below.
+    (void)std::fclose(fp);
     if (got != raw.size()) {
         return LoadError::IoFailure;
     }
