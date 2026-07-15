@@ -13,6 +13,8 @@
 | [ADR-005](ADR-005-min-msvc-version.md) | 最低 MSVC バージョンを VS 2022 17.13 以上とする | Accepted |
 | [ADR-006](ADR-006-piece-tree-implementation.md) | Piece Tree を Path-Copying Persistent RB-Tree で実装する | ~~Superseded by ADR-007~~ |
 | [ADR-007](ADR-007-piece-tree-mutable-rb.md) | Piece Tree を Mutable Red-Black Tree + Piece-Vector Snapshot で実装する | Accepted |
+| [ADR-008](ADR-008-com-raii-comptr.md) | Direct2D/DXGI/DirectWrite の COM オブジェクトは Microsoft::WRL::ComPtr で所有する | Accepted |
+| [ADR-009](ADR-009-deferred-device-init.md) | Direct2D デバイス生成は同期・UIスレッド・自己ポストメッセージ経由で遅延させる | Accepted |
 
 ## 運用ルール
 

@@ -2,9 +2,16 @@
 
 #include <windows.h>
 
+#include <utility>
+
 namespace neomifes::ui {
 
 namespace {
+
+// Internal-only message used to defer renderer device creation until after
+// the first WM_PAINT completes (ADR-009) - never posted by anything outside
+// MainWindow itself.
+constexpr UINT kMsgDeferredInit = WM_APP + 1;
 
 // Registration is one-shot per process. RegisterClassExW returns 0 if the class
 // is already registered under the same HINSTANCE, so we swallow that case.
@@ -47,7 +54,9 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     if (!ensureWindowClass(hInstance)) {
         return false;
     }
-    m_onFirstPaint = config.onFirstPaint;
+    m_onFirstPaint   = config.onFirstPaint;
+    m_onDeferredInit = config.onDeferredInit;
+    m_onResize       = config.onResize;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -63,6 +72,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     if (m_hwnd == nullptr) {
         return false;
     }
+    m_currentDpi = ::GetDpiForWindow(m_hwnd);
 
     // Fire the "window created" hook here - after CreateWindowExW has
     // returned (WM_NCCREATE / WM_CREATE done) but before ShowWindow queues
@@ -85,6 +95,10 @@ void MainWindow::requestClose() noexcept {
     }
 }
 
+void MainWindow::setPaintHandler(std::function<void(HWND)> handler) noexcept {
+    m_onPaint = std::move(handler);
+}
+
 LRESULT CALLBACK MainWindow::wndProcTrampoline(HWND hwnd, UINT msg,
                                                WPARAM wParam, LPARAM lParam) noexcept {
     MainWindow* self = nullptr;
@@ -104,26 +118,17 @@ LRESULT CALLBACK MainWindow::wndProcTrampoline(HWND hwnd, UINT msg,
 
 LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
     switch (msg) {
-        case WM_PAINT: {
-            PAINTSTRUCT ps{};
-            HDC dc = ::BeginPaint(m_hwnd, &ps);
-            if (dc != nullptr) {
-                // Phase 1: plain background fill via GDI. Phase 3 replaces this with
-                // a Direct2D device context bound to a DXGI swap chain (see
-                // detailed_design.md sec.4).
-                HBRUSH bg = ::CreateSolidBrush(RGB(30, 30, 30));  // dark placeholder
-                ::FillRect(dc, &ps.rcPaint, bg);
-                ::DeleteObject(bg);
-                ::EndPaint(m_hwnd, &ps);
-            }
-            if (!m_firstPaintFired) {
-                m_firstPaintFired = true;
-                if (m_onFirstPaint) {
-                    m_onFirstPaint(m_hwnd);
-                }
-            }
+        case WM_PAINT:
+            handlePaint();
             return 0;
-        }
+        case WM_SIZE:
+            handleSize(lParam);
+            return 0;
+        case WM_DPICHANGED:
+            return handleDpiChanged(wParam, lParam);
+        case kMsgDeferredInit:
+            handleDeferredInit();
+            return 0;
         case WM_ERASEBKGND:
             // We paint the full client rect in WM_PAINT; suppress default erase to
             // avoid flicker.
@@ -137,6 +142,68 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         default:
             return ::DefWindowProcW(m_hwnd, msg, wParam, lParam);
+    }
+}
+
+void MainWindow::handlePaint() noexcept {
+    if (m_onPaint) {
+        // The renderer owns presentation entirely (D2D/DXGI Present, not
+        // GDI); just validate the update region so Windows doesn't keep
+        // reposting WM_PAINT for it.
+        m_onPaint(m_hwnd);
+        ::ValidateRect(m_hwnd, nullptr);
+    } else {
+        PAINTSTRUCT ps{};
+        HDC dc = ::BeginPaint(m_hwnd, &ps);
+        if (dc != nullptr) {
+            // GDI placeholder fill, active until a renderer attaches via
+            // setPaintHandler() (see ADR-009 / onDeferredInit).
+            HBRUSH bg = ::CreateSolidBrush(RGB(30, 30, 30));  // dark placeholder
+            ::FillRect(dc, &ps.rcPaint, bg);
+            ::DeleteObject(bg);
+            ::EndPaint(m_hwnd, &ps);
+        }
+    }
+
+    if (!m_firstPaintFired) {
+        m_firstPaintFired = true;
+        if (m_onFirstPaint) {
+            m_onFirstPaint(m_hwnd);
+        }
+        if (m_onDeferredInit) {
+            // Posted, not called synchronously - runs one message-loop hop
+            // later so it can never affect this WM_PAINT's timing (see
+            // MainWindowConfig::onDeferredInit doc comment / ADR-009).
+            ::PostMessageW(m_hwnd, kMsgDeferredInit, 0, 0);
+        }
+    }
+}
+
+void MainWindow::handleSize(LPARAM lParam) noexcept {
+    if (!m_onResize) {
+        return;
+    }
+    const auto width  = static_cast<std::uint32_t>(LOWORD(lParam));
+    const auto height = static_cast<std::uint32_t>(HIWORD(lParam));
+    m_onResize(m_hwnd, width, height, static_cast<float>(m_currentDpi) / 96.0F);
+}
+
+LRESULT MainWindow::handleDpiChanged(WPARAM wParam, LPARAM lParam) noexcept {
+    m_currentDpi = HIWORD(wParam);
+    // The suggested new window rect triggers a synchronous WM_SIZE via
+    // SetWindowPos, so handleSize() runs with m_currentDpi already updated -
+    // no separate resize notification is needed here.
+    const auto* suggestedRect = reinterpret_cast<const RECT*>(lParam);
+    ::SetWindowPos(m_hwnd, nullptr, suggestedRect->left, suggestedRect->top,
+                   suggestedRect->right - suggestedRect->left,
+                   suggestedRect->bottom - suggestedRect->top,
+                   SWP_NOZORDER | SWP_NOACTIVATE);
+    return 0;
+}
+
+void MainWindow::handleDeferredInit() noexcept {
+    if (m_onDeferredInit) {
+        m_onDeferredInit(m_hwnd);
     }
 }
 

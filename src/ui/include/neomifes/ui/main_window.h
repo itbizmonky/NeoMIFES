@@ -1,11 +1,15 @@
 #pragma once
 
-// MainWindow - Phase 1 skeleton.
-// Only registers the window class, creates the top-level window, and paints a
-// solid background. Direct2D / DirectWrite integration lands in Phase 3.
+// MainWindow - Win32 window shell.
+// Registers the window class, creates the top-level window, and paints a
+// solid background by default (GDI). Phase 3 (Rendering Engine) attaches via
+// setPaintHandler()/onDeferredInit/onResize rather than this class linking
+// neomifes::render directly - composition happens in src/app/main.cpp, the
+// layer that already depends on both ui and render (see ADR-009).
 
 #include <windows.h>
 
+#include <cstdint>
 #include <functional>
 
 namespace neomifes::ui {
@@ -28,6 +32,15 @@ struct MainWindowConfig {
     // Optional: invoked once, on the UI thread, right after the first WM_PAINT
     // completes. Used by --measure-startup to sample the "first-paint" timestamp.
     std::function<void(HWND)> onFirstPaint;
+    // Optional: invoked once, posted (not called synchronously) via an
+    // internal WM_APP message right after the first WM_PAINT completes - so
+    // it never blocks the CreateWindowExW/UpdateWindow path or affects
+    // onFirstPaint's timing. Intended for renderer device creation (ADR-009).
+    std::function<void(HWND)> onDeferredInit;
+    // Optional: invoked from WM_SIZE (including the WM_SIZE that
+    // WM_DPICHANGED's SetWindowPos triggers) with the new client-area pixel
+    // size and current DPI scale (96 DPI == 1.0f).
+    std::function<void(HWND, std::uint32_t width, std::uint32_t height, float dpiScale)> onResize;
 };
 
 class MainWindow {
@@ -49,6 +62,12 @@ public:
     // Convenience: schedules WM_CLOSE so the message loop exits gracefully.
     void requestClose() noexcept;
 
+    // Swaps the WM_PAINT handler at runtime - e.g. once RenderPipeline::attach()
+    // succeeds and can take over from the GDI placeholder. Safe to call from
+    // any hook (all run on the UI thread). An empty handler restores the GDI
+    // fallback fill.
+    void setPaintHandler(std::function<void(HWND)> handler) noexcept;
+
     // Win32 WNDPROC entry point. Public because it is registered as the
     // window class's lpfnWndProc from a free helper in main_window.cpp; do
     // not call it from application code.
@@ -57,9 +76,18 @@ public:
 private:
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
 
+    void handlePaint() noexcept;
+    void handleSize(LPARAM lParam) noexcept;
+    LRESULT handleDpiChanged(WPARAM wParam, LPARAM lParam) noexcept;
+    void handleDeferredInit() noexcept;
+
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
+    std::function<void(HWND)>  m_onDeferredInit;
+    std::function<void(HWND, std::uint32_t, std::uint32_t, float)> m_onResize;
+    std::function<void(HWND)>  m_onPaint;          // set via setPaintHandler(); empty == GDI fallback
     bool                       m_firstPaintFired = false;
+    UINT                       m_currentDpi      = 96;
 };
 
 }  // namespace neomifes::ui

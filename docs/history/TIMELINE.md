@@ -23,6 +23,7 @@
 - [Session 15: Phase 3 着手前レビュー (設計書のADR同期漏れ発見・修正)](#session-15-2026-07-15-phase-3-着手前レビュー-設計書のadr同期漏れ発見修正)
 - [Session 16: Phase 3着手前ハウスキーピング (Named Mutex + UBSan CI)](#session-16-2026-07-16-phase-3着手前ハウスキーピング-named-mutex--ubsan-ci)
 - [Session 17: WarningsAsErrors有効化 (src/限定)](#session-17-2026-07-16-warningsaserrors有効化-src限定)
+- [Session 18: Phase 3a (Direct2D/DXGI 基盤配線)](#session-18-2026-07-16-phase-3a-direct2ddxgi-基盤配線)
 
 ---
 
@@ -389,5 +390,30 @@
 **成果物:** [`src/.clang-tidy`](../../src/.clang-tidy) 新規 (`InheritParentConfig: true` + `WarningsAsErrors: '*'`)。ルートの `.clang-tidy` は `WarningsAsErrors: ''` のまま維持 (tests/ に適用される)。`tests/` の276件は別途の低優先度フォローアップとして先送り。
 
 **次回 (Phase 3):** Rendering Engine (Direct2D/DirectWrite) に着手。
+
+## Session 18 (2026-07-16): Phase 3a (Direct2D/DXGI 基盤配線)
+
+**目標:** ユーザーの「Phase 3に進め」指示を受け、Plan modeでPhase 3全体を3a/3b/3c(+3d検討)に段階分割する計画を提示・承認を得た上で、**Phase 3a: D2D/DXGI/COMの配線基盤**(テキスト描画・キャッシュ・シンタックス・IME・テーマは対象外)を実装する。
+
+**計画フェーズ:** 3体のExplore agentを並列起動しUI/appレイヤ・Document読み取りAPI・detailed_design.md §4・CMake構造・テスト規約を調査した上で、Plan agentにPhase 3a の詳細設計 (ファイル構成・MainWindow統合・デバイスロスト処理・デバイス生成タイミング・CMake・テスト戦略・ADR要否) を依頼。得られた計画をレビューし、ユーザー承認を得てから実装着手。
+
+**成果物:**
+- **[ADR-008](../decisions/ADR-008-com-raii-comptr.md)**: COM RAIIに`Microsoft::WRL::ComPtr`採用 (HandleGuard拡張ではなく — COMの「コピーでAddRef」意味論はHandleGuardのmove-only設計と根本的に異なるため)
+- **[ADR-009](../decisions/ADR-009-deferred-device-init.md)**: デバイス生成は同期・UIスレッド・自己ポストメッセージ (`WM_APP+1`) 方式。ワーカースレッド化は不採用 (D3D11+D2D生成が実測5ms未満で起動予算に対し無視できるコストであり、ワーカースレッド化はCOMアパートメント設計の複雑性に見合わないため)
+- 新規 `src/render/` レイヤ (`resize_math.h`/`render_error.h+cpp`/`d2d_factories.h+cpp`/`render_device.h+cpp`/`render_pipeline.h+cpp`):
+  - `RenderExpected<T> = std::expected<T, RenderError>` — **プロジェクト初のstd::expected採用箇所** (Phase 2はstd::expected完全対応前の設計だったためstd::variantを使用していたが、CLAUDE.md §4の規定通りに実装)
+  - `RenderDevice`: D3D11+D2D+DXGIデバイスグラフのRAII所有。`D3D_DRIVER_TYPE_HARDWARE`→`WARP`フォールバック (GPU無しCI runner対策)。resize時は`SetTarget(nullptr)`→`ResizeBuffers`→再バインドの順序を厳守
+  - `RenderPipeline`: MainWindow/appが触るファサード。デバイスロスト検知時はデバイスグラフ全体を破棄・再生成 (MS推奨通り、スワップチェーンだけでなく)
+- `MainWindow`拡張: `onDeferredInit`(初回`WM_PAINT`後`WM_APP`経由で1回発火)・`onResize`・`setPaintHandler()`を追加、`WM_SIZE`/`WM_DPICHANGED`ハンドリング新設。GDIプレースホルダーパスは温存 (レンダラ未アタッチ時のフォールバックとして)
+- `main.cpp`: `LaunchMode::Normal`時のみ`RenderPipeline`を生成・配線。`--measure-startup`/`--measure-memory`モードは一切変更なし (ADR-009の設計通り、構造的に計測タイミングへの影響がない)
+- 単体テスト+11 (`render_resize_math_test.cpp`, `render_error_test.cpp`)、統合テスト+1 (`render_device_smoke_test.cpp` — 実際のCOM/D3D11/D2D/DXGIデバイス生成をHARDWARE→WARPフォールバック込みで検証、GPU無し環境でも成功する設計なのでhard passとして扱う)。テスト総数 93→109
+
+**検証:**
+- ローカルDebug/Release両方でフルビルド・全109テストpass (初回ビルドでCOM API呼び出しが一発でコンパイル成功 — ID2D1Device6/DeviceContext6が基底interfaceからのQueryInterfaceアップグレードで取得する必要がある点など、事前調査が正確だった)
+- clang-tidy (`src/.clang-tidy`の`WarningsAsErrors: '*'`込み) で新規ファイル6本を検証、初回スキャンで「designated initializer化」×多数・「unchecked-optional-access」1件・「const化」1件を検出・修正、再スキャンで0警告確認
+- `--measure-startup`実測: firstPaintNs=33.16ms (ローカル、目標300msの11%) — レンダラ配線後も退化なし
+- 実アプリを起動し、プロセスにロードされたモジュール一覧で`d2d1.dll`/`d3d11.dll`/`dxgi.dll`が実際にロードされていることを確認 (GDIへの静かなフォールバックではなく、D2D/DXGIが本当に有効化されたことの裏付け)。ウィンドウを4段階でリサイズしクラッシュしないこと、スクリーンショットで表示崩れがないことを確認
+
+**次回 (Phase 3b):** DirectWriteテキストレイアウト、Document内容の実描画、ビューポート/スクロール位置管理。`detailed_design.md` §4.3に追記済みの「snapshot()はフレームごとに呼ばない」ガードレールを実装で守ること。
 
 <!-- 次セッションはここに追記 -->

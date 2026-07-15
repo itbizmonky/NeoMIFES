@@ -1,10 +1,13 @@
-// NeoMIFES - Phase 1 entry point.
+// NeoMIFES - application entry point.
 //
 // Responsibilities:
 //   1. Mark process start time (QPC) as early as possible.
 //   2. Enable Per-Monitor V2 DPI awareness before any HWND is created.
-//   3. Create the top-level MainWindow (Win32 skeleton, GDI paint).
-//   4. Run the message loop.
+//   3. Create the top-level MainWindow (Win32 skeleton).
+//   4. On real launches, attach a RenderPipeline (Direct2D/DXGI) after the
+//      first paint (Phase 3a, ADR-009) - measurement modes skip this so
+//      --measure-startup's timing contract is untouched.
+//   5. Run the message loop.
 //
 // Command-line modes (used by PoC tests, disabled in normal launches):
 //   --measure-startup <out.json>  Record startup timings + memory then exit
@@ -13,7 +16,7 @@
 //                                 (Currently identical output — kept separate
 //                                 for future divergence.)
 //
-// Real editor features (Document/Rendering/Search) arrive in later phases.
+// Document Engine / Search Engine integration arrives in later phases.
 
 #include <windows.h>
 #include <shellapi.h>
@@ -21,11 +24,13 @@
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
+#include <string>
 #include <string_view>
 
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
+#include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/main_window.h"
 
 #include "startup_profile.h"
@@ -36,6 +41,7 @@ using neomifes::app::StartupProfile;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
+using neomifes::render::RenderPipeline;
 using neomifes::ui::kWindowClassName;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
@@ -130,6 +136,20 @@ void enableHighDpi() noexcept {
     }
 }
 
+// No logging engine exists yet (basic_design.md sec.6.5 is a later phase);
+// this is a deliberate, narrowly-scoped stopgap for render-attach/resize
+// failures rather than solving logging prematurely. describe()'s output is
+// documented ASCII-only, so OutputDebugStringA (not the W variant) is fine.
+void debugLogRenderError(const char* what, const neomifes::render::RenderError& err) noexcept {
+#ifndef NDEBUG
+    const std::string msg = std::string(what) + ": " + neomifes::render::describe(err) + "\n";
+    ::OutputDebugStringA(msg.c_str());
+#else
+    (void)what;
+    (void)err;
+#endif
+}
+
 int runMessageLoop() noexcept {
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -166,6 +186,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
 
     MainWindow window;
     MainWindowConfig cfg{};
+    RenderPipeline renderPipeline;
 
     // In measurement mode, capture both timing markers via hooks so their
     // ordering matches the actual UI event sequence (window created ->
@@ -180,6 +201,33 @@ int WINAPI wWinMain(HINSTANCE hInstance,
             profile.workingSetBytesAtFirstPaint        = mem.workingSetBytes;
             profile.privateWorkingSetBytesAtFirstPaint = mem.privateWorkingSetBytes;
             window.requestClose();
+        };
+    } else {
+        // Real launches only - deferred so it never affects firstPaintNs
+        // timing (ADR-009). If attach() fails, the window simply keeps the
+        // GDI placeholder forever; Phase 3a has no retry policy.
+        cfg.onDeferredInit = [&window, &renderPipeline](HWND hwnd) {
+            const auto attached = renderPipeline.attach(hwnd);
+            if (!attached) {
+                debugLogRenderError("RenderPipeline::attach", attached.error());
+                return;
+            }
+            window.setPaintHandler([&renderPipeline](HWND) {
+                const auto rendered = renderPipeline.render();
+                if (!rendered) {
+                    debugLogRenderError("RenderPipeline::render", rendered.error());
+                }
+            });
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        };
+        cfg.onResize = [&renderPipeline](HWND, std::uint32_t w, std::uint32_t h, float) {
+            if (!renderPipeline.isAttached()) {
+                return;
+            }
+            const auto resized = renderPipeline.resize(w, h);
+            if (!resized) {
+                debugLogRenderError("RenderPipeline::resize", resized.error());
+            }
         };
     }
 

@@ -8,6 +8,7 @@ target_link_libraries(NeoMIFES
         neomifes::compile_options
         neomifes::util
         neomifes::platform
+        neomifes::render
         neomifes::ui
         user32
         shell32

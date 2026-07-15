@@ -11,6 +11,8 @@ add_executable(neomifes_unit_tests
     document_line_index_test.cpp
     document_property_test.cpp
     document_file_loader_test.cpp
+    render_resize_math_test.cpp
+    render_error_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -19,6 +21,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::util
         neomifes::platform
         neomifes::document
+        neomifes::render
         GTest::gtest
         GTest::gtest_main
 )
