@@ -39,10 +39,12 @@ public:
     ~FileMapping() = default;  // member RAII wrappers unmap/close in reverse declaration order
 
     // Opens `path` read-only and maps the entire file into this process's
-    // address space. FILE_SHARE_READ | FILE_SHARE_WRITE is used so other
-    // processes (or another NeoMIFES window) can still read/write the file
-    // concurrently - the editor never takes an exclusive lock on documents
-    // it has open.
+    // address space. Shares READ, WRITE, and DELETE with other processes -
+    // the editor never takes an exclusive lock on documents it has open, and
+    // FILE_SHARE_DELETE specifically means the file can still be deleted or
+    // renamed (by the user, git, an external tool, etc.) while NeoMIFES has
+    // it mapped; without it Windows blocks delete/rename for as long as the
+    // mapping is alive.
     [[nodiscard]] static std::variant<FileMapping, FileMappingError>
         open(const std::filesystem::path& path);
 

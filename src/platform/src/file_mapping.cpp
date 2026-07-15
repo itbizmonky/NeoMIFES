@@ -4,10 +4,16 @@ namespace neomifes::platform {
 
 std::variant<FileMapping, FileMappingError>
 FileMapping::open(const std::filesystem::path& path) {
+    // FILE_SHARE_DELETE is required so the file can still be deleted or
+    // renamed by another process (or the user, via Explorer/git/etc.) while
+    // NeoMIFES has it mapped open - without it, Windows blocks delete/rename
+    // for as long as the mapping (i.e. the whole document session) is alive,
+    // which is both a real editor usability problem and, incidentally, what
+    // broke every file-loader test's fs::remove(path) cleanup in CI.
     FileHandle file{::CreateFileW(
         path.c_str(),
         GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
