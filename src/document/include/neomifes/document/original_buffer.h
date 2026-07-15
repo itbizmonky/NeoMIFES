@@ -109,6 +109,22 @@ private:
                                        std::vector<Checkpoint>& checkpoints,
                                        std::uint64_t checkpointBytes);
 
+    // SEH (__try/__except) trampoline around scanUtf8, catching a hardware
+    // EXCEPTION_IN_PAGE_ERROR - raised when the OS can't page in mapped
+    // content, the case that matters here being a network drive
+    // disconnecting while a file from it is still mapped - and reporting it
+    // via `pageError` instead of crashing the process. Declared as a private
+    // static member (rather than a free function) purely so it can name
+    // `Checkpoint` in its signature; MSVC's "no object unwinding in a
+    // function using __try" restriction is about this function's OWN locals
+    // (there are none needing destruction), not about its being a member.
+    [[nodiscard]] static bool scanUtf8Safe(std::span<const std::byte> bytes,
+                                           std::uint64_t& totalCu,
+                                           std::uint32_t& totalNewlines,
+                                           std::vector<Checkpoint>& checkpoints,
+                                           std::uint64_t checkpointBytes,
+                                           bool& pageError);
+
     // Decodes the memory-mapped content for [offset, offset+length), using
     // the checkpoint index to avoid re-decoding from byte 0 every time, and
     // caches the result. Precondition: bounds already validated by view().

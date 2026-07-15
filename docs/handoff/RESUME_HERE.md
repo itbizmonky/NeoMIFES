@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-15 (Phase 2b3 Step 1 完了時)
+> **最終更新:** 2026-07-15 (Phase 2b3 Step 2 完了時)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
@@ -16,8 +16,9 @@
 | Phase 2a (Document Engine API + MVP 実装 + テスト網羅) | ✅ 完了 |
 | Phase 2b1 (B-1 pieceView + B-2 AddBuffer チャンク化) | ✅ 完了 |
 | Phase 2b2 Step 1+2 (PieceTree insert/split/erase、PieceTable 差し替え) | ✅ 完了 |
-| **Phase 2b3 Step 1 (OriginalBuffer mmap + Lazy Decode コア)** | ✅ **完了** (CI 確認待ち) |
-| **Phase 2b3 Step 2 (1GB/100MB bench + SEH + Phase 2b 完了報告)** | ⏭️ **次回着手** |
+| Phase 2b3 Step 1 (OriginalBuffer mmap + Lazy Decode コア) | ✅ 完了 |
+| **Phase 2b3 Step 2 (1GB/100MB bench + SEH + Phase 2b 完了報告)** | ✅ **完了** (push/CI 確認待ち) |
+| **Phase 3 (Rendering: Direct2D/DirectWrite, 60fps スクロール)** | ⏭️ **次回着手** |
 
 ---
 
@@ -54,60 +55,33 @@ $tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64
 
 ---
 
-## 3. Phase 2b3 Step 2 の着手手順 (次回)
+## 3. Phase 2b (全 Step) 完了記録
 
-**目標 (Phase 2 全体 DoD):** 1GB ファイル読込ベンチ通過。
-
-### 3.1 参照する意思決定
-1. [**ADR-007**](../decisions/ADR-007-piece-tree-mutable-rb.md) — Mutable RB-Tree + Piece-Vector Snapshot (Phase 2b2 で採用済み)
-2. [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) — Step 1 で完了条件の一部を達成、残りが Step 2 の主対象 (1GB open ≤2s、Working Set 増分 ≤30MB、SEH)
+### 3.1 参照した意思決定
+1. [**ADR-007**](../decisions/ADR-007-piece-tree-mutable-rb.md) — Mutable RB-Tree + Piece-Vector Snapshot (Phase 2b2 で採用)
+2. [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) — mmap + Lazy Decode の設計・完了条件・実測値
 3. [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) — LineIndex O(log n) 化の撤回理由 (参考、対応不要)
+4. [`docs/phase_reports/phase_2b_report.md`](../phase_reports/phase_2b_report.md) — 2b1/2b2/2b3 統合レポート (最新の完了状況はここが一次資料)
 
-### 3.2 Phase 2b1〜2b3 Step 1 完了済 (前セッション群)
+### 3.2 Phase 2b1〜2b3 完了サマリ
 - ✅ `BufferSnapshot::pieceView` + AddBuffer チャンク化 (Phase 2b1)
-- ✅ `PieceTree` (insert/split/erase, CLRS 13.3+13.4) + `PieceTable` 内部差し替え (Phase 2b2)
-- ✅ プロパティテスト 20,000 反復化
-- ✅ **`OriginalBuffer` を mmap + Lazy Decode に全面再設計** (Phase 2b3 Step 1):
-  - `platform::FileMapping` (mmap RAII) 新設
-  - `OriginalBuffer` が InMemory (テスト用) / MemoryMapped (実ファイル) の二本立てに
-  - 64KiB ごとのチェックポイント索引 (常にコードポイント境界で記録、マルチバイト文字分割を構造的に防止)
-  - `view()` は on-demand decode + キャッシュ (evict なし、理由は lazy_decode_mmap.md 参照)
-  - `PieceTable` コンストラクタが `OriginalBuffer::newlineCount()` を使うよう変更 (open 時の全文デコードを排除、これが実質的な laziness の核)
-  - `OriginalBuffer::view()` / `BufferSnapshot::pieceView()` は非 noexcept に変更 (mmap decode が allocate しうるため)
-  - テスト +12 (80→92): file_mapping RAII、チェックポイント境界をまたぐマルチバイト文字、複数チェックポイントにまたがる 200KB コンテンツ、newlineCount 事前計算の検証
+- ✅ `PieceTree` (insert/split/erase, CLRS 13.3+13.4) + `PieceTable` 内部差し替え、プロパティテスト 20,000 反復化 (Phase 2b2)
+- ✅ `OriginalBuffer` を mmap + Lazy Decode に全面再設計、64KiB チェックポイント索引、on-demand decode + キャッシュ (Phase 2b3 Step 1)
+- ✅ SEH (`__try`/`__except`, `EXCEPTION_IN_PAGE_ERROR`) をスキャン/デコードの両経路に配線、100MB/1GB load ベンチ新設、実測値取得、`docs/phase_reports/phase_2b_report.md` 発行 (Phase 2b3 Step 2)
+- テスト数: 80 (Phase 2b2 完了時) → 93 (Phase 2b3 Step 2 完了時)
 
-### 3.3 Phase 2b3 Step 2 で作る予定 (次回)
-```
-tests/bench/
-  └── document_load_bench.cpp   # 新規: CI は 100MB ケース、ローカル手動検証は 1GB ケース
-
-src/document/src/original_buffer.cpp   # SEH (EXCEPTION_IN_PAGE_ERROR) 対策を追加
-                                        # (ネットワークドライブでの mmap アクセス例外)
-
-tests/integration/
-  └── (working set 計測の統合テスト。Phase 1 の startup_measure_test.cpp と
-      同じ --measure-memory ハーネスパターンを流用できないか検討)
-```
-
-### 3.3.1 実装ガードレール (継続)
-
-| # | チェック項目 |
-|---|---|
-| G13 | `docs/issues/lazy_decode_mmap.md` §リスク の「ネットワークドライブで EXCEPTION_IN_PAGE_ERROR」対策 (SEH フィルタ) — **Step 2 の主要作業** |
-| G14 (NEW) | 既存 92 単体テストは **1 行も変更なしで green** を維持してから bench 追加に進む |
-| G15 (NEW) | 1GB ベンチを CI に直接載せない (共有ランナーへの負荷)。100MB で代替し 1GB はローカル手動検証と明記する |
-
-### 3.4 Phase 2b 全体の完了条件
+### 3.3 Phase 2b 全体の完了条件 (最終)
 - [x] `PieceTable::insert` / `erase` が O(log n) (tree 経由で達成)
-- [x] `PieceTable::insert` (small edit) < 500ns 中央値 — **CI 実測 243〜276ns で達成**
-- [x] ~~`PieceTable::snapshot` 100K piece で ≤1ms~~ — 実測 1.196ms、約20%超過。低優先度の残タスクとして受容 ([`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md))
-- [ ] 1GB UTF-8 load ≤ 2s、Working Set 増分 ≤ 30MB (**Phase 2b3 Step 2 の主目標、未検証**)
-- [x] 既存単体テスト + プロパティテスト (20,000 反復) 全 green を維持
+- [x] `PieceTable::insert` (small edit) < 500ns 中央値 — CI 実測 243〜276ns
+- [x] ~~`PieceTable::snapshot` 100K piece で ≤1ms~~ — 実測 1.196ms (CI) / 1.481ms (ローカル)、約20〜48%超過。低優先度の残タスクとして受容 ([`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md))
+- [x] ~~1GB UTF-8 load ≤ 2s~~ — ローカル Release 実測 2031ms、目標に対し約1.5%超過。ディスクI/O律速でありデコード戦略非依存、低優先度で受容 ([`lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md))
+- [x] Working Set 増分 ≤ 30MB — `private_working_set_delta` で実測 0.46MB (1GB) / 0.078MB (100MB)、目標を大幅クリア (総 Working Set が file size 相当になる件の解釈は issue doc 参照)
+- [x] 既存単体テスト + プロパティテスト (20,000 反復) 全 green を維持 (93/93)
 - [x] RB invariant テスト (root black / no red-red / uniform black height / aggregate 整合) 追加済
-- [x] OriginalBuffer の mmap + Lazy Decode コア実装・テスト (Step 1)
-- [ ] SEH によるネットワークドライブ例外対策 (Step 2)
+- [x] OriginalBuffer の mmap + Lazy Decode コア実装・テスト
+- [x] SEH によるネットワークドライブ例外対策
 
-### 3.5 Phase 2b 完了時に片付ける Phase 1 宿題
+### 3.4 Phase 2b 完了時に片付ける Phase 1 宿題 (未着手、Phase 3 以降で回収)
 1. **`.clang-tidy` の `WarningsAsErrors: '*'`** に切替 (Phase 0.5 P05-4)
 2. **Named Mutex 単一インスタンス化** (basic §2.3)
 3. **CI に clang-cl UBSan ジョブ追加** (self-review R4)
@@ -149,6 +123,7 @@ tests/integration/
   - [Phase 0.5](../phase_reports/phase_0.5_report.md)
   - [Phase 1](../phase_reports/phase_1_report.md)
   - [Phase 2a](../phase_reports/phase_2a_report.md)
+  - [Phase 2b (2b1/2b2/2b3 統合)](../phase_reports/phase_2b_report.md)
 
 ---
 
@@ -156,15 +131,14 @@ tests/integration/
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 2b3 Step 2 (1GB/100MB load bench + SEH 例外対策 + Phase 2b 完了報告) に着手せよ。
-既存 92 単体テストの変更なし green を厳守すること。
+Phase 3 (Rendering Engine: Direct2D/DirectWrite 初期化 + 60fps スクロール確認) に着手せよ。
+着手前に CLAUDE.md §7 の Phase 3 DoD と要件定義書の該当節を確認すること。
 ```
 
-Phase 2b3 Step 2 の具体的作業:
-1. `tests/bench/document_load_bench.cpp` — 新規。CI 実行は 100MB モックファイル生成 → load → 時間・Working Set 計測。1GB フルサイズはコメントで「ローカル手動検証用」と明記し、CI では実行しない
-2. `src/document/src/original_buffer.cpp` の `FileMapping::open` 呼び出し周辺に **SEH (`EXCEPTION_IN_PAGE_ERROR`) 対策**を追加 — ネットワークドライブ上のファイルで mmap アクセス中に発生しうる例外を検出し `OriginalBufferError::IoFailure` に変換する ([`lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) §リスク参照)。`__try/__except` は C++ の例外処理と混在させる際に関数分離が必要な点に注意 (MSVC の制約)
-3. Working Set 計測は Phase 1 の `--measure-startup`/`--measure-memory` パターン (`src/app/startup_profile.h`) を参考に、大きいファイルを開いた直後の Working Set 増分を計測する仕組みを検討 (統合テスト or ベンチのどちらに寄せるか要判断)
-4. Phase 2b 全体の完了条件 (RESUME_HERE §3.4) を満たしたら **`docs/phase_reports/phase_2b_report.md` を1本発行** (2b1/2b2/2b3 をまとめて総括。個別レポートは作らない — CLAUDE.md §11 参照)
+Phase 3 着手前に確認すべきこと:
+1. `docs/design/basic_design.md` / `detailed_design.md` の Rendering Engine 節が Phase 2 の実装 (PieceTree ベースの `BufferSnapshot`) と整合しているか (設計時点では vector ベースの Piece 前提だった可能性があるため差分確認)
+2. §3.4 の Phase 1 宿題 (WarningsAsErrors 切替 / Named Mutex / UBSan ジョブ) を Phase 3 着手前 or 並行して着手するか、ユーザーに確認
+3. Phase 3 は新規レイヤ (`src/render/`) の追加になるため、CMakeLists 構成 (Direct2D/DirectWrite の COM ライブラリリンク) を最初に固める
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。
