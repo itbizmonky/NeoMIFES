@@ -10,6 +10,7 @@
 - **v1.1 (2026-07-14):** ユーザー確認 (4 項目) + 技術決定 (4 項目) 反映。F-1 〜 F-4 の全項目に対応。ADR-001〜005 発行。要件カバレッジ 82% → 100% 到達。
 - **v1.2 (2026-07-14):** Phase 1 完了時 (R1 起動 0.3s の計測基盤達成、R10 は Phase 2b 引継ぎ)。
 - **v1.3 (2026-07-14):** Phase 2a 完了 (Document Engine MVP、31 単体テスト + 2000 反復プロパティテスト)、Phase 2b1 完了 (B-1 pieceView / B-2 AddBuffer チャンク化)。ADR-006 (Path-Copying RB-Tree) 発行。R10 実装形態を確定。
+- **v1.4 (2026-07-15):** Phase 2b2 完了 (Step 1: PieceTree insert/split、Step 2: eraseRange CLRS 13.4 + PieceTable 内部差し替え)。ADR-006 を ADR-007 (Mutable RB-Tree) が Supersede — path-copying は実装コスト・性能目標未達リスクにより撤回。プロパティテスト 20,000 反復化。R11 (Piece Tree 永続化複雑性) を解消側に更新。新たに判明した制約: LineIndex の O(log n) 化は tree 設計上不可能と判明し撤回 ([`line_index_o_log_n.md`](../issues/line_index_o_log_n.md))。
 
 判定記号: ✅ 充足 / ⚠️ 要補強 / ❌ 未対応
 
@@ -232,14 +233,15 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 - **性能達成可能性:** 起動 0.3s が依然最難関。Lazy Decode 導入によりメモリ 20MB 目標のリスクは大幅低減
 - **推奨判断:** **Phase 0.5 (CI/ビルド整備) 着手可**。Phase 1 着手前に「起動 0.3s / メモリ 20MB」の PoC ゲートを設ける必要あり。
 
-## H. 残リスク一覧 (v1.1 → v1.2 Phase 1 完了時更新)
+## H. 残リスク一覧 (v1.4 Phase 2b2 完了時更新)
 
 | # | リスク | 深刻度 | 対応期限 | 状態 |
 |---|---|---|---|---|
 | R1 | 起動 0.3s の実現可能性 | 高 | Phase 1 PoC | 🟢 **CI 実測 22ms** (0.3s 目標の 7%)。Phase 3 で Direct2D 化後に再測定 |
 | R6 | AI プラグインの API キー漏洩・プロセス分離の是非 | 中 | Phase 9 前に再評価 | 未着手 |
-| R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b で PoC + Fuzz テスト | 🟡 **設計確定** (ADR-006 + [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md))。実装は Phase 2b 後半 |
-| R11 (NEW) | Piece Tree の永続化 (path-copying) の実装複雑性 | 中 | Phase 2b で 20K 反復プロパティテスト | 🟡 **設計確定** ([ADR-006](../decisions/ADR-006-piece-tree-implementation.md))、実装は Phase 2b 中盤 |
+| R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b3 で実装 + テスト | 🟡 設計確定 ([`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md))。**Phase 2b3 が次回の主対象** |
+| R11 | Piece Tree の delete 実装複雑性 | 中 | Phase 2b2 | 🟢 **解消**。ADR-006 (path-copying) は実装難度・性能未達リスクにより ADR-007 (mutable RB) に置換。CLRS 13.4 実装 + 20K 反復プロパティテスト + RB invariant テストで検証済み (CI 確認待ち) |
+| R12 (NEW) | LineIndex の O(log n) 化不可能と判明 | 低 | 実用上は許容 | 🟡 **仕様として受容**。tree 集約は piece 内改行位置を持たないため原理的に不可。現状の O(N) 再構築 + O(log n) クエリを維持。将来必要になれば [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) の案で対応 |
 | — | libgit2 ライセンス | 低 | Phase 11 前 |
 | — | LSP クライアント方式 | 低 | Phase 11 |
 | — | tree-sitter 併用時期 | 低 | Phase 7 後 |

@@ -38,7 +38,10 @@ std::u16string randomAsciiSlice(std::mt19937& rng, std::size_t maxLen) {
 }
 
 TEST(PieceTablePropertyTest, MatchesReferenceStringUnderRandomOps) {
-    constexpr int kIterations = 2000;
+    // 20,000 per ADR-007's Phase 2b2 completion criteria - this is the primary
+    // stress net for the tree-backed PieceTable (insert/erase/replace all
+    // route through PieceTree since Phase 2b2 Step 2).
+    constexpr int kIterations = 20000;
     std::mt19937 rng{0xC0FFEEu};
 
     PieceTable      pt;

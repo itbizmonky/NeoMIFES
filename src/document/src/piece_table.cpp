@@ -21,9 +21,7 @@ PieceTable::PieceTable(std::shared_ptr<const OriginalBuffer> original)
         p.offset       = 0;
         p.length       = m_original->size();
         p.newlineCount = countNewlines(v);
-        m_pieces.push_back(p);
-        m_totalLength   = p.length;
-        m_totalNewlines = p.newlineCount;
+        m_tree.insertAt(0, p);
     }
 }
 
@@ -37,61 +35,35 @@ std::uint32_t PieceTable::countNewlines(std::u16string_view v) noexcept {
     return n;
 }
 
-std::size_t PieceTable::findPiece(TextPos pos, std::uint64_t& posWithin) const noexcept {
-    TextPos cursor = 0;
-    for (std::size_t i = 0; i < m_pieces.size(); ++i) {
-        const auto& p = m_pieces[i];
-        // A position at pieceEnd should belong to the *next* piece so that
-        // inserts land after the current piece rather than splitting it.
-        if (pos < cursor + p.length) {
-            posWithin = pos - cursor;
-            return i;
-        }
-        cursor += p.length;
+void PieceTable::ensureBoundary(TextPos pos) {
+    const auto lookup = m_tree.pieceContainingStrictly(pos);
+    if (!lookup) {
+        return;  // already a boundary (or empty tree / out-of-range)
     }
-    posWithin = 0;
-    return m_pieces.size();
-}
+    const Piece& piece      = lookup->piece;
+    const TextPos withinLen = pos - lookup->pieceStart;
 
-std::size_t PieceTable::splitAt(std::size_t pi, std::uint64_t posWithin) {
-    if (pi >= m_pieces.size() || posWithin == 0) {
-        return pi;
-    }
-    Piece& current = m_pieces[pi];
-    if (posWithin >= current.length) {
-        return pi + 1;
-    }
-
-    // Left half becomes `current` (shortened), right half is inserted after it.
     std::u16string_view leftView =
-        (current.source == PieceSource::Add)
-            ? m_add     ->view(current.offset, posWithin)
-            : m_original->view(current.offset, posWithin);
+        (piece.source == PieceSource::Add)
+            ? m_add     ->view(piece.offset, withinLen)
+            : m_original->view(piece.offset, withinLen);
     const std::uint32_t leftNewlines = countNewlines(leftView);
 
-    Piece right{};
-    right.source       = current.source;
-    right.offset       = current.offset + posWithin;
-    right.length       = current.length - posWithin;
-    right.newlineCount = current.newlineCount - leftNewlines;
-
-    current.length       = posWithin;
-    current.newlineCount = leftNewlines;
-
-    m_pieces.insert(m_pieces.begin() + static_cast<std::ptrdiff_t>(pi + 1), right);
-    return pi + 1;
+    m_tree.splitPieceAt(pos, leftNewlines);
 }
 
 void PieceTable::insert(TextPos pos, std::u16string_view text) {
     if (text.empty()) {
         return;
     }
-    if (pos > m_totalLength) {
-        pos = m_totalLength;
+    const auto total = m_tree.totalLength();
+    if (pos > total) {
+        pos = total;
     }
 
-    // Append the incoming text to the Add buffer.
-    const std::uint64_t addOffset  = m_add->append(text);
+    ensureBoundary(pos);
+
+    const std::uint64_t addOffset   = m_add->append(text);
     const std::uint32_t addNewlines = countNewlines(text);
 
     Piece newPiece{};
@@ -100,44 +72,25 @@ void PieceTable::insert(TextPos pos, std::u16string_view text) {
     newPiece.length       = text.size();
     newPiece.newlineCount = addNewlines;
 
-    // Split the containing piece at `pos` and insert the new piece before the
-    // right half.
-    std::uint64_t posWithin = 0;
-    const std::size_t pi   = findPiece(pos, posWithin);
-    const std::size_t splitIdx = splitAt(pi, posWithin);
-
-    m_pieces.insert(m_pieces.begin() + static_cast<std::ptrdiff_t>(splitIdx), newPiece);
-    m_totalLength   += newPiece.length;
-    m_totalNewlines += newPiece.newlineCount;
+    m_tree.insertAt(pos, newPiece);
 }
 
 void PieceTable::erase(TextRange range) {
     if (range.empty()) {
         return;
     }
-    if (range.start >= m_totalLength) {
+    const auto total = m_tree.totalLength();
+    if (range.start >= total) {
         return;
     }
-    const TextPos end = std::min<TextPos>(range.end, m_totalLength);
+    const TextPos end = std::min<TextPos>(range.end, total);
 
-    // Split at both ends so the range aligns with piece boundaries.
-    std::uint64_t startWithin = 0;
-    const std::size_t startPi = findPiece(range.start, startWithin);
-    const std::size_t startSplit = splitAt(startPi, startWithin);
+    // Split at both ends so the range aligns with piece boundaries, then let
+    // the tree remove the now boundary-aligned pieces in one pass.
+    ensureBoundary(range.start);
+    ensureBoundary(end);
 
-    std::uint64_t endWithin = 0;
-    const std::size_t endPi = findPiece(end, endWithin);
-    const std::size_t endSplit = splitAt(endPi, endWithin);
-
-    // Remove pieces in [startSplit, endSplit).
-    if (endSplit > startSplit) {
-        for (std::size_t i = startSplit; i < endSplit; ++i) {
-            m_totalLength   -= m_pieces[i].length;
-            m_totalNewlines -= m_pieces[i].newlineCount;
-        }
-        m_pieces.erase(m_pieces.begin() + static_cast<std::ptrdiff_t>(startSplit),
-                       m_pieces.begin() + static_cast<std::ptrdiff_t>(endSplit));
-    }
+    m_tree.eraseRange({range.start, end});
 }
 
 void PieceTable::replace(TextRange range, std::u16string_view text) {
@@ -148,7 +101,7 @@ void PieceTable::replace(TextRange range, std::u16string_view text) {
 }
 
 std::shared_ptr<const BufferSnapshot> PieceTable::snapshot() const {
-    return std::make_shared<const BufferSnapshot>(m_original, m_add, m_pieces);
+    return std::make_shared<const BufferSnapshot>(m_original, m_add, m_tree.collectPieces());
 }
 
 }  // namespace neomifes::document

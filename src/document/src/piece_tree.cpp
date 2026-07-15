@@ -281,6 +281,260 @@ void PieceTree::insertAt(TextPos pos, const Piece& piece) {
 }
 
 // ---------------------------------------------------------------------------
+// RB Delete (CLRS 3rd ed. 13.4, adapted for nullptr sentinels + unique_ptr
+// ownership)
+// ---------------------------------------------------------------------------
+//
+// Two structural cases, mirroring CLRS exactly but expressed as explicit
+// unique_ptr surgery (the same style as rotateLeft/rotateRight):
+//
+//   z has <= 1 child:  transplant z with its (possibly null) child.
+//   z has 2 children:  y = minimum(z->right) takes z's place; y's own right
+//                       child (x, its only possible child, since y is a
+//                       minimum) takes y's old place.
+//
+// x may end up null in either case. Because a null x has no `.parent` field
+// of its own, callers of eraseFixup must track "x's parent" externally - we
+// call this xParent throughout. This is the standard technique for adapting
+// CLRS's sentinel-based RB-DELETE-FIXUP to a nullptr-based tree.
+//
+// Aggregate correctness: after ALL structural surgery (both the initial
+// splice AND any fixup rotations) completes, a single updateAggregatesUpward
+// call starting from xParent's CURRENT (post-fixup) position and following
+// its CURRENT parent chain to the root is sufficient to re-correct every
+// aggregate that could have changed. This holds because:
+//   (a) xParent is always at or below every node that fixup's rotations can
+//       touch (fixup only rotates at xParent or its ancestors, exactly like
+//       insert-fixup only rotates at z or its ancestors), and
+//   (b) rotations preserve reachability: any node that WAS an ancestor of
+//       xParent before a rotation remains reachable via xParent's currentt
+//       parent-pointer chain afterward (rotations only reorder a node and
+//       its immediate parent/child, never detach an outer ancestor).
+// So we deliberately do NOT try to track "every touched node" - we just
+// walk xParent's actual final parent chain once, after everything else is
+// done.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+PieceTreeNode* treeMinimum(PieceTreeNode* n) noexcept {
+    while (n->left) {
+        n = n->left.get();
+    }
+    return n;
+}
+
+}  // namespace
+
+void PieceTree::eraseFixup(PieceTreeNode* x, PieceTreeNode* xParent) {
+    while (x != m_root.get() && (x == nullptr || x->color == RbColor::Black)) {
+        assert(xParent != nullptr);  // unreachable otherwise: see loop guard above
+        const bool xIsLeft = (xParent->left.get() == x);
+
+        if (xIsLeft) {
+            PieceTreeNode* w = xParent->right.get();
+            assert(w != nullptr);  // RB properties guarantee a sibling exists here
+            if (isRed(w)) {
+                w->color = RbColor::Black;
+                xParent->color = RbColor::Red;
+                rotateLeft(xParent);
+                w = xParent->right.get();
+            }
+            if (!isRed(w->left.get()) && !isRed(w->right.get())) {
+                w->color = RbColor::Red;
+                x = xParent;
+                xParent = x->parent;
+            } else {
+                if (!isRed(w->right.get())) {
+                    if (w->left) {
+                        w->left->color = RbColor::Black;
+                    }
+                    w->color = RbColor::Red;
+                    rotateRight(w);
+                    w = xParent->right.get();
+                }
+                w->color = xParent->color;
+                xParent->color = RbColor::Black;
+                if (w->right) {
+                    w->right->color = RbColor::Black;
+                }
+                rotateLeft(xParent);
+                x = m_root.get();
+                xParent = nullptr;
+            }
+        } else {
+            // Mirror image of the above, exchanging left/right.
+            PieceTreeNode* w = xParent->left.get();
+            assert(w != nullptr);
+            if (isRed(w)) {
+                w->color = RbColor::Black;
+                xParent->color = RbColor::Red;
+                rotateRight(xParent);
+                w = xParent->left.get();
+            }
+            if (!isRed(w->right.get()) && !isRed(w->left.get())) {
+                w->color = RbColor::Red;
+                x = xParent;
+                xParent = x->parent;
+            } else {
+                if (!isRed(w->left.get())) {
+                    if (w->right) {
+                        w->right->color = RbColor::Black;
+                    }
+                    w->color = RbColor::Red;
+                    rotateLeft(w);
+                    w = xParent->left.get();
+                }
+                w->color = xParent->color;
+                xParent->color = RbColor::Black;
+                if (w->left) {
+                    w->left->color = RbColor::Black;
+                }
+                rotateRight(xParent);
+                x = m_root.get();
+                xParent = nullptr;
+            }
+        }
+    }
+    if (x != nullptr) {
+        x->color = RbColor::Black;
+    }
+}
+
+void PieceTree::eraseNode(PieceTreeNode* z) {
+    assert(z != nullptr);
+
+    PieceTreeNode* const zParent = z->parent;
+    RbColor zRemovedColor = z->color;  // the color that actually leaves the tree
+
+    PieceTreeNode* xRaw       = nullptr;
+    PieceTreeNode* xParentRaw = nullptr;
+
+    if (z->left == nullptr || z->right == nullptr) {
+        // At most one child: transplant z with that child (possibly null).
+        std::unique_ptr<PieceTreeNode>& zSlot = slotOf(z);
+        std::unique_ptr<PieceTreeNode>  zOwned = std::move(zSlot);
+        std::unique_ptr<PieceTreeNode>  childOwned =
+            zOwned->left ? std::move(zOwned->left) : std::move(zOwned->right);
+
+        xRaw = childOwned.get();
+        if (xRaw != nullptr) {
+            xRaw->parent = zParent;
+        }
+        xParentRaw = zParent;
+
+        zSlot = std::move(childOwned);
+        // zOwned destructs here: its remaining child (the one NOT chosen
+        // above) is already null by the `z->left == nullptr || z->right ==
+        // nullptr` precondition, so no cascade.
+    } else {
+        // Two children: y = leftmost node of z's right subtree.
+        PieceTreeNode* const y = treeMinimum(z->right.get());
+        zRemovedColor = y->color;  // y's color is what "moves" in this case
+        xRaw = y->right.get();     // y is a minimum, so y->left is always null
+
+        if (y->parent == z) {
+            // y is directly z's right child - no separate detach step needed.
+            xParentRaw = y;
+
+            std::unique_ptr<PieceTreeNode>& zSlot  = slotOf(z);
+            std::unique_ptr<PieceTreeNode>  zOwned = std::move(zSlot);
+            std::unique_ptr<PieceTreeNode>  yOwned = std::move(zOwned->right);  // == y
+
+            // y keeps its existing right child (x) untouched; it inherits
+            // z's left child and z's color/parent.
+            yOwned->left = std::move(zOwned->left);
+            if (yOwned->left) {
+                yOwned->left->parent = yOwned.get();
+            }
+            yOwned->color  = zOwned->color;
+            yOwned->parent = zParent;
+
+            zSlot = std::move(yOwned);
+            // zOwned destructs here (left/right already moved out).
+        } else {
+            // y is deeper inside z->right's subtree. First detach y from its
+            // own slot, transplanting y's right child (x) into y's old spot.
+            PieceTreeNode* const yParent = y->parent;
+            std::unique_ptr<PieceTreeNode>& ySlot  = slotOf(y);
+            std::unique_ptr<PieceTreeNode>  yOwned = std::move(ySlot);
+            std::unique_ptr<PieceTreeNode>  xOwned = std::move(yOwned->right);
+
+            if (xOwned) {
+                xOwned->parent = yParent;
+            }
+            ySlot = std::move(xOwned);  // y's old slot now holds x (or null)
+
+            xParentRaw = yParent;
+
+            // Now detach z and give y z's left/right children + color.
+            std::unique_ptr<PieceTreeNode>& zSlot  = slotOf(z);
+            std::unique_ptr<PieceTreeNode>  zOwned = std::move(zSlot);
+
+            yOwned->right = std::move(zOwned->right);
+            if (yOwned->right) {
+                yOwned->right->parent = yOwned.get();
+            }
+            yOwned->left = std::move(zOwned->left);
+            if (yOwned->left) {
+                yOwned->left->parent = yOwned.get();
+            }
+            yOwned->color  = zOwned->color;
+            yOwned->parent = zParent;
+
+            zSlot = std::move(yOwned);
+            // zOwned destructs here (left/right already moved out). Note
+            // xParentRaw (== yParent) is a descendant of y in the NEW
+            // topology, so updateAggregatesUpward(xParentRaw) below will
+            // walk through y on its way to the root.
+        }
+    }
+
+    if (zRemovedColor == RbColor::Black) {
+        eraseFixup(xRaw, xParentRaw);
+    }
+
+    // Unconditional: the structural change happened regardless of color, so
+    // ancestor aggregates always need refreshing. Safe to call with a null
+    // xParentRaw (only happens when the tree became empty or a lone child
+    // became the new root - both cases need no further updates).
+    if (xParentRaw != nullptr) {
+        updateAggregatesUpward(xParentRaw);
+    }
+
+    --m_pieceCount;
+}
+
+void PieceTree::eraseRange(TextRange range) {
+    if (m_root == nullptr) {
+        return;
+    }
+    const auto total = m_root->subtreeLength;
+    if (range.start >= total) {
+        return;
+    }
+    const TextPos end = (range.end > total) ? total : range.end;
+    if (range.start >= end) {
+        return;
+    }
+
+    TextPos remaining = end - range.start;
+    while (remaining > 0) {
+        PieceTreeNode* node = findNodeStartingAt(range.start);
+        assert(node != nullptr &&
+               "eraseRange: range.start is not a valid piece boundary");
+        if (node == nullptr) {
+            return;  // defensive: precondition violated, stop rather than corrupt state
+        }
+        const std::uint64_t len = node->piece.length;
+        assert(len <= remaining &&
+               "eraseRange: range.end is not aligned to a piece boundary");
+        eraseNode(node);
+        remaining = (len >= remaining) ? 0 : (remaining - len);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // splitPieceAt
 // ---------------------------------------------------------------------------
 //
@@ -345,6 +599,77 @@ void PieceTree::splitPieceAt(TextPos pos, std::uint32_t leftNewlines) {
     // Now insertAt(pos, rightHalf); pos is a valid boundary (end of the
     // just-shrunk piece).
     insertAt(pos, rightHalf);
+}
+
+// ---------------------------------------------------------------------------
+// pieceContainingStrictly / findNodeStartingAt
+// ---------------------------------------------------------------------------
+//
+// Both walk the tree using the same subtreeLength-based descent as
+// splitPieceAt's internal walk (kept as an independent implementation here
+// rather than factored out, since splitPieceAt's walk is already
+// CI-validated from Step 1 and duplicating ~10 lines is cheaper than risking
+// a shared-helper regression under an environment with no local build).
+// ---------------------------------------------------------------------------
+
+std::optional<PieceTree::PieceLookup> PieceTree::pieceContainingStrictly(TextPos pos) const noexcept {
+    if (m_root == nullptr) {
+        return std::nullopt;
+    }
+    const auto total = m_root->subtreeLength;
+    if (pos == 0 || pos >= total) {
+        return std::nullopt;
+    }
+
+    PieceTreeNode* cur = m_root.get();
+    TextPos        rel = pos;
+    TextPos        subtreeStart = 0;  // absolute logical start of `cur`'s subtree
+
+    while (cur != nullptr) {
+        const auto leftLen = cur->left ? cur->left->subtreeLength : 0ULL;
+
+        if (rel < leftLen) {
+            cur = cur->left.get();
+        } else if (rel < leftLen + cur->piece.length) {
+            const TextPos foundPieceStart = subtreeStart + leftLen;
+            if (rel == leftLen) {
+                return std::nullopt;  // pos lands exactly on this piece's start
+            }
+            return PieceLookup{cur->piece, foundPieceStart};
+        } else {
+            subtreeStart += leftLen + cur->piece.length;
+            rel          -= leftLen + cur->piece.length;
+            cur = cur->right.get();
+        }
+    }
+    return std::nullopt;
+}
+
+PieceTreeNode* PieceTree::findNodeStartingAt(TextPos pos) const noexcept {
+    if (m_root == nullptr) {
+        return nullptr;
+    }
+    PieceTreeNode* cur = m_root.get();
+    TextPos        rel = pos;
+
+    while (cur != nullptr) {
+        const auto leftLen = cur->left ? cur->left->subtreeLength : 0ULL;
+
+        if (rel < leftLen) {
+            cur = cur->left.get();
+        } else if (rel == leftLen) {
+            return cur;  // cur's own piece begins exactly at `pos`
+        } else if (rel < leftLen + cur->piece.length) {
+            // pos falls strictly inside cur's piece - caller violated the
+            // "pos is a boundary" precondition.
+            assert(!"findNodeStartingAt: pos is not a piece boundary");
+            return nullptr;
+        } else {
+            rel -= leftLen + cur->piece.length;
+            cur = cur->right.get();
+        }
+    }
+    return nullptr;  // pos == totalLength(): no node starts at end-of-document
 }
 
 // ---------------------------------------------------------------------------

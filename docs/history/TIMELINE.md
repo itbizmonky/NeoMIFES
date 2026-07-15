@@ -212,4 +212,30 @@
 
 **RESUME_HERE.md 更新:** Step 1 完了、Step 2 が次回着手対象。
 
+## Session 11 (2026-07-15): Phase 2b2 Step 2 (eraseRange + PieceTable 差し替え)
+
+**目標:** Step 1 の PieceTree に CLRS 13.4 RB delete を追加し、PieceTable の内部を `std::vector<Piece>` から `PieceTree` へ差し替える。公開 API は不変。
+
+**重要な設計修正 (実装検討中に判明):**
+当初 (RESUME_HERE G8) は「LineIndex を tree 集約経由で O(log n) 化」を予定していたが、これは**不可能**と判明した。`subtreeNewlines` 集約は piece 内の改行**総数**しか保持せず、任意オフセットの前に何個改行があるかを答えるには **piece 内の改行の実際の位置** が必要 — これは tree が持たないテキスト内容 (buffer) を見ないと分からない。→ **LineIndex は Phase 2b1 の設計のまま維持** (O(N) 再構築 + O(log n) 二分探索)。将来の解決案 (piece に newline-offset 配列を持たせる等) を [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) に記録し、投機的最適化を避けるため実装は見送り。
+
+**成果物:**
+- [`piece_tree.h`](../../src/document/include/neomifes/document/piece_tree.h) 拡張: `eraseRange(TextRange)`, `pieceContainingStrictly(TextPos)`, private `eraseNode`/`eraseFixup`/`findNodeStartingAt`
+- [`piece_tree.cpp`](../../src/document/src/piece_tree.cpp) 拡張: CLRS 13.4 RB-DELETE + RB-DELETE-FIXUP をnullptr-sentinel + unique_ptr 所有権モデルに適応。x が null になりうるケースは `xParent` を明示的に追跡することで対処 (CLRS の sentinel 手法の標準的な代替)
+- [`piece_table.h`](../../src/document/include/neomifes/document/piece_table.h) / [`piece_table.cpp`](../../src/document/src/piece_table.cpp) 全面書き換え: `m_pieces` (vector) → `m_tree` (PieceTree)。`findPiece`/`splitAt` を `ensureBoundary` (PieceTree::pieceContainingStrictly を使う) に統合。公開 API は 1 メソッドも変更なし
+- [`line_index.h`](../../src/document/include/neomifes/document/line_index.h) のドキュメントコメント修正 (誤った「Phase 2b で O(log n) 化」の予告を削除し、正確な制約説明に置換)
+- [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) 新規 — 上記の設計修正の詳細と将来案
+- `tests/unit/document_piece_tree_test.cpp` に erase 系テスト追加 (単体 11 ケース + 2 種のランダムストレステスト、うち1つは reference model との突合)
+- `tests/unit/document_property_test.cpp`: 2000 → 20,000 反復に拡張 (ADR-007 の Phase 2b2 完了条件)
+
+**設計の正しさ検証 (ローカルビルド不可のため入念に):**
+- rotateLeft/rotateRight は Step 1 で CI 検証済み、変更なし
+- eraseFixup の「x が null」ケースは `xParent` を明示引数として追跡し、初回ループのみ null x を扱う設計とした (2 回目以降の `x = xParent` 後は必ず非 null)
+- aggregate 再計算は「全ての構造変更 (splice + fixup rotation) が完了してから、`xParentRaw` の**現在の**親チェーンを 1 回だけ root まで rewalk する」方式に統一。rotation は xParent かその祖先でしか起きないため、この 1 回の rewalk で必ず全ての変更箇所をカバーできることを手動トレースで確認
+- 具体例 (2 子ノード削除 + sibling-black-both-children-black の再彩色ケース) を手でトレースし、期待される RB 木になることを確認
+
+**CI 未確認:** 本セッション終了時点で push 前。次回 (または本セッション内) に CI green を確認する必要あり。
+
+**次回 (Phase 2b3):** OriginalBuffer の mmap + Lazy Decode 化、1GB ロードベンチ。[`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) 参照。
+
 <!-- 次セッションはここに追記 -->

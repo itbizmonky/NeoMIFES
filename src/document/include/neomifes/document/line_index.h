@@ -2,11 +2,17 @@
 
 // LineIndex - converts between UTF-16 offsets and 0-based line numbers.
 //
-// Phase 2a MVP: computes a flat std::vector<TextPos> of line-start offsets
-// each time the caller asks for one via `build(snapshot)`. Cost is O(N) in
-// document length. This is acceptable for medium-sized documents but has to
-// be replaced by an incremental structure integrated with the piece tree
-// (Phase 2b) to hit the 10GB target - see docs/issues/piece_table_rb_tree.md.
+// Computes a flat std::vector<TextPos> of line-start offsets each time the
+// caller asks for one via `build(snapshot)`. Cost is O(N) in document length;
+// queries after a build are O(log n) via binary search.
+//
+// This design is intentionally NOT replaced by a tree-aggregate-based O(log n)
+// rebuild in Phase 2b2: PieceTree's subtreeNewlines aggregate only tracks a
+// per-piece newline COUNT, not the individual newline OFFSETS within a piece's
+// text, and the tree has no access to the backing buffers to compute those on
+// demand. Making offsetToLine/lineToOffset O(log n) end-to-end would require
+// tracking per-piece newline-offset arrays (recomputed whenever a piece is
+// split), which is deferred - see docs/issues/line_index_o_log_n.md.
 
 #include <cstdint>
 #include <vector>

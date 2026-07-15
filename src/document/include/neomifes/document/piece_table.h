@@ -2,16 +2,16 @@
 
 // PieceTable - the mutable core of the Document Engine.
 //
-// Phase 2a MVP: pieces are stored in a std::vector<Piece>. Insertion and
-// deletion locate the target piece by a linear scan on cumulative lengths.
-// This is O(n) per edit in the number of pieces. It is correct and easy to
-// audit; the container is deliberately hidden behind a small interface so
-// Phase 2b can drop in a red-black tree with order-statistic aggregates
-// (design: detailed_design.md sec.3.1, follow-up docs/issues/piece_table_rb_tree.md).
+// Phase 2b2: pieces are stored in a PieceTree (mutable Red-Black tree with
+// order-statistic aggregates, per ADR-007). Insert/erase locate the target
+// piece in O(log n). snapshot() walks the tree in-order to materialise a
+// std::vector<Piece> for BufferSnapshot - O(n pieces), which ADR-007
+// deliberately accepts (see ADR-007 sec."根拠" for why O(1) persistent
+// snapshots were not worth the implementation risk).
 //
 // Threading: PieceTable itself is single-writer. Concurrent readers use
-// snapshot() which returns a shared_ptr<BufferSnapshot> that stays valid
-// forever (RCU-style).
+// snapshot() which returns a shared_ptr<BufferSnapshot> holding an
+// independent copy of the piece list - readers never touch the live tree.
 
 #include <cstdint>
 #include <memory>
@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "neomifes/document/piece.h"
+#include "neomifes/document/piece_tree.h"
 #include "neomifes/document/text_pos.h"
 
 namespace neomifes::document {
@@ -57,32 +58,25 @@ public:
     [[nodiscard]] std::shared_ptr<const BufferSnapshot> snapshot() const;
 
     // Cheap accessors that reflect the current mutable state.
-    [[nodiscard]] std::uint64_t length()       const noexcept { return m_totalLength;   }
-    [[nodiscard]] std::uint64_t newlineCount() const noexcept { return m_totalNewlines; }
-    [[nodiscard]] std::uint64_t lineCount()    const noexcept { return m_totalNewlines + 1; }
-    [[nodiscard]] std::size_t   pieceCount()   const noexcept { return m_pieces.size(); }
+    [[nodiscard]] std::uint64_t length()       const noexcept { return m_tree.totalLength();   }
+    [[nodiscard]] std::uint64_t newlineCount() const noexcept { return m_tree.totalNewlines();  }
+    [[nodiscard]] std::uint64_t lineCount()    const noexcept { return m_tree.totalNewlines() + 1; }
+    [[nodiscard]] std::size_t   pieceCount()   const noexcept { return m_tree.pieceCount(); }
 
 private:
     // Counts '\n' inside a UTF-16 view - kept out-of-line to keep the header lean.
     static std::uint32_t countNewlines(std::u16string_view v) noexcept;
 
-    // Finds the piece index containing UTF-16 offset `pos`. If `pos` falls on a
-    // piece boundary, returns the piece to the *right* of the boundary. On
-    // return, `posWithin` is set to the offset inside the returned piece
-    // (0 when `pos` is a boundary). If the position is at end-of-document,
-    // returns m_pieces.size().
-    std::size_t findPiece(TextPos pos, std::uint64_t& posWithin) const noexcept;
-
-    // Splits the piece at index `pi` so that position `posWithin` becomes a
-    // piece boundary. Returns the index of the piece that starts at
-    // `posWithin`. No-op when posWithin == 0 or posWithin == piece.length.
-    std::size_t splitAt(std::size_t pi, std::uint64_t posWithin);
+    // Ensures `pos` is a piece boundary in the tree. If `pos` falls strictly
+    // inside an existing piece, computes how many newlines precede `pos`
+    // within that piece (by reading the backing buffer - the tree itself has
+    // no buffer access) and calls m_tree.splitPieceAt accordingly. No-op if
+    // `pos` is already a boundary.
+    void ensureBoundary(TextPos pos);
 
     std::shared_ptr<const OriginalBuffer> m_original;
     std::shared_ptr<AddBuffer>            m_add;      // Mutable, shared_ptr for snapshots.
-    std::vector<Piece>                    m_pieces;
-    std::uint64_t                         m_totalLength   = 0;
-    std::uint64_t                         m_totalNewlines = 0;
+    PieceTree                             m_tree;
 };
 
 }  // namespace neomifes::document
