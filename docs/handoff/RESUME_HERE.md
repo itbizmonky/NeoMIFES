@@ -1,7 +1,8 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-14 (Phase 2b1 完了時)
+> **最終更新:** 2026-07-15 (Phase 2b2 完了 + 包括レビュー後)
 > **次回開いたら最初にこのファイルを読むこと。**
+> **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
 ---
 
@@ -20,31 +21,21 @@
 
 ---
 
-## 2. 未検証の宿題 (再開時にまず確認)
+## 2. ビルド検証について
 
-Phase 0.5 / Phase 1 / Phase 2a のビルド検証はこの環境ではできない (MSVC 不在)。ユーザー環境か CI で:
+**この環境 (Claude Code エージェント) には MSVC が無く、ローカルビルドは恒常的に不可能。** 検証は常に GitHub Actions CI (`itbizmonky/NeoMIFES`, `.github/workflows/ci.yml`) に委ねる。
 
+- **リポジトリは初期化・push 済み。** `git init` は不要 (Session 7 で完了、以降 main ブランチへの push を継続)
+- 変更を加えたら `git add` → `git commit` → **ユーザーに `git push` を依頼** (エージェントは push しない方針、これまでの全セッションで一貫)
+- push 後 `gh run list --limit 3` で CI 結果を確認。Debug/Release/clang-tidy の 3 ジョブが green であること
+- CI が失敗した場合は `gh run view <id> --log-failed` でログを取得し、原因を特定してから修正する (前セッション群で 5+ 回この手順を踏んでおり、Windows/MSVC/clang-tidy 特有の落とし穴は [`reference_windows_cpp_ci_gotchas.md`](../../../../.claude memory を参照、または Claude のメモリ機能内 `reference_windows_cpp_ci_gotchas.md`) に集約済み
+
+ローカルで動作確認したい場合の参考手順 (このエージェント環境では実行不可、ユーザー環境向け):
 ```powershell
 # 前提: Visual Studio 2022 17.13+, CMake 3.28+, Ninja
-
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug --output-on-failure
-
-# Release + PoC + ベンチ
-cmake --preset release
-cmake --build --preset release
-ctest --preset release --output-on-failure
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug --output-on-failure
+cmake --preset release && cmake --build --preset release && ctest --preset release --output-on-failure
 ./build/release/tests/bench/neomifes_document_bench.exe --benchmark_min_time=0.1s
-```
-
-CI (`.github/workflows/ci.yml`) の green が最終検証。まだ `git init` していないので:
-```powershell
-git init
-git add .
-git commit -m "Phase 0.5 + Phase 1 + Phase 2a"
-git remote add origin <URL>
-git push -u origin main
 ```
 
 ---
@@ -80,7 +71,7 @@ tests/unit/
   └── platform_file_mapping_test.cpp             # RAII
 
 tests/bench/
-  └── document_load_1gb_bench.cpp                # 1GB モック生成 → load
+  └── document_load_bench.cpp                    # CI: 100MB / ローカル手動: 1GB モック生成 → load
 ```
 
 ### 3.3.1 実装ガードレール (継続)
@@ -155,12 +146,14 @@ docs/issues/lazy_decode_mmap.md の設計指針とリスク対策 (SEH フィル
 
 Phase 2b3 の具体的作業:
 1. `src/platform/include/neomifes/platform/file_mapping.h` — mmap RAII (`MapViewOfFileEx`/`UnmapViewOfFile`)
-2. `src/document/src/original_buffer.cpp` — 全読み込みから mmap + 64KB Lazy Decode LRU キャッシュに差し替え
+2. `src/document/src/original_buffer.cpp` — 全読み込みから mmap + 64KB Lazy Decode LRU キャッシュに差し替え。**UTF-8 マルチバイト文字がチャンク境界をまたぐケース**の処理を含む ([`lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) 参照、2026-07-15 レビューで追加されたリスク項目)
 3. `src/document/src/file_loader.cpp` — mmap 経路を使うよう変更
 4. `tests/unit/platform_file_mapping_test.cpp` — RAII の正しさ
-5. `tests/bench/document_load_1gb_bench.cpp` — 1GB モックファイル生成 → load → Working Set 計測
-6. Phase 2b 全体の完了条件 (RESUME_HERE §3.4) を満たしたら Phase 2 完了報告
-7. property test の反復数を 2000 → 20,000 に拡張 (ADR-007 の DoD)
+5. **1GB load bench の方針:** CI では 100MB 規模の縮小版で退化検知 (共有ランナーで毎回 1GB を焼くのはコスト高)。1GB 完全版はユーザーのローカル環境での手動検証に委ねる。`tests/bench/document_load_bench.cpp` に両サイズのケースを用意する
+6. Phase 2b 全体の完了条件 (RESUME_HERE §3.4) を満たしたら **`docs/phase_reports/phase_2b_report.md` を1本発行** (2b1/2b2/2b3 をまとめて総括。個別レポートは作らない — CLAUDE.md §11 参照)
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。
+
+## 8. セッション終了時に必ず確認すること
+[`CLAUDE.md`](../../CLAUDE.md) §11 の「セッション終了時チェックリスト」を実行してから作業を締めること。2026-07-15 の包括レビューでドキュメント鮮度の不整合 (本ファイルの `git init` 指示残留、Issue チェックボックス未更新、ベンチ実測値の未確認等) が多数見つかった反省に基づく恒久ルール。

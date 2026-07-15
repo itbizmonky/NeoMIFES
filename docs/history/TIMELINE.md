@@ -15,6 +15,9 @@
 - [Session 7: GitHub 連携 → CI green (5 ラウンド)](#session-7-2026-07-14-github-連携--ci-green-5-ラウンド)
 - [Session 8: ADR-006 起草 → Phase 2b1 実装](#session-8-2026-07-14-adr-006-起草--phase-2b1-実装)
 - [Session 9: Phase 2b2 着手前レビュー + ADR-007 + Timeline 整備](#session-9-2026-07-14-phase-2b2-着手前レビュー--adr-007--timeline-整備)
+- [Session 10: Phase 2b2 Step 1 (PieceTree 追加)](#session-10-2026-07-15-phase-2b2-step-1-piecetree-追加--insert--split)
+- [Session 11: Phase 2b2 Step 2 (eraseRange + PieceTable 差し替え)](#session-11-2026-07-15-phase-2b2-step-2-eraserange--piecetable-差し替え)
+- [Session 12: Phase 2b2 完了後の包括レビュー + プロセス改善](#session-12-2026-07-15-phase-2b2-完了後の包括レビュー--プロセス改善)
 
 ---
 
@@ -237,5 +240,36 @@
 **CI 未確認:** 本セッション終了時点で push 前。次回 (または本セッション内) に CI green を確認する必要あり。
 
 **次回 (Phase 2b3):** OriginalBuffer の mmap + Lazy Decode 化、1GB ロードベンチ。[`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) 参照。
+
+## Session 12 (2026-07-15): Phase 2b2 完了後の包括レビュー + プロセス改善
+
+**目標:** Phase 0 〜 Phase 2b2 全体を振り返り、実装・設計・ドキュメント・プロセスの各面をレビューし、発見した問題を修正する。
+
+**レビューで発見した問題:**
+
+1. **ドキュメント鮮度の不整合 (複数箇所):**
+   - `self_review.md` のタイトルが `v1.1` のまま (本文は v1.4 まで更新済み)
+   - `self_review.md` §G「総合評価」・§I「次アクション」が Phase 0 時点の内容のまま放置 (`docs/pocs/` を新設予定、等の実行されなかった記述含む)
+   - `RESUME_HERE.md` §2 に **`git init` の指示が残存** — リポジトリは Session 7 で初期化・push 済みにもかかわらず、次回セッションへの指示として古い手順が残っていた
+   - `RESUME_HERE.md` §6 に **既に完了済みのタスクが重複記載** (プロパティテスト反復数拡張は Phase 2b2 Step 2 で完了済みなのに Phase 2b3 の TODO として再掲)
+   - `docs/issues/piece_table_rb_tree.md` の完了条件チェックボックスが、実際には達成済みの項目も含めて全て未チェックのまま
+
+2. **CLAUDE.md 絶対ルール10違反の兆候:** 「性能改善は必ずベンチマーク結果を根拠とする」というルールがありながら、**CI が毎回出力していたベンチマーク実測値を誰も確認していなかった。** レビューで実際に CI ログを取得したところ:
+   - `PieceTable::insert` (Release): **276 ns** — 目標 500ns を達成 (ADR-007 の判断が実測でも裏付けられた)
+   - `PieceTable::snapshot`: 1000 piece 規模で 3549ns。目標は 100K piece 規模 ≤1ms だが、**その規模では未計測** (外挿でのみ推定)
+
+3. **正式フェーズレポートの欠落:** Phase 2b1・2b2 は TIMELINE.md のセッション記録のみで、CLAUDE.md 規定の正式な phase_report (設計/実装/テスト/残課題/次アクション) が作られていなかった。
+
+4. **Phase 2b3 計画の補強点:** UTF-8 マルチバイト文字が mmap decode チャンク境界をまたぐケースの設計が `lazy_decode_mmap.md` に未記載だった。1GB ロードベンチを CI (共有ランナー) でフルサイズ実行するコストへの配慮も欠けていた。
+
+**対応した修正 (全て本セッション内で実施):**
+- [`self_review.md`](../design/self_review.md) → v1.5。タイトル修正、§G/§I に「歴史的記録である」旨の明記 + 現状反映の §G'/§I' を追加
+- [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) → §2 全面書き換え (git init 指示削除、CI 運用フローに置換)、§6 の重複タスク削除、1GB ベンチを CI 縮小版+ローカル手動検証の二段構成に変更、§8 新設 (セッション終了チェックリストへの誘導)
+- [`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) → 完了条件を実態に合わせて更新。ベンチ実測値 (276ns) を記録。LineIndex 関連 2 項目は「撤回」と明記
+- [`document_piece_table_bench.cpp`](../../tests/bench/document_piece_table_bench.cpp) → `BM_PieceTable_Snapshot_100K` を追加し、100K piece 規模の snapshot 性能を外挿でなく直接計測できるようにした (次回 CI で実測値取得予定)
+- [`lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) → UTF-8 マルチバイト文字のチャンク境界分割リスクをリスク一覧・完了条件に追加
+- **[`CLAUDE.md`](../../CLAUDE.md) §11 新設「セッション終了時チェックリスト」** — 今回発見した問題の再発防止を目的とした恒久ルール。RESUME_HERE.md 全文点検、関連節の同期更新、Issue チェックボックスの即時更新、ベンチマーク実測値の確認・転記、TIMELINE 追記、親フェーズ完了時の統合レポート発行、の6項目
+
+**次回:** Phase 2b3 (mmap + Lazy Decode + 1GB bench) に、今回追加した UTF-8 境界分割リスクと CI/ローカル二段ベンチ方針を織り込んで着手する。
 
 <!-- 次セッションはここに追記 -->

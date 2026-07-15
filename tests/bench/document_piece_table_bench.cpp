@@ -1,8 +1,13 @@
-// Micro-benchmarks for the Phase 2a PieceTable MVP.
-// Targets from detailed_design.md sec.18.3 are reproduced here as reminders;
-// the vector-backed MVP is not expected to hit them yet (that is Phase 2b work
-// with the RB-tree). Numbers reported by CI serve as a baseline for tracking
-// improvement over time.
+// Micro-benchmarks for PieceTable (RB-tree backed since Phase 2b2).
+// Targets from detailed_design.md sec.18.3 / docs/issues/piece_table_rb_tree.md
+// are reproduced here as reminders. Numbers reported by CI serve as both a
+// baseline for tracking regressions and as the actual verification evidence
+// for those targets (CLAUDE.md rule #10: performance claims need bench proof).
+//
+// BM_PieceTable_Snapshot_100K exists specifically to verify the "snapshot at
+// 100K piece scale <= 1ms" target directly rather than extrapolating from the
+// smaller BM_PieceTable_Snapshot (1000 pieces) - see the 2026-07-15 review
+// finding in piece_table_rb_tree.md.
 
 #include <benchmark/benchmark.h>
 
@@ -53,6 +58,26 @@ static void BM_PieceTable_Snapshot(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_PieceTable_Snapshot);
+
+// Direct verification of the "snapshot <= 1ms @ 100K pieces" target (rather
+// than extrapolating from the 1000-piece BM_PieceTable_Snapshot above).
+// Setup cost (100K inserts) happens once outside the timed loop; at the
+// ~276ns/insert measured for BM_PieceTable_InsertAtEnd in Release this is
+// roughly ~28ms one-time, well within CI's time budget.
+static void BM_PieceTable_Snapshot_100K(benchmark::State& state) {
+    PieceTable pt;
+    constexpr int kPieceCount = 100'000;
+    for (int i = 0; i < kPieceCount; ++i) {
+        pt.insert(pt.length(), u"x");  // one char16_t == one piece per insert
+    }
+    for (auto _ : state) {
+        auto snap = pt.snapshot();
+        benchmark::DoNotOptimize(snap);
+    }
+    state.SetItemsProcessed(state.iterations());
+    state.counters["piece_count"] = static_cast<double>(kPieceCount);
+}
+BENCHMARK(BM_PieceTable_Snapshot_100K);
 
 static void BM_PieceTable_ExtractAll(benchmark::State& state) {
     PieceTable pt;

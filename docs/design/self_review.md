@@ -1,9 +1,12 @@
-# NeoMIFES 設計セルフレビュー v1.1
+# NeoMIFES 設計セルフレビュー v1.5
 
 > 対象: [`CLAUDE.md`](../../CLAUDE.md) / [`basic_design.md`](basic_design.md) / [`detailed_design.md`](detailed_design.md) / [`docs/decisions/`](../decisions/)
 > 初回レビュー日: 2026-07-14
-> 更新日: 2026-07-14 (ユーザー確認 + F-1〜F-4 修正反映)
+> 最終更新日: 2026-07-15 (Phase 2b2 完了後の包括レビュー)
 > レビュー観点: (A) 要件充足性 / (B) 設計整合性 / (C) 性能目標達成可能性 / (D) リスク / (E) 実装可能性
+>
+> ⚠️ **§A〜§G は Phase 0 (要件確認・初回設計) 時点のスナップショットとして保存されている歴史的記録。**
+> **現在の状態を知りたい場合は §H (残リスク一覧) と §I (次アクション) を見ること。** §A〜§G の内容は当時の判断根拠を追うための一次資料として意図的に凍結している (TIMELINE.md と同じ「変更しない」原則)。
 
 ## 更新履歴
 
@@ -11,6 +14,7 @@
 - **v1.2 (2026-07-14):** Phase 1 完了時 (R1 起動 0.3s の計測基盤達成、R10 は Phase 2b 引継ぎ)。
 - **v1.3 (2026-07-14):** Phase 2a 完了 (Document Engine MVP、31 単体テスト + 2000 反復プロパティテスト)、Phase 2b1 完了 (B-1 pieceView / B-2 AddBuffer チャンク化)。ADR-006 (Path-Copying RB-Tree) 発行。R10 実装形態を確定。
 - **v1.4 (2026-07-15):** Phase 2b2 完了 (Step 1: PieceTree insert/split、Step 2: eraseRange CLRS 13.4 + PieceTable 内部差し替え)。ADR-006 を ADR-007 (Mutable RB-Tree) が Supersede — path-copying は実装コスト・性能目標未達リスクにより撤回。プロパティテスト 20,000 反復化。R11 (Piece Tree 永続化複雑性) を解消側に更新。新たに判明した制約: LineIndex の O(log n) 化は tree 設計上不可能と判明し撤回 ([`line_index_o_log_n.md`](../issues/line_index_o_log_n.md))。
+- **v1.5 (2026-07-15):** Phase 2b2 完了後の包括レビュー。ドキュメント鮮度の不整合を多数発見・修正 (本ファイルのタイトル版数ズレ、§G/§I の陳腐化、RESUME_HERE.md の古い `git init` 指示、Issue の完了条件チェック漏れ)。**CI ベンチマーク実測値を初めて確認** (§H 参照) — `PieceTable::insert` 276ns で目標 500ns を達成、`snapshot` は 1000 piece 規模でのみ確認 (100K piece 規模は未検証)。再発防止のため CLAUDE.md に「セッション終了時チェックリスト」を新設。
 
 判定記号: ✅ 充足 / ⚠️ 要補強 / ❌ 未対応
 
@@ -226,12 +230,26 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 
 ---
 
-## G. 総合評価 (v1.1 更新)
+## G. 総合評価 (v1.1 時点、Phase 0 のスナップショット — 歴史的記録)
+
+> このセクションは Phase 0 完了時点 (2026-07-14) の評価であり、**更新していない**。現在の総合評価は §H・§I を参照。
 
 - **要件カバレッジ:** **100%** (F-1 / F-2 の追記により全項目対応)
 - **設計整合性:** B-1 (複数ウィンドウ)、B-2 (LineIndex 重複)、B-3 (`char16_t` 境界) が全て修正済
 - **性能達成可能性:** 起動 0.3s が依然最難関。Lazy Decode 導入によりメモリ 20MB 目標のリスクは大幅低減
 - **推奨判断:** **Phase 0.5 (CI/ビルド整備) 着手可**。Phase 1 着手前に「起動 0.3s / メモリ 20MB」の PoC ゲートを設ける必要あり。
+
+### G'. 総合評価 (v1.5 現在)
+
+- **進行状況:** Phase 0 〜 Phase 2b2 完了。CI (Debug/Release/clang-tidy) は継続的に green
+- **要件カバレッジ:** 100% (設計レベル)。実装は Document Engine (Phase 2) まで完了、Rendering 以降 (Phase 3+) は未着手
+- **性能目標の実測状況:**
+  - 起動時間: 🟢 CI 実測 22ms (目標 300ms の 7%)
+  - `PieceTable::insert`: 🟢 CI 実測 276ns (Release、目標 500ns 未満を達成)
+  - `PieceTable::snapshot`: 🟡 1000 piece 規模で 3549ns、目標の 100K piece 規模は未実測 (外挿では目標内)
+  - メモリ 20MB / 10GB ファイル / 60fps / 100万 Undo: 未実測 (該当実装が Phase 2b3 以降)
+- **設計整合性:** Piece Tree の実装形態は ADR-006 → ADR-007 で方針転換したが、Public API は不変のまま実装差し替えで完了 — 当初の「ヘッダは変えない」設計方針が実際に機能した好例
+- **推奨判断:** **Phase 2b3 (mmap + Lazy Decode + 1GB bench) 着手可**。着手前に §H の R10/C-1 (UTF-8 チャンク境界分割) を設計に織り込むこと。
 
 ## H. 残リスク一覧 (v1.4 Phase 2b2 完了時更新)
 
@@ -246,10 +264,16 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 | — | LSP クライアント方式 | 低 | Phase 11 |
 | — | tree-sitter 併用時期 | 低 | Phase 7 後 |
 
-## I. 次アクション (v1.1 版)
+## I. 次アクション (v1.1 版、Phase 0 時点 — 歴史的記録、全項目完了済み)
 
 1. ✅ **ユーザー確認完了** (縦編集/独自マクロ/マクロ言語/ビルド、および正規表現/シンタックス/設定形式/20MB計測)
 2. ✅ **設計書修正完了** (F-1〜F-3)
 3. ✅ **ADR-001〜005 発行完了**
-4. **次:** Phase 0.5 着手 — CMake 雛形 / GitHub Actions / clang-tidy / ASan / googletest / google-benchmark
-5. **次:** Phase 1 着手前に **起動 0.3s / メモリ 20MB PoC 計画** を提示 (`docs/pocs/` を新設予定)
+4. ✅ Phase 0.5 完了 — CMake / GitHub Actions / clang-tidy / ASan / googletest / google-benchmark 全て稼働
+5. ✅ Phase 1 完了 — 起動 0.3s / メモリ 20MB は独立 PoC ドキュメント新設ではなく `--measure-startup`/`--measure-memory` CLI フラグとして実装 (`docs/phase_reports/phase_1_report.md` 参照。当時想定していた `docs/pocs/` ディレクトリは新設しなかった)
+
+### I'. 次アクション (v1.5 現在)
+
+1. **次:** Phase 2b3 (OriginalBuffer mmap + Lazy Decode + 1GB load bench) — 詳細は [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) 参照
+2. Phase 2b3 着手前に `document_piece_table_bench.cpp` へ 100K piece 規模のケースを追加し、snapshot 目標を外挿でなく実測で検証する
+3. Phase 2b 完了時点で `docs/phase_reports/phase_2b_report.md` を1本発行し、2b1〜2b3 をまとめて総括する (CLAUDE.md §11 のフェーズレポート運用ルール参照)
