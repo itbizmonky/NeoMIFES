@@ -147,17 +147,15 @@ NeoMIFES/
 
 ## 6. ビルド & 開発フロー
 
-未確定事項が多いため、現時点では以下を **想定** として明記。着手時にユーザー確認する。
+**Phase 0.5 (2026-07-14) で確定・実装済み** ([ADR-001](docs/decisions/ADR-001-build-system.md) / [ADR-005](docs/decisions/ADR-005-min-msvc-version.md))。
 
-- ビルド: **CMake + MSVC (v143)** を第一候補。Ninja ジェネレータで高速化。
+- ビルド: **CMake 3.28+ + MSVC v143 (VS 17.13+)**、Ninja ジェネレータ。開発機には Visual Studio Community 2026 (MSVC 19.50/14.50) が実際にインストール済み — ローカルビルド手順は [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) §2 参照
 - C++ 標準: `/std:c++latest` (実質 C++23)
-- 警告: `/W4 /permissive- /Zc:__cplusplus`
-- サニタイザ: Debug ビルドで `/fsanitize=address`
-- 静的解析: MSVC `/analyze` + clang-tidy
-- テスト: **GoogleTest** (第一候補) / ベンチは **google/benchmark**
-- CI: **GitHub Actions** (Windows Server ランナー)
-
-> ⚠ ビルドシステム最終決定は **Phase 1 着手前にユーザー承認** を得ること。
+- 警告: `/W4 /permissive- /Zc:__cplusplus`、現状 `WarningsAsErrors: ''` (Phase 2b 完了時に `'*'` へ切替予定、self_review R4 参照)
+- サニタイザ: Debug ビルドで `/fsanitize=address` (`asan` プリセット)
+- 静的解析: clang-tidy (LLVM、VS にバンドル)。MSVC `/analyze` は未導入
+- テスト: **GoogleTest 1.15.2** / ベンチは **google/benchmark 1.9.1** (共に FetchContent)
+- CI: **GitHub Actions** (`windows-2022` ランナー、`.github/workflows/ci.yml`)
 
 ---
 
@@ -216,6 +214,7 @@ NeoMIFES/
 - [ ] **性能目標を伴う作業を完了した場合、CI のベンチマーク出力から実測値を確認し文書に転記する** (絶対ルール10の運用徹底)。「ローカル未確認」で済ませて次セッションに持ち越さない。CI は既に数値を出力している場合が多く、見に行くだけで確認できることが多い。
 - [ ] **[`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) の末尾にセッションサマリを追記する** (既存ルール、本ファイル冒頭参照)。
 - [ ] **複数セッションにまたがる親フェーズ (例: Phase 2b 全体) が完了したら、`docs/phase_reports/` に正式レポートを1本発行する。** サブステップ (2b1, 2b2 等) ごとに乱立させず、TIMELINE.md のセッション記録で代替し、親フェーズ完了時にまとめる。
+- [ ] **(2026-07-15 追加) コード変更を push する前に、必ずローカルでビルド・テスト・clang-tidy を実行する。** この開発機には Visual Studio Community 2026 (MSVC 19.50) が実際にインストールされている (`docs/handoff/RESUME_HERE.md` §2 の手順参照)。「MSVC が無いので CI 任せ」という思い込みで push→CI失敗→修正を繰り返さない。過去にこの思い込みで `FILE_SHARE_DELETE` 漏れや Clang 非互換コードなど、ローカルで数十秒で見つけられたはずのバグを CI 往復 (数分〜十数分/回) で発見していた。
 
 ---
 

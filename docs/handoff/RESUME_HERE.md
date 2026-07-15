@@ -23,20 +23,34 @@
 
 ## 2. ビルド検証について
 
-**この環境 (Claude Code エージェント) には MSVC が無く、ローカルビルドは恒常的に不可能。** 検証は常に GitHub Actions CI (`itbizmonky/NeoMIFES`, `.github/workflows/ci.yml`) に委ねる。
+**訂正 (2026-07-15):** 過去のセッションで「この環境には MSVC が無い」と誤って記録・運用していたが、実際には **Visual Studio Community 2026 (v18.2.1、MSVC 19.50/14.50.35717) がインストール済み**で、実機ビルド・テスト・clang-tidy がローカルで実行可能。今後は **push 前に必ずローカル検証すること**。CI 専用ワークフローに逆戻りしない。
+
+Bash では `cl`/`cmake`/`ninja` に PATH が通っていない (`which` で見つからない) が、これは不在を意味しない。**PowerShell + `Enter-VsDevShell` を使うこと** (環境変数はコマンド間で持続しないため、1回の呼び出し内で完結させる):
+
+```powershell
+$vsPath = "C:\Program Files\Microsoft Visual Studio\18\Community"
+Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll" -ErrorAction Stop
+Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64" | Out-Null
+Set-Location "D:\IDE\Claude\NeoMIFES"
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug --output-on-failure
+```
+
+Release + ベンチ実測値の取得も同様 (`--preset release`、`.\build\release\tests\bench\neomifes_document_bench.exe --benchmark_min_time=0.2s`)。
+
+clang-tidy (LLVM 20.1.8 が VS にバンドル) — **変更したファイルだけを個別に**実行すること (全ファイル一括だと数分でタイムアウトすることがある):
+```powershell
+$tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-tidy.exe"
+& $tidy -p build\debug --quiet --extra-arg=-Wno-unused-command-line-argument <変更したファイル>
+```
+
+`Enter-VsDevShell` 実行時に出る `'vswhere.exe' は、内部コマンドまたは...` という警告は無害 (`-VsInstallPath` を明示しているため実害なし)。
 
 - **リポジトリは初期化・push 済み。** `git init` は不要 (Session 7 で完了、以降 main ブランチへの push を継続)
-- 変更を加えたら `git add` → `git commit` → **ユーザーに `git push` を依頼** (エージェントは push しない方針、これまでの全セッションで一貫)
-- push 後 `gh run list --limit 3` で CI 結果を確認。Debug/Release/clang-tidy の 3 ジョブが green であること
-- CI が失敗した場合は `gh run view <id> --log-failed` でログを取得し、原因を特定してから修正する (前セッション群で 5+ 回この手順を踏んでおり、Windows/MSVC/clang-tidy 特有の落とし穴は [`reference_windows_cpp_ci_gotchas.md`](../../../../.claude memory を参照、または Claude のメモリ機能内 `reference_windows_cpp_ci_gotchas.md`) に集約済み
-
-ローカルで動作確認したい場合の参考手順 (このエージェント環境では実行不可、ユーザー環境向け):
-```powershell
-# 前提: Visual Studio 2022 17.13+, CMake 3.28+, Ninja
-cmake --preset debug && cmake --build --preset debug && ctest --preset debug --output-on-failure
-cmake --preset release && cmake --build --preset release && ctest --preset release --output-on-failure
-./build/release/tests/bench/neomifes_document_bench.exe --benchmark_min_time=0.1s
-```
+- 変更を加えてローカル検証が green になったら `git add` → `git commit` → **ユーザーに `git push` を依頼** (エージェントは push しない方針)
+- push 後も `gh run list --limit 3` で CI 結果を確認する。**ローカルとCIでMSVCバージョンが異なりうる** (CI は 14.44、ローカルは 14.44/14.50 両方) ため、ローカル green は「ほぼ確実」であって「絶対」ではない
+- CI が失敗した場合は `gh run view <id> --log-failed` でログを取得。Windows/MSVC/clang-tidy 特有の落とし穴は Claude のメモリ機能内 `reference_windows_cpp_ci_gotchas.md` に集約済み
 
 ---
 
