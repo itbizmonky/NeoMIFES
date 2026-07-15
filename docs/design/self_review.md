@@ -245,8 +245,8 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 - **要件カバレッジ:** 100% (設計レベル)。実装は Document Engine (Phase 2) まで完了、Rendering 以降 (Phase 3+) は未着手
 - **性能目標の実測状況:**
   - 起動時間: 🟢 CI 実測 22ms (目標 300ms の 7%)
-  - `PieceTable::insert`: 🟢 CI 実測 276ns (Release、目標 500ns 未満を達成)
-  - `PieceTable::snapshot`: 🟡 1000 piece 規模で 3549ns、目標の 100K piece 規模は未実測 (外挿では目標内)
+  - `PieceTable::insert`: 🟢 CI 実測 243〜276ns (Release、目標 500ns 未満を達成)
+  - `PieceTable::snapshot`: 🟡 **100K piece 規模で実測 1.196ms、目標 1ms を約20%超過** ([`piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) 参照)。1000 piece 規模からの線形外挿 (0.35ms 予測) は大きく外れており、外挿に頼らず実測することの重要性を示す事例となった。ブロッカーではないが Phase 2b3 完了後に再評価予定
   - メモリ 20MB / 10GB ファイル / 60fps / 100万 Undo: 未実測 (該当実装が Phase 2b3 以降)
 - **設計整合性:** Piece Tree の実装形態は ADR-006 → ADR-007 で方針転換したが、Public API は不変のまま実装差し替えで完了 — 当初の「ヘッダは変えない」設計方針が実際に機能した好例
 - **推奨判断:** **Phase 2b3 (mmap + Lazy Decode + 1GB bench) 着手可**。着手前に §H の R10/C-1 (UTF-8 チャンク境界分割) を設計に織り込むこと。
