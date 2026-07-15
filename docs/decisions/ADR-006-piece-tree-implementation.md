@@ -1,9 +1,13 @@
 # ADR-006: Piece Tree を Path-Copying Persistent RB-Tree で実装する
 
-- **ステータス:** Accepted
+- **ステータス:** **Superseded by [ADR-007](ADR-007-piece-tree-mutable-rb.md)** (2026-07-14, Phase 2b2 着手直前レビュー)
 - **決定日:** 2026-07-14 (Phase 2b 着手前)
 - **関連 Issue:** [`docs/issues/piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md)
 - **関連 Phase 報告:** [`phase_2a_report.md`](../phase_reports/phase_2a_report.md)
+
+> ⚠️ **本 ADR は [ADR-007](ADR-007-piece-tree-mutable-rb.md) によって置き換えられました。**
+> 再レビューで snapshot O(1) が要件ではないこと、persistent delete の実装コストが過大なこと、shared_ptr オーバーヘッドで 500ns insert 目標を達成困難なことが判明。詳細は ADR-007 §コンテキスト を参照。
+> 以下の本文は当時の検討経緯として保存 (削除しない — ADR は履歴)。
 
 ## コンテキスト
 

@@ -3,6 +3,8 @@
 このファイルは Claude Code が本リポジトリで作業する際に必ず最初に参照するガイドです。要件定義書 [`NeoMIFES_要件定義書.md`](NeoMIFES_要件定義書.md) と併せて読むこと。
 
 > 🔖 **セッション再開時は先に [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) を読み、現在のフェーズと未検証の宿題を把握すること。**
+> 📜 **過去の設計判断・方針転換の経緯は [`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) にセッション単位で時系列集約。「なぜ今この設計か」の一次資料。**
+> 📝 **各セッション終了時、TIMELINE.md の末尾に「そのセッションで決めたこと・作ったもの」を 1 セクション追記すること。**
 
 ---
 

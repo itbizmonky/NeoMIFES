@@ -53,8 +53,8 @@ git push -u origin main
 **目標 (Phase 2 全体 DoD):** 1GB ファイル読込ベンチ通過。
 
 ### 3.1 参照する意思決定
-1. [**ADR-006**](../decisions/ADR-006-piece-tree-implementation.md) — Path-Copying Persistent RB-Tree を採用 (path-copying vs mutable+RCU 等の比較・却下理由あり)
-2. [`docs/issues/piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) — 完了条件と計算量目標
+1. [**ADR-007**](../decisions/ADR-007-piece-tree-mutable-rb.md) — **Mutable RB-Tree + Piece-Vector Snapshot** を採用 (ADR-006 は Superseded)
+2. [`docs/issues/piece_table_rb_tree.md`](../issues/piece_table_rb_tree.md) — 完了条件と計算量目標 (ADR-007 準拠に更新済み)
 3. [`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md) — Phase 2b3 で対応
 
 ### 3.2 Phase 2b1 完了済 (前セッション)
@@ -66,17 +66,31 @@ git push -u origin main
 ### 3.3 Phase 2b2 で作る予定 (次回)
 ```
 src/document/
-  ├── include/neomifes/document/piece_tree_node.h  # 新規: immutable RB-tree ノード
-  ├── include/neomifes/document/piece_tree.h       # 新規: 公開 API (snapshot生成)
-  └── src/piece_tree.cpp                           # 新規: RB 回転 + 順序統計 + path-copy
+  ├── include/neomifes/document/piece_tree_node.h  # 新規: mutable RB ノード (Piece + subtree 集約)
+  └── src/piece_tree.cpp                           # 新規: CLRS RB insert/delete + rotate + 集約更新 + in-order 走査
 
 # 差し替え (公開ヘッダは 1 行も変えない)
-src/document/src/piece_table.cpp                 # vector → PieceTree 経由に
+src/document/src/piece_table.cpp                 # vector → mutable RB tree に
 src/document/src/line_index.cpp                  # tree 集約 (subtreeNewlineCount) から O(log n) 導出
 
 tests/unit/
-  └── document_piece_tree_test.cpp               # RB 平衡 / 順序統計 / 永続性
+  └── document_piece_tree_test.cpp               # RB invariant + 集約整合性 + edge cases
 ```
+
+### 3.3.1 実装ガードレール (ADR-007 §実装ガードレール 準拠、必ず守る)
+
+| # | チェック項目 |
+|---|---|
+| G1 | Node は mutable struct、`std::unique_ptr<Node>` で親から所有 (排他) |
+| G2 | rotate 後は **新旧の親両方** に `updateAggregate()` を呼ぶ (bug 温床) |
+| G3 | empty tree は **nullptr root** で扱う (sentinel nil は将来最適化) |
+| G4 | 既存 37 単体テストが **1 行も変更なしで green** になるまで delete まわり触らない |
+| G5 | RB invariant テストを実装と同時に追加 (root black / no red-red / uniform black height / aggregate 整合) |
+| G6 | プロパティテスト 20K 反復に上げる (Phase 2b2 DoD の一部) |
+| G7 | Piece.offset セマンティクスは **全て UTF-16 CU で統一** (Phase 2b3 の mmap Lazy Decode で OriginalBuffer 内部でバイト↔CU 変換) |
+| G8 | LineIndex クラスは **薄い wrapper として残置**。build() を tree 集約経由に書き換え、外部 API は据え置き |
+| G9 | Delete 実装は CLRS 13.4 の double-black 処理を丁寧に。Kahrs/GM 系は不要 |
+| G10 | insert/delete の path は **stack-based** に (parent pointer 使うなら別) |
 
 ### 3.4 Phase 2b3 (mmap + 1GB bench)
 ```
@@ -150,12 +164,16 @@ tests/bench/
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 2b2 (ADR-006 準拠の Piece Tree 実装 + PieceTable 差し替え) に着手せよ
+Phase 2b2 (ADR-007 準拠の Mutable RB-Tree 実装 + PieceTable 差し替え) に着手せよ。
+G1〜G10 のガードレールを守り、既存 37 単体テストの変更なし green を厳守
 ```
 
 または段階的に:
 ```
-まず piece_tree_node.h / piece_tree.h の設計を提示し、
-承認後に実装 → 既存 37 単体テスト + プロパティテストを維持したまま
-PieceTable の内部だけを差し替えよ
+まず piece_tree_node.h の struct 設計 + subtree aggregate 更新方針を提示し、
+承認後に insert 系だけ実装 → 既存 37 テスト green を CI で確認してから
+delete 実装に進め
 ```
+
+## 7. 履歴を辿りたいとき
+[`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

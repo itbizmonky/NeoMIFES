@@ -108,7 +108,7 @@ namespace neomifes::document {
 struct Piece {
     enum class Source : std::uint8_t { Original, Add };
     Source        source;
-    std::uint64_t offset;     // ソース内バイトオフセット (UTF-16 CU)
+    std::uint64_t offset;     // ソース内 UTF-16 CU オフセット (Add / Original 両方で統一)
     std::uint64_t length;     // UTF-16 CU 数
     std::uint32_t newlineCnt; // このピース内の改行数 (LineIndex 用)
 };
@@ -162,7 +162,7 @@ private:
     util::LRUCache<ChunkKey, std::u16string> m_decodeCache;  // 64KB × 上限 N チャンク
 };
 ```
-- **Piece.offset は UTF-16 CU オフセット** で持つが、Piece が Original ソースの場合は「原本バイトオフセット → 復号後 CU オフセット」のマッピングテーブル (chunk 単位) を保持する。
+- **Piece.offset は Add / Original どちらのソースでも UTF-16 CU オフセット** で統一する (Phase 2a 実装済)。Original 側は `OriginalBuffer` の内部でバイトオフセット ↔ CU オフセットのマッピングを保持し、外から見える offset は必ず CU。これにより PieceTable / BufferSnapshot / LineIndex は source を意識せず一様なアドレス空間で動作する。
 - **編集された範囲は Add Buffer に UTF-16 で入る**ため二度目以降のアクセスは高速。
 - **改行インデックスの初期構築も生バイト上で行う** (改行文字 `\n` / `\r` は UTF-8/Shift-JIS/EUC-JP のいずれもマルチバイト先頭バイトと衝突しない ASCII なので安全)。
 - UTF-16LE/BE 原本は 2 バイト単位で走査する専用パス。
