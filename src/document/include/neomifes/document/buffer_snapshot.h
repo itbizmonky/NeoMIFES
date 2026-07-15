@@ -39,14 +39,18 @@ public:
     [[nodiscard]] std::u16string extract(TextRange range) const;
 
     // Returns a UTF-16 view of the piece's own text (its full [offset,
-    // offset+length) slice inside the correct backing buffer). O(1); no
-    // allocation. Behaviour is defined only for pieces that belong to
+    // offset+length) slice inside the correct backing buffer). O(1) for
+    // AddBuffer-sourced pieces; for OriginalBuffer-sourced pieces (Phase
+    // 2b3 mmap + Lazy Decode) this may decode-and-cache on first access, so
+    // it is NOT noexcept (a genuine std::bad_alloc is allowed to propagate
+    // rather than being swallowed - CLAUDE.md forbids unconditional
+    // catch(...)). Behaviour is defined only for pieces that belong to
     // THIS snapshot's piece list; passing an unrelated Piece is UB.
     //
     // This is the intended primitive for O(N) traversal helpers such as
     // LineIndex. Prefer this over extract() when scanning by piece,
     // because extract() re-walks the full piece list from cursor=0.
-    [[nodiscard]] std::u16string_view pieceView(const Piece& p) const noexcept;
+    [[nodiscard]] std::u16string_view pieceView(const Piece& p) const;
 
     // Access to the immutable piece list for tests / benchmarks / debug.
     [[nodiscard]] const std::vector<Piece>& pieces() const noexcept { return m_pieces; }

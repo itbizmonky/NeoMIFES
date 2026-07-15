@@ -15,12 +15,16 @@ PieceTable::PieceTable(std::shared_ptr<const OriginalBuffer> original)
     : m_original(std::move(original)),
       m_add(std::make_shared<AddBuffer>()) {
     if (m_original && m_original->size() > 0) {
-        std::u16string_view v = m_original->view(0, m_original->size());
+        // newlineCount() is precomputed once by OriginalBuffer's streaming
+        // byte-level scan at load time (Phase 2b3). Deliberately NOT calling
+        // m_original->view(0, size()) here: under the mmap-backed Lazy
+        // Decode implementation that would force-decode the entire file to
+        // UTF-16 immediately on open, defeating the point of laziness.
         Piece p{};
         p.source       = PieceSource::Original;
         p.offset       = 0;
         p.length       = m_original->size();
-        p.newlineCount = countNewlines(v);
+        p.newlineCount = m_original->newlineCount();
         m_tree.insertAt(0, p);
     }
 }

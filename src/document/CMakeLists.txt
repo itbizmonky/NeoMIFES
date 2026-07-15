@@ -17,7 +17,9 @@ target_include_directories(neomifes_document
 
 target_link_libraries(neomifes_document
     PUBLIC
-        # Public headers expose nothing platform-specific; keep this minimal.
+        # original_buffer.h includes neomifes/platform/file_mapping.h (mmap RAII),
+        # so platform is a public (transitive) dependency of this target.
+        neomifes::platform
     PRIVATE
         neomifes::compile_options
         neomifes::util

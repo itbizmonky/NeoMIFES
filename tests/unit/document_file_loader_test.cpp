@@ -87,4 +87,133 @@ TEST(FileLoaderTest, EnforcesMaxBytes) {
     fs::remove(path);
 }
 
+// -----------------------------------------------------------------------------
+// Phase 2b3 (mmap + Lazy Decode): OriginalBuffer checkpoints every 64KiB of
+// UTF-8 bytes (kCheckpointBytes) so view() can resume decoding without
+// starting from byte 0 every time. These tests specifically exercise content
+// that spans / straddles that boundary - the classic bug class this design
+// has to get right (see docs/issues/lazy_decode_mmap.md).
+// -----------------------------------------------------------------------------
+
+TEST(FileLoaderTest, EmptyFileProducesEmptyDocument) {
+    auto path = tempFileWith("");
+    auto result = loadUtf8File(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_EQ(r.byteLength, 0u);
+    EXPECT_FALSE(r.hadBom);
+    EXPECT_EQ(r.document->length(), 0u);
+    EXPECT_EQ(r.document->toU16String(), u"");
+    fs::remove(path);
+}
+
+TEST(FileLoaderTest, BomOnlyFileProducesEmptyDocument) {
+    auto path = tempFileWith("\xEF\xBB\xBF");
+    auto result = loadUtf8File(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_TRUE(r.hadBom);
+    EXPECT_EQ(r.document->length(), 0u);
+    fs::remove(path);
+}
+
+TEST(FileLoaderTest, MultibyteCharacterStraddlingCheckpointBoundaryDecodesCorrectly) {
+    // 65535 ASCII bytes place the next character's first byte at byte offset
+    // 65535 - one byte before the 64KiB (65536) checkpoint mark, so the
+    // 2-byte UTF-8 character that follows straddles the boundary a naive
+    // fixed-size-chunk scheme would use. OriginalBuffer's checkpoints are
+    // recorded only after a complete code point finishes, so this must
+    // still decode correctly with no split character.
+    std::string content(65535, 'a');
+    content += "\xC3\xA9";  // U+00E9 (e with acute accent), 2 bytes UTF-8, 1 CU
+    content += std::string(10, 'b');
+
+    auto path = tempFileWith(content);
+    auto result = loadUtf8File(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+
+    const std::u16string full = r.document->toU16String();
+    ASSERT_EQ(full.size(), 65535u + 1u + 10u);
+    EXPECT_EQ(full[65534], u'a');
+    EXPECT_EQ(full[65535], static_cast<char16_t>(0x00E9));  // U+00E9, avoids relying on source-file encoding for a literal
+    EXPECT_EQ(full[65536], u'b');
+    EXPECT_EQ(r.document->lineCount(), 1u);  // no newlines in this content
+
+    fs::remove(path);
+}
+
+TEST(FileLoaderTest, SplitAtCheckpointBoundaryPreservesContent) {
+    // Same straddling layout as above, but this time force a PieceTable
+    // split exactly at the boundary (CU offset 65536), which requires
+    // PieceTable::ensureBoundary to call OriginalBuffer::view(0, 65536) -
+    // decoding all the way across the checkpoint in one call - and then a
+    // second full extract that walks both the split Original piece and the
+    // newly inserted Add piece together.
+    std::string content(65535, 'a');
+    content += "\xC3\xA9";
+    content += std::string(10, 'b');
+
+    auto path = tempFileWith(content);
+    auto result = loadUtf8File(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+
+    const std::u16string before = r.document->toU16String();
+    ASSERT_EQ(before.size(), 65535u + 1u + 10u);
+
+    r.document->insertText(65536, u"|");
+
+    const std::u16string after = r.document->toU16String();
+    ASSERT_EQ(after.size(), before.size() + 1);
+    EXPECT_EQ(after.substr(0, 65535), before.substr(0, 65535));  // unchanged 'a' run
+    EXPECT_EQ(after[65535], static_cast<char16_t>(0x00E9));      // U+00E9
+    EXPECT_EQ(after[65536], u'|');
+    EXPECT_EQ(after.substr(65537), before.substr(65536));  // unchanged 'b' run, shifted by 1
+
+    fs::remove(path);
+}
+
+TEST(FileLoaderTest, ContentSpanningMultipleCheckpointsDecodesCorrectly) {
+    // ~200KB of content spans 3+ checkpoints (kCheckpointBytes = 64KiB),
+    // exercising the binary search over the checkpoint index rather than
+    // only ever hitting checkpoint[0].
+    std::string content;
+    content.reserve(200 * 1024);
+    for (int i = 0; i < 200 * 1024; ++i) {
+        // A repeating but position-identifiable pattern (digits 0-9) so a
+        // mismatch anywhere is easy to localize by its offset mod 10.
+        content.push_back(static_cast<char>('0' + (i % 10)));
+    }
+
+    auto path = tempFileWith(content);
+    auto result = loadUtf8File(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+
+    ASSERT_EQ(r.document->length(), content.size());
+    const std::u16string full = r.document->toU16String();
+    for (std::size_t i = 0; i < content.size(); i += 4093) {  // prime stride, spot-check
+        ASSERT_EQ(static_cast<char>(full[i]), content[i]) << "mismatch at offset " << i;
+    }
+
+    fs::remove(path);
+}
+
+TEST(FileLoaderTest, NewlineCountPrecomputedWithoutFullDecode) {
+    // lineCount()/newlineCount() must be answerable from the Piece's
+    // precomputed count alone (Phase 2b3: PieceTable's constructor reads
+    // OriginalBuffer::newlineCount(), never calling view() for the whole
+    // file). This test doesn't prove "no decode happened" directly, but it
+    // does confirm the count is correct immediately after construction,
+    // before any explicit read of the content.
+    std::string content = "line1\nline2\nline3";  // 2 newlines, 3 lines
+    auto path = tempFileWith(content);
+    auto result = loadUtf8File(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+
+    EXPECT_EQ(r.document->lineCount(), 3u);
+}
+
 }  // namespace

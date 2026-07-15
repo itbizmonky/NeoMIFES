@@ -19,7 +19,7 @@ BufferSnapshot::BufferSnapshot(std::shared_ptr<const OriginalBuffer> original,
     }
 }
 
-std::u16string_view BufferSnapshot::pieceView(const Piece& p) const noexcept {
+std::u16string_view BufferSnapshot::pieceView(const Piece& p) const {
     return (p.source == PieceSource::Add)
                ? (m_add      ? m_add     ->view(p.offset, p.length) : std::u16string_view{})
                : (m_original ? m_original->view(p.offset, p.length) : std::u16string_view{});

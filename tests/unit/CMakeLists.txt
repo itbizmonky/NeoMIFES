@@ -3,6 +3,7 @@ add_executable(neomifes_unit_tests
     util_wchar_cast_test.cpp
     platform_perf_clock_test.cpp
     platform_process_metrics_test.cpp
+    platform_file_mapping_test.cpp
     document_add_buffer_test.cpp
     document_buffer_snapshot_test.cpp
     document_piece_table_test.cpp

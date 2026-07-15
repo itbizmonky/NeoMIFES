@@ -1,4 +1,5 @@
 add_library(neomifes_platform STATIC
+    src/file_mapping.cpp
     src/perf_clock.cpp
     src/process_metrics.cpp
 )

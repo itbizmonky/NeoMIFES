@@ -64,6 +64,9 @@ struct DestroyWindowDeleter {
 struct DeleteObjectDeleter {
     void operator()(HGDIOBJ h) const noexcept { ::DeleteObject(h); }
 };
+struct UnmapViewDeleter {
+    void operator()(LPVOID p) const noexcept { ::UnmapViewOfFile(p); }
+};
 
 // Type aliases --------------------------------------------------------------
 // NOTE: The invalid value for HANDLE-family varies; we pick the common one and
@@ -72,5 +75,11 @@ using KernelHandle    = HandleGuard<HANDLE, CloseHandleDeleter, nullptr>;
 using ModuleHandle    = HandleGuard<HMODULE, FreeLibraryDeleter, nullptr>;
 using WindowHandle    = HandleGuard<HWND, DestroyWindowDeleter, nullptr>;
 using GdiObjectHandle = HandleGuard<HGDIOBJ, DeleteObjectDeleter, nullptr>;
+
+// CreateFileW returns INVALID_HANDLE_VALUE (not nullptr) on failure - a
+// distinct sentinel from the other HANDLE-family wrappers above.
+using FileHandle = HandleGuard<HANDLE, CloseHandleDeleter, INVALID_HANDLE_VALUE>;
+// MapViewOfFile* returns LPVOID, released via UnmapViewOfFile (not CloseHandle).
+using MappedView = HandleGuard<LPVOID, UnmapViewDeleter, nullptr>;
 
 }  // namespace neomifes::platform

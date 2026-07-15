@@ -99,6 +99,17 @@ TEST(PieceTableTest, OriginalBufferSeed) {
     EXPECT_EQ(extractAll(pt), u"hello, world");
 }
 
+TEST(PieceTableTest, OriginalBufferSeedNewlineCountPrecomputed) {
+    // fromU16String() precomputes newlineCount() eagerly (Phase 2b3), unlike
+    // the old path where PieceTable's constructor derived it via a full
+    // decode. Verify the initial Piece's newlineCount is correct for seed
+    // content that actually contains newlines.
+    auto orig = OriginalBuffer::fromU16String(u"a\nb\nc");
+    PieceTable pt(orig);
+    EXPECT_EQ(pt.newlineCount(), 2u);
+    EXPECT_EQ(pt.lineCount(),    3u);
+}
+
 TEST(PieceTableTest, NewlineCountTracked) {
     PieceTable pt;
     pt.insert(0, u"line1\nline2\nline3");
