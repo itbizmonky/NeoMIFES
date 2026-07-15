@@ -70,16 +70,58 @@ struct UnmapViewDeleter {
 
 // Type aliases --------------------------------------------------------------
 // NOTE: The invalid value for HANDLE-family varies; we pick the common one and
-// callers should be aware. Use INVALID_HANDLE_VALUE variant for file handles.
+// callers should be aware. Use FileHandle (below) for file handles.
 using KernelHandle    = HandleGuard<HANDLE, CloseHandleDeleter, nullptr>;
 using ModuleHandle    = HandleGuard<HMODULE, FreeLibraryDeleter, nullptr>;
 using WindowHandle    = HandleGuard<HWND, DestroyWindowDeleter, nullptr>;
 using GdiObjectHandle = HandleGuard<HGDIOBJ, DeleteObjectDeleter, nullptr>;
-
-// CreateFileW returns INVALID_HANDLE_VALUE (not nullptr) on failure - a
-// distinct sentinel from the other HANDLE-family wrappers above.
-using FileHandle = HandleGuard<HANDLE, CloseHandleDeleter, INVALID_HANDLE_VALUE>;
 // MapViewOfFile* returns LPVOID, released via UnmapViewOfFile (not CloseHandle).
 using MappedView = HandleGuard<LPVOID, UnmapViewDeleter, nullptr>;
+
+// FileHandle - RAII wrapper for HANDLE values from CreateFileW, whose invalid
+// sentinel is INVALID_HANDLE_VALUE rather than nullptr like the HandleGuard
+// aliases above. Deliberately NOT a HandleGuard<HANDLE, ..., INVALID_HANDLE_VALUE>
+// instantiation: INVALID_HANDLE_VALUE expands to ((HANDLE)(LONG_PTR)-1), an
+// integer-to-pointer conversion that MSVC accepts as a non-type template
+// argument but Clang correctly rejects (such conversions are not permitted in
+// core constant expressions per the standard) - confirmed locally, this broke
+// clang-tidy while building fine under the real MSVC compiler. A default
+// member initializer (used here) has no such restriction since it is
+// evaluated at construction time, not as a compile-time constant.
+class FileHandle {
+public:
+    FileHandle() noexcept = default;
+    explicit FileHandle(HANDLE h) noexcept : m_handle(h) {}
+
+    FileHandle(const FileHandle&)            = delete;
+    FileHandle& operator=(const FileHandle&) = delete;
+
+    FileHandle(FileHandle&& other) noexcept
+        : m_handle(std::exchange(other.m_handle, INVALID_HANDLE_VALUE)) {}
+
+    FileHandle& operator=(FileHandle&& other) noexcept {
+        if (this != &other) {
+            reset(std::exchange(other.m_handle, INVALID_HANDLE_VALUE));
+        }
+        return *this;
+    }
+
+    ~FileHandle() { reset(); }
+
+    void reset(HANDLE h = INVALID_HANDLE_VALUE) noexcept {
+        if (m_handle != INVALID_HANDLE_VALUE) {
+            ::CloseHandle(m_handle);
+        }
+        m_handle = h;
+    }
+
+    [[nodiscard]] HANDLE get() const noexcept { return m_handle; }
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return m_handle != INVALID_HANDLE_VALUE;
+    }
+
+private:
+    HANDLE m_handle = INVALID_HANDLE_VALUE;
+};
 
 }  // namespace neomifes::platform

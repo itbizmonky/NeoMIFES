@@ -38,7 +38,19 @@ TEST(FileMappingTest, OpensAndReadsPlainContent) {
 }
 
 TEST(FileMappingTest, ReturnsNotFoundForMissingFile) {
-    auto result = FileMapping::open("Z:\\this\\path\\does\\not\\exist_nmfs.bin");
+    // Deliberately NOT using a hardcoded drive letter like "Z:\..." here:
+    // whether an unmapped drive letter yields ERROR_FILE_NOT_FOUND,
+    // ERROR_PATH_NOT_FOUND, or ERROR_BAD_NETPATH depends on the machine's
+    // drive configuration (confirmed locally - a real Windows install
+    // returned ERROR_BAD_NETPATH for a bogus "Z:", which the initial
+    // implementation didn't classify as NotFound). Using a nonexistent
+    // filename under a definitely-real, definitely-local directory keeps
+    // the drive itself valid so only the file lookup fails, giving a
+    // reliable ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND regardless of
+    // the machine's drive mappings.
+    const auto path = fs::temp_directory_path()
+                     / "nmfs_definitely_does_not_exist_9f3a7c21.bin";
+    auto result = FileMapping::open(path);
     ASSERT_TRUE(std::holds_alternative<FileMappingError>(result));
     EXPECT_EQ(std::get<FileMappingError>(result), FileMappingError::NotFound);
 }

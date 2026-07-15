@@ -20,13 +20,29 @@ FileMapping::open(const std::filesystem::path& path) {
         nullptr)};
     if (!file) {
         const DWORD err = ::GetLastError();
-        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
-            return FileMappingError::NotFound;
+        // A path whose drive letter isn't mapped to anything (no drive, no
+        // network share) does NOT come back as ERROR_FILE_NOT_FOUND /
+        // ERROR_PATH_NOT_FOUND on real hardware - confirmed locally with a
+        // genuinely unmapped drive letter, which returned ERROR_BAD_NETPATH
+        // instead. CI's runner environment happened not to exercise this
+        // path, so it went undetected until testing against a real Windows
+        // install. Treat the whole "can't resolve this path at all" family
+        // as NotFound, since from the caller's perspective (open a file the
+        // user pointed at) they are indistinguishable.
+        switch (err) {
+            case ERROR_FILE_NOT_FOUND:
+            case ERROR_PATH_NOT_FOUND:
+            case ERROR_BAD_NETPATH:
+            case ERROR_BAD_NET_NAME:
+            case ERROR_INVALID_DRIVE:
+            case ERROR_INVALID_NAME:
+                return FileMappingError::NotFound;
+            case ERROR_ACCESS_DENIED:
+            case ERROR_SHARING_VIOLATION:
+                return FileMappingError::PermissionDenied;
+            default:
+                return FileMappingError::IoFailure;
         }
-        if (err == ERROR_ACCESS_DENIED) {
-            return FileMappingError::PermissionDenied;
-        }
-        return FileMappingError::IoFailure;
     }
 
     LARGE_INTEGER size{};
