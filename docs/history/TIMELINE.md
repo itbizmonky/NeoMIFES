@@ -18,6 +18,7 @@
 - [Session 10: Phase 2b2 Step 1 (PieceTree 追加)](#session-10-2026-07-15-phase-2b2-step-1-piecetree-追加--insert--split)
 - [Session 11: Phase 2b2 Step 2 (eraseRange + PieceTable 差し替え)](#session-11-2026-07-15-phase-2b2-step-2-eraserange--piecetable-差し替え)
 - [Session 12: Phase 2b2 完了後の包括レビュー + プロセス改善](#session-12-2026-07-15-phase-2b2-完了後の包括レビュー--プロセス改善)
+- [Session 13: Phase 2b3 Step 1 (mmap + Lazy Decode コア)](#session-13-2026-07-15-phase-2b3-step-1-mmap--lazy-decode-コア)
 
 ---
 
@@ -273,5 +274,28 @@
 **次回:** Phase 2b3 (mmap + Lazy Decode + 1GB bench) に、今回追加した UTF-8 境界分割リスクと CI/ローカル二段ベンチ方針を織り込んで着手する。
 
 **追記 (同日、push 後の CI 結果確認):** 新設した `BM_PieceTable_Snapshot_100K` の実測値が判明。**100K piece で 1.196ms、目標 (≤1ms) を約20%超過。** 1000 piece からの線形外挿予測 (0.35ms) は大きく外れており、「外挿でなく実測する」という本セッションの教訓が早速裏付けられた形。ブロッカーとはせず `piece_table_rb_tree.md` に低優先度の残タスクとして記録し、Phase 2b3 完了後に再評価する方針とした。`InsertAtEnd` は 243ns で目標 500ns を引き続き達成。
+
+## Session 13 (2026-07-15): Phase 2b3 Step 1 (mmap + Lazy Decode コア)
+
+**目標:** `OriginalBuffer` を Phase 2a の「全読み込み + 全文デコード」から mmap + on-demand デコードに置き換える。公開 API 不変を維持。
+
+**設計判断 (実装検討中に確定):**
+- **mmap ビュー自体の LRU 追い出しは実装しない**。x64 の仮想アドレス空間は 10GB 級ファイルでも十分足りるため、OS のページング任せで良い (`MapViewOfFile` を 1 回、ファイル全体に対して呼ぶだけ)。当初 Issue が想定していた「1GB ずつマップして LRU で解放」は過剰設計と判断
+- **デコード結果のキャッシュは「初回アクセスでデコードして永久保持、追い出しなし」方式にした**。真の LRU 追い出しを実装するには `std::u16string_view` を返す現行 API が dangling view を生みうる (追い出された瞬間、既に返した view が無効化される) ため、それを安全にするには参照カウント付きキャッシュエントリへの設計変更が必要になり、リスクに見合わないと判断。メモリ増加は「実際にスクロール/検索でアクセスした範囲」にのみ比例するため、**ファイルを開いた直後**という目標計測ポイントには影響しない
+- **64KiB ごとのチェックポイント索引** (バイトオフセット + その時点の CU オフセット) を初回スキャン時に構築。**チェックポイントは必ず「完全な 1 文字を処理し終えた直後」にのみ記録**するため、マルチバイト UTF-8 文字が途中で分断されることは構造的に起こり得ない (単なる注意ではなく、アルゴリズムの不変条件として保証)
+- **`PieceTable` のコンストラクタが `OriginalBuffer::newlineCount()` を直接使うよう変更** — これが実質的な laziness の核。以前は `view(0, size())` でファイル全体を強制デコードしてから改行数を数えていたが、これでは mmap 化しても意味がない。改行数はバイトレベルの初回スキャンで事前計算されるようになった
+- `OriginalBuffer::view()` / `BufferSnapshot::pieceView()` から `noexcept` を除去 (mmap デコード経路がアロケーションを伴うため、`std::bad_alloc` を握り潰す `catch(...)` は CLAUDE.md で禁止されている)
+
+**成果物:**
+- 新規 `platform::FileMapping` (mmap RAII、`handle_guard.h` に `FileHandle`/`MappedView` エイリアス追加)
+- `OriginalBuffer` 全面再設計 (InMemory/MemoryMapped 二本立て、チェックポイント索引、on-demand decode キャッシュ)
+- `PieceTable` コンストラクタ、`FileLoader` (旧 `decodeUtf8` 削除) を新設計に対応
+- テスト +12 (80→92): `platform_file_mapping_test.cpp` 新設、`document_file_loader_test.cpp` にチェックポイント境界をまたぐマルチバイト文字・複数チェックポイント・newlineCount 事前計算のテスト追加
+
+**レビューで見つけて直したバグ:** `FileMapping::size()` が move 後に stale な値 (moved-from のはずなのに古いサイズ) を返す問題。`m_view` (HandleGuard) は move で正しくリセットされるが `m_size` はただの `uint64_t` でリセットされないため。`size()` の実装を `m_view` の有効性に紐付けることで解消。
+
+**CI 未確認:** push 前。次回セッション冒頭で確認要。
+
+**次回 (Phase 2b3 Step 2):** 1GB/100MB load bench (CI は縮小版、フルサイズはローカル手動)、SEH によるネットワークドライブ例外対策、Phase 2b 完了報告 (`phase_2b_report.md` 1本に統合)。
 
 <!-- 次セッションはここに追記 -->
