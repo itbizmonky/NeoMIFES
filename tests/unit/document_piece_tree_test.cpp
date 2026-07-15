@@ -431,6 +431,11 @@ TEST(PieceTreeTest, EraseEmptyRangeIsNoOp) {
 TEST(PieceTreeTest, EraseRangeClampsToTotalLength) {
     PieceTree t;
     t.insertAt(0, addPiece(0, 5));
+    // eraseRange requires range.start to already be a boundary (splitting is
+    // the caller's responsibility, mirroring splitPieceAt's contract) - split
+    // at 2 first so this test exercises only the range.end clamp, not a
+    // boundary violation.
+    t.splitPieceAt(2, 0);  // pieces become [0,2) [2,5)
     t.eraseRange({2, 9999});
     EXPECT_EQ(t.totalLength(), 2u);
     EXPECT_TRUE(t.validate());
