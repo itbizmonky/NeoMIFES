@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-17 (Phase 4b2 完了後)
+> **最終更新:** 2026-07-17 (Phase 4b3 完了後)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
@@ -26,7 +26,8 @@
 | Phase 4a (Cursor/SelectionModel/Command/UndoStack、ヘッドレス、100万Undo DoD 実測) | ✅ 完了 (ADR-012) |
 | Phase 4b1 (キーボード入力配線・キャレット描画・マウスホイールスクロール) | ✅ 完了 |
 | Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) | ✅ 完了 |
-| **Phase 4b3 (ドラッグ選択・ダブル/トリプルクリック・複数カーソル)** | ⏭️ **次回着手** |
+| Phase 4b3 (ドラッグ選択) | ✅ 完了 |
+| **Phase 4b4 (ダブル/トリプルクリック・複数カーソル)** | ⏭️ **次回着手** |
 
 ---
 
@@ -232,6 +233,24 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 **スコープ外 (Phase 4b3 へ持ち越し):** ドラッグ選択 (`WM_MOUSEMOVE`+`SetCapture`/`ReleaseCapture`)、ダブルクリック(単語選択)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加、選択範囲のクリップボードコピー
 
+### 3.11 Phase 4b3 (ドラッグ選択) 完了記録
+
+**設計上の発見:** Phase 4b2 実装済みの `handleMouseDown(pos, shiftDown=true, ...)` が「anchorを保持しpositionだけ動かす」というドラッグの継続移動に必要な挙動と完全に一致していたため、**新規の core/app ロジックは一切不要だった**。`MainWindow` 側の Win32 状態管理 (`SetCapture`/`WM_MOUSEMOVE`/`WM_LBUTTONUP`) を追加するだけで実現。
+
+**成果物:**
+- `MainWindow`: `onMouseDrag` フック新設(shiftDownパラメータなし)。`handleMouseDown()` の先頭で `::SetCapture(m_hwnd)`、新規 `WM_MOUSEMOVE`(`handleMouseMove`、ドラッグ中のみ発火)・`WM_LBUTTONUP`(`handleMouseUp`、`::ReleaseCapture()`)を追加
+- `src/app/main.cpp`: `onMouseDrag` は `hitTest()` の後、既存の `handleMouseDown(*hit, /*shiftDown=*/true, ...)` を呼ぶだけ
+- テスト数: 189 → 190 (単体+1: ドラッグが依拠する「shiftDown=true繰り返し呼び出しでanchor保持のまま拡張し続ける」挙動のピン留めテスト)
+- 実アプリで複数点ドラッグ・Shift+ドラッグ・ウィンドウ境界外へのドラッグ(`SetCapture`効果検証)をシミュレートしクラッシュなし・正常終了を確認
+
+**完了条件:**
+- [x] マウスドラッグで選択範囲が連続的に拡張される(ユニットテスト+実アプリでのP/Invokeドラッグシミュレーションでクラッシュなしを確認)
+- [x] ドラッグ中にカーソルがウィンドウ境界外に出てもクラッシュしない(`SetCapture`の効果を実機で確認)
+- [x] ローカル Debug/Release 全190テスト green、変更 `.cpp` 2ファイルの clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み) 新規警告0
+- [ ] ドラッグ中の選択ハイライトの視覚的な正しさは自動検証していない — Phase 4b1/4b2と同じ理由([[reference-no-win32-gui-automation]])、ユーザー自身による目視確認を推奨
+
+**スコープ外 (Phase 4b4 へ持ち越し):** ダブルクリック(単語選択)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加、選択範囲のクリップボードコピー、`WM_CAPTURECHANGED` の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -278,9 +297,10 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 4b3 (ドラッグ選択・ダブル/トリプルクリック・複数カーソル) に着手せよ。
-着手前に detailed_design.md §5.3 の Phase 4b1/4b2 実装済み範囲と、
-本ファイル §3.10 のスコープ外一覧を確認すること。
+Phase 4b4 (ダブル/トリプルクリック・複数カーソル) に着手せよ。
+着手前に detailed_design.md §5.3 の Phase 4b1/4b2/4b3 実装済み範囲と、
+本ファイル §3.11 のスコープ外一覧を確認すること。
+ダブルクリック(単語選択)は単語境界判定の仕様についてユーザー確認が必要 (ADR-012 参照)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
@@ -299,13 +319,14 @@ Phase 3 は [`docs/phase_reports/phase_3_report.md`](../phase_reports/phase_3_re
 
 **Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) は完了済み (§3.10 参照)。** `RenderPipeline::hitTest()` でクリック座標を `TextPos` に変換し、`SelectionModel::moveAllTo(pos, shiftDown)` でクリック/Shift+クリックによるカーソル移動・選択拡張を実装。選択範囲は半透明の矩形でハイライト描画される。
 
-**Phase 4b3 (次回) 着手時に確認すること:**
-1. ドラッグ選択 (`WM_MOUSEMOVE` + `SetCapture`/`ReleaseCapture`)。ボタン押下状態をまたぐ新規の状態管理 (`MainWindow`にmouseDown中フラグを持たせるか、`WM_LBUTTONDOWN`〜`WM_LBUTTONUP`間の座標追跡方法) の設計が必要。`RenderPipeline::hitTest()` (Phase 4b2実装済み) はそのまま再利用できる想定
-2. ダブルクリック(単語選択)・トリプルクリック(行選択)。`WM_LBUTTONDBLCLK` の配線 + 単語境界判定 (`MovementUnit` 未実装、Phase 4a/ADR-012 で延期された論点と同じ課題に直面する見込み)
-3. Alt+クリックによる複数カーソル追加。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する入力経路がまだ無い。編集コマンド (`InsertTextCommand`等) が複数カーソルを考慮していない点 (Phase 4aレビューのPLAUSIBLE指摘) も併せて要検討
-4. `docs/design/detailed_design.md` §5.3 に Phase 4b1/4b2 の実装内容と Phase 4b3 へのスコープ外一覧を明記済み — まずここを読む
-5. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1/4b2 では未判断のまま)
-6. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
+**Phase 4b3 (ドラッグ選択) は完了済み (§3.11 参照)。** Phase 4b2 の `handleMouseDown(pos, shiftDown=true, ...)` がドラッグの継続移動に必要な挙動と完全に一致していたため、新規の core/app ロジックは不要で、`MainWindow` の `SetCapture`/`WM_MOUSEMOVE`/`WM_LBUTTONUP` 配線のみで実現した。
+
+**Phase 4b4 (次回) 着手時に確認すること:**
+1. ダブルクリック(単語選択)・トリプルクリック(行選択)。`WM_LBUTTONDBLCLK` の配線 + 単語境界判定 (`MovementUnit` 未実装、ADR-012 で「Unicode UAX #29 準拠か簡易ASCII判定か等の仕様がユーザーと合意された時点」を再評価トリガーとして明記済み) — **着手前にユーザーへ単語境界判定の仕様を確認すること**
+2. Alt+クリックによる複数カーソル追加。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する入力経路がまだ無い。編集コマンド (`InsertTextCommand`等) が複数カーソルを考慮していない点 (Phase 4aレビューのPLAUSIBLE指摘) も併せて要検討
+3. `docs/design/detailed_design.md` §5.3 に Phase 4b1/4b2/4b3 の実装内容と Phase 4b4 へのスコープ外一覧を明記済み — まずここを読む
+4. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1/4b2/4b3 では未判断のまま)
+5. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

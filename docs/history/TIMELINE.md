@@ -28,7 +28,7 @@
 - [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
 - [Session 21: Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了](#session-21-2026-07-16-phase-3c-textlayoutcache--粗粒度フレームスキップ--measure-frame--phase-3-全体完了)
 - [Session 22: Phase 4a (Command/Undo/Selection、ヘッドレス) — 100万Undo DoD 実測](#session-22-2026-07-16-phase-4a-commandundoselectionヘッドレス--100万undo-dod-実測)
-- [Session 23: Phase 4a レビュー + Phase 4b1/4b2 (入力配線・キャレット・選択ハイライト)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
+- [Session 23: Phase 4a レビュー + Phase 4b1/4b2/4b3 (入力配線・キャレット・選択・ドラッグ)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
 
 ---
 
@@ -569,6 +569,23 @@
 
 **教訓 (Phase 4b2):** `HitTestPoint`(座標→位置)は `HitTestTextPosition`(位置→座標、Phase 4b1でキャレット描画に使用済み)の逆方向にあたる同じAPIファミリで、`hitTest()`の実装は`drawVisibleLines()`が既に確立していたDPI変換・TextLayoutCache運用パターンをほぼそのまま再利用できた — 新規のDirectWrite APIを導入する際も、既存の類似APIの使用パターンを踏襲することでコード全体の一貫性を保てることを再確認した。また `moveAllTo()`にデフォルト引数を追加する設計判断(新規メソッド名を増やさない)は、既存呼び出し元を一切変更せずに機能拡張できる後方互換な変更の一例として、今後の類似拡張の参考になる。
 
-**次回 (Phase 4b3):** ドラッグ選択 (`WM_MOUSEMOVE`+`SetCapture`/`ReleaseCapture`)、ダブルクリック(単語選択)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加、選択範囲のクリップボードコピー。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.10/§6 参照。
+**Phase 4b2 完了後:** ユーザーが「push する」と指示。push後 CI (`gh run list`) が success で完了 (Build&Test debug/release・UBSan・clang-tidy の4ジョブ全green、総実行時間38分51秒) したことを確認。続けて「次のPhaseへ進め」と指示、同一セッション内で Phase 4b3 に着手。
+
+**計画フェーズ (Phase 4b3):** RESUME_HERE.md §3.10/§6 が Phase 4b3 のスコープとして挙げていた「ドラッグ選択・ダブル/トリプルクリック・複数カーソル」について、`MainWindow`/`editor_input`/`SelectionModel` の現状 (Phase 4b2後の最新状態) を直接精読して調査した結果、**Phase 4b2で実装済みの`handleMouseDown(pos, shiftDown=true, ...)`が「anchor保持でpositionだけ動かす」という、ドラッグの継続移動に必要な挙動と完全に一致する**ことを発見。ドラッグ選択には新規の core/app ロジックが一切不要で、`MainWindow`側のWin32状態管理 (`SetCapture`/`WM_MOUSEMOVE`/`WM_LBUTTONUP`) だけで実現できると判断。一方ダブルクリック(単語選択)は単語境界判定の仕様についてADR-012が既に「ユーザーとの合意が必要」と明記済みの再評価トリガーに該当し、Alt+クリック複数カーソルは編集コマンドの複数カーソル対応という別の大きめの設計変更を要することが分かったため、Plan Modeで **Phase 4b3のスコープをドラッグ選択のみに絞り、ダブル/トリプルクリック・複数カーソルはPhase 4b4以降へ延期する**計画を立案。ExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物 (Phase 4b3):**
+- `MainWindow`: `onMouseDrag`フック新設(shiftDownパラメータなし — ドラッグは常にanchor保持での拡張)。`handleMouseDown()`(既存)の先頭で`::SetCapture(m_hwnd)`を呼びドラッグ中フラグを立てる。新規`WM_MOUSEMOVE`(`handleMouseMove`、ドラッグ中のみ`onMouseDrag`発火)・`WM_LBUTTONUP`(`handleMouseUp`、`::ReleaseCapture()`+フラグ降下)を追加
+- `src/app/main.cpp`: `onMouseDrag`配線 — `RenderPipeline::hitTest()`でヒットテストした後、**既存の**`handleMouseDown(*hit, /*shiftDown=*/true, ...)`を呼ぶだけ。新規の`app`層関数は無し
+- テスト数: 189→190 (単体+1: `EditorInputTest.RepeatedShiftedMouseDownSimulatesDragExtendingFromOriginalAnchor` — `handleMouseDown`を`shiftDown=true`で複数回呼び、anchorが最初の呼び出し以降変わらず維持されることを検証、ドラッグが依拠する核心の挙動を明示的にピン留め)
+- 実アプリで `SetCursorPos`+`mouse_event`+`keybd_event`(P/Invoke)による複数点ドラッグ・Shift+ドラッグ・ウィンドウ境界外へのドラッグ(`SetCapture`の効果検証)をシミュレートし、クラッシュせず正常終了することを確認
+
+**検証 (Phase 4b3):**
+- ローカル Debug/Release 両方でフルビルド・全190テスト pass
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、変更 `.cpp` 2ファイル対象) で新規警告0
+- **既知の限界:** Phase 4b1/4b2と同様、ドラッグ中の選択ハイライトが視覚的に正しいかは自動検証できない ([[reference-no-win32-gui-automation]])。`SetCapture`がウィンドウ境界外へのドラッグでもクラッシュしないことは実機で確認したが、これは「クラッシュしない」の確認であって「見た目が正しい」の確認ではない
+
+**教訓 (Phase 4b3):** Phase 4b2で`handleMouseDown`に`shiftDown`という汎用的な「anchor保持で拡張するか」フラグを設計したことが、Phase 4b3で「ドラッグは実質的に繰り返しのShift+クリック」という洞察につながり、新規コードをほぼ書かずに済んだ。個別の入力イベント(クリック・ドラッグ)ごとに専用のハンドラを都度新設するのではなく、「選択操作の共通の型は何か」という抽象度で設計しておくと、後続の入力手段(この場合ドラッグ)が驚くほど安く実装できることを示す一例。この累積的な設計効率は、Phase 4b1で`moveAllTo`にShift+クリック用の`extendSelection`を足した判断が、Phase 4b3でさらに一段先まで効いた結果でもある。
+
+**次回 (Phase 4b4):** ダブルクリック(単語選択、単語境界判定の仕様についてユーザー確認が必要)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加(編集コマンドの複数カーソル対応も必要)、選択範囲のクリップボードコピー。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.11/§6 参照。
 
 <!-- 次セッションはここに追記 -->

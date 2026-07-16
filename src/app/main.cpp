@@ -397,6 +397,21 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
         }
     };
+    cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline](
+                          HWND hwnd, std::int32_t x, std::int32_t y) {
+        const auto hit = renderPipeline.hitTest(x, y);
+        if (!hit) {
+            return;
+        }
+        // A drag always extends from whatever anchor onMouseDown established
+        // (shiftDown=true), regardless of whether the drag started with
+        // Shift held (Phase 4b3) - see plan doc rationale.
+        const bool changed =
+            neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, selectionModel, viewport, document);
+        if (changed) {
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        }
+    };
 }
 
 // Reuses onDeferredInit exactly like the Normal path does for real

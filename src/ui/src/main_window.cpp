@@ -62,6 +62,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onChar         = config.onChar;
     m_onMouseWheel   = config.onMouseWheel;
     m_onMouseDown    = config.onMouseDown;
+    m_onMouseDrag    = config.onMouseDrag;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -145,6 +146,12 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_LBUTTONDOWN:
             handleMouseDown(wParam, lParam);
+            return 0;
+        case WM_MOUSEMOVE:
+            handleMouseMove(lParam);
+            return 0;
+        case WM_LBUTTONUP:
+            handleMouseUp();
             return 0;
         case WM_ERASEBKGND:
             // We paint the full client rect in WM_PAINT; suppress default erase to
@@ -246,6 +253,14 @@ void MainWindow::handleMouseWheel(WPARAM wParam) noexcept {
 }
 
 void MainWindow::handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept {
+    // SetCapture unconditionally (even with no onMouseDown/onMouseDrag
+    // configured) - a plain click that never turns into a drag just gets an
+    // immediate WM_LBUTTONUP, which releases capture harmlessly. This is
+    // the standard Win32 pattern for drag operations (Phase 4b3): it keeps
+    // WM_MOUSEMOVE/WM_LBUTTONUP delivered to this window even if the cursor
+    // leaves the client area mid-drag.
+    ::SetCapture(m_hwnd);
+    m_isDragging = true;
     if (!m_onMouseDown) {
         return;
     }
@@ -253,6 +268,23 @@ void MainWindow::handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept {
     const auto y         = static_cast<std::int32_t>(GET_Y_LPARAM(lParam));
     const bool shiftDown = (wParam & MK_SHIFT) != 0;
     m_onMouseDown(m_hwnd, x, y, shiftDown);
+}
+
+void MainWindow::handleMouseMove(LPARAM lParam) noexcept {
+    if (!m_isDragging || !m_onMouseDrag) {
+        return;
+    }
+    const auto x = static_cast<std::int32_t>(GET_X_LPARAM(lParam));
+    const auto y = static_cast<std::int32_t>(GET_Y_LPARAM(lParam));
+    m_onMouseDrag(m_hwnd, x, y);
+}
+
+void MainWindow::handleMouseUp() noexcept {
+    if (!m_isDragging) {
+        return;
+    }
+    m_isDragging = false;
+    ::ReleaseCapture();
 }
 
 }  // namespace neomifes::ui

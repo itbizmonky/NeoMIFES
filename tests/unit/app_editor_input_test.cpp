@@ -237,4 +237,33 @@ TEST(EditorInputTest, HandleMouseDownWithShiftExtendsSelection) {
     EXPECT_TRUE(env.selection.primaryCursor().hasSelection());
 }
 
+TEST(EditorInputTest, RepeatedShiftedMouseDownSimulatesDragExtendingFromOriginalAnchor) {
+    // Phase 4b3: drag-select is implemented purely as MainWindow Win32
+    // plumbing (SetCapture + WM_MOUSEMOVE) that calls handleMouseDown with
+    // shiftDown=true repeatedly - no new core/app logic. This test pins
+    // down the behavior that design relies on: a plain mouse-down
+    // establishes the anchor, and every subsequent "extend" call keeps that
+    // same anchor no matter how many times it's called or how far position
+    // moves - simulating a multi-point drag.
+    Env env;
+    env.doc.insertText(0, u"hello world");
+
+    handleMouseDown(3, /*shiftDown=*/false, env.selection, env.viewport, env.doc);  // drag start
+    ASSERT_EQ(env.selection.primaryCursor().anchor, 3U);
+    ASSERT_FALSE(env.selection.primaryCursor().hasSelection());
+
+    handleMouseDown(5, /*shiftDown=*/true, env.selection, env.viewport, env.doc);  // first move
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 3U);
+    EXPECT_EQ(env.selection.primaryCursor().position, 5U);
+
+    handleMouseDown(9, /*shiftDown=*/true, env.selection, env.viewport, env.doc);  // further move
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 3U);    // still the drag start
+    EXPECT_EQ(env.selection.primaryCursor().position, 9U);  // tracks latest point
+    EXPECT_TRUE(env.selection.primaryCursor().hasSelection());
+
+    handleMouseDown(1, /*shiftDown=*/true, env.selection, env.viewport, env.doc);  // move back past start
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 3U);    // anchor never moves mid-drag
+    EXPECT_EQ(env.selection.primaryCursor().position, 1U);
+}
+
 }  // namespace

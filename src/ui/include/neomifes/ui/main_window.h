@@ -55,6 +55,12 @@ struct MainWindowConfig {
     // coordinate and the live Shift modifier state (Phase 4b2, read from the
     // message's own wParam per mouse-message convention, not GetKeyState).
     std::function<void(HWND, std::int32_t x, std::int32_t y, bool shiftDown)> onMouseDown;
+    // Optional: invoked from WM_MOUSEMOVE with the client-area pixel
+    // coordinate, but only while a drag is in progress (between
+    // WM_LBUTTONDOWN's SetCapture and the matching WM_LBUTTONUP). No
+    // shiftDown parameter - a drag always extends the selection from
+    // whatever anchor onMouseDown established (Phase 4b3).
+    std::function<void(HWND, std::int32_t x, std::int32_t y)> onMouseDrag;
 };
 
 class MainWindow {
@@ -98,6 +104,8 @@ private:
     void handleChar(WPARAM wParam) noexcept;
     void handleMouseWheel(WPARAM wParam) noexcept;
     void handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept;
+    void handleMouseMove(LPARAM lParam) noexcept;
+    void handleMouseUp() noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
@@ -108,7 +116,9 @@ private:
     std::function<void(HWND, wchar_t)>          m_onChar;
     std::function<void(HWND, short)>            m_onMouseWheel;
     std::function<void(HWND, std::int32_t, std::int32_t, bool)> m_onMouseDown;
+    std::function<void(HWND, std::int32_t, std::int32_t)>       m_onMouseDrag;
     bool                       m_firstPaintFired = false;
+    bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;
 };
 
