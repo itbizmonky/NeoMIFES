@@ -27,6 +27,7 @@
 - [Session 19: Phase 0〜3a 包括レビュー + Phase 3b 計画ブラッシュアップ](#session-19-2026-07-16-phase-03a-包括レビュー--phase-3b-計画ブラッシュアップ)
 - [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
 - [Session 21: Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了](#session-21-2026-07-16-phase-3c-textlayoutcache--粗粒度フレームスキップ--measure-frame--phase-3-全体完了)
+- [Session 22: Phase 4a (Command/Undo/Selection、ヘッドレス) — 100万Undo DoD 実測](#session-22-2026-07-16-phase-4a-commandundoselectionヘッドレス--100万undo-dod-実測)
 
 ---
 
@@ -497,5 +498,30 @@
 **教訓:** 元の設計スケッチ (`detailed_design.md` §4.1) が構想していた3コンポーネントのうち2つを「未着手」ではなく「測定に基づき明示的に延期」として扱い、ADR に再評価トリガーを明記したことで、将来のセッションが「なぜGlyphCacheが無いのか」を一から再検討する無駄を防いだ。CLAUDE.md ルール3/10 (推測実装をしない・ベンチマーク根拠必須) は「機能を作らない」判断そのものにも適用され、その判断もまた根拠と共に記録すべきものであることを再確認した。
 
 **次回 (Phase 4):** Editor Core (Cursor/SelectionModel/Command/Undo/Viewport)。`RenderPipeline::setTopLine()` を実際に駆動する `Viewport` への置換、対話的編集実現後の細粒度 DamageTracker 再評価 (ADR-011)、`TextLayoutCache` のメモリ実測 ([`text_layout_cache_unbounded_growth.md`](../issues/text_layout_cache_unbounded_growth.md)) が主な引き継ぎ事項。
+
+## Session 22 (2026-07-16): Phase 4a (Command/Undo/Selection、ヘッドレス) — 100万Undo DoD 実測
+
+**目標:** ユーザーの「継続実行せよ」指示 (前セッションの `/compact` 後) を受け、`RESUME_HERE.md` §6 が示す次アクション通り Phase 4 (Editor Core) に着手する。CLAUDE.md §7 の Phase 4 DoD「100万Undo達成」の達成が最終目標。
+
+**計画フェーズ:** `docs/phase_reports/phase_3_report.md` §6・`detailed_design.md` §5/§6 を確認した上で、Explore agent 3体を並列起動し (1) `Document` の公開API・エラー処理規約・`RenderPipeline` との連携パターン、(2) `MainWindow` の入力処理有無・`main.cpp` の配線点・render層のエラー処理規約 (`std::expected`)・CMake登録パターン、(3) 既存テスト/ベンチの規約・Phase 4 関連 ADR/issue・要件定義書の Undo 要件文言、を調査。`src/core/` が完全新規レイヤーであること、`detailed_design.md` §5/§6 (縦編集・約20種標準コマンド・UndoStackの1000件バケット化+zstd圧縮+ディスクスワップ) が Document/Render 実装確定前の Phase 0 スケッチであることを確認し、Plan Mode で **Phase 4 を 4a (ヘッドレス基盤+100万Undoベンチ) / 4b以降 (UI配線・矩形選択・圧縮等)** に分割する計画を立案。Phase 3 の 3a/3b/3c 分割、ADR-011 の延期パターンを踏襲。ExitPlanMode でユーザー承認を得て実装着手。
+
+**成果物:**
+- **[ADR-012](../decisions/ADR-012-phase4a-editor-core-scope.md)**: Phase 4a は Command/Undo/Selection のヘッドレス基盤のみを実装し、UI配線・UndoStackの圧縮/ディスクスワップ・矩形選択(縦編集)・`tryMerge`・`MovementUnit`・Search/Encoding/Plugin/AI依存の標準コマンド群・`Viewport`の`FoldingMap`を明示的に延期する。各項目の再評価トリガーを明記
+- 新規 `src/core/` レイヤ (`neomifes::core`、`neomifes::document` にのみ PUBLIC 依存、`neomifes::render` には意図的に非依存 — CLAUDE.md §3「並行実行可能な独立エンジン」の原則を優先):
+  - `Cursor`(design doc §5.1のまま、フラット `TextPos`)/`ICommand`・`ExecutionContext`(新規グルー)/`SelectionModel`(8種の `MovementKind`、複数カーソル+範囲重複マージ、上下移動の列保持は `LineIndex` の行区切り契約から `BufferSnapshot::extract` 無しで計算)/`InsertTextCommand`・`DeleteRangeCommand`・`ReplaceRangeCommand`(`BufferSnapshot::extract` で削除/置換前テキストを捕捉)/`UndoStack`(`std::vector<unique_ptr<ICommand>>` 2本のシンプル実装)/`CommandDispatcher`(execute→push を1呼び出しにまとめる新規グルー)/`Viewport`(`scrollTo`/`ensureVisible`/`visibleLines`、`FoldingMap`無し)
+- 新規 `tests/bench/core_undo_stack_bench.cpp` + `neomifes_core_bench` ターゲット: 100万コマンドの push/undo を1単位として計測 (`state.range()` は使わず固定 `constexpr kOpCount` — 既存bench規約踏襲)
+- 新規 `docs/issues/undo_stack_unbounded_memory.md`: UndoStack のメモリ使用量無制限成長の tripwire (時間面のDoDは実測済みだがメモリ面は未計測)
+- テスト+35 (単体: `core_selection_model_test.cpp`/`core_edit_commands_test.cpp`/`core_undo_stack_test.cpp`/`core_command_dispatcher_test.cpp`/`core_viewport_test.cpp`)。テスト総数 129→164
+- `.github/workflows/ci.yml`: ベンチ smoke run の `$benchExes` 配列に `neomifes_core_bench.exe` 追加
+
+**検証:**
+- ローカル Debug/Release 両方でフルビルド・全164テスト pass
+- google-benchmark 実測 (Release、`--benchmark_min_time=0.01s`、1,000,000コマンド): `BM_UndoStack_PushOneMillion` 352ms、`BM_UndoStack_UndoOneMillion` 174ms — DoD「100万Undo達成」を実測で確認 (ADR-012 に記録)。Debug実測はpush 5.01s/undo 2.05s (CI予算内)
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、`src/core/*.cpp` 対象) で3件検出・修正: `readability-math-missing-parentheses`(`*`/`+`混在への括弧追加、3箇所)、`readability-avoid-nested-conditional-operator`(上下移動の行番号決定を三項演算子の入れ子からif/else if/elseに書き換え)、`misc-const-correctness`(`mergeOverlapping()`のループ変数を`const Cursor&`に)。再スキャンで0警告確認。`tests/`側は既存規約通りwarn-onlyのため対応不要 (BM_マクロ由来の構造的警告のみ、自作コード起因の1件 `core_edit_commands_test.cpp` の括弧欠落は修正)
+- ヘッダファイル単体への clang-tidy 直接実行はコンパイルフラグ欠如による誤検知(`std::string_view`未検出等)を起こすことを確認 — CI と同じく `.cpp` ファイルのみを対象とする方針を再確認
+
+**教訓:** Phase 0 設計スケッチ (`detailed_design.md` §5/§6) の全量を一度に実装しようとせず、DoD (「100万Undo達成」の一点)を満たす最小構成をまず切り出してヘッドレスに実装し、ベンチマークで実測してから UI配線等の残作業を次フェーズへ回す判断が、ADR-011 (Phase 3c) に続き有効に機能した。`UndoStack`の1000件バケット化/zstd圧縮/ディスクスワップという具体的な設計は、実際にメモリを計測してから要否を判断すべき最適化であり、要件定義書に規定の無い256MB予算という数値を鵜呑みにして先行実装しないという判断がCLAUDE.mdルール10の実践として機能した。
+
+**次回 (Phase 4b):** キーボード/マウス入力配線・キャレット描画・`Viewport`↔`RenderPipeline`接続。`MainWindow::wndProc` への `WM_KEYDOWN`/`WM_CHAR`/`WM_LBUTTONDOWN`/`WM_MOUSEWHEEL` 新設、`RenderPipeline` への選択範囲/キャレット描画パス追加が主な引き継ぎ事項。詳細は ADR-012・`RESUME_HERE.md` §3.8/§6 参照。
 
 <!-- 次セッションはここに追記 -->

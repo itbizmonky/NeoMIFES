@@ -62,7 +62,8 @@ jobs:
           $benchExes = @(
             'neomifes_util_bench.exe',
             'neomifes_document_bench.exe',
-            'neomifes_render_bench.exe'
+            'neomifes_render_bench.exe',
+            'neomifes_core_bench.exe'
           )
           $missing = @()
           foreach ($name in $benchExes) {

@@ -46,3 +46,20 @@ target_link_libraries(neomifes_render_bench
 set_target_properties(neomifes_render_bench PROPERTIES
     FOLDER "tests"
 )
+
+add_executable(neomifes_core_bench
+    core_undo_stack_bench.cpp
+)
+
+target_link_libraries(neomifes_core_bench
+    PRIVATE
+        neomifes::compile_options
+        neomifes::core
+        neomifes::document
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+set_target_properties(neomifes_core_bench PROPERTIES
+    FOLDER "tests"
+)
