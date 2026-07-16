@@ -49,8 +49,11 @@ static void BM_TextLayoutCache_Miss(benchmark::State& state) {
     std::uint64_t lineNumber = 0;
     for (auto _ : state) {
         TextLayoutCache cache;
-        const auto result = cache.getOrCreate(lineNumber++, line, *factory->Get(), *format.Get(),
-                                               kMaxWidthDips, kMaxHeightDips);
+        // Non-const: benchmark::DoNotOptimize() deprecated its const-ref
+        // overload (permits unwanted compiler optimizations) in favor of a
+        // mutable-lvalue-reference overload.
+        auto result = cache.getOrCreate(lineNumber++, line, *factory->Get(), *format.Get(),
+                                        kMaxWidthDips, kMaxHeightDips);
         benchmark::DoNotOptimize(result);
     }
     state.SetItemsProcessed(state.iterations());
@@ -83,7 +86,8 @@ static void BM_TextLayoutCache_Hit(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        const auto result =
+        // Non-const: see the miss benchmark's comment above.
+        auto result =
             cache.getOrCreate(0, line, *factory->Get(), *format.Get(), kMaxWidthDips, kMaxHeightDips);
         benchmark::DoNotOptimize(result);
     }
