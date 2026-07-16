@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <string>
 
 namespace neomifes::app {
 

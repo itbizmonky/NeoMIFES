@@ -1,4 +1,4 @@
-# NeoMIFES 設計セルフレビュー v1.7
+# NeoMIFES 設計セルフレビュー v1.8
 
 > 対象: [`CLAUDE.md`](../../CLAUDE.md) / [`basic_design.md`](basic_design.md) / [`detailed_design.md`](detailed_design.md) / [`docs/decisions/`](../decisions/)
 > 初回レビュー日: 2026-07-14
@@ -17,6 +17,7 @@
 - **v1.5 (2026-07-15):** Phase 2b2 完了後の包括レビュー。ドキュメント鮮度の不整合を多数発見・修正 (本ファイルのタイトル版数ズレ、§G/§I の陳腐化、RESUME_HERE.md の古い `git init` 指示、Issue の完了条件チェック漏れ)。**CI ベンチマーク実測値を初めて確認** (§H 参照) — `PieceTable::insert` 276ns で目標 500ns を達成、`snapshot` は 1000 piece 規模でのみ確認 (100K piece 規模は未検証)。再発防止のため CLAUDE.md に「セッション終了時チェックリスト」を新設。
 - **v1.6 (2026-07-15):** Phase 2b3 (Step 1: mmap+Lazy Decode コア、Step 2: SEH + load bench + 実測値) 完了、Phase 2b (2a+2b1+2b2+2b3) 全体の DoD 達成。Phase 3 着手前の包括レビューで **`detailed_design.md` §3.1 (Document Engine) と `basic_design.md` の該当箇所が ADR-006 (Superseded) 時代の設計のまま凍結されていた**問題を発見・修正 — 実装済みの ADR-007 アーキテクチャ (Mutable RB-Tree、O(n) snapshot、単一mmapビュー、128KiB AddBufferチャンク、永久デコードキャッシュ) に更新し、§4.3 に「snapshot()はフレームごとに呼ばない」という Phase 3 設計ガードレールを追記。§G'/§H/§I' を Phase 2b 完了状態に更新。
 - **v1.7 (2026-07-16):** Phase 3 着手前ハウスキーピング (WarningsAsErrors有効化/Named Mutex/UBSan CI) 完了、**Phase 3a (D2D/DXGI/COM 基盤配線) 完了** ([ADR-008](../decisions/ADR-008-com-raii-comptr.md) ComPtr採用、[ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成タイミング)。実アプリでD2D/DXGI/D3D11の実際のロードとリサイズ耐性を確認、起動時間退化なし (33ms実測)。詳細な完了記録は本ファイルではなく [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.5 に集約 (サブフェーズ粒度の記録はRESUME_HERE.md/TIMELINE.mdに委ね、本ファイルはフェーズ境界の包括レビューのみを担当する運用に整理)。
+- **v1.8 (2026-07-16):** Phase 0〜3a + Phase 3b 計画の包括レビュー。`detailed_design.md` §4.1-§4.3 を Phase 3a 実装 (RenderDevice/RenderPipeline/d2d_factories のシングルトン分離、RenderExpected<T> エラー型) の実態に同期。§4.4 に Phase 3b 設計課題 4 件 (DC アクセスパターン、Document→Render 通知、スクロール位置管理、DPI 対応) を新設。§18.3 ベンチ目標値修正 (snapshot 100ns→1ms)、§19.1-§19.2 CI 記述を実態に更新。`basic_design.md` §4.1 の「非同期化」を ADR-009 準拠の正確な表現に修正。§H R1 を Phase 3a 完了反映で「解消」に更新。コード面では `startup_profile.h` の未使用 include 削除。
 
 判定記号: ✅ 充足 / ⚠️ 要補強 / ❌ 未対応
 
@@ -253,13 +254,13 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
   - 1GB ファイル load: 🟡 ローカル実測 2031ms、目標2.0sを約1.5%超過。ディスクI/O律速でデコード戦略非依存と判断し低優先度で受容
   - メモリ20MB(空ドキュメント) / 60fps / 100万Undo: 未実測 (該当実装がPhase 3以降)
 - **設計整合性:** Piece Tree の実装形態は ADR-006 → ADR-007 で方針転換したが、Public API は不変のまま実装差し替えで完了 — 当初の「ヘッダは変えない」設計方針が実際に機能した好例。**一方で `detailed_design.md`/`basic_design.md` の Document Engine 記述が ADR-007 実装後も ADR-006 時代のコード例のまま放置されていたことが Phase 3 着手前レビューで発覚し、本セッションで修正した** (§I' 参照) — ADR/Issueの更新だけでは不十分で、参照される設計書本体も同期させる必要があるという教訓
-- **推奨判断:** **Phase 3a (D2D/DXGI/COM 基盤配線) 完了、Phase 3b (DirectWrite テキストレイアウト) 着手可**。§H の残技術的負債 (WarningsAsErrors切替/Named Mutex/UBSan CI) は全て解消済み ([`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.4 参照)。
+- **推奨判断:** **Phase 3a (D2D/DXGI/COM 基盤配線) 完了、Phase 3b (DirectWrite テキストレイアウト) 着手可**。§H の残技術的負債 (WarningsAsErrors切替/Named Mutex/UBSan CI) は全て解消済み ([`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.4 参照)。Phase 3b 着手前に解決すべき設計課題 4 件を `detailed_design.md` §4.4 に明記済み。
 
 ## H. 残リスク一覧 (v1.6 Phase 2b 完了時更新)
 
 | # | リスク | 深刻度 | 対応期限 | 状態 |
 |---|---|---|---|---|
-| R1 | 起動 0.3s の実現可能性 | 高 | Phase 1 PoC | 🟢 **CI 実測 22ms** (0.3s 目標の 7%)。Phase 3 で Direct2D 化後に再測定 |
+| R1 | 起動 0.3s の実現可能性 | 高 | Phase 1 PoC | 🟢 **解消**。CI 実測 22ms (Phase 1)、**Phase 3a で D2D/DXGI 配線後も 33ms** (目標 300ms の 11%) — D2D 化による退化なし (ADR-009 の deferred init 設計が奏功) |
 | R6 | AI プラグインの API キー漏洩・プロセス分離の是非 | 中 | Phase 9 前に再評価 | 未着手 |
 | R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b3 で実装 + テスト | 🟢 **解消**。mmap + 64KiBチェックポイント索引 + 永久デコードキャッシュ + SEH例外対策を実装、93テストで検証済み、CI green ([`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md)) |
 | R11 | Piece Tree の delete 実装複雑性 | 中 | Phase 2b2 | 🟢 **解消**。ADR-006 (path-copying) は実装難度・性能未達リスクにより ADR-007 (mutable RB) に置換。CLRS 13.4 実装 + 20K 反復プロパティテスト + RB invariant テストで検証済み |

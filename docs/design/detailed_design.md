@@ -217,42 +217,87 @@ struct LoadResult {
 
 ## 4. Rendering Engine 詳細
 
-### 4.1 クラス構成
+### 4.1 クラス構成 (Phase 3a 実装済み + Phase 3b 以降の拡張予定)
+
+> **現状 (Phase 3a 完了時):** D3D11/D2D/DXGI デバイスグラフの RAII 所有とクリア描画が動作。テキスト描画・キャッシュ・ダーティ矩形は Phase 3b/3c で追加予定。
+> **設計判断:** [ADR-008](../decisions/ADR-008-com-raii-comptr.md) COM RAII に `Microsoft::WRL::ComPtr` を採用 / [ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成は同期・UIスレッド・自己ポストメッセージ (`WM_APP`) 方式
 
 ```cpp
 namespace neomifes::render {
 
+// プロセス単位シングルトン (d2d_factories.h) — magic-static で遅延初期化
+RenderExpected<Microsoft::WRL::ComPtr<ID2D1Factory7>>   sharedD2DFactory() noexcept;
+RenderExpected<Microsoft::WRL::ComPtr<IDWriteFactory7>> sharedDWriteFactory() noexcept;
+
+// 1 HWND 分の D3D11+D2D+DXGI デバイスグラフの RAII 所有者
+class RenderDevice {
+public:
+    [[nodiscard]] static RenderExpected<RenderDevice> create(HWND, std::uint32_t w, std::uint32_t h) noexcept;
+    [[nodiscard]] static RenderExpected<RenderDevice> createHeadless() noexcept; // テスト用
+    [[nodiscard]] RenderExpected<void> resize(std::uint32_t w, std::uint32_t h) noexcept;
+    [[nodiscard]] RenderExpected<void> clearAndPresent(const D2D1_COLOR_F&) noexcept;
+private:
+    Microsoft::WRL::ComPtr<ID3D11Device>        m_d3dDevice;   // HARDWARE→WARP フォールバック
+    Microsoft::WRL::ComPtr<IDXGISwapChain2>     m_swapChain;   // FLIP_DISCARD, 2 buffers
+    Microsoft::WRL::ComPtr<ID2D1Device6>        m_d2dDevice;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext6> m_dc;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1>        m_targetBitmap;
+};
+
+// MainWindow / app が実際に触るファサード
 class RenderPipeline {
 public:
-    void attach(HWND);
-    void resize(std::uint32_t w, std::uint32_t h, float dpi);
-    void render(const class RenderFrame&);   // UI Thread から呼ぶ
-    void invalidate(TextRange);
+    [[nodiscard]] RenderExpected<void> attach(HWND hwnd) noexcept;
+    [[nodiscard]] RenderExpected<void> resize(std::uint32_t w, std::uint32_t h) noexcept;
+    [[nodiscard]] RenderExpected<void> render() noexcept;
+    [[nodiscard]] bool isAttached() const noexcept;
 private:
-    Microsoft::WRL::ComPtr<ID2D1Factory7>          m_d2dFactory;
-    Microsoft::WRL::ComPtr<IDWriteFactory7>        m_dwFactory;
-    Microsoft::WRL::ComPtr<IDXGISwapChain2>        m_swapChain;
-    Microsoft::WRL::ComPtr<ID2D1DeviceContext6>    m_dc;
-    TextLayoutCache                                m_layoutCache;
-    GlyphCache                                     m_glyphCache;
-    DamageTracker                                  m_damage;
+    [[nodiscard]] RenderExpected<void> recreateDevice() noexcept; // デバイスロスト時
+    HWND                        m_hwnd = nullptr;
+    std::uint32_t               m_width = 0, m_height = 0;
+    std::optional<RenderDevice> m_device; // 有効 or 空の二択
+    // Phase 3b 以降で追加予定:
+    //   TextLayoutCache  m_layoutCache;
+    //   GlyphCache       m_glyphCache;
+    //   DamageTracker    m_damage;
 };
+
+// エラー型 — プロジェクト初の std::expected 実用箇所
+struct RenderError { RenderStage stage; HRESULT hr; [[nodiscard]] bool isDeviceLost() const noexcept; };
+template <typename T> using RenderExpected = std::expected<T, RenderError>;
 
 } // namespace
 ```
 
+**デバイスロスト処理:** `RenderPipeline::render()` が `isDeviceLost()` を検知したら `RenderDevice` を丸ごと破棄・再生成 (1 回だけリトライ)。MS の推奨通り「スワップチェーンだけ」ではなく「デバイスグラフ全体」を作り直す。
+
+**MainWindow との統合:** `neomifes_ui` は `neomifes_render` をリンクしない。合成は `src/app/main.cpp` (両方をリンクする構成ルート) で行い、レイヤ分離を保つ。`MainWindowConfig::onDeferredInit` で `RenderPipeline::attach()` → 成功時に `setPaintHandler()` で D2D 描画を差し込む。`--measure-startup`/`--measure-memory` モードでは `RenderPipeline` を一切配線しない (計測契約を構造的に保護)。
+
 ### 4.2 レンダリング戦略
-1. **Frame 開始:** DamageTracker から更新矩形一覧を取得
-2. **可視行決定:** Viewport + Document の LineIndex から表示行番号を算出
-3. **DirectWrite Layout:** 未キャッシュ行のみ `IDWriteTextLayout` を生成し LRU に挿入
-4. **描画:** ダーティ矩形にクリッピングして DrawGlyphRun / FillRectangle
-5. **Present:** `DXGI_PRESENT_DO_NOT_SEQUENCE` で低遅延
+
+**Phase 3a (実装済み):** クリア色で全画面を塗り潰して `Present1(1, 0, ...)` (v-sync interval 1)。ダーティ矩形・部分描画は Phase 3c で導入予定。
+
+**Phase 3b 以降の完成形:**
+1. **Frame 開始:** DamageTracker から更新矩形一覧を取得 (Phase 3c)
+2. **可視行決定:** スクロール位置 + Document の LineIndex から表示行番号を算出
+3. **DirectWrite Layout:** 未キャッシュ行のみ `IDWriteTextLayout` を生成し LRU に挿入 (Phase 3b で基盤、Phase 3c で LRU キャッシュ)
+4. **描画:** ダーティ矩形にクリッピングして DrawTextLayout / FillRectangle (Phase 3c)
+5. **Present:** 部分更新時は `DXGI_PRESENT_DO_NOT_SEQUENCE` 検討 (Phase 3c)
 
 ### 4.3 パフォーマンス目安
 - 1 行のレイアウト生成: < 50µs
 - キャッシュヒット時の 1 行描画: < 5µs
 - フルフレーム描画予算: 16.6ms / 60fps
 - **`PieceTable::snapshot()` はフレームごとに呼ばない。** 実測 O(n pieces) (100K piece規模で1.2〜1.5ms、§3.1参照) のため、毎フレーム呼ぶと大きめのドキュメントで frame budget の約7%をコピーだけで消費する。`RenderPipeline` は Document からの変更通知を受けたときだけ snapshot を再取得してキャッシュし、通常フレームでは既存キャッシュを再利用すること
+
+### 4.4 Phase 3b 着手前の設計課題
+
+Phase 3b でテキスト描画を実装するにあたり、以下のアーキテクチャ課題を事前に解決する必要がある:
+
+1. **RenderDevice の DC アクセスパターン:** 現在 `ID2D1DeviceContext6` は `RenderDevice` の private メンバ。テキスト描画には DC へのアクセスが必要。`beginFrame()`/`endFrame()` ペアで DC 参照を返す方式を推奨 (clearAndPresent を分解)
+2. **Document → Render の変更通知チャネル:** §4.3 のガードレール「Document 変更通知を受けたときだけ snapshot 再取得」を実装レベルで守るための Observer/コールバック機構。Phase 3b の最小実装としては、`RenderPipeline` が `Document*` を保持し、document version counter を比較する方式が最小
+3. **スクロール位置管理:** `Viewport` クラス (§5.2) は Phase 4 (Editor Core) スコープだが、Phase 3b のテキスト描画に「どの行が可視か」の情報は必須。Phase 3b では `RenderPipeline` 内に最小限のスクロール位置 (topLine + visibleLineCount) を保持し、Phase 4 で `Viewport` に置換する設計を推奨
+4. **DPI 対応テキストレイアウト:** `MainWindowConfig::onResize` は `dpiScale` を既に受け取るが、`RenderPipeline`/`RenderDevice` はこれを保持・利用していない。Phase 3b で `IDWriteTextFormat` 生成時の DPI スケーリングに必要
 
 ---
 
@@ -719,29 +764,34 @@ enum class IoError { NotFound, PermissionDenied, InvalidEncoding, Cancelled, Unk
 ### 18.3 ベンチマーク (google/benchmark)
 | Bench | 目標 |
 |---|---|
-| PieceTable::insert (small edit) | ≤ 500ns |
-| PieceTable::snapshot | ≤ 100ns |
-| Render frame (100 行) | ≤ 3ms |
-| Search (1GB, plain) | ≥ 500MB/s |
-| Undo/Redo (100k ops) | ≤ 50ms |
+| PieceTable::insert (small edit) | ≤ 500ns | 🟢 CI実測 243〜276ns |
+| PieceTable::snapshot (100K pieces) | ≤ 1ms | 🟡 実測 1.2〜1.5ms (低優先度残タスク) |
+| Render frame (100 行) | ≤ 3ms | 未計測 (Phase 3b+) |
+| Search (1GB, plain) | ≥ 500MB/s | 未計測 (Phase 5) |
+| Undo/Redo (100k ops) | ≤ 50ms | 未計測 (Phase 4) |
 
 ---
 
 ## 19. ビルド & CI 詳細
 
 ### 19.1 ビルド
+
+> 確定済み: [ADR-001](../decisions/ADR-001-build-system.md) / [ADR-005](../decisions/ADR-005-min-msvc-version.md)
+
 ```
-CMake >= 3.28
-MSVC v143 (VS2022)
+CMake >= 3.28, Ninja ジェネレータ
+MSVC v143 (VS 17.13+, ADR-005)  — ローカル開発機は VS 2026 (MSVC 19.50)
 /std:c++latest /W4 /permissive- /Zc:__cplusplus /EHsc /GR-
-Debug: /fsanitize=address /Zi /Od
+Debug:   /fsanitize=address /Zi /Od (ASan プリセット)
 Release: /O2 /Ob3 /GL /LTCG /GS-
+UBSan:   clang-cl + /MT (静的 CRT) + -fno-sanitize=alignment (ubsan プリセット)
 ```
-- `GR-` は RTTI 無効。プラグイン境界は C ABI なので影響なし。
+- `/GR-` は RTTI 無効。プラグイン境界は C ABI なので影響なし。`dynamic_cast` 禁止 (CLAUDE.md §4)
+- `src/.clang-tidy` で本番コードのみ `WarningsAsErrors: '*'`。`tests/` はルートの `WarningsAsErrors: ''` が適用
 
 ### 19.2 CI (GitHub Actions)
-- ジョブ: `build-msvc-debug`, `build-msvc-release`, `unit-tests`, `bench-guard`, `static-analysis`
-- `bench-guard` は主要ベンチが 5% 以上退化したら fail
+- ジョブ: `build-and-test` (Debug/Release マトリクス)、`static-analysis` (clang-tidy)、`ubsan` (clang-cl UBSan)
+- ベンチマークは smoke 実行のみ (CI 上の退化ガードは Phase 3c の `--measure-frame` と併せて導入予定)
 
 ---
 

@@ -24,6 +24,7 @@
 - [Session 16: Phase 3着手前ハウスキーピング (Named Mutex + UBSan CI)](#session-16-2026-07-16-phase-3着手前ハウスキーピング-named-mutex--ubsan-ci)
 - [Session 17: WarningsAsErrors有効化 (src/限定)](#session-17-2026-07-16-warningsaserrors有効化-src限定)
 - [Session 18: Phase 3a (Direct2D/DXGI 基盤配線)](#session-18-2026-07-16-phase-3a-direct2ddxgi-基盤配線)
+- [Session 19: Phase 0〜3a 包括レビュー + Phase 3b 計画ブラッシュアップ](#session-19-2026-07-16-phase-03a-包括レビュー--phase-3b-計画ブラッシュアップ)
 
 ---
 
@@ -415,5 +416,33 @@
 - 実アプリを起動し、プロセスにロードされたモジュール一覧で`d2d1.dll`/`d3d11.dll`/`dxgi.dll`が実際にロードされていることを確認 (GDIへの静かなフォールバックではなく、D2D/DXGIが本当に有効化されたことの裏付け)。ウィンドウを4段階でリサイズしクラッシュしないこと、スクリーンショットで表示崩れがないことを確認
 
 **次回 (Phase 3b):** DirectWriteテキストレイアウト、Document内容の実描画、ビューポート/スクロール位置管理。`detailed_design.md` §4.3に追記済みの「snapshot()はフレームごとに呼ばない」ガードレールを実装で守ること。
+
+## Session 19 (2026-07-16): Phase 0〜3a 包括レビュー + Phase 3b 計画ブラッシュアップ
+
+**目標:** ユーザーの指示「Phase0〜Phase3aまでの実装内容と、Phase3bの実装計画をレビューして改善点や修正点を明確にしたうえで品質改善せよ」に基づき、全フェーズのドキュメント・ソースコード・Phase 3b 計画を包括的にレビューし、発見した問題を修正する。
+
+**レビュー手法:** Explore agent でソースコード全 35 ファイル (~3,900 行) + テスト 17 ファイル (~2,140 行) を棚卸し (命名規約・include 整合性・NOLINT・所有権・CMake 一貫性・ADR 状態) した上で、設計書 4 本 (basic_design / detailed_design / self_review / RESUME_HERE) + TIMELINE.md を全文精読。
+
+**発見した問題 (Session 15 と同パターンの再発を含む):**
+
+1. **🔴 `detailed_design.md` §4.1 が Phase 3a 実装と乖離** — 同 §3.1 で Session 15 に発見・修正したのと同じパターン。§4.1 のコード例は `m_d2dFactory`/`m_dwFactory` を RenderPipeline の直接メンバに持つ旧案のまま、実装では `d2d_factories.h` のプロセス単位シングルトンに分離済み。`void attach(HWND)` (非返却) vs 実際の `RenderExpected<void> attach(HWND)`。`TextLayoutCache`/`GlyphCache`/`DamageTracker` が既存メンバかのように記載されているが未実装。実際の `RenderPipeline → optional<RenderDevice> → ComPtrs` 構成が反映されていなかった
+2. **🟡 `detailed_design.md` §18.3 のベンチ目標値 `PieceTable::snapshot ≤ 100ns`** — 1000 倍の誤記 (実測 1.2ms)
+3. **🟡 `detailed_design.md` §19.1-§19.2 のビルド/CI 記述陳腐化** — "VS2022" 表記、実在しないジョブ名
+4. **🟡 `basic_design.md` §4.1 の「非同期化」表現** — ADR-009 は同期・UIスレッド・WM_APP 方式を明確に選択
+5. **🟢 RESUME_HERE.md §1 に「(push/CI 確認待ち)」残存**、`self_review.md` §H R1 が Phase 3a 未反映
+6. **🟢 `startup_profile.h` の未使用 `#include <string>`**
+7. **Phase 3b 設計課題 4 件を特定:** DC アクセスパターン / Document→Render 通知 / スクロール位置管理 / DPI 対応
+
+**対応内容:**
+- `detailed_design.md` §4.1-§4.3 を Phase 3a 実装 (RenderDevice/RenderPipeline/d2d_factories シングルトン分離、RenderExpected エラー型) の実態に全面書き換え。**§4.4 新設** — Phase 3b 設計課題 4 件を具体的な推奨方針付きで明記
+- `detailed_design.md` §18.3 ベンチ目標値修正 (snapshot 100ns→1ms) + 実測値付き状態カラムを追加
+- `detailed_design.md` §19.1-§19.2 を CI 実態 (build-and-test/static-analysis/ubsan の 3 ジョブ) に更新
+- `basic_design.md` §4.1「非同期化」→「初回 WM_PAINT 完了後に UI スレッド上で遅延実行 (ADR-009)」
+- RESUME_HERE.md §1「push/CI 確認待ち」削除、§6 に Phase 3b 設計課題 4 件の具体的チェックリストを追記
+- `self_review.md` v1.7→v1.8、§H R1 を「解消」に更新、§G' 推奨判断に §4.4 参照を追加
+- `startup_profile.h` の未使用 `#include <string>` 削除
+- ローカル Debug/Release 全 109 テスト pass、clang-tidy 0 件を確認
+
+**教訓:** Session 15 で発見・対策した「ADR 更新後の設計書本体同期漏れ」が §4 (Rendering Engine) で再発していた。CLAUDE.md §11 のチェックリスト「ADR 更新時は設計書本体のコード例も同期」は §3 (Document Engine) だけでなく、新設された §4 (Phase 3a の成果物) にも適用する必要がある。Phase 3a では 2 本の ADR (008/009) を発行したが、§4.1 の旧来のコード例が同セッション内で更新されないまま push された。原因は「Phase 3a ではコード例を新設したわけではなく、既存の §4.1 に触れなかったため、チェックリストの対象として認識されなかった」こと。
 
 <!-- 次セッションはここに追記 -->

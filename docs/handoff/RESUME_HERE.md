@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-16 (Phase 3a 完了時)
+> **最終更新:** 2026-07-16 (Phase 0〜3a 包括レビュー後)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
@@ -19,7 +19,7 @@
 | Phase 2b3 Step 1+2 (mmap+Lazy Decode + SEH + bench + Phase 2b 完了報告) | ✅ 完了 |
 | Phase 3 着手前レビュー (設計書のADR-007同期) | ✅ 完了 |
 | Phase 3 着手前ハウスキーピング (WarningsAsErrors/Named Mutex/UBSan CI) | ✅ 完了 |
-| **Phase 3a (D2D/DXGI/COM 基盤配線)** | ✅ **完了** (push/CI 確認待ち) |
+| **Phase 3a (D2D/DXGI/COM 基盤配線)** | ✅ **完了** |
 | **Phase 3b (DirectWrite テキストレイアウト + Document実描画)** | ⏭️ **次回着手** |
 
 ---
@@ -179,6 +179,12 @@ Phase 3b 着手時に確認すること:
 2. `neomifes::document::Document::snapshot()` → `BufferSnapshot::extract`/`pieceView` で表示対象テキストを取得する経路を設計する。**`detailed_design.md` §4.3 の「`PieceTable::snapshot()` はフレームごとに呼ばない」ガードレールを実装レベルで守ること** — Document の変更通知を受けたときだけ snapshot を再取得してキャッシュし、通常フレームでは既存キャッシュを再利用する
 3. `neomifes::render::d2d_factories.h` の `sharedDWriteFactory()` は Phase 3a で用意済みだが未使用 — Phase 3b で初めて呼ばれることになる
 4. 新規 ADR が必要か判断 (例: `IDWriteTextLayout` のキャッシュ粒度、フォントフォールバック順の実装方式)
+
+**Phase 3b で事前に解決すべき設計課題** (`detailed_design.md` §4.4 参照):
+1. **RenderDevice の DC アクセスパターン:** `clearAndPresent()` を `beginFrame()`/`endFrame()` に分解し、間で `ID2D1DeviceContext6&` を返す設計を検討する。現状 DC は private
+2. **Document → Render 通知:** snapshot をフレーム毎に取らないためのメカニズム。最小実装は `Document` にバージョンカウンタを持たせ `RenderPipeline` が前回取得時のバージョンと比較する方式
+3. **スクロール位置:** `Viewport` (Phase 4) は存在しない。`RenderPipeline` 内に暫定的な `topLine`/`visibleLineCount` を保持し、Phase 4 で `Viewport` に置換する
+4. **DPI 対応:** `onResize` 経由で受け取る `dpiScale` を `RenderPipeline` が保持し、`IDWriteTextFormat` 生成やレイアウト計算に反映させる
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

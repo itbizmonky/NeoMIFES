@@ -158,7 +158,7 @@
 ### 4.1 起動時間 ≤ 0.3s
 - 静的リンク中心。動的 DLL は最小限
 - 起動時初期化を **必要最小限のみ同期**、残りは Worker で遅延ロード
-- Direct2D デバイス生成もメインウィンドウ表示後に非同期化
+- Direct2D デバイス生成は初回 `WM_PAINT` 完了後に UI スレッド上で遅延実行 ([ADR-009](../decisions/ADR-009-deferred-device-init.md)、ワーカースレッドは不採用)
 - COM / DirectWrite ファクトリはシングルトンで再利用
 - Startup Profiling を CI に組み込み、退化検知
 
