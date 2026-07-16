@@ -17,8 +17,15 @@ target_link_libraries(neomifes_render
         # their public API, and a future frame-timing member will reuse
         # PerfClock (its doc comment earmarks exactly this reuse).
         neomifes::platform
+        # render_pipeline.h exposes document::Document*/document::LineNumber
+        # in its public API (RenderPipeline::setDocument/setTopLine). See
+        # ADR-010 for why Rendering Engine depends directly on Document
+        # Engine rather than routing through the app layer.
+        neomifes::document
     PRIVATE
         neomifes::compile_options
+        # wchar_cast.h (u16string_view -> WCHAR* for DrawText)
+        neomifes::util
         d2d1
         dwrite
         dxgi

@@ -217,10 +217,10 @@ struct LoadResult {
 
 ## 4. Rendering Engine 詳細
 
-### 4.1 クラス構成 (Phase 3a 実装済み + Phase 3b 以降の拡張予定)
+### 4.1 クラス構成 (Phase 3b 実装済み + Phase 3c 以降の拡張予定)
 
-> **現状 (Phase 3a 完了時):** D3D11/D2D/DXGI デバイスグラフの RAII 所有とクリア描画が動作。テキスト描画・キャッシュ・ダーティ矩形は Phase 3b/3c で追加予定。
-> **設計判断:** [ADR-008](../decisions/ADR-008-com-raii-comptr.md) COM RAII に `Microsoft::WRL::ComPtr` を採用 / [ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成は同期・UIスレッド・自己ポストメッセージ (`WM_APP`) 方式
+> **現状 (Phase 3b 完了時):** D3D11/D2D/DXGI デバイスグラフの RAII 所有に加え、DirectWrite でアタッチした `Document` の可視行を実描画する。レイアウト/グリフキャッシュとダーティ矩形は Phase 3c で追加予定。
+> **設計判断:** [ADR-008](../decisions/ADR-008-com-raii-comptr.md) COM RAII に `Microsoft::WRL::ComPtr` を採用 / [ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成は同期・UIスレッド・自己ポストメッセージ (`WM_APP`) 方式 / [ADR-010](../decisions/ADR-010-render-depends-on-document.md) Rendering Engine は Document Engine に直接依存する
 
 ```cpp
 namespace neomifes::render {
@@ -235,28 +235,56 @@ public:
     [[nodiscard]] static RenderExpected<RenderDevice> create(HWND, std::uint32_t w, std::uint32_t h) noexcept;
     [[nodiscard]] static RenderExpected<RenderDevice> createHeadless() noexcept; // テスト用
     [[nodiscard]] RenderExpected<void> resize(std::uint32_t w, std::uint32_t h) noexcept;
-    [[nodiscard]] RenderExpected<void> clearAndPresent(const D2D1_COLOR_F&) noexcept;
+    void setDpi(float dpiScale) noexcept; // SetDpi は失敗しないため戻り値なし
+    // beginFrame()/endFrame() ペアで DC を貸し出す (Phase 3a の clearAndPresent()
+    // を置き換え)。返るポインタは対応する endFrame() までのみ有効
+    [[nodiscard]] RenderExpected<ID2D1DeviceContext6*> beginFrame() noexcept;
+    [[nodiscard]] RenderExpected<void> endFrame() noexcept;
 private:
     Microsoft::WRL::ComPtr<ID3D11Device>        m_d3dDevice;   // HARDWARE→WARP フォールバック
     Microsoft::WRL::ComPtr<IDXGISwapChain2>     m_swapChain;   // FLIP_DISCARD, 2 buffers
     Microsoft::WRL::ComPtr<ID2D1Device6>        m_d2dDevice;
     Microsoft::WRL::ComPtr<ID2D1DeviceContext6> m_dc;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1>        m_targetBitmap;
+    bool                                         m_frameOpen = false; // beginFrame/endFrame 誤用ガード
 };
 
 // MainWindow / app が実際に触るファサード
 class RenderPipeline {
 public:
     [[nodiscard]] RenderExpected<void> attach(HWND hwnd) noexcept;
-    [[nodiscard]] RenderExpected<void> resize(std::uint32_t w, std::uint32_t h) noexcept;
+    [[nodiscard]] RenderExpected<void> resize(std::uint32_t w, std::uint32_t h, float dpiScale) noexcept;
     [[nodiscard]] RenderExpected<void> render() noexcept;
     [[nodiscard]] bool isAttached() const noexcept;
+
+    // 非所有。呼び出し側が Document の生存期間を保証する (ADR-010)
+    void setDocument(const document::Document* doc) noexcept;
+    // Phase 4 で Viewport に置換されるまでの暫定フック (常に 0、対話的スクロール未実装)
+    void setTopLine(document::LineNumber line) noexcept;
+    [[nodiscard]] document::LineNumber topLine() const noexcept;
 private:
     [[nodiscard]] RenderExpected<void> recreateDevice() noexcept; // デバイスロスト時
+    [[nodiscard]] RenderExpected<void> refreshDocumentCacheIfStale() noexcept; // §4.3 ガードレールの実装本体
+    [[nodiscard]] RenderExpected<void> ensureTextFormat() noexcept;   // IDWriteTextFormat 遅延生成 + 行高さ計測
+    [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6&) noexcept;
+    [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
+    void drawVisibleLines(ID2D1DeviceContext6&) noexcept;
+
     HWND                        m_hwnd = nullptr;
     std::uint32_t               m_width = 0, m_height = 0;
+    float                       m_dpiScale = 1.0F;
     std::optional<RenderDevice> m_device; // 有効 or 空の二択
-    // Phase 3b 以降で追加予定:
+
+    const document::Document*                       m_document = nullptr;
+    bool                                             m_hasCachedSnapshot = false;
+    std::uint64_t                                    m_cachedDocumentVersion = 0;
+    std::shared_ptr<const document::BufferSnapshot>  m_cachedSnapshot;
+    document::LineNumber                             m_topLine = 0;
+
+    Microsoft::WRL::ComPtr<IDWriteTextFormat>    m_textFormat;   // DPI非依存、デバイスロストを跨いで生存
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textBrush;    // デバイスコンテキスト依存、recreateDeviceでReset
+    float                                         m_lineHeightDips = 0.0F;
+    // Phase 3c 以降で追加予定:
     //   TextLayoutCache  m_layoutCache;
     //   GlyphCache       m_glyphCache;
     //   DamageTracker    m_damage;
@@ -269,35 +297,41 @@ template <typename T> using RenderExpected = std::expected<T, RenderError>;
 } // namespace
 ```
 
-**デバイスロスト処理:** `RenderPipeline::render()` が `isDeviceLost()` を検知したら `RenderDevice` を丸ごと破棄・再生成 (1 回だけリトライ)。MS の推奨通り「スワップチェーンだけ」ではなく「デバイスグラフ全体」を作り直す。
+**デバイスロスト処理:** `RenderPipeline::render()` が `isDeviceLost()` を検知したら `RenderDevice` を丸ごと破棄・再生成 (1 回だけリトライ)。MS の推奨通り「スワップチェーンだけ」ではなく「デバイスグラフ全体」を作り直す。`recreateDevice()` は再生成後に `setDpi()` を再適用し、`m_textBrush` (デバイスコンテキスト依存) を破棄する。
 
-**MainWindow との統合:** `neomifes_ui` は `neomifes_render` をリンクしない。合成は `src/app/main.cpp` (両方をリンクする構成ルート) で行い、レイヤ分離を保つ。`MainWindowConfig::onDeferredInit` で `RenderPipeline::attach()` → 成功時に `setPaintHandler()` で D2D 描画を差し込む。`--measure-startup`/`--measure-memory` モードでは `RenderPipeline` を一切配線しない (計測契約を構造的に保護)。
+**MainWindow との統合:** `neomifes_ui` は `neomifes_render` をリンクしない。合成は `src/app/main.cpp` (両方をリンクする構成ルート) で行い、レイヤ分離を保つ。`MainWindowConfig::onDeferredInit` で `RenderPipeline::attach()` → 成功時に `setDocument()` と `setPaintHandler()` で D2D 描画を差し込む。`--measure-startup`/`--measure-memory` モードでは `RenderPipeline` を一切配線しない (計測契約を構造的に保護)。
+
+**Rendering Engine → Document Engine の依存 (ADR-010):** `neomifes_render` は `neomifes_document` に `PUBLIC` 依存する。CLAUDE.md §3 のレイヤ図は上位→下位の依存を示しており、Rendering Engine は Document Engine より上位に描かれているため、この依存方向はレイヤ規約上正しい (document 側に render への参照は無く、循環は発生しない)。
 
 ### 4.2 レンダリング戦略
 
-**Phase 3a (実装済み):** クリア色で全画面を塗り潰して `Present1(1, 0, ...)` (v-sync interval 1)。ダーティ矩形・部分描画は Phase 3c で導入予定。
+**Phase 3a (実装済み):** クリア色で全画面を塗り潰して `Present1(1, 0, ...)` (v-sync interval 1)。
 
-**Phase 3b 以降の完成形:**
-1. **Frame 開始:** DamageTracker から更新矩形一覧を取得 (Phase 3c)
-2. **可視行決定:** スクロール位置 + Document の LineIndex から表示行番号を算出
-3. **DirectWrite Layout:** 未キャッシュ行のみ `IDWriteTextLayout` を生成し LRU に挿入 (Phase 3b で基盤、Phase 3c で LRU キャッシュ)
-4. **描画:** ダーティ矩形にクリッピングして DrawTextLayout / FillRectangle (Phase 3c)
-5. **Present:** 部分更新時は `DXGI_PRESENT_DO_NOT_SEQUENCE` 検討 (Phase 3c)
+**Phase 3b (実装済み):**
+1. **可視行決定:** `topLine` (常に 0、対話的スクロール未実装) + `computeVisibleLineCount()` (`viewport_math.h`、クライアント高さ/DPI/行高さから算出) で表示行範囲を決定
+2. **DirectWrite 基盤:** `IDWriteTextFormat` を遅延生成 (`Consolas` 14pt、`DWRITE_WORD_WRAPPING_NO_WRAP` — 固定行送りレイアウトが折り返しで崩れないよう明示指定)。**レイアウトキャッシュ (`IDWriteTextLayout` の LRU) は Phase 3c**、Phase 3b は行ごとに `ID2D1DeviceContext::DrawText` を直接呼ぶのみ
+3. **描画:** 可視範囲全体を1回の `BufferSnapshot::extract()` で取得し (行ごとの `extract()` 呼び出しによる O(pieces) 累積コストを回避)、`\n` で分割して行ごとに `DrawText`
+
+**Phase 3c 以降の残タスク:**
+1. **Frame 開始:** DamageTracker から更新矩形一覧を取得
+2. **DirectWrite Layout キャッシュ:** 未キャッシュ行のみ `IDWriteTextLayout` を生成し LRU に挿入
+3. **描画:** ダーティ矩形にクリッピングして部分再描画
+4. **Present:** 部分更新時は `DXGI_PRESENT_DO_NOT_SEQUENCE` 検討
 
 ### 4.3 パフォーマンス目安
 - 1 行のレイアウト生成: < 50µs
 - キャッシュヒット時の 1 行描画: < 5µs
 - フルフレーム描画予算: 16.6ms / 60fps
-- **`PieceTable::snapshot()` はフレームごとに呼ばない。** 実測 O(n pieces) (100K piece規模で1.2〜1.5ms、§3.1参照) のため、毎フレーム呼ぶと大きめのドキュメントで frame budget の約7%をコピーだけで消費する。`RenderPipeline` は Document からの変更通知を受けたときだけ snapshot を再取得してキャッシュし、通常フレームでは既存キャッシュを再利用すること
+- **`PieceTable::snapshot()` はフレームごとに呼ばない。** 実測 O(n pieces) (100K piece規模で1.2〜1.5ms、§3.1参照) のため、毎フレーム呼ぶと大きめのドキュメントで frame budget の約7%をコピーだけで消費する。**実装済み (Phase 3b):** `RenderPipeline::refreshDocumentCacheIfStale()` が `Document::version()` を前回キャッシュ時の値と比較し、変化時のみ `snapshot()` を呼ぶ (ADR-010)。これがこの層で `snapshot()` を呼ぶ唯一の箇所
 
-### 4.4 Phase 3b 着手前の設計課題
+### 4.4 Phase 3b 設計課題 (解決済み)
 
-Phase 3b でテキスト描画を実装するにあたり、以下のアーキテクチャ課題を事前に解決する必要がある:
+Phase 3b 着手前に洗い出した4件のアーキテクチャ課題は全て実装済み:
 
-1. **RenderDevice の DC アクセスパターン:** 現在 `ID2D1DeviceContext6` は `RenderDevice` の private メンバ。テキスト描画には DC へのアクセスが必要。`beginFrame()`/`endFrame()` ペアで DC 参照を返す方式を推奨 (clearAndPresent を分解)
-2. **Document → Render の変更通知チャネル:** §4.3 のガードレール「Document 変更通知を受けたときだけ snapshot 再取得」を実装レベルで守るための Observer/コールバック機構。Phase 3b の最小実装としては、`RenderPipeline` が `Document*` を保持し、document version counter を比較する方式が最小
-3. **スクロール位置管理:** `Viewport` クラス (§5.2) は Phase 4 (Editor Core) スコープだが、Phase 3b のテキスト描画に「どの行が可視か」の情報は必須。Phase 3b では `RenderPipeline` 内に最小限のスクロール位置 (topLine + visibleLineCount) を保持し、Phase 4 で `Viewport` に置換する設計を推奨
-4. **DPI 対応テキストレイアウト:** `MainWindowConfig::onResize` は `dpiScale` を既に受け取るが、`RenderPipeline`/`RenderDevice` はこれを保持・利用していない。Phase 3b で `IDWriteTextFormat` 生成時の DPI スケーリングに必要
+1. **RenderDevice の DC アクセスパターン:** `beginFrame()`/`endFrame()` ペアに分解して解決 (§4.1 参照、`clearAndPresent()` は廃止)
+2. **Document → Render の変更通知チャネル:** `Document::version()` + `RenderPipeline::refreshDocumentCacheIfStale()` で解決 (ADR-010、§4.3 参照)
+3. **スクロール位置管理:** `RenderPipeline::m_topLine` (常に 0、Phase 4 で `Viewport` に置換予定) + `computeVisibleLineCount()` (`viewport_math.h`) で解決
+4. **DPI 対応テキストレイアウト:** `RenderPipeline::m_dpiScale` を保持し `RenderDevice::setDpi()` に転送。フォントサイズは DIP 固定 (`SetDpi` が自動スケーリング) のため DPI 依存のフォントサイズ計算は不要と判明
 
 ---
 

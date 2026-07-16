@@ -54,3 +54,33 @@ set_tests_properties(render_device_smoke PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# render_text_smoke_test - exercises RenderPipeline::render() actually
+# drawing Document content via DirectWrite (Phase 3b), on top of the real
+# device graph render_device_smoke_test already covers in isolation.
+add_executable(neomifes_render_text_smoke_test
+    render_text_smoke_test.cpp
+)
+
+target_link_libraries(neomifes_render_text_smoke_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::render
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_render_text_smoke_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    render_text_smoke
+    COMMAND neomifes_render_text_smoke_test
+)
+
+set_tests_properties(render_text_smoke PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

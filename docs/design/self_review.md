@@ -1,8 +1,8 @@
-# NeoMIFES 設計セルフレビュー v1.8
+# NeoMIFES 設計セルフレビュー v1.9
 
 > 対象: [`CLAUDE.md`](../../CLAUDE.md) / [`basic_design.md`](basic_design.md) / [`detailed_design.md`](detailed_design.md) / [`docs/decisions/`](../decisions/)
 > 初回レビュー日: 2026-07-14
-> 最終更新日: 2026-07-16 (Phase 3a 完了時)
+> 最終更新日: 2026-07-16 (Phase 3b 完了時)
 > レビュー観点: (A) 要件充足性 / (B) 設計整合性 / (C) 性能目標達成可能性 / (D) リスク / (E) 実装可能性
 >
 > ⚠️ **§A〜§G は Phase 0 (要件確認・初回設計) 時点のスナップショットとして保存されている歴史的記録。**
@@ -18,6 +18,7 @@
 - **v1.6 (2026-07-15):** Phase 2b3 (Step 1: mmap+Lazy Decode コア、Step 2: SEH + load bench + 実測値) 完了、Phase 2b (2a+2b1+2b2+2b3) 全体の DoD 達成。Phase 3 着手前の包括レビューで **`detailed_design.md` §3.1 (Document Engine) と `basic_design.md` の該当箇所が ADR-006 (Superseded) 時代の設計のまま凍結されていた**問題を発見・修正 — 実装済みの ADR-007 アーキテクチャ (Mutable RB-Tree、O(n) snapshot、単一mmapビュー、128KiB AddBufferチャンク、永久デコードキャッシュ) に更新し、§4.3 に「snapshot()はフレームごとに呼ばない」という Phase 3 設計ガードレールを追記。§G'/§H/§I' を Phase 2b 完了状態に更新。
 - **v1.7 (2026-07-16):** Phase 3 着手前ハウスキーピング (WarningsAsErrors有効化/Named Mutex/UBSan CI) 完了、**Phase 3a (D2D/DXGI/COM 基盤配線) 完了** ([ADR-008](../decisions/ADR-008-com-raii-comptr.md) ComPtr採用、[ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成タイミング)。実アプリでD2D/DXGI/D3D11の実際のロードとリサイズ耐性を確認、起動時間退化なし (33ms実測)。詳細な完了記録は本ファイルではなく [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.5 に集約 (サブフェーズ粒度の記録はRESUME_HERE.md/TIMELINE.mdに委ね、本ファイルはフェーズ境界の包括レビューのみを担当する運用に整理)。
 - **v1.8 (2026-07-16):** Phase 0〜3a + Phase 3b 計画の包括レビュー。`detailed_design.md` §4.1-§4.3 を Phase 3a 実装 (RenderDevice/RenderPipeline/d2d_factories のシングルトン分離、RenderExpected<T> エラー型) の実態に同期。§4.4 に Phase 3b 設計課題 4 件 (DC アクセスパターン、Document→Render 通知、スクロール位置管理、DPI 対応) を新設。§18.3 ベンチ目標値修正 (snapshot 100ns→1ms)、§19.1-§19.2 CI 記述を実態に更新。`basic_design.md` §4.1 の「非同期化」を ADR-009 準拠の正確な表現に修正。§H R1 を Phase 3a 完了反映で「解消」に更新。コード面では `startup_profile.h` の未使用 include 削除。
+- **v1.9 (2026-07-16):** **Phase 3b (DirectWrite テキストレイアウト + Document 実描画) 完了**。§4.4 の設計課題 4 件を全て解消側に更新 (`RenderDevice::beginFrame`/`endFrame`、`Document::version()`、`RenderPipeline::m_topLine`、`m_dpiScale` 保持)。[ADR-010](../decisions/ADR-010-render-depends-on-document.md) (Rendering Engine → Document Engine 直接依存) を新規発行 — CLAUDE.md §3 のレイヤ図が上位→下位の依存方向を示しており Rendering Engine は Document Engine より上位に描かれているため、この依存は規約上正しい方向であることを計画時に確認した。`detailed_design.md` §4.1-§4.3 を実装形状に同期。R13 (`snapshot()` の O(n) コスト) を「コードレベルで実装済み」に更新。実アプリでの `--open` 実ファイル描画・4段階リサイズを目視確認 (スクリーンショット)。テスト数 109→123。詳細は [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.6 に集約。
 
 判定記号: ✅ 充足 / ⚠️ 要補強 / ❌ 未対応
 
@@ -254,7 +255,7 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
   - 1GB ファイル load: 🟡 ローカル実測 2031ms、目標2.0sを約1.5%超過。ディスクI/O律速でデコード戦略非依存と判断し低優先度で受容
   - メモリ20MB(空ドキュメント) / 60fps / 100万Undo: 未実測 (該当実装がPhase 3以降)
 - **設計整合性:** Piece Tree の実装形態は ADR-006 → ADR-007 で方針転換したが、Public API は不変のまま実装差し替えで完了 — 当初の「ヘッダは変えない」設計方針が実際に機能した好例。**一方で `detailed_design.md`/`basic_design.md` の Document Engine 記述が ADR-007 実装後も ADR-006 時代のコード例のまま放置されていたことが Phase 3 着手前レビューで発覚し、本セッションで修正した** (§I' 参照) — ADR/Issueの更新だけでは不十分で、参照される設計書本体も同期させる必要があるという教訓
-- **推奨判断:** **Phase 3a (D2D/DXGI/COM 基盤配線) 完了、Phase 3b (DirectWrite テキストレイアウト) 着手可**。§H の残技術的負債 (WarningsAsErrors切替/Named Mutex/UBSan CI) は全て解消済み ([`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.4 参照)。Phase 3b 着手前に解決すべき設計課題 4 件を `detailed_design.md` §4.4 に明記済み。
+- **推奨判断:** **Phase 3a/3b (D2D/DXGI/COM 基盤配線 + DirectWrite テキストレイアウト) 完了、Phase 3c (TextLayoutCache/GlyphCache/DamageTracker + 60fps計測) 着手可**。§H の残技術的負債 (WarningsAsErrors切替/Named Mutex/UBSan CI) は全て解消済み ([`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.4 参照)。Phase 3b 着手前に解決すべき設計課題 4 件は全て解消済み ([ADR-010](../decisions/ADR-010-render-depends-on-document.md)、`detailed_design.md` §4.4 参照)。
 
 ## H. 残リスク一覧 (v1.6 Phase 2b 完了時更新)
 
@@ -265,7 +266,7 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 | R10 | Lazy Decode の実装複雑性 (デコードキャッシュ整合性) | 中 | Phase 2b3 で実装 + テスト | 🟢 **解消**。mmap + 64KiBチェックポイント索引 + 永久デコードキャッシュ + SEH例外対策を実装、93テストで検証済み、CI green ([`docs/issues/lazy_decode_mmap.md`](../issues/lazy_decode_mmap.md)) |
 | R11 | Piece Tree の delete 実装複雑性 | 中 | Phase 2b2 | 🟢 **解消**。ADR-006 (path-copying) は実装難度・性能未達リスクにより ADR-007 (mutable RB) に置換。CLRS 13.4 実装 + 20K 反復プロパティテスト + RB invariant テストで検証済み |
 | R12 | LineIndex の O(log n) 化不可能と判明 | 低 | 実用上は許容 | 🟡 **仕様として受容**。tree 集約は piece 内改行位置を持たないため原理的に不可。現状の O(N) 再構築 + O(log n) クエリを維持。将来必要になれば [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md) の案で対応 |
-| R13 (NEW) | `PieceTable::snapshot()` の O(n) コスト (~1.2ms@100K piece) を Phase 3 のフレーム描画設計が見落とすリスク | 中 | Phase 3 設計時 | 🟢 **本レビューで対応**。`detailed_design.md` §3.1/§4.3 に「snapshot()はフレームごとに呼ばない、Document変更通知でのみ再取得」というガードレールを明記 |
+| R13 (NEW) | `PieceTable::snapshot()` の O(n) コスト (~1.2ms@100K piece) を Phase 3 のフレーム描画設計が見落とすリスク | 中 | Phase 3 設計時 | 🟢 **解消**。`detailed_design.md` §3.1/§4.3 のガードレール明記に加え、**Phase 3b で `RenderPipeline::refreshDocumentCacheIfStale()` としてコードレベルで実装済み** (`Document::version()` 比較、ADR-010) |
 | R14 (NEW) | 設計書 (basic/detailed_design.md) がADR更新後も同期されず、実装済みアーキテクチャと矛盾したまま放置されるリスク | 中 | 各フェーズ完了時 | 🟡 **一度顕在化・修正**。Phase 2b3完了時点でDocument Engine節がADR-006時代のまま3セッション分放置されていた (本レビューで発見・修正)。CLAUDE.md §11 のチェックリストに「ADR更新時は参照される設計書本体も同期確認する」を明示的に含めるかは今後の課題として残す |
 | 1GB load ≤2s | ベンチ目標を約1.5%超過 | 低 | Phase 2b3 | 🟡 ローカル実測2031ms。ディスクI/O律速でデコード戦略非依存、10GBでも比例悪化のみと想定 |
 | snapshot ≤1ms@100K | ベンチ目標を約20〜48%超過 | 低 | Phase 2b2/3 | 🟡 低優先度残タスク。R13対応によりPhase 3設計への実害は抑制済み |
@@ -289,4 +290,5 @@ CLAUDE.md §7 のフェーズ計画は妥当だが、以下 2 点調整推奨:
 4. ✅ R14 の再発防止策として CLAUDE.md §11 に「ADR更新時は設計書本体のコード例も同期させる」チェック項目を追加済み
 5. ✅ Phase 3 着手前ハウスキーピング (WarningsAsErrors有効化/Named Mutex/UBSan CI) 完了
 6. ✅ **Phase 3a (D2D/DXGI/COM 基盤配線)** 完了 — ADR-008/ADR-009、`src/render/` 新設、実アプリでの動作確認済み
-7. **次:** Phase 3b (DirectWrite テキストレイアウト + Document 内容の実描画 + ビューポート/スクロール管理) — 詳細は [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §6 参照
+7. ✅ **Phase 3b (DirectWrite テキストレイアウト + Document 内容の実描画)** 完了 — ADR-010、`RenderDevice::beginFrame`/`endFrame`、`Document::version()`、`RenderPipeline` のドキュメントキャッシュ/DirectWrite描画、テスト109→123、実アプリで `--open` 実ファイル描画とリサイズ耐性を確認済み
+8. **次:** Phase 3c (TextLayoutCache/GlyphCache/DamageTracker + 60fps計測ハーネス) — 詳細は [`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §6 参照

@@ -235,14 +235,34 @@ RenderExpected<void> RenderDevice::resize(std::uint32_t width, std::uint32_t hei
     return {};
 }
 
-RenderExpected<void> RenderDevice::clearAndPresent(const D2D1_COLOR_F& color) noexcept {
+void RenderDevice::setDpi(float dpiScale) noexcept {
+    // 96 DPI (USER_DEFAULT_SCREEN_DPI) == scale 1.0, matching resize_math.h::dpiToScale().
+    const float dpi = 96.0F * dpiScale;
+    m_dc->SetDpi(dpi, dpi);
+}
+
+RenderExpected<ID2D1DeviceContext6*> RenderDevice::beginFrame() noexcept {
     if (!m_swapChain) {
+        return std::unexpected(
+            RenderError{.stage = RenderStage::Present, .hr = E_NOT_VALID_STATE});
+    }
+    if (m_frameOpen) {
         return std::unexpected(
             RenderError{.stage = RenderStage::Present, .hr = E_NOT_VALID_STATE});
     }
 
     m_dc->BeginDraw();
-    m_dc->Clear(color);
+    m_frameOpen = true;
+    return m_dc.Get();
+}
+
+RenderExpected<void> RenderDevice::endFrame() noexcept {
+    if (!m_frameOpen) {
+        return std::unexpected(
+            RenderError{.stage = RenderStage::Present, .hr = E_NOT_VALID_STATE});
+    }
+    m_frameOpen = false;
+
     const HRESULT endHr = m_dc->EndDraw();
     if (FAILED(endHr)) {
         return std::unexpected(RenderError{.stage = RenderStage::Present, .hr = endHr});

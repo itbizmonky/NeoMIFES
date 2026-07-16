@@ -13,16 +13,19 @@ Document::Document(std::shared_ptr<const OriginalBuffer> original)
 void Document::insertText(TextPos pos, std::u16string_view text) {
     m_pieceTable.insert(pos, text);
     m_lineIndexDirty = true;
+    ++m_version;
 }
 
 void Document::eraseRange(TextRange range) {
     m_pieceTable.erase(range);
     m_lineIndexDirty = true;
+    ++m_version;
 }
 
 void Document::replaceRange(TextRange range, std::u16string_view text) {
     m_pieceTable.replace(range, text);
     m_lineIndexDirty = true;
+    ++m_version;
 }
 
 std::u16string Document::toU16String() const {
@@ -30,7 +33,7 @@ std::u16string Document::toU16String() const {
     return snap->extract(TextRange{.start = 0, .end = snap->length()});
 }
 
-void Document::ensureLineIndex() {
+void Document::ensureLineIndex() const {
     if (!m_lineIndexDirty) {
         return;
     }
@@ -39,12 +42,12 @@ void Document::ensureLineIndex() {
     m_lineIndexDirty = false;
 }
 
-LineNumber Document::offsetToLine(TextPos pos) {
+LineNumber Document::offsetToLine(TextPos pos) const {
     ensureLineIndex();
     return m_lineIndex.offsetToLine(pos);
 }
 
-TextPos Document::lineToOffset(LineNumber line) {
+TextPos Document::lineToOffset(LineNumber line) const {
     ensureLineIndex();
     return m_lineIndex.lineToOffset(line);
 }

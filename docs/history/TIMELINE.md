@@ -25,6 +25,7 @@
 - [Session 17: WarningsAsErrors有効化 (src/限定)](#session-17-2026-07-16-warningsaserrors有効化-src限定)
 - [Session 18: Phase 3a (Direct2D/DXGI 基盤配線)](#session-18-2026-07-16-phase-3a-direct2ddxgi-基盤配線)
 - [Session 19: Phase 0〜3a 包括レビュー + Phase 3b 計画ブラッシュアップ](#session-19-2026-07-16-phase-03a-包括レビュー--phase-3b-計画ブラッシュアップ)
+- [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
 
 ---
 
@@ -444,5 +445,29 @@
 - ローカル Debug/Release 全 109 テスト pass、clang-tidy 0 件を確認
 
 **教訓:** Session 15 で発見・対策した「ADR 更新後の設計書本体同期漏れ」が §4 (Rendering Engine) で再発していた。CLAUDE.md §11 のチェックリスト「ADR 更新時は設計書本体のコード例も同期」は §3 (Document Engine) だけでなく、新設された §4 (Phase 3a の成果物) にも適用する必要がある。Phase 3a では 2 本の ADR (008/009) を発行したが、§4.1 の旧来のコード例が同セッション内で更新されないまま push された。原因は「Phase 3a ではコード例を新設したわけではなく、既存の §4.1 に触れなかったため、チェックリストの対象として認識されなかった」こと。
+
+## Session 20 (2026-07-16): Phase 3b (DirectWrite テキストレイアウト + Document 実描画)
+
+**目標:** ユーザーの「Phase 3b の計画に入れ」指示を受け、Plan mode で Session 19 が特定した Phase 3b 設計課題 4 件 (DC アクセスパターン / Document→Render 通知 / スクロール位置管理 / DPI 対応) の解決方針を確定し、DirectWrite でのテキスト実描画を実装する。
+
+**計画フェーズ:** RESUME_HERE.md §6・detailed_design.md §4.4・既存の render/document ソース (render_pipeline.h/render_device.h/document.h/buffer_snapshot.h/main.cpp/file_loader.h) を直接精読した上で、Plan agent に詳細設計 (4課題の解決方針・具体的シグネチャ・ADR要否・テスト戦略・タスク分割) を依頼。Plan agent は「Rendering Engine → Document Engine の依存方向」についてプロンプトの前提誤りを指摘・訂正 (CLAUDE.md §3 のレイヤ図は上位→下位の依存であり、Rendering Engine は Document Engine より上位に描かれているため直接依存は規約上正しい)。得られた計画を `src/render/CMakeLists.txt`・`docs/decisions/README.md` 等で裏取り検証してからユーザー承認を得て実装着手。
+
+**成果物:**
+- **[ADR-010](../decisions/ADR-010-render-depends-on-document.md)**: Rendering Engine は Document Engine に直接依存する (`neomifes_render` → `neomifes_document` PUBLIC 依存)。却下案 (app層仲介・`ITextSource`抽象) の理由も記録
+- `RenderDevice`: `clearAndPresent()` を `beginFrame()`/`endFrame()` に分解 (DC を非所有ポインタで貸し出し、`m_frameOpen` で誤用ガード)。`setDpi()` 追加
+- `Document`: `version()` カウンタ追加。`offsetToLine`/`lineToOffset` を `mutable` キャッシュ経由の `const` メソッドに変更 (`RenderPipeline` が `const Document*` 越しに呼べるように)
+- `RenderPipeline`: `setDocument()`/`setTopLine()`/`topLine()` 追加。`refreshDocumentCacheIfStale()` が `Document::version()` 比較で `snapshot()` を呼ぶ唯一の箇所 (§4.3 ガードレールの実装)。`ensureTextFormat()`/`ensureTextBrush()`/`drawVisibleLines()` を追加、可視範囲を1回の `extract()` で取得し `\n` 分割して `DrawText`。`resize()` に `dpiScale` 引数追加
+- 新規 `viewport_math.h`: `computeVisibleLineCount()` (純粋関数、`resize_math.h` と同パターン)
+- `main.cpp`: `--open <path>` 引数追加、`Document` を `window`/`renderPipeline` より前に宣言 (非所有ポインタの生存期間保証)。`wWinMain` の認知的複雑度超過 (clang-tidy) を `loadStartupDocument()` ヘルパー抽出で解消
+- テスト+14 (単体: `render_viewport_math_test.cpp`/`document_document_test.cpp`、統合: `render_device_smoke_test.cpp` に誤用ガード2件追加、新規 `render_text_smoke_test.cpp`)。テスト総数 109→123
+
+**検証:**
+- ローカル Debug/Release 両方でフルビルド・全123テスト pass
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み) で4件検出・修正: `wWinMain` 認知的複雑度超過 (ヘルパー抽出)、未使用 using 宣言、`bugprone-unchecked-optional-access` (`refreshDocumentCacheIfStale`/`ensureTextFormat` という不透明な関数呼び出しを挟むと `if (!m_device)` によるナローイングが効かなくなる問題 — チェック直後に `RenderDevice&` 参照へ束縛することで解消)、`bugprone-unused-return-value` (`(void)` キャストでは抑制されず、`[[maybe_unused]]` 付き名前付き変数への代入で解消)。再スキャンで0警告確認
+- 実アプリを `--open <file>` で起動し、PowerShell (`System.Drawing`) でスクリーンショットを撮影して複数行・タブインデントを含むテキストが正しく描画されることを確認。600x400→1400x900→300x200→1000x650 の4段階リサイズでクラッシュ・表示崩れがないことを確認 (途中、スクリーンショットが真っ暗に見えた原因はウィンドウが最小化されていたことによるもので、GDI プレースホルダーと D2D クリア色が偶然同じ RGB(30,30,30) だったため誤診断しかけた — `IsIconic()` で状態確認する一手間が有効だった)
+
+**教訓:** GDI プレースホルダー色と D2D 背景クリア色が同一 RGB 値のため、スクリーンショットの見た目だけでは「D2D が実際に描画しているか」を判別できない。プロセスのロード済みモジュール確認 (d2d1.dll等) や `IsIconic()` 等の状態確認を併用することで誤診断を避けられた。
+
+**次回 (Phase 3c):** `TextLayoutCache`/`GlyphCache`/`DamageTracker`、60fps計測ハーネス (`--measure-frame`)。`RenderPipeline::drawVisibleLines()` は現状行ごとに `DrawText` を直接呼ぶだけで `IDWriteTextLayout` のキャッシュを持たない — キャッシュ粒度・無効化戦略の設計が必要 (新規 ADR の可能性が高い)。
 
 <!-- 次セッションはここに追記 -->

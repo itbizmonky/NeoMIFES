@@ -6,7 +6,9 @@
 //   3. Create the top-level MainWindow (Win32 skeleton).
 //   4. On real launches, attach a RenderPipeline (Direct2D/DXGI) after the
 //      first paint (Phase 3a, ADR-009) - measurement modes skip this so
-//      --measure-startup's timing contract is untouched.
+//      --measure-startup's timing contract is untouched. The Document (see
+//      --open below, or an empty Document by default) is handed to the
+//      RenderPipeline so it can draw real content (Phase 3b, ADR-010).
 //   5. Run the message loop.
 //
 // Command-line modes (used by PoC tests, disabled in normal launches):
@@ -16,7 +18,13 @@
 //                                 (Currently identical output — kept separate
 //                                 for future divergence.)
 //
-// Document Engine / Search Engine integration arrives in later phases.
+// Command-line options (real launches only):
+//   --open <path>  Load a UTF-8 file into the Document at startup so its
+//                  content renders. A missing/invalid file falls back to an
+//                  empty Document rather than blocking startup. File->Open
+//                  dialog / recent-files UI is a later phase.
+//
+// Search Engine integration arrives in a later phase.
 
 #include <windows.h>
 #include <shellapi.h>
@@ -24,9 +32,14 @@
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <variant>
 
+#include "neomifes/document/document.h"
+#include "neomifes/document/file_loader.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
@@ -38,6 +51,9 @@
 namespace {
 
 using neomifes::app::StartupProfile;
+using neomifes::document::Document;
+using neomifes::document::LoadError;
+using neomifes::document::LoadResult;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
@@ -92,8 +108,12 @@ enum class LaunchMode : std::uint8_t {
 };
 
 struct LaunchArgs {
-    LaunchMode            mode = LaunchMode::Normal;
-    std::filesystem::path outputPath;
+    LaunchMode                           mode = LaunchMode::Normal;
+    std::filesystem::path                outputPath;
+    // Real-launch-only convenience flag to prove Document content actually
+    // renders (Phase 3b). File->Open dialog / recent-files UI is out of
+    // scope here - this is the smallest useful slice.
+    std::optional<std::filesystem::path> openPath;
 };
 
 // Very small hand-rolled parser. We deliberately avoid CommandLineToArgvW-derived
@@ -112,6 +132,9 @@ LaunchArgs parseArgs() noexcept {
                                   ? LaunchMode::MeasureStartup
                                   : LaunchMode::MeasureMemory;
             args.outputPath = argv[i + 1];
+            ++i;
+        } else if (a == L"--open" && (i + 1) < argc) {
+            args.openPath = argv[i + 1];
             ++i;
         }
     }
@@ -150,6 +173,19 @@ void debugLogRenderError(const char* what, const neomifes::render::RenderError& 
 #endif
 }
 
+// Same non-fatal, debug-only logging shape as debugLogRenderError - a failed
+// --open falls back to an empty Document rather than blocking startup.
+void debugLogLoadError(const std::filesystem::path& path, LoadError err) noexcept {
+#ifndef NDEBUG
+    const std::wstring msg = L"loadUtf8File failed for " + path.wstring() +
+                             L" (LoadError=" + std::to_wstring(static_cast<int>(err)) + L")\n";
+    ::OutputDebugStringW(msg.c_str());
+#else
+    (void)path;
+    (void)err;
+#endif
+}
+
 int runMessageLoop() noexcept {
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -157,6 +193,23 @@ int runMessageLoop() noexcept {
         ::DispatchMessageW(&msg);
     }
     return static_cast<int>(msg.wParam);
+}
+
+// Real launches only (checked by the caller). A missing/invalid --open path
+// falls back to an empty Document rather than blocking startup - pulled out
+// of wWinMain to keep its cognitive complexity down.
+Document loadStartupDocument(const LaunchArgs& args) {
+    Document document;
+    if (!args.openPath) {
+        return document;
+    }
+    auto loadResult = neomifes::document::loadUtf8File(*args.openPath);
+    if (auto* result = std::get_if<LoadResult>(&loadResult)) {
+        document = std::move(*result->document);
+    } else {
+        debugLogLoadError(*args.openPath, std::get<LoadError>(loadResult));
+    }
+    return document;
 }
 
 }  // namespace
@@ -184,6 +237,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
 
     enableHighDpi();
 
+    // Declared before window/renderPipeline so it outlives both (reverse
+    // destruction order) - RenderPipeline::setDocument() below hands out a
+    // non-owning pointer that must not dangle while the message loop runs.
+    Document document =
+        args.mode == LaunchMode::Normal ? loadStartupDocument(args) : Document{};
+
     MainWindow window;
     MainWindowConfig cfg{};
     RenderPipeline renderPipeline;
@@ -206,12 +265,13 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // Real launches only - deferred so it never affects firstPaintNs
         // timing (ADR-009). If attach() fails, the window simply keeps the
         // GDI placeholder forever; Phase 3a has no retry policy.
-        cfg.onDeferredInit = [&window, &renderPipeline](HWND hwnd) {
+        cfg.onDeferredInit = [&window, &renderPipeline, &document](HWND hwnd) {
             const auto attached = renderPipeline.attach(hwnd);
             if (!attached) {
                 debugLogRenderError("RenderPipeline::attach", attached.error());
                 return;
             }
+            renderPipeline.setDocument(&document);
             window.setPaintHandler([&renderPipeline](HWND) {
                 const auto rendered = renderPipeline.render();
                 if (!rendered) {
@@ -220,11 +280,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
             });
             ::InvalidateRect(hwnd, nullptr, FALSE);
         };
-        cfg.onResize = [&renderPipeline](HWND, std::uint32_t w, std::uint32_t h, float) {
+        cfg.onResize = [&renderPipeline](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
             if (!renderPipeline.isAttached()) {
                 return;
             }
-            const auto resized = renderPipeline.resize(w, h);
+            const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
                 debugLogRenderError("RenderPipeline::resize", resized.error());
             }

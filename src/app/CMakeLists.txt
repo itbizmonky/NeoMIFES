@@ -8,6 +8,10 @@ target_link_libraries(NeoMIFES
         neomifes::compile_options
         neomifes::util
         neomifes::platform
+        # Explicit even though neomifes::render now links it publicly (ADR-010) -
+        # main.cpp calls document::loadUtf8File/constructs document::Document
+        # directly, not just through render's transitive dependency.
+        neomifes::document
         neomifes::render
         neomifes::ui
         user32
