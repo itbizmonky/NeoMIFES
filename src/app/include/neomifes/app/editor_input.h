@@ -50,4 +50,13 @@ bool handleChar(wchar_t ch, core::CommandDispatcher& dispatcher, core::Selection
 [[nodiscard]] document::LineNumber applyMouseWheelScroll(short wheelDelta,
                                                           document::LineNumber currentTopLine);
 
+// Places the cursor at `pos` (collapsing any selection), or extends the
+// selection to `pos` if shiftDown. `pos` is already hit-tested by the
+// caller (RenderPipeline::hitTest(), Phase 4b2) - this module stays
+// Win32/render-independent per the file header above, so the screen
+// coordinate -> TextPos conversion happens in the render layer, not here.
+// Always returns true (a click always warrants a repaint attempt).
+bool handleMouseDown(document::TextPos pos, bool shiftDown, core::SelectionModel& selection,
+                     core::Viewport& viewport, const document::Document& document);
+
 }  // namespace neomifes::app

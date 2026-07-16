@@ -94,10 +94,12 @@ void SelectionModel::collapseToPrimary() {
     m_cursors.assign(1, primary);
 }
 
-void SelectionModel::moveAllTo(document::TextPos position) {
+void SelectionModel::moveAllTo(document::TextPos position, bool extendSelection) {
     for (Cursor& cursor : m_cursors) {
         cursor.position = position;
-        cursor.anchor   = position;
+        if (!extendSelection) {
+            cursor.anchor = position;
+        }
     }
     mergeOverlapping();
 }

@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-17 (Phase 4b1 完了後)
+> **最終更新:** 2026-07-17 (Phase 4b2 完了後)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
@@ -25,7 +25,8 @@
 | **Phase 3 全体 (60fps スクロール確認 DoD 達成、[`phase_3_report.md`](../phase_reports/phase_3_report.md) 発行済み)** | ✅ **完了** |
 | Phase 4a (Cursor/SelectionModel/Command/UndoStack、ヘッドレス、100万Undo DoD 実測) | ✅ 完了 (ADR-012) |
 | Phase 4b1 (キーボード入力配線・キャレット描画・マウスホイールスクロール) | ✅ 完了 |
-| **Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画)** | ⏭️ **次回着手** |
+| Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) | ✅ 完了 |
+| **Phase 4b3 (ドラッグ選択・ダブル/トリプルクリック・複数カーソル)** | ⏭️ **次回着手** |
 
 ---
 
@@ -212,6 +213,25 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 **スコープ外 (Phase 4b2 へ持ち越し):** マウスクリックでのカーソル位置特定 (`WM_LBUTTONDOWN` + `IDWriteTextLayout::HitTestPoint`)、選択範囲のハイライト描画、複数カーソルの入力経路 (Alt+Click等)、PageUp/PageDown、Ctrl+矢印 (単語移動)、クリップボード、IME、`tryMerge`
 
+### 3.10 Phase 4b2 (マウスクリック位置特定 + 選択範囲ハイライト描画) 完了記録
+
+**成果物:**
+- `SelectionModel::moveAllTo(TextPos, bool extendSelection = false)` — デフォルト引数で既存呼び出し(`CommandDispatcher`/`UndoStack`)を変更せず後方互換を維持しつつ、Shift+クリックでのanchor保持に対応
+- `RenderPipeline::hitTest(xPx, yPx) -> optional<TextPos>` 新設 — このコードベース初の `IDWriteTextLayout::HitTestPoint` 使用。既存の `TextLayoutCache`/DPI変換/`m_topLine` 計算(`drawVisibleLines()`が確立済み)を再利用
+- 選択範囲ハイライト描画: `RenderPipeline::setSelectionRange(TextRange)` 新設、`FrameState`に`selectionRange`追加(caretPosition追加と同じ理由でフレームスキップとの不整合を予防)、新規`m_selectionBrush`(半透明青)、`drawSelectionOnLine()`を`drawVisibleLines()`ループ内で`DrawTextLayout`より前に描画
+- `neomifes::app::handleMouseDown(TextPos, bool shiftDown, ...)` 新設 — ヒットテスト済みの`TextPos`を受け取るだけで、座標変換自体は`RenderPipeline`(レイアウト情報を持つレンダー層)が担い、`editor_input`のWin32/レンダー非依存という既存制約を維持
+- `MainWindow`: `onMouseDown`フック新設、`WM_LBUTTONDOWN`処理を追加(`<windowsx.h>`の`GET_X_LPARAM`/`GET_Y_LPARAM`、`wParam & MK_SHIFT`でShift状態取得)
+- テスト数: 185 → 189 (単体+4: `moveAllTo`のextendケース2件+`handleMouseDown`2件、統合+2: `hitTest`の境界値検証+選択ハイライトのフレームスキップ検証)
+
+**完了条件:**
+- [x] クリックでカーソルが移動し既存の選択が解除される(ユニットテスト+実アプリでの`SetCursorPos`+`mouse_event`によるクリックシミュレーションでクラッシュなしを確認)
+- [x] Shift+クリックでanchorを保持したまま選択範囲が拡張される(ユニットテストで検証、実アプリでも`keybd_event`でShift保持状態を再現しクラッシュなしを確認)
+- [x] 選択範囲変更のみのフレームがフレームスキップに飲まれない(統合テスト`SelectionRangeRendersWithoutErrorAndForcesRedraw`で検証)
+- [x] ローカル Debug/Release 全189テスト green、変更 `.cpp` 5ファイルの clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み) 新規警告0 (1件検出・修正: `readability-isolate-declaration`)
+- [ ] キャレット・選択ハイライトの視覚的な描画位置の正しさ(ピクセル単位)は自動検証していない — Phase 4b1と同じ理由([[reference-no-win32-gui-automation]])、ユーザー自身による目視確認を推奨
+
+**スコープ外 (Phase 4b3 へ持ち越し):** ドラッグ選択 (`WM_MOUSEMOVE`+`SetCapture`/`ReleaseCapture`)、ダブルクリック(単語選択)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加、選択範囲のクリップボードコピー
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -258,9 +278,9 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) に着手せよ。
-着手前に detailed_design.md §5.3 の Phase 4b1 実装済み範囲と、
-本ファイル §3.9 のスコープ外一覧を確認すること。
+Phase 4b3 (ドラッグ選択・ダブル/トリプルクリック・複数カーソル) に着手せよ。
+着手前に detailed_design.md §5.3 の Phase 4b1/4b2 実装済み範囲と、
+本ファイル §3.10 のスコープ外一覧を確認すること。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
@@ -277,13 +297,15 @@ Phase 3 は [`docs/phase_reports/phase_3_report.md`](../phase_reports/phase_3_re
 
 **Phase 4b1 (キーボード入力配線・キャレット描画・マウスホイールスクロール) は完了済み (§3.9 参照)。** `neomifes::app_input` ライブラリで `WM_KEYDOWN`/`WM_CHAR`/`WM_MOUSEWHEEL` を Editor Core に配線し、実アプリで対話的な編集・移動・Undo/Redo・スクロールが動作する状態になった。キャレットも `RenderPipeline` に描画される。
 
-**Phase 4b2 (次回) 着手時に確認すること:**
-1. マウスクリックでのカーソル位置特定 (`WM_LBUTTONDOWN` の `MainWindow` への配線 + 画面座標→`document::TextPos` への逆変換)。このコードベースに `IDWriteTextLayout::HitTestPoint` の前例は無い (Phase 4b1 調査で確認済み) — クリックされた行の特定 (y座標→`LineNumber`) とその行内のヒットテスト (x座標→列) の2段階になる想定
-2. 選択範囲のハイライト描画。`RenderPipeline::drawVisibleLines()` にキャレット描画 (Phase 4b1, `drawCaretOnLine`) は追加済みなので、同じループ内で選択範囲がある行に半透明矩形を重ねる形が自然か検討する
-3. `docs/design/detailed_design.md` §5.3 に Phase 4b1 の実装内容と Phase 4b2 へのスコープ外一覧を明記済み — まずここを読む
-4. 複数カーソルの入力経路 (Alt+Click 等)。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する経路がまだ無い
-5. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1 では未判断のまま)
-6. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。Phase 4b2 で選択範囲操作等が加わり編集量が増えたら再実測を検討
+**Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) は完了済み (§3.10 参照)。** `RenderPipeline::hitTest()` でクリック座標を `TextPos` に変換し、`SelectionModel::moveAllTo(pos, shiftDown)` でクリック/Shift+クリックによるカーソル移動・選択拡張を実装。選択範囲は半透明の矩形でハイライト描画される。
+
+**Phase 4b3 (次回) 着手時に確認すること:**
+1. ドラッグ選択 (`WM_MOUSEMOVE` + `SetCapture`/`ReleaseCapture`)。ボタン押下状態をまたぐ新規の状態管理 (`MainWindow`にmouseDown中フラグを持たせるか、`WM_LBUTTONDOWN`〜`WM_LBUTTONUP`間の座標追跡方法) の設計が必要。`RenderPipeline::hitTest()` (Phase 4b2実装済み) はそのまま再利用できる想定
+2. ダブルクリック(単語選択)・トリプルクリック(行選択)。`WM_LBUTTONDBLCLK` の配線 + 単語境界判定 (`MovementUnit` 未実装、Phase 4a/ADR-012 で延期された論点と同じ課題に直面する見込み)
+3. Alt+クリックによる複数カーソル追加。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する入力経路がまだ無い。編集コマンド (`InsertTextCommand`等) が複数カーソルを考慮していない点 (Phase 4aレビューのPLAUSIBLE指摘) も併せて要検討
+4. `docs/design/detailed_design.md` §5.3 に Phase 4b1/4b2 の実装内容と Phase 4b3 へのスコープ外一覧を明記済み — まずここを読む
+5. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1/4b2 では未判断のまま)
+6. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

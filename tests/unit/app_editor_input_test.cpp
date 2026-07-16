@@ -13,6 +13,7 @@ namespace {
 using neomifes::app::applyMouseWheelScroll;
 using neomifes::app::handleChar;
 using neomifes::app::handleKeyDown;
+using neomifes::app::handleMouseDown;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
@@ -206,6 +207,34 @@ TEST(EditorInputTest, ApplyMouseWheelScrollUpDecreasesTopLineClampedToZero) {
 
 TEST(EditorInputTest, ApplyMouseWheelScrollDownIncreasesTopLine) {
     EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 5), 8U);  // scroll down: +3 lines
+}
+
+TEST(EditorInputTest, HandleMouseDownPlacesCursorAndClearsSelection) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    ASSERT_TRUE(env.selection.primaryCursor().hasSelection());  // selected "he"
+
+    const bool changed =
+        handleMouseDown(7, /*shiftDown=*/false, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.selection.primaryCursor().position, 7U);
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 7U);
+    EXPECT_FALSE(env.selection.primaryCursor().hasSelection());
+}
+
+TEST(EditorInputTest, HandleMouseDownWithShiftExtendsSelection) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    env.selection.moveAllTo(2);
+
+    const bool changed =
+        handleMouseDown(8, /*shiftDown=*/true, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 2U);    // unchanged
+    EXPECT_EQ(env.selection.primaryCursor().position, 8U);  // moved to click
+    EXPECT_TRUE(env.selection.primaryCursor().hasSelection());
 }
 
 }  // namespace

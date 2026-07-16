@@ -51,6 +51,10 @@ struct MainWindowConfig {
     // Optional: invoked from WM_MOUSEWHEEL with the raw wheel delta
     // (positive = away from the user, a multiple of WHEEL_DELTA). Phase 4b1.
     std::function<void(HWND, short wheelDelta)> onMouseWheel;
+    // Optional: invoked from WM_LBUTTONDOWN with the client-area pixel
+    // coordinate and the live Shift modifier state (Phase 4b2, read from the
+    // message's own wParam per mouse-message convention, not GetKeyState).
+    std::function<void(HWND, std::int32_t x, std::int32_t y, bool shiftDown)> onMouseDown;
 };
 
 class MainWindow {
@@ -93,6 +97,7 @@ private:
     void handleKeyDown(WPARAM wParam) noexcept;
     void handleChar(WPARAM wParam) noexcept;
     void handleMouseWheel(WPARAM wParam) noexcept;
+    void handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
@@ -102,6 +107,7 @@ private:
     std::function<void(HWND, UINT, bool, bool)> m_onKeyDown;
     std::function<void(HWND, wchar_t)>          m_onChar;
     std::function<void(HWND, short)>            m_onMouseWheel;
+    std::function<void(HWND, std::int32_t, std::int32_t, bool)> m_onMouseDown;
     bool                       m_firstPaintFired = false;
     UINT                       m_currentDpi      = 96;
 };

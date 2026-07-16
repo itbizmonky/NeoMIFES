@@ -180,4 +180,24 @@ TEST(SelectionModelTest, MoveAllToAppliesToEveryCursorAndMerges) {
     EXPECT_EQ(model.cursors()[0].position, 3U);
 }
 
+TEST(SelectionModelTest, MoveAllToWithExtendKeepsAnchor) {
+    SelectionModel model(3);  // anchor and position both start at 3
+
+    model.moveAllTo(9, /*extendSelection=*/true);
+    EXPECT_EQ(model.primaryCursor().anchor, 3U);    // unchanged
+    EXPECT_EQ(model.primaryCursor().position, 9U);  // moved
+    EXPECT_TRUE(model.primaryCursor().hasSelection());
+}
+
+TEST(SelectionModelTest, MoveAllToWithoutExtendCollapsesExistingSelection) {
+    SelectionModel model(0);
+    model.moveAllTo(9, /*extendSelection=*/true);
+    ASSERT_TRUE(model.primaryCursor().hasSelection());
+
+    model.moveAllTo(2);  // extendSelection defaults to false
+    EXPECT_EQ(model.primaryCursor().anchor, 2U);
+    EXPECT_EQ(model.primaryCursor().position, 2U);
+    EXPECT_FALSE(model.primaryCursor().hasSelection());
+}
+
 }  // namespace

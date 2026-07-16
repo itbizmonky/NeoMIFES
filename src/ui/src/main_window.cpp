@@ -1,6 +1,7 @@
 #include "neomifes/ui/main_window.h"
 
 #include <windows.h>
+#include <windowsx.h>  // GET_X_LPARAM/GET_Y_LPARAM (WM_LBUTTONDOWN, Phase 4b2)
 
 #include <utility>
 
@@ -60,6 +61,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onKeyDown      = config.onKeyDown;
     m_onChar         = config.onChar;
     m_onMouseWheel   = config.onMouseWheel;
+    m_onMouseDown    = config.onMouseDown;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -140,6 +142,9 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_MOUSEWHEEL:
             handleMouseWheel(wParam);
+            return 0;
+        case WM_LBUTTONDOWN:
+            handleMouseDown(wParam, lParam);
             return 0;
         case WM_ERASEBKGND:
             // We paint the full client rect in WM_PAINT; suppress default erase to
@@ -238,6 +243,16 @@ void MainWindow::handleMouseWheel(WPARAM wParam) noexcept {
     if (m_onMouseWheel) {
         m_onMouseWheel(m_hwnd, static_cast<short>(HIWORD(wParam)));
     }
+}
+
+void MainWindow::handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept {
+    if (!m_onMouseDown) {
+        return;
+    }
+    const auto x         = static_cast<std::int32_t>(GET_X_LPARAM(lParam));
+    const auto y         = static_cast<std::int32_t>(GET_Y_LPARAM(lParam));
+    const bool shiftDown = (wParam & MK_SHIFT) != 0;
+    m_onMouseDown(m_hwnd, x, y, shiftDown);
 }
 
 }  // namespace neomifes::ui

@@ -132,4 +132,11 @@ document::LineNumber applyMouseWheelScroll(short wheelDelta, document::LineNumbe
     return (currentTopLine >= scrollUp) ? currentTopLine - scrollUp : 0;
 }
 
+bool handleMouseDown(document::TextPos pos, bool shiftDown, SelectionModel& selection,
+                     Viewport& viewport, const Document& document) {
+    selection.moveAllTo(pos, shiftDown);
+    viewport.ensureVisible(selection.primaryCursor().position, document);
+    return true;
+}
+
 }  // namespace neomifes::app

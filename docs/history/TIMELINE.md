@@ -28,7 +28,7 @@
 - [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
 - [Session 21: Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了](#session-21-2026-07-16-phase-3c-textlayoutcache--粗粒度フレームスキップ--measure-frame--phase-3-全体完了)
 - [Session 22: Phase 4a (Command/Undo/Selection、ヘッドレス) — 100万Undo DoD 実測](#session-22-2026-07-16-phase-4a-commandundoselectionヘッドレス--100万undo-dod-実測)
-- [Session 23: Phase 4a レビュー + Phase 4b1 (キーボード入力配線 + キャレット描画 + マウスホイールスクロール)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
+- [Session 23: Phase 4a レビュー + Phase 4b1/4b2 (入力配線・キャレット・選択ハイライト)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
 
 ---
 
@@ -549,6 +549,26 @@
 
 **教訓:** Phase 4aのコードレビューで見つかった「`ExecutionContext`が`SelectionModel&`を保持するが未使用」という altitude 指摘 (「早すぎる抽象化では」という懸念) は、Phase 4bで実際にキーボード入力を配線する段になって「編集後にカーソルをどこへ動かすか」という実需要が生まれ、まさにその未使用フィールドで解決するという形で正当化された。レビュー段階で「今は使われていない」と映った設計が、次フェーズの実装で自然に活きるケースがあることを示す一例。また、`FrameState`とキャレットの相互作用(粗粒度フレームスキップがキャレット単独移動を握りつぶす)はレビューでは発見されず実装中に気づいた — 既存の最適化機構に新機能を足すときは、その機構の判定条件を毎回洗い出す必要があるという教訓。
 
-**次回 (Phase 4b2):** マウスクリックでのカーソル位置特定 (`WM_LBUTTONDOWN` + `IDWriteTextLayout::HitTestPoint`、このコードベースに前例なし)、選択範囲のハイライト描画。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.9/§6 参照。
+**Phase 4b1 完了後:** ユーザーが実アプリで動作確認 (「実機確認」指示)。エージェントが `NeoMIFES.exe` を起動し、対話的な操作項目 (文字入力・矢印移動・Home/End・Backspace/Delete・Ctrl+Z/Y・Enter・マウスホイール・リサイズ) の確認をユーザーに依頼。ユーザー確認後「Phase 4b2 に進me」と指示、続けて同一セッション内で Phase 4b2 に着手。
+
+**計画フェーズ (Phase 4b2):** Explore agent 1体で (1) `RenderPipeline` の現状 (Phase 4b1後の最新状態、`drawVisibleLines()`のループ構造、`drawCaretOnLine()`のシグネチャ)、(2) `viewport_math.h`/`resize_math.h` のDPI変換規約、(3) `HitTestPoint`/`DWRITE_HIT_TEST_METRICS` の標準シグネチャ (リポジトリに前例なし、SDKヘッダも同梱されていないため一般知識から報告)、(4) `main_window.cpp`にマウスキャプチャ/移動系メッセージの前例が無いこと、(5) `editor_input.h/.cpp`の既存シグネチャと`main.cpp`配線パターン、(6) `SelectionModel::moveAllTo()`がposition/anchor両方を設定するためShift+クリックの選択拡張に使えないこと、を確認。この調査結果を基に Plan Mode で設計 — **ドラッグ選択・ダブル/トリプルクリック・Alt+クリック複数カーソルは Phase 4b3 以降へ延期**し、単純クリック+Shift+クリックによる範囲選択のみをスコープとする。ExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物 (Phase 4b2):**
+- `SelectionModel::moveAllTo(TextPos, bool extendSelection = false)` — デフォルト引数で既存呼び出し (`CommandDispatcher`/`UndoStack`) を変更せず後方互換を保ちつつ、Shift+クリックでのanchor保持に対応
+- `RenderPipeline::hitTest(xPx, yPx) -> optional<TextPos>` 新設 — このコードベース初の `IDWriteTextLayout::HitTestPoint` 使用。既存の `TextLayoutCache`/DPI変換/`m_topLine` 計算を再利用し、可視行なら描画時に作成済みのレイアウトをキャッシュヒットで再利用する設計
+- 選択範囲ハイライト描画: `RenderPipeline::setSelectionRange(TextRange)` 新設、`FrameState`に`selectionRange`追加(caretPosition追加と同じ理由でフレームスキップとの不整合を予防)、新規`m_selectionBrush`(半透明青)、`drawSelectionOnLine()`を`drawVisibleLines()`ループ内で`DrawTextLayout`より前に呼び出しテキストの下に描画
+- `neomifes::app::handleMouseDown(TextPos, bool shiftDown, ...)` 新設 — ヒットテスト済みの`TextPos`を受け取るだけで、座標変換自体はレンダー層(`RenderPipeline::hitTest()`)が担い、`editor_input`はWin32/レンダー非依存の制約を維持
+- `MainWindow`: `onMouseDown`フック新設、`WM_LBUTTONDOWN`処理を追加 (`<windowsx.h>`の`GET_X_LPARAM`/`GET_Y_LPARAM`、`wParam & MK_SHIFT`でShift状態取得)
+- テスト数: 185→189 (単体+4: `moveAllTo`のextendケース2件+`handleMouseDown`2件、統合+2: `hitTest`の境界値検証+選択ハイライトのフレームスキップ検証)
+- 実アプリで `SetCursorPos`+`mouse_event`(P/Invoke)によるクリック・Shift+クリックのシミュレーションを実行し、クラッシュしないことを確認
+
+**検証 (Phase 4b2):**
+- ローカル Debug/Release 両方でフルビルド・全189テスト pass
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、変更 `.cpp` 5ファイル対象) で1件検出・修正: `readability-isolate-declaration` (`float startX=0,startY=0,endX=0,endY=0;`の1行複数宣言を4行に分離)。再スキャンで0警告確認
+- **既知の限界:** Phase 4b1と同様、キャレット・選択ハイライトの視覚的な正しさはこのセッションのツールセットでは自動検証できない (ネイティブWin32ウィンドウのスクリーンショット/GUI自動化ツールが無いため)。統合テストは「クラッシュ・エラーなく描画される」「フレームスキップが正しく回避される」ことのみを保証し、ピクセル単位の見た目確認はユーザー自身に委ねる
+
+**教訓 (Phase 4b2):** `HitTestPoint`(座標→位置)は `HitTestTextPosition`(位置→座標、Phase 4b1でキャレット描画に使用済み)の逆方向にあたる同じAPIファミリで、`hitTest()`の実装は`drawVisibleLines()`が既に確立していたDPI変換・TextLayoutCache運用パターンをほぼそのまま再利用できた — 新規のDirectWrite APIを導入する際も、既存の類似APIの使用パターンを踏襲することでコード全体の一貫性を保てることを再確認した。また `moveAllTo()`にデフォルト引数を追加する設計判断(新規メソッド名を増やさない)は、既存呼び出し元を一切変更せずに機能拡張できる後方互換な変更の一例として、今後の類似拡張の参考になる。
+
+**次回 (Phase 4b3):** ドラッグ選択 (`WM_MOUSEMOVE`+`SetCapture`/`ReleaseCapture`)、ダブルクリック(単語選択)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加、選択範囲のクリップボードコピー。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.10/§6 参照。
 
 <!-- 次セッションはここに追記 -->

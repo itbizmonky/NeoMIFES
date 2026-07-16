@@ -20,6 +20,7 @@
 namespace {
 
 using neomifes::document::Document;
+using neomifes::document::TextRange;
 using neomifes::render::RenderPipeline;
 
 // RAII helper so every TEST body doesn't repeat the hidden-window dance.
@@ -208,6 +209,81 @@ TEST(RenderTextSmokeTest, CaretOnlyMovementForcesRedrawInsteadOfFrameSkip) {
     EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
                 statsAfterSecond.misses != statsAfterFirst.misses)
         << "caret-only movement was frame-skipped instead of triggering a redraw";
+}
+
+TEST(RenderTextSmokeTest, HitTestReturnsPositionsWithinKnownLineBounds) {
+    // Phase 4b2: RenderPipeline::hitTest() is the first HitTestPoint use in
+    // this codebase - no exact pixel-to-column round trip is asserted here
+    // (that depends on Consolas' actual glyph advance widths, which this
+    // test doesn't control), only that clicks land within plausible bounds
+    // for a short, known line.
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"ab\ncd");
+    pipeline.setDocument(&doc);
+    const auto rendered = pipeline.render();  // populates the layout cache
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // x=0 on line 0 should land at or near the very start of the document.
+    const auto lineStartHit = pipeline.hitTest(0, 0);
+    ASSERT_TRUE(lineStartHit.has_value());
+    EXPECT_LE(*lineStartHit, 2U);  // within "ab"
+
+    // A far-right x on line 0 should land at or before the end of "ab" (2),
+    // never past it (NO_WRAP text can't hit-test into the next line via x).
+    const auto lineEndHit = pipeline.hitTest(10000, 0);
+    ASSERT_TRUE(lineEndHit.has_value());
+    EXPECT_LE(*lineEndHit, 2U);
+
+    // A y coordinate one line height down should land on line 1 ("cd",
+    // offset 3-5), not line 0.
+    const auto secondLineHit = pipeline.hitTest(0, 20);
+    ASSERT_TRUE(secondLineHit.has_value());
+    EXPECT_GE(*secondLineHit, 3U);
+}
+
+TEST(RenderTextSmokeTest, SelectionRangeRendersWithoutErrorAndForcesRedraw) {
+    // Same frame-skip technique as CaretOnlyMovementForcesRedrawInsteadOfFrameSkip
+    // above, applied to setSelectionRange() (Phase 4b2). Pixel-level
+    // highlight correctness is out of scope (existing project policy - see
+    // file header).
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    pipeline.setSelectionRange(TextRange{.start = 0, .end = 4});
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (selection set) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "selection-only change was frame-skipped instead of triggering a redraw";
 }
 
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {

@@ -1,5 +1,6 @@
 #include "neomifes/render/render_pipeline.h"
 
+#include <algorithm>
 #include <string_view>
 #include <utility>
 
@@ -15,6 +16,14 @@ namespace {
 using document::LineNumber;
 using document::TextPos;
 using document::TextRange;
+
+// Fixed, window-size-independent bound rather than the live client width:
+// keeps layout cache entries valid across resize() (a resize never needs to
+// invalidate this cache), same spirit as ensureTextFormat()'s 4096-DIP
+// probe-layout box. Shared by drawVisibleLines() and hitTest() (Phase 4b2)
+// since both fetch line layouts through the same TextLayoutCache.
+constexpr float kMaxLayoutWidthDips  = 65536.0F;
+constexpr float kMaxLayoutHeightDips = 65536.0F;
 }  // namespace
 
 RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
@@ -34,7 +43,8 @@ RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
     }
     m_device = std::move(*device);
     m_device->setDpi(m_dpiScale);
-    m_textBrush.Reset();  // stale binding to whatever device context existed before
+    m_textBrush.Reset();       // stale binding to whatever device context existed before
+    m_selectionBrush.Reset();
     return {};
 }
 
@@ -65,6 +75,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .height          = m_height,
         .dpiScale        = m_dpiScale,
         .caretPosition   = m_caretPosition,
+        .selectionRange  = m_selectionRange,
     };
 }
 
@@ -107,7 +118,8 @@ RenderExpected<void> RenderPipeline::render() noexcept {
 
 RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_device.reset();
-    m_textBrush.Reset();  // bound to the device context that just went away
+    m_textBrush.Reset();       // bound to the device context that just went away
+    m_selectionBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -207,18 +219,26 @@ RenderExpected<void> RenderPipeline::ensureTextBrush(ID2D1DeviceContext6& dc) no
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept {
+    if (m_selectionBrush) {
+        return {};
+    }
+    // Windows' conventional selection blue (RGB 0,120,215), translucent so
+    // glyphs drawn on top (drawVisibleLines() draws the highlight before
+    // DrawTextLayout) stay legible.
+    constexpr D2D1_COLOR_F kSelectionColor = {0.0F / 255.0F, 120.0F / 255.0F, 215.0F / 255.0F, 0.4F};
+    const HRESULT hr = dc.CreateSolidColorBrush(kSelectionColor, m_selectionBrush.GetAddressOf());
+    if (FAILED(hr)) {
+        return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+    }
+    return {};
+}
+
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
         return;
     }
-
-    // Fixed, window-size-independent bound rather than the live client
-    // width: keeps layout cache entries valid across resize() (a resize
-    // never needs to invalidate this cache), same spirit as
-    // ensureTextFormat()'s 4096-DIP probe-layout box.
-    constexpr float kMaxLayoutWidthDips  = 65536.0F;
-    constexpr float kMaxLayoutHeightDips = 65536.0F;
 
     const std::uint64_t totalLines = m_document->lineCount();
     if (totalLines == 0) {
@@ -262,6 +282,23 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
             m_layoutCache.getOrCreate(line, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
                                       kMaxLayoutWidthDips, kMaxLayoutHeightDips);
         if (layoutResult.has_value()) {
+            // Drawn before DrawTextLayout so glyphs render on top of the
+            // highlight (Phase 4b2). Skipped entirely when there's no
+            // selection - avoids a lineToOffset() lookup on the common
+            // no-selection path.
+            if (!m_selectionRange.empty()) {
+                const TextPos lineStart    = m_document->lineToOffset(line);
+                const TextPos lineEnd      = lineStart + lineSpan.size();
+                const TextPos selStart     = std::min(m_selectionRange.start, m_selectionRange.end);
+                const TextPos selEnd       = std::max(m_selectionRange.start, m_selectionRange.end);
+                const TextPos overlapStart = std::max(lineStart, selStart);
+                const TextPos overlapEnd   = std::min(lineEnd, selEnd);
+                if (overlapStart < overlapEnd) {
+                    drawSelectionOnLine(dc, **layoutResult, y,
+                                        static_cast<std::uint32_t>(overlapStart - lineStart),
+                                        static_cast<std::uint32_t>(overlapEnd - lineStart));
+                }
+            }
             dc.DrawTextLayout(D2D1::Point2F(0.0F, y), *layoutResult, m_textBrush.Get());
             if (line == caretLine) {
                 drawCaretOnLine(dc, **layoutResult, y, caretColumn);
@@ -295,6 +332,82 @@ void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     const D2D1_RECT_F caretRect =
         D2D1::RectF(caretX, y, caretX + kCaretWidthDips, y + m_lineHeightDips);
     dc.FillRectangle(caretRect, m_textBrush.Get());
+}
+
+void RenderPipeline::drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                                         std::uint32_t startColumn, std::uint32_t endColumn) noexcept {
+    if (!m_selectionBrush) {
+        return;
+    }
+    DWRITE_HIT_TEST_METRICS startMetrics{};
+    DWRITE_HIT_TEST_METRICS endMetrics{};
+    float   startX = 0.0F;
+    float   startY = 0.0F;
+    float   endX   = 0.0F;
+    float   endY   = 0.0F;
+    HRESULT hr = layout.HitTestTextPosition(startColumn, FALSE, &startX, &startY, &startMetrics);
+    if (FAILED(hr)) {
+        return;
+    }
+    hr = layout.HitTestTextPosition(endColumn, FALSE, &endX, &endY, &endMetrics);
+    if (FAILED(hr)) {
+        return;
+    }
+    const D2D1_RECT_F selectionRect = D2D1::RectF(startX, y, endX, y + m_lineHeightDips);
+    dc.FillRectangle(selectionRect, m_selectionBrush.Get());
+}
+
+std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || !m_dwriteFactory ||
+        m_dpiScale <= 0.0F) {
+        return std::nullopt;
+    }
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return std::nullopt;
+    }
+
+    const float xDip = static_cast<float>(xPx) / m_dpiScale;
+    const float yDip = static_cast<float>(yPx) / m_dpiScale;
+
+    const LineNumber startLine =
+        m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
+    const LineNumber rowOffset =
+        yDip >= 0.0F ? static_cast<LineNumber>(yDip / m_lineHeightDips) : LineNumber{0};
+    LineNumber targetLine = startLine + rowOffset;
+    if (targetLine >= totalLines) {
+        targetLine = static_cast<LineNumber>(totalLines - 1);
+    }
+
+    const TextPos lineStart = m_document->lineToOffset(targetLine);
+    const TextPos lineEndExclusive = (targetLine + 1 >= totalLines)
+                                          ? m_cachedSnapshot->length()
+                                          : m_document->lineToOffset(targetLine + 1);
+    const std::u16string lineText =
+        m_cachedSnapshot->extract(TextRange{.start = lineStart, .end = lineEndExclusive});
+    std::u16string_view lineSpan(lineText);
+    const auto newlinePos = lineSpan.find(u'\n');
+    if (newlinePos != std::u16string_view::npos) {
+        lineSpan = lineSpan.substr(0, newlinePos);
+    }
+
+    const auto layoutResult =
+        m_layoutCache.getOrCreate(targetLine, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
+                                  kMaxLayoutWidthDips, kMaxLayoutHeightDips);
+    if (!layoutResult.has_value()) {
+        return std::nullopt;
+    }
+
+    BOOL                     isTrailingHit = FALSE;
+    BOOL                     isInside      = FALSE;
+    DWRITE_HIT_TEST_METRICS  metrics{};
+    const HRESULT hr = (*layoutResult)->HitTestPoint(xDip, 0.0F, &isTrailingHit, &isInside, &metrics);
+    if (FAILED(hr)) {
+        return std::nullopt;
+    }
+    const std::uint32_t column =
+        isTrailingHit ? (metrics.textPosition + metrics.length) : metrics.textPosition;
+    return lineStart + column;
 }
 
 RenderExpected<void> RenderPipeline::renderOnce() noexcept {
@@ -333,6 +446,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
         // the original brush failure is still what gets reported.
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return brushResult;
+    }
+    auto selectionBrushResult = ensureSelectionBrush(*dc);
+    if (!selectionBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return selectionBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

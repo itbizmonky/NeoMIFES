@@ -36,6 +36,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
@@ -71,6 +72,7 @@ using neomifes::core::Viewport;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::LoadResult;
+using neomifes::document::TextRange;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
@@ -317,14 +319,19 @@ void wireMeasureStartupOrMemoryMode(MainWindowConfig& cfg, StartupProfile& profi
 }
 
 // Bridges core::Viewport/SelectionModel state into RenderPipeline and
-// requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel
-// below (Phase 4b1). RenderPipeline stays core-agnostic (setTopLine/
-// setCaretPosition take plain document types), so this glue lives here in
-// the app layer rather than in either core or render.
+// requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel/
+// onMouseDown below (Phase 4b1/4b2). RenderPipeline stays core-agnostic
+// (setTopLine/setCaretPosition/setSelectionRange take plain document
+// types), so this glue lives here in the app layer rather than in either
+// core or render.
 void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
                                   const SelectionModel& selection, const Viewport& viewport) {
     renderPipeline.setTopLine(viewport.topLine());
-    renderPipeline.setCaretPosition(selection.primaryCursor().position);
+    const auto& cursor = selection.primaryCursor();
+    renderPipeline.setCaretPosition(cursor.position);
+    renderPipeline.setSelectionRange(
+        TextRange{.start = std::min(cursor.position, cursor.anchor),
+                 .end     = std::max(cursor.position, cursor.anchor)});
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -377,6 +384,18 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.onMouseWheel = [&viewport, &selectionModel, &renderPipeline](HWND hwnd, short wheelDelta) {
         viewport.scrollTo(neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    };
+    cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline](
+                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown) {
+        const auto hit = renderPipeline.hitTest(x, y);
+        if (!hit) {
+            return;
+        }
+        const bool changed =
+            neomifes::app::handleMouseDown(*hit, shiftDown, selectionModel, viewport, document);
+        if (changed) {
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        }
     };
 }
 

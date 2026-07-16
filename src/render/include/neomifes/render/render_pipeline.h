@@ -81,6 +81,21 @@ public:
     // SelectionModel::primaryCursor().position and forwards it here.
     void setCaretPosition(document::TextPos pos) noexcept { m_caretPosition = pos; }
 
+    // Selection range to highlight, as a flat document::TextRange (Phase
+    // 4b2) - same core-agnostic reasoning as setCaretPosition. An empty
+    // range (start == end) means no selection to draw.
+    void setSelectionRange(document::TextRange range) noexcept { m_selectionRange = range; }
+
+    // Converts a client-area point (device pixels, e.g. from
+    // WM_LBUTTONDOWN's lParam) to the nearest document::TextPos, using the
+    // same TextLayoutCache/DPI/line-height state drawVisibleLines() already
+    // maintains (Phase 4b2). Not const: a cache-miss line populates
+    // m_layoutCache, same as drawVisibleLines(). nullopt if no document is
+    // attached or nothing has been rendered yet (no cached snapshot to
+    // hit-test against).
+    [[nodiscard]] std::optional<document::TextPos> hitTest(std::int32_t xPx,
+                                                            std::int32_t yPx) noexcept;
+
     // Exposed for the --measure-frame harness and integration tests to
     // observe caching behavior (Phase 3c, ADR-011) - not merely test-only,
     // the frame harness reports these numbers in its JSON output.
@@ -104,6 +119,10 @@ private:
         // still forces a redraw instead of being coarse-frame-skipped
         // (Phase 4b1 - the frame-skip in render() predates the caret).
         document::TextPos     caretPosition = 0;
+        // Same reasoning as caretPosition, for selection-only changes
+        // (e.g. Shift+click extending the selection without moving topLine)
+        // (Phase 4b2).
+        document::TextRange   selectionRange{};
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -113,6 +132,7 @@ private:
     [[nodiscard]] RenderExpected<void> refreshDocumentCacheIfStale() noexcept;
     [[nodiscard]] RenderExpected<void> ensureTextFormat() noexcept;
     [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6& dc) noexcept;
+    [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
     // Draws a thin solid caret bar at `column` (UTF-16 code units into the
@@ -121,6 +141,13 @@ private:
     // that line's already-fetched layout and m_textBrush (Phase 4b1).
     void drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                          std::uint32_t column) noexcept;
+    // Draws a translucent highlight rectangle spanning [startColumn,
+    // endColumn) of `layout`, at vertical offset `y`. Called from
+    // drawVisibleLines() BEFORE DrawTextLayout for any visible line that
+    // intersects m_selectionRange, so the highlight sits behind the glyphs
+    // (Phase 4b2).
+    void drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                             std::uint32_t startColumn, std::uint32_t endColumn) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -138,13 +165,16 @@ private:
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
     document::TextPos                                 m_caretPosition         = 0;
+    document::TextRange                               m_selectionRange{};  // start==end: no selection
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
-    // device loss; m_textBrush is bound to the device context and must be
-    // reset whenever the device is (re)created (recreateDevice()/attach()).
+    // device loss; m_textBrush/m_selectionBrush are bound to the device
+    // context and must be reset whenever the device is (re)created
+    // (recreateDevice()/attach()).
     Microsoft::WRL::ComPtr<IDWriteFactory7>       m_dwriteFactory;
     Microsoft::WRL::ComPtr<IDWriteTextFormat>     m_textFormat;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_textBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_selectionBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
 
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not
