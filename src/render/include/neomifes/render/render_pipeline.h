@@ -5,13 +5,18 @@
 // wholesale (per Direct3D/DXGI guidance - a lost device invalidates the
 // entire object graph, not just the swap chain).
 //
-// Phase 3b scope: attach/resize/render draw the visible lines of an
-// attached Document with a single fixed-pitch IDWriteTextFormat, no word
-// wrap, topLine always 0 (no interactive scrolling yet - Editor Core /
-// Viewport is Phase 4). Layout/glyph caching and dirty-rect damage tracking
-// land in Phase 3c (see docs/design/detailed_design.md sec.4 for the
-// eventual full shape - TextLayoutCache/GlyphCache/DamageTracker are
-// deliberately not part of this facade yet).
+// Phase 3b: attach/resize/render draw the visible lines of an attached
+// Document with a single fixed-pitch IDWriteTextFormat, no word wrap,
+// topLine always 0 by default (no interactive scrolling yet - Editor Core /
+// Viewport is Phase 4).
+//
+// Phase 3c (ADR-011): drawVisibleLines() reuses cached IDWriteTextLayout
+// objects (TextLayoutCache) instead of laying out every visible line fresh
+// every frame, and render() skips the entire beginFrame/Clear/draw/endFrame
+// sequence when nothing has changed since the last successful frame (a
+// coarse, frame-level "damage" check - see FrameState below). A custom
+// glyph-atlas cache and fine-grained dirty-rect tracking are deliberately
+// deferred (ADR-011 records why and the re-evaluation triggers).
 
 #include <d2d1_3.h>
 #include <dwrite_3.h>
@@ -25,6 +30,7 @@
 #include "neomifes/document/text_pos.h"
 #include "neomifes/render/render_device.h"
 #include "neomifes/render/render_error.h"
+#include "neomifes/render/text_layout_cache.h"
 
 namespace neomifes::document {
 class Document;
@@ -68,7 +74,30 @@ public:
     void setTopLine(document::LineNumber line) noexcept { m_topLine = line; }
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
 
+    // Exposed for the --measure-frame harness and integration tests to
+    // observe caching behavior (Phase 3c, ADR-011) - not merely test-only,
+    // the frame harness reports these numbers in its JSON output.
+    [[nodiscard]] TextLayoutCacheStats layoutCacheStats() const noexcept {
+        return m_layoutCache.stats();
+    }
+
 private:
+    // Coarse, frame-level "did anything change" snapshot (Phase 3c's
+    // DamageTracker equivalent, ADR-011). No per-region information - just
+    // enough to decide whether to skip the frame entirely. See render()'s
+    // use of this and the ADR for the flip-model/DWM-composition safety
+    // argument for why skipping a WM_PAINT-driven redraw is sound here.
+    struct FrameState {
+        bool                  hasDocument     = false;
+        std::uint64_t         documentVersion = 0;
+        document::LineNumber  topLine         = 0;
+        std::uint32_t         width = 0, height = 0;
+        float                 dpiScale = 0.0F;
+
+        friend bool operator==(const FrameState&, const FrameState&) = default;
+    };
+    [[nodiscard]] FrameState captureFrameState() const noexcept;
+
     [[nodiscard]] RenderExpected<void> recreateDevice() noexcept;
     [[nodiscard]] RenderExpected<void> refreshDocumentCacheIfStale() noexcept;
     [[nodiscard]] RenderExpected<void> ensureTextFormat() noexcept;
@@ -92,12 +121,24 @@ private:
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
 
-    // m_textFormat is DPI-independent (DIPs) and survives device loss;
-    // m_textBrush is bound to the device context and must be reset whenever
-    // the device is (re)created (recreateDevice()/attach()).
+    // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
+    // device loss; m_textBrush is bound to the device context and must be
+    // reset whenever the device is (re)created (recreateDevice()/attach()).
+    Microsoft::WRL::ComPtr<IDWriteFactory7>       m_dwriteFactory;
     Microsoft::WRL::ComPtr<IDWriteTextFormat>     m_textFormat;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_textBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
+
+    // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not
+    // device-bound (unlike m_textBrush) - NOT cleared in recreateDevice().
+    // Cleared wholesale only when refreshDocumentCacheIfStale() detects a
+    // Document::version() change.
+    TextLayoutCache m_layoutCache;
+
+    // nullopt means "no successful frame yet, or the device was just
+    // (re)created" - either way the next render() must draw unconditionally
+    // rather than risk skipping into an uninitialized/stale back buffer.
+    std::optional<FrameState> m_lastRenderedFrameState;
 };
 
 }  // namespace neomifes::render

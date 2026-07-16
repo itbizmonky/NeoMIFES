@@ -217,10 +217,10 @@ struct LoadResult {
 
 ## 4. Rendering Engine 詳細
 
-### 4.1 クラス構成 (Phase 3b 実装済み + Phase 3c 以降の拡張予定)
+### 4.1 クラス構成 (Phase 3c 実装済み)
 
-> **現状 (Phase 3b 完了時):** D3D11/D2D/DXGI デバイスグラフの RAII 所有に加え、DirectWrite でアタッチした `Document` の可視行を実描画する。レイアウト/グリフキャッシュとダーティ矩形は Phase 3c で追加予定。
-> **設計判断:** [ADR-008](../decisions/ADR-008-com-raii-comptr.md) COM RAII に `Microsoft::WRL::ComPtr` を採用 / [ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成は同期・UIスレッド・自己ポストメッセージ (`WM_APP`) 方式 / [ADR-010](../decisions/ADR-010-render-depends-on-document.md) Rendering Engine は Document Engine に直接依存する
+> **現状 (Phase 3c 完了時):** D3D11/D2D/DXGI デバイスグラフの RAII 所有 + DirectWrite でアタッチした `Document` の可視行を実描画 + 行キャッシュ (`TextLayoutCache`) + 粗粒度フレームスキップ。独自グリフアトラス (GlyphCache) と細粒度 DamageTracker は明示的に延期 (ADR-011)。
+> **設計判断:** [ADR-008](../decisions/ADR-008-com-raii-comptr.md) COM RAII に `Microsoft::WRL::ComPtr` を採用 / [ADR-009](../decisions/ADR-009-deferred-device-init.md) デバイス生成は同期・UIスレッド・自己ポストメッセージ (`WM_APP`) 方式 / [ADR-010](../decisions/ADR-010-render-depends-on-document.md) Rendering Engine は Document Engine に直接依存する / [ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) Phase 3c は TextLayoutCache のみを実装し GlyphCache・細粒度 DamageTracker を延期する
 
 ```cpp
 namespace neomifes::render {
@@ -249,6 +249,25 @@ private:
     bool                                         m_frameOpen = false; // beginFrame/endFrame 誤用ガード
 };
 
+// 行番号キーの IDWriteTextLayout キャッシュ (Phase 3c、ADR-011)。
+// デバイスロストとは無関係 (recreateDeviceではクリアしない)。
+// 無効化は Document::version() 変化時の wholesale clear() のみ
+struct TextLayoutCacheStats { std::uint64_t hits = 0, misses = 0; };
+class TextLayoutCache {
+public:
+    [[nodiscard]] RenderExpected<IDWriteTextLayout*> getOrCreate(
+        document::LineNumber line, std::u16string_view lineText,
+        IDWriteFactory7& dwriteFactory, IDWriteTextFormat& textFormat,
+        float maxWidthDips, float maxHeightDips) noexcept;
+    void clear() noexcept;
+    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] TextLayoutCacheStats stats() const noexcept;
+    void resetStats() noexcept;
+private:
+    std::unordered_map<document::LineNumber, Microsoft::WRL::ComPtr<IDWriteTextLayout>> m_entries;
+    TextLayoutCacheStats m_stats;
+};
+
 // MainWindow / app が実際に触るファサード
 class RenderPipeline {
 public:
@@ -259,16 +278,31 @@ public:
 
     // 非所有。呼び出し側が Document の生存期間を保証する (ADR-010)
     void setDocument(const document::Document* doc) noexcept;
-    // Phase 4 で Viewport に置換されるまでの暫定フック (常に 0、対話的スクロール未実装)
+    // Phase 4 で Viewport に置換されるまでの暫定フック (対話的スクロール未実装、
+    // --measure-frame ハーネスが唯一の実呼び出し元)
     void setTopLine(document::LineNumber line) noexcept;
     [[nodiscard]] document::LineNumber topLine() const noexcept;
+    // --measure-frame と統合テストが観測するキャッシュ統計 (Phase 3c)
+    [[nodiscard]] TextLayoutCacheStats layoutCacheStats() const noexcept;
 private:
+    // 粗粒度フレームスキップ (Phase 3c の DamageTracker 代替、ADR-011)。
+    // 前回成功フレームと完全一致なら beginFrame/Clear/draw/endFrame を丸ごとスキップ
+    struct FrameState {
+        bool hasDocument = false;
+        std::uint64_t documentVersion = 0;
+        document::LineNumber topLine = 0;
+        std::uint32_t width = 0, height = 0;
+        float dpiScale = 0.0F;
+        friend bool operator==(const FrameState&, const FrameState&) = default;
+    };
+    [[nodiscard]] FrameState captureFrameState() const noexcept;
+
     [[nodiscard]] RenderExpected<void> recreateDevice() noexcept; // デバイスロスト時
-    [[nodiscard]] RenderExpected<void> refreshDocumentCacheIfStale() noexcept; // §4.3 ガードレールの実装本体
+    [[nodiscard]] RenderExpected<void> refreshDocumentCacheIfStale() noexcept; // §4.3 ガードレールの実装本体、layoutCache も clear
     [[nodiscard]] RenderExpected<void> ensureTextFormat() noexcept;   // IDWriteTextFormat 遅延生成 + 行高さ計測
     [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6&) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
-    void drawVisibleLines(ID2D1DeviceContext6&) noexcept;
+    void drawVisibleLines(ID2D1DeviceContext6&) noexcept; // layoutCache.getOrCreate() + DrawTextLayout
 
     HWND                        m_hwnd = nullptr;
     std::uint32_t               m_width = 0, m_height = 0;
@@ -281,13 +315,13 @@ private:
     std::shared_ptr<const document::BufferSnapshot>  m_cachedSnapshot;
     document::LineNumber                             m_topLine = 0;
 
-    Microsoft::WRL::ComPtr<IDWriteTextFormat>    m_textFormat;   // DPI非依存、デバイスロストを跨いで生存
+    Microsoft::WRL::ComPtr<IDWriteFactory7>      m_dwriteFactory; // DPI非依存、デバイスロストを跨いで生存
+    Microsoft::WRL::ComPtr<IDWriteTextFormat>    m_textFormat;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_textBrush;    // デバイスコンテキスト依存、recreateDeviceでReset
     float                                         m_lineHeightDips = 0.0F;
-    // Phase 3c 以降で追加予定:
-    //   TextLayoutCache  m_layoutCache;
-    //   GlyphCache       m_glyphCache;
-    //   DamageTracker    m_damage;
+
+    TextLayoutCache            m_layoutCache;             // recreateDeviceではクリアしない
+    std::optional<FrameState>  m_lastRenderedFrameState;  // nullopt = 次のrender()は必ず描画
 };
 
 // エラー型 — プロジェクト初の std::expected 実用箇所
@@ -308,30 +342,36 @@ template <typename T> using RenderExpected = std::expected<T, RenderError>;
 **Phase 3a (実装済み):** クリア色で全画面を塗り潰して `Present1(1, 0, ...)` (v-sync interval 1)。
 
 **Phase 3b (実装済み):**
-1. **可視行決定:** `topLine` (常に 0、対話的スクロール未実装) + `computeVisibleLineCount()` (`viewport_math.h`、クライアント高さ/DPI/行高さから算出) で表示行範囲を決定
-2. **DirectWrite 基盤:** `IDWriteTextFormat` を遅延生成 (`Consolas` 14pt、`DWRITE_WORD_WRAPPING_NO_WRAP` — 固定行送りレイアウトが折り返しで崩れないよう明示指定)。**レイアウトキャッシュ (`IDWriteTextLayout` の LRU) は Phase 3c**、Phase 3b は行ごとに `ID2D1DeviceContext::DrawText` を直接呼ぶのみ
-3. **描画:** 可視範囲全体を1回の `BufferSnapshot::extract()` で取得し (行ごとの `extract()` 呼び出しによる O(pieces) 累積コストを回避)、`\n` で分割して行ごとに `DrawText`
+1. **可視行決定:** `topLine` + `computeVisibleLineCount()` (`viewport_math.h`、クライアント高さ/DPI/行高さから算出) で表示行範囲を決定
+2. **DirectWrite 基盤:** `IDWriteTextFormat` を遅延生成 (`Consolas` 14pt、`DWRITE_WORD_WRAPPING_NO_WRAP` — 固定行送りレイアウトが折り返しで崩れないよう明示指定)
+3. **描画:** 可視範囲全体を1回の `BufferSnapshot::extract()` で取得し (行ごとの `extract()` 呼び出しによる O(pieces) 累積コストを回避)、`\n` で分割して行ごとに描画
 
-**Phase 3c 以降の残タスク:**
-1. **Frame 開始:** DamageTracker から更新矩形一覧を取得
-2. **DirectWrite Layout キャッシュ:** 未キャッシュ行のみ `IDWriteTextLayout` を生成し LRU に挿入
-3. **描画:** ダーティ矩形にクリッピングして部分再描画
-4. **Present:** 部分更新時は `DXGI_PRESENT_DO_NOT_SEQUENCE` 検討
+**Phase 3c (実装済み):**
+1. **DirectWrite Layout キャッシュ:** `TextLayoutCache` が行番号キーで `IDWriteTextLayout` をキャッシュ。`drawVisibleLines()` は `getOrCreate()` → `dc.DrawTextLayout()` (Phase 3b の `dc.DrawText()` 直呼びを置換)。無効化は `Document::version()` 変化時の wholesale `clear()` のみ (§4.4 参照)
+2. **粗粒度フレームスキップ:** `RenderPipeline::render()` が `FrameState` (Document version/topLine/width/height/dpiScale) を前回成功フレームと比較し、完全一致なら `beginFrame`/`Clear`/`drawVisibleLines`/`endFrame` を丸ごとスキップ
+3. **Present:** 引き続き全画面 `Present1(1, 0, ...)`。部分更新・`DXGI_PRESENT_DO_NOT_SEQUENCE` は細粒度 DamageTracker (延期、ADR-011) と共に将来検討
 
-### 4.3 パフォーマンス目安
-- 1 行のレイアウト生成: < 50µs
-- キャッシュヒット時の 1 行描画: < 5µs
-- フルフレーム描画予算: 16.6ms / 60fps
+**Phase 3c でスコープ外とした残タスク (ADR-011、再評価トリガー付き):**
+- **GlyphCache:** 独自グリフラン/アトラスラスタライズ。TextLayoutCache 単体の実測 (§4.3) が目標を大幅にクリアしているため現時点では不要と判断。再評価トリガー: ベンチ/`--measure-frame` 実測でフレーム予算割れが判明した場合
+- **細粒度 DamageTracker:** 部分矩形 dirty-rect 追跡。対話的編集 (Phase 4) が無いため実際のユースケースが存在しない。再評価トリガー: Phase 4 で対話的な1行単位編集が実現した場合
+
+### 4.3 パフォーマンス目安・実測値
+
+- 1 行のレイアウト生成 (TextLayoutCache miss): 目標 < 50µs、**実測 532ns** (`tests/bench/render_text_layout_cache_bench.cpp` `BM_TextLayoutCache_Miss`, Release, CI, 約94倍のマージン)
+- キャッシュヒット時の 1 行描画準備 (TextLayoutCache hit): 目標 < 5µs、**実測 4.34ns** (`BM_TextLayoutCache_Hit`, Release, CI, 約1152倍のマージン)
+- フルフレーム描画予算: 16.6ms / 60fps。**実測 (`--measure-frame`, 50,000行合成ドキュメント、300フレーム連続スクロール, Release):** avg 5.52ms / p50 5.56ms / p95 5.66ms / max 8.11ms / min 0.25ms — 全フレームが予算内 (vsync 同期のため avg は概ね1フレーム分の描画+Presentコストを反映、CPU側のキャッシュ効果はマイクロベンチ側で分離測定)
 - **`PieceTable::snapshot()` はフレームごとに呼ばない。** 実測 O(n pieces) (100K piece規模で1.2〜1.5ms、§3.1参照) のため、毎フレーム呼ぶと大きめのドキュメントで frame budget の約7%をコピーだけで消費する。**実装済み (Phase 3b):** `RenderPipeline::refreshDocumentCacheIfStale()` が `Document::version()` を前回キャッシュ時の値と比較し、変化時のみ `snapshot()` を呼ぶ (ADR-010)。これがこの層で `snapshot()` を呼ぶ唯一の箇所
 
-### 4.4 Phase 3b 設計課題 (解決済み)
+### 4.4 Phase 3b/3c 設計課題 (解決済み)
 
-Phase 3b 着手前に洗い出した4件のアーキテクチャ課題は全て実装済み:
+Phase 3b 着手前に洗い出した4件のアーキテクチャ課題、および Phase 3c で追加検討した2件は全て解決済み (未着手ではなく「解決 = 実装 or 明示的延期」):
 
 1. **RenderDevice の DC アクセスパターン:** `beginFrame()`/`endFrame()` ペアに分解して解決 (§4.1 参照、`clearAndPresent()` は廃止)
-2. **Document → Render の変更通知チャネル:** `Document::version()` + `RenderPipeline::refreshDocumentCacheIfStale()` で解決 (ADR-010、§4.3 参照)
-3. **スクロール位置管理:** `RenderPipeline::m_topLine` (常に 0、Phase 4 で `Viewport` に置換予定) + `computeVisibleLineCount()` (`viewport_math.h`) で解決
+2. **Document → Render の変更通知チャネル:** `Document::version()` + `RenderPipeline::refreshDocumentCacheIfStale()` で解決 (ADR-010、§4.3 参照)。Phase 3c でこの同じ通知を `TextLayoutCache::clear()` のトリガーとしても再利用
+3. **スクロール位置管理:** `RenderPipeline::m_topLine` (Phase 4 で `Viewport` に置換予定、`--measure-frame` ハーネスが現状唯一の実呼び出し元) + `computeVisibleLineCount()` (`viewport_math.h`) で解決
 4. **DPI 対応テキストレイアウト:** `RenderPipeline::m_dpiScale` を保持し `RenderDevice::setDpi()` に転送。フォントサイズは DIP 固定 (`SetDpi` が自動スケーリング) のため DPI 依存のフォントサイズ計算は不要と判明
+5. **(Phase 3c) TextLayoutCache のキャッシュキー・無効化粒度:** 行番号キー + `Document::version()` 変化時の wholesale `clear()` で解決 (ADR-011)。内容ハッシュキーや細粒度無効化は、対応する変更範囲情報のソースが存在しないため見送り
+6. **(Phase 3c) フレームスキップの安全性:** `RenderDevice` の `DXGI_SWAP_EFFECT_FLIP_DISCARD` + DWM 合成下では前回 Present 内容がコンポジタ側に保持されるため、`WM_PAINT` の都度描画は必須でない。`MainWindow::handlePaint()` が無条件に `::ValidateRect()` を呼ぶため、描画スキップが `WM_PAINT` 再発行ループを招くこともない (ADR-011)
 
 ---
 

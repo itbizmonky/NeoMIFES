@@ -26,6 +26,7 @@
 - [Session 18: Phase 3a (Direct2D/DXGI 基盤配線)](#session-18-2026-07-16-phase-3a-direct2ddxgi-基盤配線)
 - [Session 19: Phase 0〜3a 包括レビュー + Phase 3b 計画ブラッシュアップ](#session-19-2026-07-16-phase-03a-包括レビュー--phase-3b-計画ブラッシュアップ)
 - [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
+- [Session 21: Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了](#session-21-2026-07-16-phase-3c-textlayoutcache--粗粒度フレームスキップ--measure-frame--phase-3-全体完了)
 
 ---
 
@@ -469,5 +470,32 @@
 **教訓:** GDI プレースホルダー色と D2D 背景クリア色が同一 RGB 値のため、スクリーンショットの見た目だけでは「D2D が実際に描画しているか」を判別できない。プロセスのロード済みモジュール確認 (d2d1.dll等) や `IsIconic()` 等の状態確認を併用することで誤診断を避けられた。
 
 **次回 (Phase 3c):** `TextLayoutCache`/`GlyphCache`/`DamageTracker`、60fps計測ハーネス (`--measure-frame`)。`RenderPipeline::drawVisibleLines()` は現状行ごとに `DrawText` を直接呼ぶだけで `IDWriteTextLayout` のキャッシュを持たない — キャッシュ粒度・無効化戦略の設計が必要 (新規 ADR の可能性が高い)。
+
+## Session 21 (2026-07-16): Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了
+
+**目標:** ユーザーの「着手せよ」指示を受け、Session 20 が引き継いだ Phase 3c (`TextLayoutCache`/`GlyphCache`/`DamageTracker` + 60fps計測ハーネス) の設計・実装を行う。CLAUDE.md §7 の Phase 3 DoD「60fpsスクロール確認」の達成が最終目標。
+
+**計画フェーズ:** RESUME_HERE.md §6・`main.cpp`/`startup_profile.h`/`ci.yml` の既存計測PoCパターン・`render_pipeline.h/.cpp` の現状を直接精読した上で、Plan agent に詳細設計を依頼。Plan agent は元の3コンポーネント構想 (`TextLayoutCache`/`GlyphCache`/`DamageTracker`) を再検証し、**GlyphCache と細粒度 DamageTracker を明示的に延期する**ことを提案 (CLAUDE.md ルール3「推測実装をしない」・ルール10「性能改善はベンチマーク根拠必須」に基づく判断: D2D の `DrawTextLayout()` が既にシェーピング済みグリフラン情報を再利用するため TextLayoutCache 単体で恩恵の大部分を得られる可能性が高く、独自グリフアトラスが必要という実測根拠が無い。細粒度 DamageTracker も対話的編集・スクロールが未実装のため実際のユースケースが無い)。ユーザー承認を得て実装着手。
+
+**成果物:**
+- **[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md)**: Phase 3c は TextLayoutCache のみを実装し、GlyphCache・細粒度 DamageTracker を延期する。再評価トリガー (ベンチ/計測での目標未達 → GlyphCache 再検討、Phase 4 での対話的編集 → 細粒度 DamageTracker 再検討) を明記
+- 新規 `src/render/text_layout_cache.{h,cpp}`: 行番号キーの `IDWriteTextLayout` キャッシュ。`Document::version()` 変化時の wholesale `clear()` のみで無効化 (LRU無し — 無制限成長は [`text_layout_cache_unbounded_growth.md`](../issues/text_layout_cache_unbounded_growth.md) に tripwire として記録)
+- `RenderPipeline`: `drawVisibleLines()` を `dc.DrawText()` 直呼びから `TextLayoutCache::getOrCreate()` + `dc.DrawTextLayout()` に変更。`FrameState`/`captureFrameState()` による粗粒度フレームスキップ (`DXGI_SWAP_EFFECT_FLIP_DISCARD` + DWM合成下での安全性、`MainWindow::handlePaint()` の無条件 `ValidateRect()` により `WM_PAINT` 再発行ループにならないことを確認)
+- 新規 `src/app/frame_profile.{h,cpp}` + `main.cpp` の `--measure-frame <out.json>`: 5万行の合成ドキュメント (または `--open` の実ファイル) で300フレーム連続スクロールを計測し min/max/avg/p50/p95 + キャッシュ統計を JSON 出力。`--measure-startup` と同じ計測PoCパターンを踏襲し `MainWindow` へのマウス/キーボード配線は追加していない
+- 新規 `tests/bench/render_text_layout_cache_bench.cpp` (`neomifes_render_bench`): デバイス/vsync を介さない TextLayoutCache 単体のCPUコスト計測
+- `.github/workflows/ci.yml`: 「Frame PoC (report only, no hard fail)」ステップ追加 (Startup PoC と同じ soft-fail パターン)
+- 新規 `docs/phase_reports/phase_3_report.md`: Phase 3 (3a/3b/3c) 統合完了レポート。ユーザーに確認の上、Phase 3c 完了時点で発行 (「Phase 3d」= Line Gutter/テーマ/IME 等は Phase 3 の DoD に必須でないため対象外とし独立の将来フェーズとして扱う方針で合意)
+- テスト+6 (単体: `render_text_layout_cache_test.cpp`)、統合+3 (`render_text_smoke_test.cpp` にキャッシュ/フレームスキップ検証3件追加、新規 `frame_measure_test.cpp`)。テスト総数 123→129
+
+**検証:**
+- ローカル Debug/Release 両方でフルビルド・全129テスト pass
+- google-benchmark 実測 (Release): `BM_TextLayoutCache_Miss` 532ns (目標<50µsに対し約94倍のマージン)、`BM_TextLayoutCache_Hit` 4.34ns (目標<5µsに対し約1152倍のマージン) — GlyphCache 延期判断を裏付ける実測データとして ADR-011 に記録
+- `--measure-frame` 実測 (Release、5万行、300フレーム): avg 5.52ms / p50 5.56ms / p95 5.66ms / max 8.11ms — 全フレームが16.6ms予算内、60fps DoD 達成を確認
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み) で2件検出・修正: `modernize-use-ranges` (`std::sort`→`std::ranges::sort`)、`readability-avoid-nested-conditional-operator` (三項演算子の入れ子を if/else if/else に書き換え)。再スキャンで0警告確認
+- `bugprone-unchecked-optional-access`/`bugprone-unused-return-value` 系の再発は無し (Session 20 で確立した「`RenderDevice&` 参照への早期束縛」「`[[maybe_unused]]` 付き名前付き変数への代入」パターンを新規コードでも一貫して踏襲したため)
+
+**教訓:** 元の設計スケッチ (`detailed_design.md` §4.1) が構想していた3コンポーネントのうち2つを「未着手」ではなく「測定に基づき明示的に延期」として扱い、ADR に再評価トリガーを明記したことで、将来のセッションが「なぜGlyphCacheが無いのか」を一から再検討する無駄を防いだ。CLAUDE.md ルール3/10 (推測実装をしない・ベンチマーク根拠必須) は「機能を作らない」判断そのものにも適用され、その判断もまた根拠と共に記録すべきものであることを再確認した。
+
+**次回 (Phase 4):** Editor Core (Cursor/SelectionModel/Command/Undo/Viewport)。`RenderPipeline::setTopLine()` を実際に駆動する `Viewport` への置換、対話的編集実現後の細粒度 DamageTracker 再評価 (ADR-011)、`TextLayoutCache` のメモリ実測 ([`text_layout_cache_unbounded_growth.md`](../issues/text_layout_cache_unbounded_growth.md)) が主な引き継ぎ事項。
 
 <!-- 次セッションはここに追記 -->

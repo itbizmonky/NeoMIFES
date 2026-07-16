@@ -30,3 +30,19 @@ target_link_libraries(neomifes_document_bench
 set_target_properties(neomifes_document_bench PROPERTIES
     FOLDER "tests"
 )
+
+add_executable(neomifes_render_bench
+    render_text_layout_cache_bench.cpp
+)
+
+target_link_libraries(neomifes_render_bench
+    PRIVATE
+        neomifes::compile_options
+        neomifes::render
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+set_target_properties(neomifes_render_bench PROPERTIES
+    FOLDER "tests"
+)

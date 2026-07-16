@@ -1,6 +1,7 @@
 add_executable(NeoMIFES WIN32
     main.cpp
     startup_profile.cpp
+    frame_profile.cpp
 )
 
 target_link_libraries(NeoMIFES

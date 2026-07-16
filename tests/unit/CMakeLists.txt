@@ -15,6 +15,7 @@ add_executable(neomifes_unit_tests
     render_resize_math_test.cpp
     render_error_test.cpp
     render_viewport_math_test.cpp
+    render_text_layout_cache_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

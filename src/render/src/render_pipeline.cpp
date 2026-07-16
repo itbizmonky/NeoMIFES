@@ -8,7 +8,6 @@
 #include "neomifes/render/d2d_factories.h"
 #include "neomifes/render/resize_math.h"
 #include "neomifes/render/viewport_math.h"
-#include "neomifes/util/wchar_cast.h"
 
 namespace neomifes::render {
 
@@ -57,10 +56,34 @@ RenderExpected<void> RenderPipeline::resize(std::uint32_t width, std::uint32_t h
     return result;
 }
 
+RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
+    return FrameState{
+        .hasDocument     = m_document != nullptr,
+        .documentVersion = m_document != nullptr ? m_document->version() : 0,
+        .topLine         = m_topLine,
+        .width           = m_width,
+        .height          = m_height,
+        .dpiScale        = m_dpiScale,
+    };
+}
+
 RenderExpected<void> RenderPipeline::render() noexcept {
     if (!m_device) {
         return std::unexpected(RenderError{.stage = RenderStage::NotAttached, .hr = E_NOT_VALID_STATE});
     }
+
+    // Coarse frame-level skip (Phase 3c, ADR-011): if nothing observable has
+    // changed since the last successful frame, skip beginFrame/Clear/
+    // drawVisibleLines/endFrame entirely. Safe under the FLIP_DISCARD swap
+    // effect + DWM composition (the compositor retains the last presented
+    // frame independently of this process; MainWindow::handlePaint() already
+    // calls ValidateRect() unconditionally regardless of what the paint
+    // handler does, so this cannot cause a WM_PAINT repost loop).
+    const FrameState current = captureFrameState();
+    if (m_lastRenderedFrameState && *m_lastRenderedFrameState == current) {
+        return {};
+    }
+
     auto result = renderOnce();
     if (!result && result.error().isDeviceLost()) {
         auto recreated = recreateDevice();
@@ -73,7 +96,10 @@ RenderExpected<void> RenderPipeline::render() noexcept {
             return std::unexpected(
                 RenderError{.stage = RenderStage::NotAttached, .hr = E_UNEXPECTED});
         }
-        return renderOnce();
+        result = renderOnce();
+    }
+    if (result) {
+        m_lastRenderedFrameState = current;
     }
     return result;
 }
@@ -81,6 +107,10 @@ RenderExpected<void> RenderPipeline::render() noexcept {
 RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_device.reset();
     m_textBrush.Reset();  // bound to the device context that just went away
+    // A freshly (re)created swap chain's back buffer is uninitialized - the
+    // next render() must not treat "nothing logically changed" as license to
+    // skip drawing into it.
+    m_lastRenderedFrameState.reset();
     auto device = RenderDevice::create(m_hwnd, m_width, m_height);
     if (!device) {
         return std::unexpected(device.error());
@@ -105,6 +135,11 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     m_cachedSnapshot        = m_document->snapshot();
     m_cachedDocumentVersion = m_document->version();
     m_hasCachedSnapshot     = true;
+    // Wholesale invalidation - the only granularity available without a
+    // per-region change source (ADR-011). Every line's layout is stale once
+    // the document has mutated at all, since Document::version() carries no
+    // range information.
+    m_layoutCache.clear();
     return {};
 }
 
@@ -125,6 +160,10 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
     }
+    // Promoted to a member (Phase 3c) so drawVisibleLines() can hand it to
+    // TextLayoutCache::getOrCreate() on a cache miss without re-querying the
+    // process-wide singleton every frame.
+    m_dwriteFactory = *factory;
 
     // The default DWRITE_WORD_WRAPPING_WRAP would silently break the fixed
     // topLine*lineHeight row layout drawVisibleLines() relies on (a long
@@ -168,9 +207,17 @@ RenderExpected<void> RenderPipeline::ensureTextBrush(ID2D1DeviceContext6& dc) no
 }
 
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
-    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F) {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
+        !m_dwriteFactory) {
         return;
     }
+
+    // Fixed, window-size-independent bound rather than the live client
+    // width: keeps layout cache entries valid across resize() (a resize
+    // never needs to invalidate this cache), same spirit as
+    // ensureTextFormat()'s 4096-DIP probe-layout box.
+    constexpr float kMaxLayoutWidthDips  = 65536.0F;
+    constexpr float kMaxLayoutHeightDips = 65536.0F;
 
     const std::uint64_t totalLines = m_document->lineCount();
     if (totalLines == 0) {
@@ -201,11 +248,15 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         const std::u16string_view lineSpan =
             (newlinePos == std::u16string_view::npos) ? remaining : remaining.substr(0, newlinePos);
 
-        const D2D1_RECT_F layoutRect = D2D1::RectF(
-            0.0F, y, static_cast<float>(m_width) / m_dpiScale, y + m_lineHeightDips);
-        const std::wstring_view wLine = util::toWstringView(lineSpan);
-        dc.DrawText(wLine.data(), static_cast<UINT32>(wLine.size()), m_textFormat.Get(), layoutRect,
-                    m_textBrush.Get());
+        const auto layoutResult =
+            m_layoutCache.getOrCreate(line, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
+                                      kMaxLayoutWidthDips, kMaxLayoutHeightDips);
+        if (layoutResult.has_value()) {
+            dc.DrawTextLayout(D2D1::Point2F(0.0F, y), *layoutResult, m_textBrush.Get());
+        }
+        // A layout-creation failure for a single line is no worse than the
+        // pre-Phase-3c behavior of DrawText() silently failing per-call - it
+        // skips just that line, not the whole frame.
 
         y += m_lineHeightDips;
         if (newlinePos == std::u16string_view::npos) {

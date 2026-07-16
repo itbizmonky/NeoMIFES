@@ -17,6 +17,13 @@
 //   --measure-memory  <out.json>  Same, but focus on the memory snapshot.
 //                                 (Currently identical output — kept separate
 //                                 for future divergence.)
+//   --measure-frame   <out.json>  Drive a synthetic scroll (setTopLine() over
+//                                 N frames) through the attached Document,
+//                                 timing each render() call, then write a
+//                                 FrameProfile (Phase 3c, ADR-011). Uses
+//                                 --open's document if given, otherwise
+//                                 synthesizes a large one - see
+//                                 synthesizeMeasurementDocument().
 //
 // Command-line options (real launches only):
 //   --open <path>  Load a UTF-8 file into the Document at startup so its
@@ -37,6 +44,7 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
@@ -46,10 +54,12 @@
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/main_window.h"
 
+#include "frame_profile.h"
 #include "startup_profile.h"
 
 namespace {
 
+using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
@@ -105,6 +115,7 @@ enum class LaunchMode : std::uint8_t {
     Normal,
     MeasureStartup,
     MeasureMemory,
+    MeasureFrame,
 };
 
 struct LaunchArgs {
@@ -127,10 +138,15 @@ LaunchArgs parseArgs() noexcept {
     }
     for (int i = 1; i < argc; ++i) {
         const std::wstring_view a = argv[i];
-        if ((a == L"--measure-startup" || a == L"--measure-memory") && (i + 1) < argc) {
-            args.mode       = (a == L"--measure-startup")
-                                  ? LaunchMode::MeasureStartup
-                                  : LaunchMode::MeasureMemory;
+        if ((a == L"--measure-startup" || a == L"--measure-memory" || a == L"--measure-frame") &&
+            (i + 1) < argc) {
+            if (a == L"--measure-startup") {
+                args.mode = LaunchMode::MeasureStartup;
+            } else if (a == L"--measure-memory") {
+                args.mode = LaunchMode::MeasureMemory;
+            } else {
+                args.mode = LaunchMode::MeasureFrame;
+            }
             args.outputPath = argv[i + 1];
             ++i;
         } else if (a == L"--open" && (i + 1) < argc) {
@@ -212,6 +228,138 @@ Document loadStartupDocument(const LaunchArgs& args) {
     return document;
 }
 
+// --measure-frame without --open (e.g. the CI PoC step, which passes no
+// --open so it stays self-contained with no repo fixture-file dependency)
+// synthesizes one large document instead. A single insertText() call rather
+// than a per-line loop avoids an O(n) PieceTable::insert loop cost from
+// dominating the harness's own setup time.
+constexpr std::uint64_t kSyntheticLineCount = 50'000;
+
+Document synthesizeMeasurementDocument() {
+    constexpr std::u16string_view kLineText = u"synthetic line for --measure-frame scrolling\n";
+    std::u16string text;
+    text.reserve(kLineText.size() * kSyntheticLineCount);
+    for (std::uint64_t i = 0; i < kSyntheticLineCount; ++i) {
+        text += kLineText;
+    }
+    Document document;
+    document.insertText(0, text);
+    return document;
+}
+
+// Decides which Document a launch needs: --open's file (Normal or
+// MeasureFrame), a synthesized large document (MeasureFrame without --open),
+// or an unused empty one (MeasureStartup/MeasureMemory don't render at all).
+// `syntheticLineCountOut` is set only when the synthetic path was taken, for
+// FrameProfile reporting. Pulled out of wWinMain to keep its cognitive
+// complexity down (same rationale as loadStartupDocument() above).
+Document prepareDocument(const LaunchArgs& args, std::uint64_t& syntheticLineCountOut) {
+    syntheticLineCountOut = 0;
+    if (args.mode == LaunchMode::MeasureFrame && !args.openPath) {
+        syntheticLineCountOut = kSyntheticLineCount;
+        return synthesizeMeasurementDocument();
+    }
+    if (args.mode == LaunchMode::Normal || args.mode == LaunchMode::MeasureFrame) {
+        return loadStartupDocument(args);
+    }
+    return Document{};
+}
+
+// ~5s at 60fps - long enough to surface an occasional dropped-frame spike
+// without making the CI PoC step slow.
+constexpr std::uint32_t kMeasureFrameCount = 300;
+
+// Drives a synthetic scroll through `pipeline`'s attached Document, timing
+// each render() call. Deliberately times the FULL render() call including
+// Present1's vsync wait (this proves the Phase 3 DoD wording "60fps scroll
+// verification" directly - a frame that keeps pace with vsync without
+// spiking - rather than isolating TextLayoutCache's own CPU cost, which
+// render_text_layout_cache_bench.cpp already does without any device/vsync
+// involved at all).
+FrameProfile runFrameMeasurement(RenderPipeline& pipeline, std::uint64_t syntheticLineCount) {
+    std::vector<std::int64_t> durationsNs;
+    durationsNs.reserve(kMeasureFrameCount);
+    for (std::uint32_t i = 0; i < kMeasureFrameCount; ++i) {
+        pipeline.setTopLine(i);
+        const auto start    = PerfClock::now();
+        const auto rendered = pipeline.render();
+        const auto end       = PerfClock::now();
+        if (rendered) {
+            durationsNs.push_back((end - start).count());
+        }
+    }
+    return FrameProfile::fromDurations(std::move(durationsNs), syntheticLineCount,
+                                       pipeline.layoutCacheStats());
+}
+
+// The three cfg-wiring branches below are each pulled into their own
+// function (rather than inlined in wWinMain) for the same cognitive-
+// complexity reason as loadStartupDocument()/prepareDocument() above.
+void wireMeasureStartupOrMemoryMode(MainWindowConfig& cfg, StartupProfile& profile,
+                                    MainWindow& window) {
+    cfg.onWindowCreated = [&profile](HWND) {
+        profile.windowCreatedNs = PerfClock::nanosSinceProcessStart();
+    };
+    cfg.onFirstPaint = [&profile, &window](HWND) {
+        profile.firstPaintNs = PerfClock::nanosSinceProcessStart();
+        const auto mem = currentProcessMemory();
+        profile.workingSetBytesAtFirstPaint        = mem.workingSetBytes;
+        profile.privateWorkingSetBytesAtFirstPaint = mem.privateWorkingSetBytes;
+        window.requestClose();
+    };
+}
+
+// Real launches only - deferred so it never affects firstPaintNs timing
+// (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
+// forever; there is no retry policy.
+void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
+                    Document& document) {
+    cfg.onDeferredInit = [&window, &renderPipeline, &document](HWND hwnd) {
+        const auto attached = renderPipeline.attach(hwnd);
+        if (!attached) {
+            debugLogRenderError("RenderPipeline::attach", attached.error());
+            return;
+        }
+        renderPipeline.setDocument(&document);
+        window.setPaintHandler([&renderPipeline](HWND) {
+            const auto rendered = renderPipeline.render();
+            if (!rendered) {
+                debugLogRenderError("RenderPipeline::render", rendered.error());
+            }
+        });
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+    };
+    cfg.onResize = [&renderPipeline](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+        if (!renderPipeline.isAttached()) {
+            return;
+        }
+        const auto resized = renderPipeline.resize(w, h, dpiScale);
+        if (!resized) {
+            debugLogRenderError("RenderPipeline::resize", resized.error());
+        }
+    };
+}
+
+// Reuses onDeferredInit exactly like the Normal path does for real
+// rendering - no new MainWindow hooks, no mouse/keyboard plumbing. The
+// entire synthetic-scroll measurement loop runs synchronously inside this
+// one callback, then closes the window.
+void wireMeasureFrameMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
+                          Document& document, FrameProfile& frameProfile,
+                          std::uint64_t syntheticLineCount) {
+    cfg.onDeferredInit = [&window, &renderPipeline, &document, &frameProfile,
+                          syntheticLineCount](HWND hwnd) {
+        const auto attached = renderPipeline.attach(hwnd);
+        if (attached) {
+            renderPipeline.setDocument(&document);
+            frameProfile = runFrameMeasurement(renderPipeline, syntheticLineCount);
+        } else {
+            debugLogRenderError("RenderPipeline::attach", attached.error());
+        }
+        window.requestClose();
+    };
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance,
@@ -240,55 +388,24 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Declared before window/renderPipeline so it outlives both (reverse
     // destruction order) - RenderPipeline::setDocument() below hands out a
     // non-owning pointer that must not dangle while the message loop runs.
-    Document document =
-        args.mode == LaunchMode::Normal ? loadStartupDocument(args) : Document{};
+    std::uint64_t syntheticLineCountUsed = 0;
+    Document      document               = prepareDocument(args, syntheticLineCountUsed);
+    FrameProfile  frameProfile{};
 
     MainWindow window;
     MainWindowConfig cfg{};
     RenderPipeline renderPipeline;
 
-    // In measurement mode, capture both timing markers via hooks so their
-    // ordering matches the actual UI event sequence (window created ->
-    // first paint), rather than the order in which we return from create().
-    if (args.mode != LaunchMode::Normal) {
-        cfg.onWindowCreated = [&profile](HWND) {
-            profile.windowCreatedNs = PerfClock::nanosSinceProcessStart();
-        };
-        cfg.onFirstPaint = [&profile, &window](HWND) {
-            profile.firstPaintNs = PerfClock::nanosSinceProcessStart();
-            const auto mem = currentProcessMemory();
-            profile.workingSetBytesAtFirstPaint        = mem.workingSetBytes;
-            profile.privateWorkingSetBytesAtFirstPaint = mem.privateWorkingSetBytes;
-            window.requestClose();
-        };
+    // Each mode's hook wiring lives in its own function (see definitions
+    // above) - ordering matters for MeasureStartup/MeasureMemory (window
+    // created -> first paint), matters not at all for the others.
+    if (args.mode == LaunchMode::MeasureStartup || args.mode == LaunchMode::MeasureMemory) {
+        wireMeasureStartupOrMemoryMode(cfg, profile, window);
+    } else if (args.mode == LaunchMode::MeasureFrame) {
+        wireMeasureFrameMode(cfg, window, renderPipeline, document, frameProfile,
+                             syntheticLineCountUsed);
     } else {
-        // Real launches only - deferred so it never affects firstPaintNs
-        // timing (ADR-009). If attach() fails, the window simply keeps the
-        // GDI placeholder forever; Phase 3a has no retry policy.
-        cfg.onDeferredInit = [&window, &renderPipeline, &document](HWND hwnd) {
-            const auto attached = renderPipeline.attach(hwnd);
-            if (!attached) {
-                debugLogRenderError("RenderPipeline::attach", attached.error());
-                return;
-            }
-            renderPipeline.setDocument(&document);
-            window.setPaintHandler([&renderPipeline](HWND) {
-                const auto rendered = renderPipeline.render();
-                if (!rendered) {
-                    debugLogRenderError("RenderPipeline::render", rendered.error());
-                }
-            });
-            ::InvalidateRect(hwnd, nullptr, FALSE);
-        };
-        cfg.onResize = [&renderPipeline](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
-            if (!renderPipeline.isAttached()) {
-                return;
-            }
-            const auto resized = renderPipeline.resize(w, h, dpiScale);
-            if (!resized) {
-                debugLogRenderError("RenderPipeline::resize", resized.error());
-            }
-        };
+        wireNormalMode(cfg, window, renderPipeline, document);
     }
 
     if (!window.create(hInstance, cfg)) {
@@ -297,10 +414,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
 
     const int rc = runMessageLoop();
 
-    if (args.mode != LaunchMode::Normal) {
+    if (args.mode == LaunchMode::MeasureStartup || args.mode == LaunchMode::MeasureMemory) {
         profile.measuredExitNs = PerfClock::nanosSinceProcessStart();
         // Failure to write is fatal for the PoC — surface it via non-zero exit.
         if (!profile.writeJson(args.outputPath)) {
+            return 2;
+        }
+    } else if (args.mode == LaunchMode::MeasureFrame) {
+        if (!frameProfile.writeJson(args.outputPath)) {
             return 2;
         }
     }

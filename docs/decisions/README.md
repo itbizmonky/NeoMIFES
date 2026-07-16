@@ -16,6 +16,7 @@
 | [ADR-008](ADR-008-com-raii-comptr.md) | Direct2D/DXGI/DirectWrite の COM オブジェクトは Microsoft::WRL::ComPtr で所有する | Accepted |
 | [ADR-009](ADR-009-deferred-device-init.md) | Direct2D デバイス生成は同期・UIスレッド・自己ポストメッセージ経由で遅延させる | Accepted |
 | [ADR-010](ADR-010-render-depends-on-document.md) | Rendering Engine は Document Engine に直接依存する | Accepted |
+| [ADR-011](ADR-011-phase3c-render-cache-scope.md) | Phase 3c は TextLayoutCache のみを実装し、GlyphCache と細粒度 DamageTracker を延期する | Accepted |
 
 ## 運用ルール
 

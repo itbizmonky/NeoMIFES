@@ -61,7 +61,8 @@ jobs:
           # crashes on startup" faster than waiting for a full bench matrix.
           $benchExes = @(
             'neomifes_util_bench.exe',
-            'neomifes_document_bench.exe'
+            'neomifes_document_bench.exe',
+            'neomifes_render_bench.exe'
           )
           $missing = @()
           foreach ($name in $benchExes) {
@@ -107,6 +108,41 @@ jobs:
             Write-Host "----- end profile -----"
           } else {
             Write-Host "!! startup.json was not produced"
+          }
+
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "!! non-zero exit; leaving step as soft failure"
+          }
+
+      - name: Frame PoC (report only, no hard fail)
+        if: matrix.preset == 'release'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          # Phase 3c (ADR-011): --measure-frame drives a synthetic scroll and
+          # times each render() call. Same soft-fail rationale as the Startup
+          # PoC step above - a shared CI runner is not representative of
+          # end-user frame-time hardware, so this is report-only, never a
+          # hard gate.
+          $exe = Get-ChildItem -Recurse -Path build/release -Filter NeoMIFES.exe |
+                 Select-Object -First 1
+          if (-not $exe) { throw "NeoMIFES.exe not found under build/release" }
+
+          $out = Join-Path $env:RUNNER_TEMP "frame.json"
+          if (Test-Path $out) { Remove-Item $out -Force }
+
+          Write-Host "Launching $($exe.FullName) --measure-frame $out"
+          $proc = Start-Process -FilePath $exe.FullName `
+                                -ArgumentList @('--measure-frame', $out) `
+                                -Wait -PassThru
+          Write-Host ("Exit code: {0}" -f $proc.ExitCode)
+
+          if (Test-Path $out) {
+            Write-Host "----- frame profile -----"
+            Get-Content $out
+            Write-Host "----- end profile -----"
+          } else {
+            Write-Host "!! frame.json was not produced"
           }
 
           if ($proc.ExitCode -ne 0) {

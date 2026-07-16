@@ -84,3 +84,32 @@ set_tests_properties(render_text_smoke PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# frame_measure_test - exercises --measure-frame (Phase 3c, ADR-011)
+# end-to-end via subprocess spawn, same pattern as startup_measure_test.cpp
+# (custom main() to receive the built NeoMIFES.exe path as argv[1]).
+add_executable(neomifes_frame_measure_test
+    frame_measure_test.cpp
+)
+
+target_link_libraries(neomifes_frame_measure_test
+    PRIVATE
+        neomifes::compile_options
+        GTest::gtest
+)
+
+set_target_properties(neomifes_frame_measure_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    frame_measure
+    COMMAND neomifes_frame_measure_test $<TARGET_FILE:NeoMIFES>
+)
+
+# 300 vsync-gated frames (~5s at 60fps) plus process startup, plus headroom
+# for a loaded CI runner or WARP software fallback.
+set_tests_properties(frame_measure PROPERTIES
+    LABELS "integration"
+    TIMEOUT 60
+)
