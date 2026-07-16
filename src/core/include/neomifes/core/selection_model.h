@@ -49,6 +49,12 @@ public:
     // Drops every cursor but the primary one, collapsing its selection.
     void collapseToPrimary();
 
+    // Sets every cursor's position AND anchor to `position` (selection
+    // cleared), then re-merges. Used after an edit or undo/redo moves the
+    // document out from under a cursor's old offset (edit commands don't
+    // touch SelectionModel themselves - see ICommand::cursorPositionAfter*).
+    void moveAllTo(document::TextPos position);
+
     [[nodiscard]] std::span<const Cursor> cursors() const noexcept { return m_cursors; }
     [[nodiscard]] const Cursor&           primaryCursor() const noexcept;
 

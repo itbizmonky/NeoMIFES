@@ -57,6 +57,9 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onFirstPaint   = config.onFirstPaint;
     m_onDeferredInit = config.onDeferredInit;
     m_onResize       = config.onResize;
+    m_onKeyDown      = config.onKeyDown;
+    m_onChar         = config.onChar;
+    m_onMouseWheel   = config.onMouseWheel;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -128,6 +131,15 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return handleDpiChanged(wParam, lParam);
         case kMsgDeferredInit:
             handleDeferredInit();
+            return 0;
+        case WM_KEYDOWN:
+            handleKeyDown(wParam);
+            return 0;
+        case WM_CHAR:
+            handleChar(wParam);
+            return 0;
+        case WM_MOUSEWHEEL:
+            handleMouseWheel(wParam);
             return 0;
         case WM_ERASEBKGND:
             // We paint the full client rect in WM_PAINT; suppress default erase to
@@ -204,6 +216,27 @@ LRESULT MainWindow::handleDpiChanged(WPARAM wParam, LPARAM lParam) noexcept {
 void MainWindow::handleDeferredInit() noexcept {
     if (m_onDeferredInit) {
         m_onDeferredInit(m_hwnd);
+    }
+}
+
+void MainWindow::handleKeyDown(WPARAM wParam) noexcept {
+    if (!m_onKeyDown) {
+        return;
+    }
+    const bool shiftDown = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool ctrlDown  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    m_onKeyDown(m_hwnd, static_cast<UINT>(wParam), shiftDown, ctrlDown);
+}
+
+void MainWindow::handleChar(WPARAM wParam) noexcept {
+    if (m_onChar) {
+        m_onChar(m_hwnd, static_cast<wchar_t>(wParam));
+    }
+}
+
+void MainWindow::handleMouseWheel(WPARAM wParam) noexcept {
+    if (m_onMouseWheel) {
+        m_onMouseWheel(m_hwnd, static_cast<short>(HIWORD(wParam)));
     }
 }
 

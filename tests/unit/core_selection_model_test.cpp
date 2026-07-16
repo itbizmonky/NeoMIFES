@@ -157,4 +157,27 @@ TEST(SelectionModelTest, CollapseToPrimaryDropsOtherCursors) {
     EXPECT_TRUE(model.cursors()[0].isPrimary);
 }
 
+TEST(SelectionModelTest, MoveAllToSetsPositionAndAnchorClearingSelection) {
+    Document doc;
+    doc.insertText(0, u"hello world");
+    SelectionModel model(0);
+    model.moveAll(MovementKind::Right, doc, /*extendSelection=*/true);  // create a selection
+    ASSERT_TRUE(model.primaryCursor().hasSelection());
+
+    model.moveAllTo(9);
+    EXPECT_EQ(model.primaryCursor().position, 9U);
+    EXPECT_EQ(model.primaryCursor().anchor, 9U);
+    EXPECT_FALSE(model.primaryCursor().hasSelection());
+}
+
+TEST(SelectionModelTest, MoveAllToAppliesToEveryCursorAndMerges) {
+    SelectionModel model(0);
+    model.addCursor(6);
+    ASSERT_EQ(model.cursors().size(), 2U);
+
+    model.moveAllTo(3);
+    EXPECT_EQ(model.cursors().size(), 1U);  // both cursors landed on the same position
+    EXPECT_EQ(model.cursors()[0].position, 3U);
+}
+
 }  // namespace

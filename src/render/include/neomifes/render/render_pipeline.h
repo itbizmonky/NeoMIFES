@@ -74,6 +74,13 @@ public:
     void setTopLine(document::LineNumber line) noexcept { m_topLine = line; }
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
 
+    // Caret position, as a flat document::TextPos (Phase 4b1). Not
+    // core::Cursor-typed - RenderPipeline stays independent of
+    // neomifes::core (same "independent, concurrently runnable engines"
+    // reasoning as Viewport's header comment). The app layer reads
+    // SelectionModel::primaryCursor().position and forwards it here.
+    void setCaretPosition(document::TextPos pos) noexcept { m_caretPosition = pos; }
+
     // Exposed for the --measure-frame harness and integration tests to
     // observe caching behavior (Phase 3c, ADR-011) - not merely test-only,
     // the frame harness reports these numbers in its JSON output.
@@ -93,6 +100,10 @@ private:
         document::LineNumber  topLine         = 0;
         std::uint32_t         width = 0, height = 0;
         float                 dpiScale = 0.0F;
+        // Included so caret-only movement (document/topLine/size unchanged)
+        // still forces a redraw instead of being coarse-frame-skipped
+        // (Phase 4b1 - the frame-skip in render() predates the caret).
+        document::TextPos     caretPosition = 0;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -104,6 +115,12 @@ private:
     [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
+    // Draws a thin solid caret bar at `column` (UTF-16 code units into the
+    // line) within `layout`, at vertical offset `y`. Called from
+    // drawVisibleLines() for whichever visible line the caret is on, reusing
+    // that line's already-fetched layout and m_textBrush (Phase 4b1).
+    void drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                         std::uint32_t column) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -120,6 +137,7 @@ private:
     std::uint64_t                                     m_cachedDocumentVersion = 0;
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
+    document::TextPos                                 m_caretPosition         = 0;
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush is bound to the device context and must be

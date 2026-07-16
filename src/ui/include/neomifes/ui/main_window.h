@@ -41,6 +41,16 @@ struct MainWindowConfig {
     // WM_DPICHANGED's SetWindowPos triggers) with the new client-area pixel
     // size and current DPI scale (96 DPI == 1.0f).
     std::function<void(HWND, std::uint32_t width, std::uint32_t height, float dpiScale)> onResize;
+    // Optional: invoked from WM_KEYDOWN with the raw virtual-key code and
+    // the live Shift/Ctrl modifier state (Phase 4b1). Not fired for
+    // character input - see onChar.
+    std::function<void(HWND, UINT vkCode, bool shiftDown, bool ctrlDown)> onKeyDown;
+    // Optional: invoked from WM_CHAR with the translated UTF-16 code unit
+    // (surrogate halves arrive as two separate calls). Phase 4b1.
+    std::function<void(HWND, wchar_t ch)> onChar;
+    // Optional: invoked from WM_MOUSEWHEEL with the raw wheel delta
+    // (positive = away from the user, a multiple of WHEEL_DELTA). Phase 4b1.
+    std::function<void(HWND, short wheelDelta)> onMouseWheel;
 };
 
 class MainWindow {
@@ -80,12 +90,18 @@ private:
     void handleSize(LPARAM lParam) noexcept;
     LRESULT handleDpiChanged(WPARAM wParam, LPARAM lParam) noexcept;
     void handleDeferredInit() noexcept;
+    void handleKeyDown(WPARAM wParam) noexcept;
+    void handleChar(WPARAM wParam) noexcept;
+    void handleMouseWheel(WPARAM wParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
     std::function<void(HWND)>  m_onDeferredInit;
     std::function<void(HWND, std::uint32_t, std::uint32_t, float)> m_onResize;
     std::function<void(HWND)>  m_onPaint;          // set via setPaintHandler(); empty == GDI fallback
+    std::function<void(HWND, UINT, bool, bool)> m_onKeyDown;
+    std::function<void(HWND, wchar_t)>          m_onChar;
+    std::function<void(HWND, short)>            m_onMouseWheel;
     bool                       m_firstPaintFired = false;
     UINT                       m_currentDpi      = 96;
 };

@@ -21,6 +21,7 @@ add_executable(neomifes_unit_tests
     core_undo_stack_test.cpp
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp
+    app_editor_input_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -31,6 +32,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::document
         neomifes::render
         neomifes::core
+        neomifes::app_input
         GTest::gtest
         GTest::gtest_main
 )

@@ -28,6 +28,7 @@
 - [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
 - [Session 21: Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了](#session-21-2026-07-16-phase-3c-textlayoutcache--粗粒度フレームスキップ--measure-frame--phase-3-全体完了)
 - [Session 22: Phase 4a (Command/Undo/Selection、ヘッドレス) — 100万Undo DoD 実測](#session-22-2026-07-16-phase-4a-commandundoselectionヘッドレス--100万undo-dod-実測)
+- [Session 23: Phase 4a レビュー + Phase 4b1 (キーボード入力配線 + キャレット描画 + マウスホイールスクロール)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
 
 ---
 
@@ -523,5 +524,31 @@
 **教訓:** Phase 0 設計スケッチ (`detailed_design.md` §5/§6) の全量を一度に実装しようとせず、DoD (「100万Undo達成」の一点)を満たす最小構成をまず切り出してヘッドレスに実装し、ベンチマークで実測してから UI配線等の残作業を次フェーズへ回す判断が、ADR-011 (Phase 3c) に続き有効に機能した。`UndoStack`の1000件バケット化/zstd圧縮/ディスクスワップという具体的な設計は、実際にメモリを計測してから要否を判断すべき最適化であり、要件定義書に規定の無い256MB予算という数値を鵜呑みにして先行実装しないという判断がCLAUDE.mdルール10の実践として機能した。
 
 **次回 (Phase 4b):** キーボード/マウス入力配線・キャレット描画・`Viewport`↔`RenderPipeline`接続。`MainWindow::wndProc` への `WM_KEYDOWN`/`WM_CHAR`/`WM_LBUTTONDOWN`/`WM_MOUSEWHEEL` 新設、`RenderPipeline` への選択範囲/キャレット描画パス追加が主な引き継ぎ事項。詳細は ADR-012・`RESUME_HERE.md` §3.8/§6 参照。
+
+## Session 23 (2026-07-17): Phase 4a レビュー + Phase 4b1 (キーボード入力配線 + キャレット描画 + マウスホイールスクロール)
+
+**目標:** ユーザーから「次のPhaseに進みたい。もしくはここで貴方にレビューして貰うのが良いか?」と問われ、まず `/code-review` でPhase 4a (`a513021`) を高effortでレビューし、指摘を修正してから Phase 4b に着手する2段構成のセッション。
+
+**レビューフェーズ:** 8観点 (line-by-line/removed-behavior/cross-file/reuse/simplification/efficiency/altitude/CLAUDE.md conventions) の並列 finder エージェントで Phase 4a の diff を精査 (2エージェントはAPIセッション制限で失敗、手動で補完)。30候補から重複排除・検証の上、CONFIRMED 1件・PLAUSIBLE 4件の計5件に収束。**CONFIRMED:** `Viewport::ensureVisible()` が `noexcept` 宣言されているが内部で呼ぶ `Document::offsetToLine()` が (`LineIndex` 再構築時に allocate しうるため) `noexcept` ではなく、例外発生時に `std::terminate()` を招く不整合。即座に修正 (`noexcept` 除去)。**PLAUSIBLE (Phase 4b以降の既知課題として記録):** CRLF行末でのカーソル位置不整合(Phase 6 Encoding Engineスコープ)、垂直移動のsticky column欠如、編集コマンドがSelectionModelのカーソル位置を更新しないギャップ、`mergeOverlapping()`の単一カーソル時の無駄な allocation。効率指摘の `mergeOverlapping()` fast pathも同セッションで修正。
+
+**計画フェーズ (Phase 4b):** ユーザーが「次フェーズに進め」と指示。`RESUME_HERE.md` §6・`MainWindow`/`RenderPipeline`/`main.cpp` の現状を直接精読した上で、Explore agent 1体で D2D描画プリミティブの現状(`DrawTextLayout`/`Clear`/`CreateSolidColorBrush`のみ、矩形/線描画皆無)・`HitTest`系APIの前例(皆無)・`MainWindow`を演習するテストの有無(皆無、Win32メッセージシミュレーションハーネス自体が存在しない)を確認。この調査結果と、レビューで発覚した「編集コマンドがSelectionModelを更新しない」ギャップを踏まえ、Plan Modeで **Phase 4b を 4b1 (キーボード入力+キャレット描画+マウスホイール、ヘッドレステスト可能) / 4b2 (マウスクリック位置特定+選択範囲ハイライト、新規hit-test設計を要する)** に分割する計画を立案。Phase 3の3a/3b/3c分割、Phase 4のADR-012分割と同じ「1PR=1責務」パターンを踏襲。ExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物:**
+- レビューで発覚したギャップの解消: `SelectionModel::moveAllTo(TextPos)` 新設、`ICommand::cursorPositionAfterExecute()`/`cursorPositionAfterUndo()` を全コマンドに追加し `CommandDispatcher::dispatch()`/`UndoStack::undo()`/`redo()` が自動的に `SelectionModel` を更新するよう配線 (Phase 4a時点で未使用だった `ExecutionContext::selection()` を実際に使い始めた)
+- `MainWindow`: `onKeyDown`/`onChar`/`onMouseWheel` フック新設、`WM_KEYDOWN`/`WM_CHAR`/`WM_MOUSEWHEEL` 処理を追加
+- 新規ライブラリ `neomifes::app_input` (`src/app/editor_input.h/.cpp`): Win32非依存の `handleKeyDown`/`handleChar`/`applyMouseWheelScroll`。Win32メッセージハーネスが無い制約から、Win32プリミティブ型の引数を受け取るが内部でWin32 APIを一切呼ばない設計にすることでヘッドレステスト可能にした (Phase 4aの`src/core/`と同じ思想)
+- `RenderPipeline`: `setCaretPosition(TextPos)` 新設、`drawVisibleLines()` のループ内でキャレット行に `HitTestTextPosition`+`FillRectangle` で描画 (新規ブラシは作らず既存 `m_textBrush` を再利用)。`FrameState` に `caretPosition` を追加し、Phase 3cの粗粒度フレームスキップがキャレット単独移動を再描画対象外にしてしまう不整合(レビューでは未指摘、実装中に自己発見)を修正
+- `src/app/main.cpp`: `SelectionModel`/`CommandDispatcher`/`Viewport` を配線、`Viewport::topLine()`→`RenderPipeline::setTopLine()` のブリッジを実装 (Phase 4aで「Phase 4bの仕事」と明記されていた箇所)
+- テスト数: 164→185 (単体+20、統合+1: `RenderTextSmokeTest.CaretOnlyMovementForcesRedrawInsteadOfFrameSkip` でFrameState修正を実証)
+- 実アプリ (`NeoMIFES.exe`) を起動し `System.Windows.Forms.SendKeys` で入力 (文字入力・矢印・Backspace/Delete・Ctrl+Z/Y・Enter・Home/End・Ctrl+Home/End) を送信、クラッシュしないことを確認。約1,350文字の連続入力セッションで `WorkingSet64` を計測 (48.53MB→51.49MB、増分約3MB) し `undo_stack_unbounded_memory.md` に初回実測として追記
+
+**検証:**
+- ローカル Debug/Release 両方でフルビルド・全185テスト pass
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、変更/新規 `.cpp` 全8ファイル対象) で2件検出・修正: `readability-redundant-casting` (三項演算子+`static_cast`の組み合わせをif文に書き換え)、`hicpp-use-auto`/`modernize-use-auto` (`char16_t inserted = static_cast<char16_t>(ch)` を `auto` に)。再スキャンで0警告確認
+- **既知の限界:** キャレットの視覚的な描画位置の正しさ(ピクセル単位)は自動検証していない。このセッションにはネイティブWin32ウィンドウのスクリーンショット/GUI自動化ツールが無く、`SendKeys`によるクラッシュ検知のみ実施 — Phase 3a/3bで行われていた「スクリーンショットで確認」に相当する視覚検証はユーザー自身に委ねる必要がある
+
+**教訓:** Phase 4aのコードレビューで見つかった「`ExecutionContext`が`SelectionModel&`を保持するが未使用」という altitude 指摘 (「早すぎる抽象化では」という懸念) は、Phase 4bで実際にキーボード入力を配線する段になって「編集後にカーソルをどこへ動かすか」という実需要が生まれ、まさにその未使用フィールドで解決するという形で正当化された。レビュー段階で「今は使われていない」と映った設計が、次フェーズの実装で自然に活きるケースがあることを示す一例。また、`FrameState`とキャレットの相互作用(粗粒度フレームスキップがキャレット単独移動を握りつぶす)はレビューでは発見されず実装中に気づいた — 既存の最適化機構に新機能を足すときは、その機構の判定条件を毎回洗い出す必要があるという教訓。
+
+**次回 (Phase 4b2):** マウスクリックでのカーソル位置特定 (`WM_LBUTTONDOWN` + `IDWriteTextLayout::HitTestPoint`、このコードベースに前例なし)、選択範囲のハイライト描画。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.9/§6 参照。
 
 <!-- 次セッションはここに追記 -->

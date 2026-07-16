@@ -4,7 +4,7 @@
 
 namespace neomifes::core {
 
-void Viewport::ensureVisible(document::TextPos pos, const document::Document& doc) noexcept {
+void Viewport::ensureVisible(document::TextPos pos, const document::Document& doc) {
     const document::LineNumber line = doc.offsetToLine(pos);
     if (line < m_topLine) {
         m_topLine = line;

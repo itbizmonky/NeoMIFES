@@ -39,7 +39,7 @@ public:
 
     // Adjusts topLine (if needed) so the line containing `pos` falls inside
     // the currently visible window.
-    void ensureVisible(document::TextPos pos, const document::Document& doc) noexcept;
+    void ensureVisible(document::TextPos pos, const document::Document& doc);
 
     void setVisibleLineCount(std::uint32_t count) noexcept { m_visibleLineCount = count; }
 

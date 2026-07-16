@@ -23,6 +23,10 @@ public:
     void undo(ExecutionContext&) override;
     [[nodiscard]] std::size_t      weight() const noexcept override;
     [[nodiscard]] std::string_view id() const noexcept override { return "edit.insert"; }
+    [[nodiscard]] document::TextPos cursorPositionAfterExecute() const noexcept override {
+        return m_pos + m_text.size();
+    }
+    [[nodiscard]] document::TextPos cursorPositionAfterUndo() const noexcept override { return m_pos; }
 
 private:
     document::TextPos m_pos;
@@ -37,6 +41,12 @@ public:
     void undo(ExecutionContext&) override;
     [[nodiscard]] std::size_t      weight() const noexcept override;
     [[nodiscard]] std::string_view id() const noexcept override { return "edit.delete"; }
+    [[nodiscard]] document::TextPos cursorPositionAfterExecute() const noexcept override {
+        return m_range.start;
+    }
+    [[nodiscard]] document::TextPos cursorPositionAfterUndo() const noexcept override {
+        return m_range.start + m_deletedText.size();
+    }
 
 private:
     document::TextRange m_range;
@@ -53,6 +63,12 @@ public:
     void undo(ExecutionContext&) override;
     [[nodiscard]] std::size_t      weight() const noexcept override;
     [[nodiscard]] std::string_view id() const noexcept override { return "edit.replace"; }
+    [[nodiscard]] document::TextPos cursorPositionAfterExecute() const noexcept override {
+        return m_range.start + m_newText.size();
+    }
+    [[nodiscard]] document::TextPos cursorPositionAfterUndo() const noexcept override {
+        return m_range.start + m_oldText.size();
+    }
 
 private:
     document::TextRange m_range;

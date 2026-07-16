@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "neomifes/core/selection_model.h"
+
 namespace neomifes::core {
 
 CommandDispatcher::CommandDispatcher(document::Document& document, SelectionModel& selection) noexcept
@@ -9,6 +11,7 @@ CommandDispatcher::CommandDispatcher(document::Document& document, SelectionMode
 
 void CommandDispatcher::dispatch(std::unique_ptr<ICommand> command) {
     command->execute(m_context);
+    m_context.selection().moveAllTo(command->cursorPositionAfterExecute());
     m_undoStack.push(std::move(command));
 }
 

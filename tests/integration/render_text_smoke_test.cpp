@@ -172,6 +172,44 @@ TEST(RenderTextSmokeTest, IdenticalStateRenderSkipsEntirelyButChangedStateDoesNo
                 statsAfterThird.misses != statsAfterFirst.misses);
 }
 
+TEST(RenderTextSmokeTest, CaretOnlyMovementForcesRedrawInsteadOfFrameSkip) {
+    // Phase 4b1: FrameState now includes caretPosition specifically so that
+    // moving the caret alone (Document/topLine/size/DPI all unchanged) is
+    // not swallowed by the Phase 3c coarse frame-skip. Same technique as
+    // IdenticalStateRenderSkipsEntirelyButChangedStateDoesNot above: a
+    // genuine skip leaves layout-cache stats completely frozen, so a caret
+    // move that still shows movement here proves the skip did NOT trigger.
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+    pipeline.setCaretPosition(0);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // Move the caret only - everything else stays identical.
+    pipeline.setCaretPosition(3);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (caret moved) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "caret-only movement was frame-skipped instead of triggering a redraw";
+}
+
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();

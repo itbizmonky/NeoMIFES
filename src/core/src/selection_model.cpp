@@ -94,6 +94,14 @@ void SelectionModel::collapseToPrimary() {
     m_cursors.assign(1, primary);
 }
 
+void SelectionModel::moveAllTo(document::TextPos position) {
+    for (Cursor& cursor : m_cursors) {
+        cursor.position = position;
+        cursor.anchor   = position;
+    }
+    mergeOverlapping();
+}
+
 const Cursor& SelectionModel::primaryCursor() const noexcept {
     for (const Cursor& cursor : m_cursors) {
         if (cursor.isPrimary) {
@@ -104,6 +112,9 @@ const Cursor& SelectionModel::primaryCursor() const noexcept {
 }
 
 void SelectionModel::mergeOverlapping() {
+    if (m_cursors.size() <= 1) {
+        return;
+    }
     std::ranges::sort(m_cursors, {}, [](const Cursor& c) { return std::min(c.position, c.anchor); });
 
     std::vector<Cursor> merged;

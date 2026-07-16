@@ -48,6 +48,21 @@ TEST(CommandDispatcherTest, UndoOnEmptyHistoryReturnsFalse) {
     EXPECT_FALSE(dispatcher.undo());
 }
 
+TEST(CommandDispatcherTest, DispatchUndoRedoMoveCursorToCommandReportedPositions) {
+    Document          doc;
+    SelectionModel    selection(0);
+    CommandDispatcher dispatcher(doc, selection);
+
+    dispatcher.dispatch(std::make_unique<InsertTextCommand>(0, u"hello"));
+    EXPECT_EQ(selection.primaryCursor().position, 5U);  // end of inserted text
+
+    ASSERT_TRUE(dispatcher.undo());
+    EXPECT_EQ(selection.primaryCursor().position, 0U);  // back to insertion point
+
+    ASSERT_TRUE(dispatcher.redo());
+    EXPECT_EQ(selection.primaryCursor().position, 5U);  // end of inserted text again
+}
+
 TEST(CommandDispatcherTest, MultipleCommandsUndoInReverseOrder) {
     Document          doc;
     SelectionModel    selection;

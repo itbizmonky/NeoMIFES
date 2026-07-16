@@ -64,6 +64,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .width           = m_width,
         .height          = m_height,
         .dpiScale        = m_dpiScale,
+        .caretPosition   = m_caretPosition,
     };
 }
 
@@ -241,6 +242,15 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     const std::u16string text =
         m_cachedSnapshot->extract(TextRange{.start = startOffset, .end = endOffset});
 
+    // Caret line/column, computed once (Phase 4b1). Only meaningful if it
+    // falls within [startLine, endLineExclusive) - checked per-iteration
+    // below rather than skipped here, since a caret outside the visible
+    // range (e.g. ensureVisible() hasn't run yet for this frame) simply
+    // never matches `line == caretLine` in the loop.
+    const LineNumber caretLine = m_document->offsetToLine(m_caretPosition);
+    const auto caretColumn =
+        static_cast<std::uint32_t>(m_caretPosition - m_document->lineToOffset(caretLine));
+
     std::u16string_view remaining(text);
     float                y = 0.0F;
     for (LineNumber line = startLine; line < endLineExclusive; ++line) {
@@ -253,6 +263,9 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
                                       kMaxLayoutWidthDips, kMaxLayoutHeightDips);
         if (layoutResult.has_value()) {
             dc.DrawTextLayout(D2D1::Point2F(0.0F, y), *layoutResult, m_textBrush.Get());
+            if (line == caretLine) {
+                drawCaretOnLine(dc, **layoutResult, y, caretColumn);
+            }
         }
         // A layout-creation failure for a single line is no worse than the
         // pre-Phase-3c behavior of DrawText() silently failing per-call - it
@@ -264,6 +277,24 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         }
         remaining = remaining.substr(newlinePos + 1);
     }
+}
+
+void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                                     std::uint32_t column) noexcept {
+    if (!m_textBrush) {
+        return;
+    }
+    DWRITE_HIT_TEST_METRICS metrics{};
+    float                    caretX = 0.0F;
+    float                    caretY = 0.0F;
+    const HRESULT hr = layout.HitTestTextPosition(column, FALSE, &caretX, &caretY, &metrics);
+    if (FAILED(hr)) {
+        return;
+    }
+    constexpr float kCaretWidthDips = 1.5F;
+    const D2D1_RECT_F caretRect =
+        D2D1::RectF(caretX, y, caretX + kCaretWidthDips, y + m_lineHeightDips);
+    dc.FillRectangle(caretRect, m_textBrush.Get());
 }
 
 RenderExpected<void> RenderPipeline::renderOnce() noexcept {

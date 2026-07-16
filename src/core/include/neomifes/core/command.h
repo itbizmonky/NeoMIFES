@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <string_view>
 
+#include "neomifes/document/text_pos.h"
+
 namespace neomifes::document {
 class Document;
 }
@@ -45,6 +47,13 @@ public:
     // part of ICommand's required surface (detailed_design.md sec.6.1).
     [[nodiscard]] virtual std::size_t weight() const noexcept = 0;
     [[nodiscard]] virtual std::string_view id() const noexcept = 0;
+
+    // Where the primary cursor should land right after execute()/undo() has
+    // run. CommandDispatcher/UndoStack call SelectionModel::moveAllTo() with
+    // these so the caret tracks edits without every input-handling call site
+    // having to compute it itself (Phase 4b1).
+    [[nodiscard]] virtual document::TextPos cursorPositionAfterExecute() const noexcept = 0;
+    [[nodiscard]] virtual document::TextPos cursorPositionAfterUndo() const noexcept    = 0;
 };
 
 }  // namespace neomifes::core

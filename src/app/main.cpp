@@ -46,6 +46,10 @@
 #include <variant>
 #include <vector>
 
+#include "neomifes/app/editor_input.h"
+#include "neomifes/core/command_dispatcher.h"
+#include "neomifes/core/selection_model.h"
+#include "neomifes/core/viewport.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
 #include "neomifes/platform/handle_guard.h"
@@ -61,6 +65,9 @@ namespace {
 
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
+using neomifes::core::CommandDispatcher;
+using neomifes::core::SelectionModel;
+using neomifes::core::Viewport;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::LoadResult;
@@ -309,11 +316,24 @@ void wireMeasureStartupOrMemoryMode(MainWindowConfig& cfg, StartupProfile& profi
     };
 }
 
+// Bridges core::Viewport/SelectionModel state into RenderPipeline and
+// requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel
+// below (Phase 4b1). RenderPipeline stays core-agnostic (setTopLine/
+// setCaretPosition take plain document types), so this glue lives here in
+// the app layer rather than in either core or render.
+void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
+                                  const SelectionModel& selection, const Viewport& viewport) {
+    renderPipeline.setTopLine(viewport.topLine());
+    renderPipeline.setCaretPosition(selection.primaryCursor().position);
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
-                    Document& document) {
+                    Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
+                    Viewport& viewport) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
@@ -337,6 +357,26 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         if (!resized) {
             debugLogRenderError("RenderPipeline::resize", resized.error());
         }
+    };
+    cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
+                        HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+        const bool changed = neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, dispatcher,
+                                                          selectionModel, viewport, document);
+        if (changed) {
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        }
+    };
+    cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
+                     HWND hwnd, wchar_t ch) {
+        const bool changed =
+            neomifes::app::handleChar(ch, dispatcher, selectionModel, viewport, document);
+        if (changed) {
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        }
+    };
+    cfg.onMouseWheel = [&viewport, &selectionModel, &renderPipeline](HWND hwnd, short wheelDelta) {
+        viewport.scrollTo(neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine()));
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
 }
 
@@ -392,6 +432,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     Document      document               = prepareDocument(args, syntheticLineCountUsed);
     FrameProfile  frameProfile{};
 
+    // Editor Core state (Phase 4b1) - Normal-mode-only in practice (only
+    // wireNormalMode's hooks ever touch these), but declared unconditionally
+    // like `document` above since CommandDispatcher must be constructed
+    // with a valid Document& regardless of launch mode.
+    SelectionModel    selectionModel{0};
+    CommandDispatcher dispatcher{document, selectionModel};
+    Viewport          viewport;
+
     MainWindow window;
     MainWindowConfig cfg{};
     RenderPipeline renderPipeline;
@@ -405,7 +453,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireMeasureFrameMode(cfg, window, renderPipeline, document, frameProfile,
                              syntheticLineCountUsed);
     } else {
-        wireNormalMode(cfg, window, renderPipeline, document);
+        wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport);
     }
 
     if (!window.create(hInstance, cfg)) {

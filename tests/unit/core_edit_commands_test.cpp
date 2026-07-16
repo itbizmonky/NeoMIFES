@@ -22,9 +22,11 @@ TEST(InsertTextCommandTest, ExecuteInsertsThenUndoRemoves) {
     InsertTextCommand cmd(0, u"hello");
     cmd.execute(ctx);
     EXPECT_EQ(doc.toU16String(), u"hello");
+    EXPECT_EQ(cmd.cursorPositionAfterExecute(), 5U);
 
     cmd.undo(ctx);
     EXPECT_EQ(doc.toU16String(), u"");
+    EXPECT_EQ(cmd.cursorPositionAfterUndo(), 0U);
 }
 
 TEST(InsertTextCommandTest, WeightMatchesTextSizeFormula) {
@@ -41,9 +43,11 @@ TEST(DeleteRangeCommandTest, ExecuteDeletesThenUndoRestoresExactText) {
     DeleteRangeCommand cmd(TextRange{.start = 5, .end = 11});  // " world"
     cmd.execute(ctx);
     EXPECT_EQ(doc.toU16String(), u"hello");
+    EXPECT_EQ(cmd.cursorPositionAfterExecute(), 5U);
 
     cmd.undo(ctx);
     EXPECT_EQ(doc.toU16String(), u"hello world");
+    EXPECT_EQ(cmd.cursorPositionAfterUndo(), 11U);  // end of the restored " world"
 }
 
 TEST(ReplaceRangeCommandTest, ExecuteReplacesThenUndoRestoresOriginal) {
@@ -55,9 +59,11 @@ TEST(ReplaceRangeCommandTest, ExecuteReplacesThenUndoRestoresOriginal) {
     ReplaceRangeCommand cmd(TextRange{.start = 0, .end = 5}, u"HELLO");
     cmd.execute(ctx);
     EXPECT_EQ(doc.toU16String(), u"HELLO world");
+    EXPECT_EQ(cmd.cursorPositionAfterExecute(), 5U);
 
     cmd.undo(ctx);
     EXPECT_EQ(doc.toU16String(), u"hello world");
+    EXPECT_EQ(cmd.cursorPositionAfterUndo(), 5U);
 }
 
 TEST(ReplaceRangeCommandTest, UndoRestoresOriginalLengthWhenReplacementIsLonger) {
