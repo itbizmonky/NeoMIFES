@@ -20,7 +20,7 @@ bool UndoStack::undo(ExecutionContext& ctx) {
     command->undo(ctx);
     // command is still valid here - only ownership moves into m_redo below,
     // the pointee is untouched by that move.
-    ctx.selection().moveAllTo(command->cursorPositionAfterUndo());
+    ctx.selection().setCursors(command->cursorsAfterUndo());
     m_redo.push_back(std::move(command));
     return true;
 }
@@ -32,7 +32,7 @@ bool UndoStack::redo(ExecutionContext& ctx) {
     std::unique_ptr<ICommand> command = std::move(m_redo.back());
     m_redo.pop_back();
     command->execute(ctx);
-    ctx.selection().moveAllTo(command->cursorPositionAfterExecute());
+    ctx.selection().setCursors(command->cursorsAfterExecute());
     m_undo.push_back(std::move(command));
     return true;
 }

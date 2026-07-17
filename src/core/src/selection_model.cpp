@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <string>
+#include <utility>
 
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
@@ -125,6 +126,11 @@ void SelectionModel::moveAllTo(document::TextPos position, bool extendSelection)
             cursor.anchor = position;
         }
     }
+    mergeOverlapping();
+}
+
+void SelectionModel::setCursors(std::vector<Cursor> cursors) {
+    m_cursors = std::move(cursors);
     mergeOverlapping();
 }
 

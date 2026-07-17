@@ -11,7 +11,9 @@
 
 #include <cstddef>
 #include <string_view>
+#include <vector>
 
+#include "neomifes/core/cursor.h"
 #include "neomifes/document/text_pos.h"
 
 namespace neomifes::document {
@@ -48,12 +50,14 @@ public:
     [[nodiscard]] virtual std::size_t weight() const noexcept = 0;
     [[nodiscard]] virtual std::string_view id() const noexcept = 0;
 
-    // Where the primary cursor should land right after execute()/undo() has
-    // run. CommandDispatcher/UndoStack call SelectionModel::moveAllTo() with
-    // these so the caret tracks edits without every input-handling call site
-    // having to compute it itself (Phase 4b1).
-    [[nodiscard]] virtual document::TextPos cursorPositionAfterExecute() const noexcept = 0;
-    [[nodiscard]] virtual document::TextPos cursorPositionAfterUndo() const noexcept    = 0;
+    // The full cursor set SelectionModel should hold right after execute()/
+    // undo() has run. CommandDispatcher/UndoStack call
+    // SelectionModel::setCursors() with these so every cursor (not just the
+    // primary one) tracks edits without every input-handling call site
+    // having to compute it itself (Phase 4b1, generalized to N cursors in
+    // Phase 4b5a). Single-cursor commands return a single-element vector.
+    [[nodiscard]] virtual std::vector<Cursor> cursorsAfterExecute() const = 0;
+    [[nodiscard]] virtual std::vector<Cursor> cursorsAfterUndo() const    = 0;
 };
 
 }  // namespace neomifes::core

@@ -53,10 +53,16 @@ public:
     // false (default), anchor is set to the same value (selection cleared) -
     // used after an edit or undo/redo moves the document out from under a
     // cursor's old offset (edit commands don't touch SelectionModel
-    // themselves - see ICommand::cursorPositionAfter*). When true, anchor is
-    // left in place (Shift+click semantics, Phase 4b2), mirroring moveAll's
-    // extendSelection parameter.
+    // themselves - see ICommand::cursorsAfterExecute()/cursorsAfterUndo()).
+    // When true, anchor is left in place (Shift+click semantics, Phase 4b2),
+    // mirroring moveAll's extendSelection parameter.
     void moveAllTo(document::TextPos position, bool extendSelection = false);
+
+    // Replaces the entire cursor set (e.g. with ICommand::cursorsAfterExecute()/
+    // cursorsAfterUndo() after a multi-cursor edit, Phase 4b5a). Triggers a
+    // merge pass, same as addCursor() - two cursors whose edits landed on the
+    // same final position collapse into one.
+    void setCursors(std::vector<Cursor> cursors);
 
     // Selects the "word" (or single punctuation character, or run of
     // whitespace) at `pos`, using simple character-class boundaries rather

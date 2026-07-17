@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <vector>
+
+#include "neomifes/core/cursor.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/document/document.h"
 
 namespace {
 
+using neomifes::core::Cursor;
 using neomifes::core::MovementKind;
 using neomifes::core::SelectionModel;
 using neomifes::document::Document;
@@ -258,6 +262,28 @@ TEST(SelectionModelTest, SelectWordAtOnEmptyLineIsNoOp) {
     model.selectWordAt(2, doc);
     EXPECT_FALSE(model.primaryCursor().hasSelection());
     EXPECT_EQ(model.primaryCursor().position, 2U);
+}
+
+TEST(SelectionModelTest, SetCursorsReplacesEntireCursorSet) {
+    SelectionModel model(0);
+    model.addCursor(6);
+    ASSERT_EQ(model.cursors().size(), 2U);
+
+    model.setCursors(std::vector<Cursor>{Cursor{.position = 2, .anchor = 1, .isPrimary = true},
+                                         Cursor{.position = 9, .anchor = 9, .isPrimary = false}});
+    ASSERT_EQ(model.cursors().size(), 2U);
+    EXPECT_EQ(model.cursors()[0].anchor, 1U);
+    EXPECT_EQ(model.cursors()[0].position, 2U);
+    EXPECT_EQ(model.cursors()[1].position, 9U);
+    EXPECT_TRUE(model.primaryCursor().position == 2U);
+}
+
+TEST(SelectionModelTest, SetCursorsMergesCursorsThatLandOnTheSamePosition) {
+    SelectionModel model(0);
+
+    model.setCursors(std::vector<Cursor>{Cursor{.position = 3, .anchor = 3, .isPrimary = true},
+                                         Cursor{.position = 3, .anchor = 3, .isPrimary = false}});
+    EXPECT_EQ(model.cursors().size(), 1U);
 }
 
 TEST(SelectionModelTest, SelectLineAtIncludesTrailingNewlineExceptOnLastLine) {

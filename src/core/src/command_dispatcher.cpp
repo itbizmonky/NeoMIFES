@@ -11,7 +11,7 @@ CommandDispatcher::CommandDispatcher(document::Document& document, SelectionMode
 
 void CommandDispatcher::dispatch(std::unique_ptr<ICommand> command) {
     command->execute(m_context);
-    m_context.selection().moveAllTo(command->cursorPositionAfterExecute());
+    m_context.selection().setCursors(command->cursorsAfterExecute());
     m_undoStack.push(std::move(command));
 }
 
