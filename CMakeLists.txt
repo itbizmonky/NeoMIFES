@@ -60,8 +60,12 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompileOptions)
 include(Sanitizers)
 
+# Dependencies.cmake fetches RE2/Abseil unconditionally (Phase 5a: the
+# Search Engine is a core runtime dependency, not test-only) and gates
+# GoogleTest/benchmark internally on NEOMIFES_BUILD_TESTS.
+include(Dependencies)
+
 if(NEOMIFES_BUILD_TESTS)
-    include(Dependencies)
     enable_testing()
 endif()
 

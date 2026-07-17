@@ -1,4 +1,5 @@
 add_library(neomifes_util STATIC
+    src/utf8_convert.cpp
     src/version.cpp
 )
 add_library(neomifes::util ALIAS neomifes_util)

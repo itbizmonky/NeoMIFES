@@ -1,6 +1,7 @@
 add_executable(neomifes_unit_tests
     util_version_test.cpp
     util_wchar_cast_test.cpp
+    util_utf8_convert_test.cpp
     platform_perf_clock_test.cpp
     platform_process_metrics_test.cpp
     platform_file_mapping_test.cpp
@@ -23,6 +24,7 @@ add_executable(neomifes_unit_tests
     core_viewport_test.cpp
     app_editor_input_test.cpp
     ui_click_tracking_test.cpp
+    search_search_service_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -33,6 +35,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::document
         neomifes::render
         neomifes::core
+        neomifes::search
         neomifes::app_input
         neomifes::ui
         GTest::gtest

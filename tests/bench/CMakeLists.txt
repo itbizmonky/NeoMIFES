@@ -63,3 +63,20 @@ target_link_libraries(neomifes_core_bench
 set_target_properties(neomifes_core_bench PROPERTIES
     FOLDER "tests"
 )
+
+add_executable(neomifes_search_bench
+    search_find_all_bench.cpp
+)
+
+target_link_libraries(neomifes_search_bench
+    PRIVATE
+        neomifes::compile_options
+        neomifes::search
+        neomifes::document
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+set_target_properties(neomifes_search_bench PROPERTIES
+    FOLDER "tests"
+)
