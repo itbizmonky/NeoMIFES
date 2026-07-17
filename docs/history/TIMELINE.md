@@ -676,6 +676,42 @@
 
 **教訓 (Phase 4b6a〜4b6d):** (1) 「既存の単一カーソル向けプリミティブを一般化してから複数のユースケースで共有する」パターンが本フェーズでも繰り返し有効だった — `moveVertically`のUp/Down→PageUp/PageDown一般化、`classify()`のselectWordAt→moveByWord共有、いずれも新規ロジックをほぼ書かずに済んだ。(2) clang-tidyのcognitive complexityチェックは「ラムダの本体がどこで実行されるか」ではなく「ラムダがどこに書かれているか(字面上のネスト)」を見るため、分岐を関数に切り出しても、ラムダ自体がまだ大きい関数の中にインライン定義されていれば複雑度は下がりきらない — 呼び出し元の複雑度を本当に下げるには、ラムダ本体そのものを外に出す必要がある。(3) Phase 4b5bのUBSan(clang-cl)障害を踏まえて「新規Win32 API面を追加したら`ubsan`プリセットも試す」を4b6cで実践した結果、実際に2件のclang-cl固有の指摘(special-member-functions、bugprone-suspicious-stringview-data-usage)を事前に検出できた — 教訓が実運用で機能した最初の確認事例。
 
-**次回 (Phase 4b7):** スコープ未確定。候補: 複数行にまたがる単語移動、複数カーソルを跨いだクリップボードコピー/ペーストの分配、**複数カーソルの視覚的描画**(RenderPipelineが複数のキャレット/選択範囲を保持・描画できるようにする、Phase 4b5a以降の既知の制限で優先度検討の価値あり)、ダブルクリック→ドラッグでの単語単位ドラッグ拡張、`WM_CAPTURECHANGED`の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール、段落単位移動。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.14/§6 参照。次セッション開始時にユーザーとスコープを確認すること。
+## Session 24 (2026-07-17): Phase 4b7a〜4b7c (複数カーソル視覚描画・複数行単語移動・複数カーソルクリップボード)
+
+**Phase 4b6 push・CI確認:** ユーザーが「pushせよ」と指示、Phase 4b6a〜4b6d + 設計ドキュメント同期の全コミットをpush。CI (`gh run`) で4ジョブ (Build&Test debug/release・UBSan・clang-tidy) 全green確認。
+
+**Phase 4b7 スコープ確認:** ユーザーが「着手せよ」と指示したがPhase 4b7自体のスコープが未確定だったため、AskUserQuestionで確認。候補のうち**複数カーソルの視覚的描画**(推奨案として提示)・**複数行にまたがる単語移動**・**複数カーソルを跨いだクリップボード**の3項目が選択された(「その他」も選択されたが自由記述欄への具体的な記入は無かったため、この3項目のみをスコープとして扱った)。
+
+**計画フェーズ:** CLAUDE.mdルール8「1PR=1責務」に従い、Plan Modeで **4b7a(視覚描画)→4b7b(複数行単語移動)→4b7c(複数カーソルクリップボード)** の順に分割する計画を立案。4b7aを最初にした理由は2点: (1) `RenderPipeline`の構造変更を伴う最も規模の大きい変更を早期に着手・検証したい、(2) これが完了すると Phase 4b5a以降ずっと視覚的に確認できなかった複数カーソルの効果(4b5b/4b6dのAlt+クリック/Alt+Shift拡張)が初めて画面上で見えるようになり、既存機能の実効的な検証価値も持つため。ExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物 (Phase 4b7a — 複数カーソルの視覚的描画):**
+- `RenderPipeline`に新規値型`CursorVisual{TextPos position; TextRange selectionRange;}`(`= default`な`operator==`込み)を追加。単一値の`setCaretPosition()`/`setSelectionRange()`を1本の`setCursorVisuals(std::vector<CursorVisual>)`に置き換え(2つのAPIが常に対で呼ばれていた実情に合わせ1呼び出しでアトミックに更新できるようにした)。`FrameState::caretPosition`/`selectionRange`も`std::vector<CursorVisual> cursorVisuals`に置き換え、粗粒度フレームスキップが複数カーソルの変化を正しく検知するようにした
+- `drawVisibleLines()`を書き換え: 全`CursorVisual`の行・列を可視行ループの外側で1回だけ事前計算する新規private関数`computeCaretDraws()`を追加(`offsetToLine()`呼び出しをカーソル数分に抑え、可視行数×カーソル数にしない)。選択ハイライト描画・キャレット描画もそれぞれ`drawSelectionsOnLine()`/`drawCaretsOnLine()`という新規private関数に分離し、可視行ループ内で全`CursorVisual`をイテレートして該当行のものだけ描画する形に一般化
+- `main.cpp`の`syncRenderStateAndInvalidate()`を書き換え、`selection.cursors()`全件から`CursorVisual`のvectorを組み立てて`setCursorVisuals()`を1回呼ぶ形に変更
+- `tests/integration/render_text_smoke_test.cpp`: 既存3テストを新APIに移行、新規`MultipleCursorVisualsRenderWithoutErrorAndForceRedraw`(3カーソル・一部選択ありを混在させてエラー無く描画完了することを検証)を追加
+- 実アプリ (`NeoMIFES.exe`) を起動しAlt+クリックで複数カーソルを追加、**ユーザー自身の目視確認**で各カーソルのキャレット/選択ハイライトが実際に画面へ描画されることを確認(このセッションにはネイティブWin32ウィンドウのスクリーンショット/GUI自動化ツールが無く[[reference-no-win32-gui-automation]]、Phase 4b7aの主目的が視覚的検証そのものだったため、他フェーズ以上にユーザー確認の比重を高くした)。ユーザーは確認後「進め」と回答し4b7bへ継続を指示
+
+**成果物 (Phase 4b7b — 複数行にまたがる単語移動):**
+- Phase 4b6bの単一行スコープの`moveByWord()`を、行境界を跨いで走査を継続する`moveByWordForward()`/`moveByWordBackward()`に分割・拡張。無名namespace内の`skipWhitespaceForward()`/`skipWhitespaceBackward()`ヘルパーが、空白(行末の仮想的な区切り含む)を行を跨いで読み飛ばす処理を担う。空行は「純粋な空白1個分」として扱い通過する(明示的な停止はしない — 単語移動の簡易さを優先し段落移動とは役割を分離)
+- 行を跨ぐ処理は既存パターン(`doc.snapshot()->extract()`で1行分だけ取得)を繰り返すループとして実装し、文書全体の一括extractは避けた(巨大ファイルでのメモリ安全性を既存コードの流儀と揃えた)
+- `tests/unit/core_selection_model_test.cpp`: 旧`WordLeftRightStayWithinCurrentLine`を`WordRightCrossesLineBoundaryToNextWord`/`WordLeftCrossesLineBoundaryToPreviousWord`/`WordRightSkipsOverAnEntireEmptyLine`/`WordLeftSkipsOverAnEntireEmptyLine`/`WordRightAtDocumentEndOfMultiLineDocIsNoOp`/`WordLeftAtDocumentStartOfMultiLineDocIsNoOp`の6件に置き換え
+- テスト作成時、"foo\nbar"間のような「実際の空白文字を挟まない改行1個」がShift無しの単一行内の空白1個(既存の`WordRightFromMidWhitespaceAlsoLandsAtNextWordStart`が示す通り1回のキー押下でスキップされる)と全く同じ扱いになる(1回の`WordRight`で"foo"の末尾から"bar"の先頭へ直接到達する)ことにテスト実行時に気づき、当初の期待値(2回のキー押下を想定)を実装ではなくテスト側の誤りと判断して修正した
+
+**成果物 (Phase 4b7c — 複数カーソルを跨いだクリップボード):**
+- **スコープをVSCode等が行う「コピー時のカーソル数とペースト時のカーソル数が一致すれば1対1で分配する」高度な対応の対象外**とし、シンプルな規則を採用: コピー/カットは選択を持つ全カーソルのテキストを昇順`\n`連結、ペーストは同一テキストを全カーソルへ同一内容として適用(選択があれば置換) — `handleChar()`の既存の「全カーソルへ同じテキストを適用する」規則と統一
+- `editor_input.cpp`に無名namespace内の共通ヘルパー`insertTextAtEveryCursor()`を新設し、`handleChar()`/`handlePaste()`双方が同じ「全カーソルへテキスト適用→`MultiCursorEditCommand`を1回ディスパッチ」ロジックを共有するよう統合。`textToCopy()`は全カーソルを走査し選択を持つものだけ`\n`連結する形に一般化
+- 新規`deleteAllSelections()`(既存`applyDeleteKey()`と同じ「1カーソル1エントリ、no-opも明示的に1エントリ」パターンを流用)を追加し、`main.cpp`の`handleClipboardKey()`のCut分岐がこれを呼ぶよう変更。これにより`main.cpp`から`DeleteRangeCommand`/`edit_commands.h`への直接依存が不要になった(編集ロジックをeditor_input層に集約する既存方針への統一)
+- `tests/unit/app_editor_input_test.cpp`: `TextToCopyJoinsMultipleSelectionsWithNewline`/`TextToCopySkipsCursorsWithoutSelection`/`HandlePasteInsertsAtEveryCursor`/`DeleteAllSelectionsDeletesEachCursorsSelection`/`DeleteAllSelectionsLeavesCursorsWithoutSelectionUntouched`/`DeleteAllSelectionsReturnsFalseWithNoSelectionsAtAll`の6件を追加
+
+**検証 (Phase 4b7a〜4b7c 通し):**
+- ローカル Debug/Release 両方でフルビルド・全テストpass(各サブフェーズ完了ごとに実施、累積)。ctestで最終確認した総テスト数は250(単体+12・統合+1、内訳は各サブフェーズの成果物節を参照)
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、変更/新規ファイル対象) で複数件検出・修正: 4b7aの`drawVisibleLines()`が`readability-function-cognitive-complexity`(33、閾値25)に抵触し`computeCaretDraws()`/`drawCaretsOnLine()`/`drawSelectionsOnLine()`への分離で解消。再スキャンで0警告確認
+- Phase 4b5b以来の教訓に従い、4b7aで新規`= default`な`CursorVisual::operator==`を追加した際、ローカル`ubsan`(clang-cl)プリセットで検証 — `TextPos`(uint64_t)と`TextRange`(既存`operator==`済み)のみをメンバに持つため実際に安全であることを確認できた(問題は検出されず)
+- 実アプリで4b7aの視覚確認に続き、PageUp/PageDown・複数行を跨ぐCtrl+矢印・複数カーソルCtrl+C/X/V+Undo/Redoを含む複合操作をP/Invokeでシミュレートし、クラッシュなし・応答性維持を確認
+- **既知の限界:** 4b7a自体の視覚検証はユーザー自身の目視確認に依存しており、以降のセッションでの回帰は自動検証されない([[reference-no-win32-gui-automation]])
+
+**教訓 (Phase 4b7a〜4b7c):** (1) 「既存の単一値/単一カーソル向けプリミティブを一般化してから複数のユースケースで共有する」パターンが本フェーズでも一貫して有効だった — `CursorVisual`による単一キャレット/選択→vector化、`classify()`/`CharKind`の単一行→複数行`moveByWord*`への転用、`insertTextAtEveryCursor()`による`handleChar`/`handlePaste`の統合、いずれも並行する特別処理を増やさずに済んだ。(2) Phase 4b6cで確立した「ラムダの本体そのものを外に出さないとcognitive complexityは下がりきらない」教訓は本フェーズでは新規発生せず(`drawVisibleLines()`は元々独立関数だったため分離のみで解消)、教訓が状況依存であることの確認になった。(3) Phase 4b7aでユーザー自身の視覚確認を明示的に依頼したことで、Phase 4b5a以降積み残されていた「複数カーソルは見えているのか」という疑問に初めて実証的な答えが得られた — 視覚検証手段を持たないこの開発環境では、実装が完了した時点でなく「視覚的に意味のある変化が生まれた時点」でユーザー確認を挟むことが、確認の密度と実装速度のバランスとして機能した。
+
+**次回 (Phase 4b8):** スコープ未確定。候補: 複数カーソルを跨いだクリップボードのN対N分配(コピー時とペースト時のカーソル数が一致する場合の1対1分配、クリップボードへのメタデータ付加を要する)、段落単位移動、ダブルクリック→ドラッグでの単語単位ドラッグ拡張、`WM_CAPTURECHANGED`の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.15/§6 参照。次セッション開始時にユーザーとスコープを確認すること。
 
 <!-- 次セッションはここに追記 -->
