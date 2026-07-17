@@ -33,9 +33,10 @@ enum class MovementKind : std::uint8_t {
     PageUp,    // Phase 4b6a - moveAll()'s pageSize argument supplies the jump size
     PageDown,  // Phase 4b6a
     // Phase 4b6b - simple character-class word boundaries (same rule as
-    // selectWordAt(), Phase 4b4), confined to the current line: at a line's
-    // start/end, WordLeft/WordRight stop there rather than crossing into the
-    // adjacent line (deliberate scope limit, see selection_model.cpp).
+    // selectWordAt(), Phase 4b4). Crosses line boundaries (Phase 4b7b),
+    // treating each line break (and any empty line) as whitespace - a
+    // distinct stop at paragraph breaks is a separate, unimplemented
+    // concern (see selection_model.cpp).
     WordLeft,
     WordRight,
 };

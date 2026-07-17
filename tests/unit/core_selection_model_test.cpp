@@ -131,17 +131,68 @@ TEST(SelectionModelTest, WordLeftAtLineStartIsNoOp) {
     EXPECT_EQ(model.primaryCursor().position, 0U);
 }
 
-TEST(SelectionModelTest, WordLeftRightStayWithinCurrentLine) {
+TEST(SelectionModelTest, WordRightCrossesLineBoundaryToNextWord) {
+    // A lone line break between two words behaves like a single space would
+    // within one line (WordRightFromMidWhitespaceAlsoLandsAtNextWordStart
+    // above): there's no whitespace *character* to stop within, so one
+    // press lands directly at the next word's start.
     Document doc;
     doc.insertText(0, u"foo\nbar");
     SelectionModel model(0);  // start of "foo"
 
-    model.moveAll(MovementKind::WordLeft, doc, false);
-    EXPECT_EQ(model.primaryCursor().position, 0U);  // clamped, doesn't cross into a previous line
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 4U);  // crossed the line break to start of "bar"
 
-    SelectionModel model2(3);  // end of "foo", right before '\n'
-    model2.moveAll(MovementKind::WordRight, doc, false);
-    EXPECT_EQ(model2.primaryCursor().position, 3U);  // clamped, doesn't cross into "bar"
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 7U);  // end of "bar" / end of document
+}
+
+TEST(SelectionModelTest, WordLeftCrossesLineBoundaryToPreviousWord) {
+    Document doc;
+    doc.insertText(0, u"foo\nbar");
+    SelectionModel model(7);  // end of "bar" (end of document)
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 4U);  // start of "bar"
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 0U);  // crossed the line break to start of "foo"
+}
+
+TEST(SelectionModelTest, WordRightSkipsOverAnEntireEmptyLine) {
+    Document doc;
+    doc.insertText(0, u"a\n\nb");  // line 1 (offset 2) is empty
+    SelectionModel model(0);
+
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 3U);  // start of "b", skipping the empty line entirely
+}
+
+TEST(SelectionModelTest, WordLeftSkipsOverAnEntireEmptyLine) {
+    Document doc;
+    doc.insertText(0, u"a\n\nb");
+    SelectionModel model(3);  // start of "b"
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 0U);  // start of "a", skipping the empty line entirely
+}
+
+TEST(SelectionModelTest, WordRightAtDocumentEndOfMultiLineDocIsNoOp) {
+    Document doc;
+    doc.insertText(0, u"foo\nbar");
+    SelectionModel model(7);  // end of document
+
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 7U);
+}
+
+TEST(SelectionModelTest, WordLeftAtDocumentStartOfMultiLineDocIsNoOp) {
+    Document doc;
+    doc.insertText(0, u"foo\nbar");
+    SelectionModel model(0);
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 0U);
 }
 
 TEST(SelectionModelTest, ShiftWordRightExtendsSelection) {

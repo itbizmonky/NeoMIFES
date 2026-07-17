@@ -52,8 +52,9 @@ namespace {
     return std::min(targetLineStart + column, targetLineEnd);
 }
 
-// Simple character-class boundaries, shared by moveByWord() (Ctrl+Left/
-// Right, Phase 4b6b) and selectWordAt() (double-click, Phase 4b4 - see
+// Simple character-class boundaries, shared by moveByWordForward()/
+// moveByWordBackward() (Ctrl+Left/Right, Phase 4b6b/4b7b) and selectWordAt()
+// (double-click, Phase 4b4 - see
 // ADR-012's MovementUnit deferral for why this simplified rule was chosen
 // over full Unicode UAX #29 segmentation). ASCII alnum/underscore and CJK
 // ranges (hiragana, katakana, CJK unified ideographs, halfwidth/fullwidth
@@ -74,44 +75,112 @@ enum class CharKind : std::uint8_t { Word, Whitespace, Other };
     return (isAsciiWord || isCjk) ? CharKind::Word : CharKind::Other;
 }
 
-// Ctrl+Left/Right (Phase 4b6b): skip to the start of the previous/next
-// "word", using the same simple character-class rule as selectWordAt()
-// (Phase 4b4) - confined to the current line, deliberately not crossing into
-// the previous/next line (see MovementKind::WordLeft/WordRight's doc
-// comment). At a line's start (backward) or end (forward), this is a no-op,
-// matching LineStart/LineEnd's clamping behavior for the other movement
-// kinds.
-[[nodiscard]] document::TextPos moveByWord(const document::Document& doc,
-                                           document::TextPos position, bool forward) {
+// Ctrl+Left/Right (Phase 4b6b, cross-line since Phase 4b7b): skip to the
+// start of the previous/next "word", using the same simple character-class
+// rule as selectWordAt() (Phase 4b4). classify() already treats '\n' as
+// whitespace within a single line's extracted text; these helpers extend
+// that to the boundary BETWEEN lines (which classify() never directly sees,
+// since each line is extracted separately) by continuing the whitespace
+// skip onto the next/previous line's content. An empty line counts as one
+// line-break's worth of whitespace and is skipped over rather than treated
+// as its own stop - a distinct "stop at paragraph breaks" behavior belongs
+// to paragraph movement, a separate, unimplemented concern (see
+// MovementKind's doc comment).
+
+[[nodiscard]] document::TextPos skipWhitespaceForward(const document::Document& doc,
+                                                       document::TextPos         position) {
+    for (;;) {
+        const document::LineNumber line      = doc.offsetToLine(position);
+        const document::TextPos    lineStart = doc.lineToOffset(line);
+        const document::TextPos    lineEnd   = lineContentEnd(doc, line);
+        if (lineStart >= lineEnd) {
+            if (line + 1 >= doc.lineCount()) {
+                return position;  // empty line, and it's the last one
+            }
+            position = doc.lineToOffset(line + 1);
+            continue;
+        }
+        const std::u16string lineText =
+            doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
+        auto col = static_cast<std::size_t>(position - lineStart);
+        while (col < lineText.size() && classify(lineText[col]) == CharKind::Whitespace) {
+            ++col;
+        }
+        if (col < lineText.size()) {
+            return lineStart + col;
+        }
+        if (line + 1 >= doc.lineCount()) {
+            return lineEnd;
+        }
+        position = doc.lineToOffset(line + 1);
+    }
+}
+
+[[nodiscard]] document::TextPos skipWhitespaceBackward(const document::Document& doc,
+                                                        document::TextPos         position) {
+    for (;;) {
+        const document::LineNumber line      = doc.offsetToLine(position);
+        const document::TextPos    lineStart = doc.lineToOffset(line);
+        const document::TextPos    lineEnd   = lineContentEnd(doc, line);
+        if (lineStart >= lineEnd) {
+            if (lineStart == 0) {
+                return position;  // empty line, and it's the first one
+            }
+            position = lineStart - 1;  // step onto the previous line's trailing '\n'
+            continue;
+        }
+        const std::u16string lineText =
+            doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
+        auto col = static_cast<std::size_t>(std::min(position, lineEnd) - lineStart);
+        while (col > 0 && classify(lineText[col - 1]) == CharKind::Whitespace) {
+            --col;
+        }
+        if (col > 0) {
+            return lineStart + col;
+        }
+        if (lineStart == 0) {
+            return lineStart;
+        }
+        position = lineStart - 1;
+    }
+}
+
+[[nodiscard]] document::TextPos moveByWordForward(const document::Document& doc,
+                                                   document::TextPos         position) {
     const document::LineNumber line      = doc.offsetToLine(position);
     const document::TextPos    lineStart = doc.lineToOffset(line);
     const document::TextPos    lineEnd   = lineContentEnd(doc, line);
-    if (lineStart >= lineEnd) {
-        return position;  // empty line - nothing to skip over
-    }
-    const std::u16string lineText =
-        doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
-    auto col = static_cast<std::size_t>(std::clamp(position, lineStart, lineEnd) - lineStart);
-
-    if (forward) {
+    if (lineStart < lineEnd) {
+        const std::u16string lineText =
+            doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
+        auto col = static_cast<std::size_t>(std::min(position, lineEnd) - lineStart);
         if (col < lineText.size() && classify(lineText[col]) != CharKind::Whitespace) {
             const CharKind kind = classify(lineText[col]);
             while (col < lineText.size() && classify(lineText[col]) == kind) {
                 ++col;
             }
         }
-        while (col < lineText.size() && classify(lineText[col]) == CharKind::Whitespace) {
-            ++col;
-        }
-    } else {
-        while (col > 0 && classify(lineText[col - 1]) == CharKind::Whitespace) {
+        position = lineStart + col;
+    }
+    return skipWhitespaceForward(doc, position);
+}
+
+[[nodiscard]] document::TextPos moveByWordBackward(const document::Document& doc,
+                                                    document::TextPos         position) {
+    position = skipWhitespaceBackward(doc, position);
+    const document::LineNumber line      = doc.offsetToLine(position);
+    const document::TextPos    lineStart = doc.lineToOffset(line);
+    const document::TextPos    lineEnd   = lineContentEnd(doc, line);
+    if (lineStart >= lineEnd) {
+        return position;  // landed on an empty line - nothing to consume
+    }
+    const std::u16string lineText =
+        doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
+    auto col = static_cast<std::size_t>(position - lineStart);
+    if (col > 0) {
+        const CharKind kind = classify(lineText[col - 1]);
+        while (col > 0 && classify(lineText[col - 1]) == kind) {
             --col;
-        }
-        if (col > 0) {
-            const CharKind kind = classify(lineText[col - 1]);
-            while (col > 0 && classify(lineText[col - 1]) == kind) {
-                --col;
-            }
         }
     }
     return lineStart + col;
@@ -141,9 +210,9 @@ enum class CharKind : std::uint8_t { Word, Whitespace, Other };
         case MovementKind::PageDown:
             return moveVertically(doc, position, static_cast<std::int64_t>(pageSize));
         case MovementKind::WordLeft:
-            return moveByWord(doc, position, /*forward=*/false);
+            return moveByWordBackward(doc, position);
         case MovementKind::WordRight:
-            return moveByWord(doc, position, /*forward=*/true);
+            return moveByWordForward(doc, position);
     }
     assert(false && "unhandled MovementKind");
     return position;
