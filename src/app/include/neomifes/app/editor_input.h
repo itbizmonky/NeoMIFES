@@ -80,20 +80,32 @@ bool handleTripleClick(document::TextPos pos, core::SelectionModel& selection,
 bool handleAltClick(document::TextPos pos, core::SelectionModel& selection,
                     core::Viewport& viewport, const document::Document& document);
 
-// Returns the primary cursor's selected text (Phase 4b6c - Ctrl+C/X), or
-// nullopt if there's no active selection. Read-only: touches neither the
-// document nor the clipboard - callers combine this with
-// platform::setClipboardText() (src/platform/clipboard.h, kept out of this
-// Win32-API-free module) and, for Cut, a follow-up delete of the same range.
+// Returns every selecting cursor's text joined with '\n' in ascending
+// cursor order (Phase 4b6c - Ctrl+C/X; generalized to all cursors in Phase
+// 4b7c), or nullopt if no cursor has an active selection. Cursors without a
+// selection are skipped, not represented as an empty chunk. Read-only:
+// touches neither the document nor the clipboard - callers combine this
+// with platform::setClipboardText() (src/platform/clipboard.h, kept out of
+// this Win32-API-free module) and, for Cut, a follow-up
+// deleteAllSelections().
 [[nodiscard]] std::optional<std::u16string> textToCopy(const core::SelectionModel& selection,
                                                         const document::Document&  document);
 
-// Inserts `text` at the primary cursor, replacing its selection if it has
-// one. Scoped to the primary cursor only (Phase 4b6c) - distributing a
-// paste across multiple cursors is a separate, unscoped design question.
-// Always returns true.
+// Inserts `text` identically at every cursor, replacing each one's
+// selection if it has one (Phase 4b6c, generalized to all cursors in Phase
+// 4b7c - same "same text at every cursor" rule as handleChar(), not the
+// "distribute N copied chunks across N cursors" some editors do, which
+// would need clipboard metadata this codebase doesn't have). Always
+// returns true.
 bool handlePaste(std::u16string_view text, core::CommandDispatcher& dispatcher,
                  core::SelectionModel& selection, core::Viewport& viewport,
                  const document::Document& document);
+
+// Deletes every cursor's active selection (Phase 4b7c - Ctrl+X's delete
+// half, after the caller has already copied the text via textToCopy()).
+// Cursors without a selection are left untouched. Returns false without
+// dispatching if no cursor had a selection to delete.
+bool deleteAllSelections(core::CommandDispatcher& dispatcher, core::SelectionModel& selection,
+                         core::Viewport& viewport, const document::Document& document);
 
 }  // namespace neomifes::app

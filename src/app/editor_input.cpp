@@ -22,11 +22,9 @@ namespace {
 
 using core::CommandDispatcher;
 using core::Cursor;
-using core::InsertTextCommand;
 using core::MovementKind;
 using core::MultiCursorEditCommand;
 using core::PerCursorEdit;
-using core::ReplaceRangeCommand;
 using core::SelectionModel;
 using core::Viewport;
 using document::Document;
@@ -35,6 +33,29 @@ using document::TextRange;
 [[nodiscard]] TextRange selectionRange(const Cursor& cursor) noexcept {
     return TextRange{.start = std::min(cursor.position, cursor.anchor),
                      .end   = std::max(cursor.position, cursor.anchor)};
+}
+
+// Applies `text` identically to every cursor - a plain insert at cursors
+// with no selection, or a replace at cursors that have one - as a single
+// MultiCursorEditCommand. Shared by handleChar() (Phase 4b5b) and
+// handlePaste() (Phase 4b7c, generalized from the earlier primary-cursor-
+// only paste), since both reduce to exactly this once the text to insert is
+// known.
+bool insertTextAtEveryCursor(std::u16string_view text, CommandDispatcher& dispatcher,
+                             SelectionModel& selection, Viewport& viewport, const Document& document) {
+    const std::u16string textCopy(text);
+    std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
+    std::vector<PerCursorEdit> edits;
+    edits.reserve(before.size());
+    for (const Cursor& cursor : before) {
+        const TextRange range = cursor.hasSelection()
+                                    ? selectionRange(cursor)
+                                    : TextRange{.start = cursor.position, .end = cursor.position};
+        edits.push_back(PerCursorEdit{.range = range, .insertedText = textCopy});
+    }
+    dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
+    viewport.ensureVisible(selection.primaryCursor().position, document);
+    return true;
 }
 
 // Arrow/Home/End/PageUp/PageDown navigation. Returns false for any vkCode
@@ -133,24 +154,8 @@ bool handleChar(wchar_t ch, CommandDispatcher& dispatcher, SelectionModel& selec
     if (ch == u'\r') {
         inserted = u'\n';
     }
-    const std::u16string text(1, inserted);
-
-    // Every cursor gets the same inserted text (Phase 4b5b): a plain insert
-    // at cursors with no selection, or a replace at cursors that have one -
-    // same per-cursor rule as applyDeleteKey above, generalizing the
-    // pre-4b5b single-cursor InsertTextCommand/ReplaceRangeCommand dispatch.
-    std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
-    std::vector<PerCursorEdit> edits;
-    edits.reserve(before.size());
-    for (const Cursor& cursor : before) {
-        const TextRange range = cursor.hasSelection()
-                                    ? selectionRange(cursor)
-                                    : TextRange{.start = cursor.position, .end = cursor.position};
-        edits.push_back(PerCursorEdit{.range = range, .insertedText = text});
-    }
-    dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
-    viewport.ensureVisible(selection.primaryCursor().position, document);
-    return true;
+    return insertTextAtEveryCursor(std::u16string_view(&inserted, 1), dispatcher, selection, viewport,
+                                   document);
 }
 
 document::LineNumber applyMouseWheelScroll(short wheelDelta, document::LineNumber currentTopLine) {
@@ -196,22 +201,58 @@ bool handleAltClick(document::TextPos pos, SelectionModel& selection, Viewport& 
 }
 
 std::optional<std::u16string> textToCopy(const SelectionModel& selection, const Document& document) {
-    const Cursor& cursor = selection.primaryCursor();
-    if (!cursor.hasSelection()) {
+    // Phase 4b7c: every cursor with a selection contributes its text,
+    // joined in ascending cursor order with '\n' - cursors without a
+    // selection are skipped. Distributing N copied chunks back across N
+    // cursors on paste (as some editors do) needs clipboard metadata this
+    // codebase doesn't have; paste instead applies the whole joined string
+    // identically to every cursor (see insertTextAtEveryCursor()).
+    std::u16string joined;
+    bool            any = false;
+    for (const Cursor& cursor : selection.cursors()) {
+        if (!cursor.hasSelection()) {
+            continue;
+        }
+        if (any) {
+            joined += u'\n';
+        }
+        joined += document.snapshot()->extract(selectionRange(cursor));
+        any = true;
+    }
+    if (!any) {
         return std::nullopt;
     }
-    return document.snapshot()->extract(selectionRange(cursor));
+    return joined;
 }
 
 bool handlePaste(std::u16string_view text, CommandDispatcher& dispatcher, SelectionModel& selection,
                  Viewport& viewport, const Document& document) {
-    const Cursor&        cursor = selection.primaryCursor();
-    const std::u16string pasted(text);
-    if (cursor.hasSelection()) {
-        dispatcher.dispatch(std::make_unique<ReplaceRangeCommand>(selectionRange(cursor), pasted));
-    } else {
-        dispatcher.dispatch(std::make_unique<InsertTextCommand>(cursor.position, pasted));
+    return insertTextAtEveryCursor(text, dispatcher, selection, viewport, document);
+}
+
+bool deleteAllSelections(CommandDispatcher& dispatcher, SelectionModel& selection, Viewport& viewport,
+                         const Document& document) {
+    // Phase 4b7c (Ctrl+X): deletes every cursor's active selection, no-op
+    // for cursors without one - same "1 cursor, 1 edit-list entry, no-op
+    // entries included" pattern as applyDeleteKey() above, minus the
+    // Backspace/Delete direction logic (Cut never deletes outside a
+    // selection).
+    std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
+    std::vector<PerCursorEdit> edits;
+    edits.reserve(before.size());
+    bool anyChange = false;
+    for (const Cursor& cursor : before) {
+        TextRange range{.start = cursor.position, .end = cursor.position};
+        if (cursor.hasSelection()) {
+            range      = selectionRange(cursor);
+            anyChange = true;
+        }
+        edits.push_back(PerCursorEdit{.range = range, .insertedText = u""});
     }
+    if (!anyChange) {
+        return false;
+    }
+    dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
     viewport.ensureVisible(selection.primaryCursor().position, document);
     return true;
 }

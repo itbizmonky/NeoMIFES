@@ -40,7 +40,6 @@
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,7 +49,6 @@
 
 #include "neomifes/app/editor_input.h"
 #include "neomifes/core/command_dispatcher.h"
-#include "neomifes/core/edit_commands.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/document.h"
@@ -70,7 +68,6 @@ namespace {
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::core::CommandDispatcher;
-using neomifes::core::DeleteRangeCommand;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
@@ -400,8 +397,8 @@ struct ClipboardKeyResult {
 // above. Clipboard I/O is a Win32 API concern (src/platform/clipboard.h),
 // so this lives here rather than inside neomifes::app::handleKeyDown() -
 // editor_input.cpp is deliberately kept free of Win32 calls so it stays
-// headlessly testable (see editor_input.h's file header). Scoped to the
-// primary cursor only (textToCopy()/handlePaste()'s documented scope).
+// headlessly testable (see editor_input.h's file header). Applies to every
+// cursor (Phase 4b7c) via textToCopy()/handlePaste()/deleteAllSelections().
 ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
                                       CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                                       Viewport& viewport, const Document& document) {
@@ -416,7 +413,7 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
         neomifes::app::handlePaste(*text, dispatcher, selectionModel, viewport, document);
         return {.handled = true, .changed = true};
     }
-    // Copy or Cut. If the clipboard write fails, don't delete the selection
+    // Copy or Cut. If the clipboard write fails, don't delete any selection
     // for Cut either - that would destroy text the user never actually got
     // a copy of.
     const auto text = neomifes::app::textToCopy(selectionModel, document);
@@ -424,11 +421,9 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
         return {.handled = true, .changed = false};
     }
     if (vkCode == 'X') {
-        const auto& cursor = selectionModel.primaryCursor();
-        dispatcher.dispatch(std::make_unique<DeleteRangeCommand>(
-            TextRange{.start = std::min(cursor.position, cursor.anchor),
-                     .end     = std::max(cursor.position, cursor.anchor)}));
-        return {.handled = true, .changed = true};
+        const bool changed =
+            neomifes::app::deleteAllSelections(dispatcher, selectionModel, viewport, document);
+        return {.handled = true, .changed = changed};
     }
     return {.handled = true, .changed = false};
 }

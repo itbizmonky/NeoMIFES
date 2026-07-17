@@ -11,6 +11,7 @@
 namespace {
 
 using neomifes::app::applyMouseWheelScroll;
+using neomifes::app::deleteAllSelections;
 using neomifes::app::handleAltClick;
 using neomifes::app::handleChar;
 using neomifes::app::handleDoubleClick;
@@ -451,6 +452,84 @@ TEST(EditorInputTest, HandlePasteReplacesActiveSelection) {
     handlePaste(u"HE", env.dispatcher, env.selection, env.viewport, env.doc);
     EXPECT_EQ(env.doc.toU16String(), u"HEllo world");
     EXPECT_FALSE(env.selection.primaryCursor().hasSelection());
+}
+
+TEST(EditorInputTest, TextToCopyJoinsMultipleSelectionsWithNewline) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.moveAllTo(2, /*extendSelection=*/false);
+    env.selection.moveAllTo(0, /*extendSelection=*/true);  // primary selects "ab" (0-2)
+    env.selection.addCursor(5);
+    env.selection.moveCursorMatching(/*identifyingAnchor=*/5, /*newPos=*/3);  // second selects "cd" (3-5)
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const auto text = textToCopy(env.selection, env.doc);
+    ASSERT_TRUE(text.has_value());
+    EXPECT_EQ(*text, u"ab\ncd");
+}
+
+TEST(EditorInputTest, TextToCopySkipsCursorsWithoutSelection) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.moveAllTo(0);        // no selection
+    env.selection.addCursor(5);
+    env.selection.moveCursorMatching(5, 3);  // selects "cd" (3-5)
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const auto text = textToCopy(env.selection, env.doc);
+    ASSERT_TRUE(text.has_value());
+    EXPECT_EQ(*text, u"cd");
+}
+
+TEST(EditorInputTest, HandlePasteInsertsAtEveryCursor) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.addCursor(3);  // primary at 0, second right before 'c'
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = handlePaste(u"X", env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"Xab Xcd");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 1U);
+    EXPECT_EQ(env.selection.cursors()[1].position, 5U);
+}
+
+TEST(EditorInputTest, DeleteAllSelectionsDeletesEachCursorsSelection) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.moveAllTo(2, false);
+    env.selection.moveAllTo(0, true);  // primary selects "ab"
+    env.selection.addCursor(5);
+    env.selection.moveCursorMatching(5, 3);  // second selects "cd"
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = deleteAllSelections(env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u" ");
+}
+
+TEST(EditorInputTest, DeleteAllSelectionsLeavesCursorsWithoutSelectionUntouched) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.moveAllTo(0);  // primary: no selection
+    env.selection.addCursor(5);
+    env.selection.moveCursorMatching(5, 3);  // second selects "cd"
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = deleteAllSelections(env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"ab ");
+}
+
+TEST(EditorInputTest, DeleteAllSelectionsReturnsFalseWithNoSelectionsAtAll) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(1);
+
+    const bool changed = deleteAllSelections(env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_FALSE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"ab");
 }
 
 }  // namespace
