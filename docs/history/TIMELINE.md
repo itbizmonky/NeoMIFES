@@ -633,6 +633,10 @@
 
 **教訓 (Phase 4b5a/4b5b):** 「入力配線を先に作ってから複数カーソル対応を追加する」のではなく「複数カーソル対応(core層)を先に作ってから入力配線を追加する」順序を選んだことで、4b5bの実装は「既存の`addCursor()`を呼ぶ3行」+「`editor_input.cpp`の呼び出し経路を1箇所に統一する書き換え」だけで完結した — Phase 4b3(ドラッグ選択が既存の`shiftDown=true`呼び出しの繰り返しで実現できた)と同様、「土台となる汎用インターフェースを先に正しく設計しておくと、後続の入力手段が驚くほど安く実装できる」というこのプロジェクトで繰り返し観測されているパターンの再確認。また、`MultiCursorEditCommand`を「1カーソル1エントリ、no-opも明示的に1エントリとして表現する」設計にしたことで、「一部のカーソルだけ境界にいる」という部分的no-opケースを特別扱いなしに処理できた — 可変長のedit listではなく固定長(カーソル数と同じ)のedit listにするという一見些細な設計判断が、呼び出し側のコードを大幅に単純化した一例。
 
+**Phase 4b5 push・CI failure・修正 (同セッション継続):** ユーザーが「pushせよ」と指示、`6704556`(4b3)〜`5118a8a`(4b5b)の4コミットをpush。CI(run `29550663468`)でBuild&Test debug/release・clang-tidyは成功したが、**UBSan (clang-cl) ジョブがビルド段階で失敗**: `src/ui/include/neomifes/ui/click_tracking.h`(Phase 4b4で新設)の`ClickTrackerState`が持つ`friend constexpr bool operator==(...) = default;`が、メンバ`ClickPoint`に`operator==`が定義されていないため暗黙的に削除されており、clang-cl が `-Werror -Wdefaulted-function-deleted` で検出(MSVCはこの種の「静かな削除」を無診断で通すため、Phase 4b4完了時のローカル検証・CIには一度も引っかからず4b5a/4b5bの2コミット分も素通りしていた)。原因を`gh api repos/.../actions/jobs/<id>/logs`で直接取得したビルドログから特定し、`ClickPoint`に同様の`= default`な`operator==`を追加して修正。ローカルの`ubsan`プリセット(`cmake --preset ubsan && cmake --build --preset ubsan`、VS付属LLVMのclang-cl.exeで動作、これまでのセッションで未使用だった)で再現・修正確認してからコミット`ed23aa4`をpush、CI(run `29551870156`)で全4ジョブgreenを確認。
+
+**教訓:** 「ローカル検証はMSVCのみで実施」という運用が定着していたため、MSVCとclang-clで診断結果が異なるバグ(defaulted比較演算子の暗黙的削除)が2フェーズ分(4b4→4b5a/4b5b)気づかれずに積み重なった。この種のバグはCIに存在するUBSan(clang-cl)ジョブでしか検出できないため、`= default`な比較演算子を新規に書いた際はローカルでも`ubsan`プリセットを一度実行する習慣が必要と判断し、`RESUME_HERE.md`§2と`reference_windows_cpp_ci_gotchas.md`(項目6)に記録した(コミット`8fdecc5`)。「ローカルgreen ≈ ほぼ確実だが絶対ではない」という既存の注記が、今回はMSVCバージョン差異ではなくコンパイラ自体の差異という新しいパターンで実証された。
+
 **次回 (Phase 4b6):** スコープ未確定。候補: Alt+Shift+クリック(追加カーソルの選択範囲拡張)、Alt+ドラッグでの追加カーソルの選択拡張、選択範囲のクリップボードコピー、ダブルクリック→ドラッグでの単語単位ドラッグ拡張、`WM_CAPTURECHANGED`の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール、PageUp/PageDown、Ctrl+矢印(単語移動)。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.13/§6 参照。次セッション開始時にユーザーとスコープを確認すること。
 
 <!-- 次セッションはここに追記 -->
