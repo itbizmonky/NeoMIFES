@@ -16,7 +16,9 @@ using neomifes::app::handleChar;
 using neomifes::app::handleDoubleClick;
 using neomifes::app::handleKeyDown;
 using neomifes::app::handleMouseDown;
+using neomifes::app::handlePaste;
 using neomifes::app::handleTripleClick;
+using neomifes::app::textToCopy;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
@@ -406,6 +408,49 @@ TEST(EditorInputTest, BackspaceWithOneCursorAtStartStillDeletesForOtherCursors) 
     ASSERT_EQ(env.selection.cursors().size(), 2U);
     EXPECT_EQ(env.selection.cursors()[0].position, 0U);  // unchanged, was already at start
     EXPECT_EQ(env.selection.cursors()[1].position, 1U);
+}
+
+TEST(EditorInputTest, TextToCopyReturnsPrimarySelectionText) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    ASSERT_TRUE(env.selection.primaryCursor().hasSelection());  // selected "he"
+
+    const auto text = textToCopy(env.selection, env.doc);
+    ASSERT_TRUE(text.has_value());
+    EXPECT_EQ(*text, u"he");
+}
+
+TEST(EditorInputTest, TextToCopyReturnsNulloptWithNoSelection) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    env.selection.moveAllTo(3);
+
+    EXPECT_FALSE(textToCopy(env.selection, env.doc).has_value());
+}
+
+TEST(EditorInputTest, HandlePasteInsertsAtCursorWithNoSelection) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(1);
+
+    const bool changed = handlePaste(u"XYZ", env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"aXYZb");
+    EXPECT_EQ(env.selection.primaryCursor().position, 4U);
+}
+
+TEST(EditorInputTest, HandlePasteReplacesActiveSelection) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    ASSERT_TRUE(env.selection.primaryCursor().hasSelection());  // selected "he"
+
+    handlePaste(u"HE", env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_EQ(env.doc.toU16String(), u"HEllo world");
+    EXPECT_FALSE(env.selection.primaryCursor().hasSelection());
 }
 
 }  // namespace

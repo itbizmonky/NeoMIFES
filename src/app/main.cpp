@@ -40,6 +40,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -49,10 +50,12 @@
 
 #include "neomifes/app/editor_input.h"
 #include "neomifes/core/command_dispatcher.h"
+#include "neomifes/core/edit_commands.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
+#include "neomifes/platform/clipboard.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
@@ -67,6 +70,7 @@ namespace {
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::core::CommandDispatcher;
+using neomifes::core::DeleteRangeCommand;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
@@ -358,6 +362,77 @@ bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool alt
     return neomifes::app::handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
 }
 
+// Whether a Ctrl+C/X/V keystroke was recognized at all, and (only when it
+// was) whether it changed the document/selection.
+struct ClipboardKeyResult {
+    bool handled = false;
+    bool changed = false;
+};
+
+// Handles Ctrl+C/X/V (Phase 4b6c). Pulled out of wireNormalMode's onKeyDown
+// lambda for the same cognitive-complexity reason as dispatchMouseDown()
+// above. Clipboard I/O is a Win32 API concern (src/platform/clipboard.h),
+// so this lives here rather than inside neomifes::app::handleKeyDown() -
+// editor_input.cpp is deliberately kept free of Win32 calls so it stays
+// headlessly testable (see editor_input.h's file header). Scoped to the
+// primary cursor only (textToCopy()/handlePaste()'s documented scope).
+ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
+                                      CommandDispatcher& dispatcher, SelectionModel& selectionModel,
+                                      Viewport& viewport, const Document& document) {
+    if (!ctrlDown || (vkCode != 'C' && vkCode != 'X' && vkCode != 'V')) {
+        return {};
+    }
+    if (vkCode == 'V') {
+        const auto text = neomifes::platform::getClipboardText(hwnd);
+        if (!text) {
+            return {.handled = true, .changed = false};
+        }
+        neomifes::app::handlePaste(*text, dispatcher, selectionModel, viewport, document);
+        return {.handled = true, .changed = true};
+    }
+    // Copy or Cut. If the clipboard write fails, don't delete the selection
+    // for Cut either - that would destroy text the user never actually got
+    // a copy of.
+    const auto text = neomifes::app::textToCopy(selectionModel, document);
+    if (!text || !neomifes::platform::setClipboardText(hwnd, *text)) {
+        return {.handled = true, .changed = false};
+    }
+    if (vkCode == 'X') {
+        const auto& cursor = selectionModel.primaryCursor();
+        dispatcher.dispatch(std::make_unique<DeleteRangeCommand>(
+            TextRange{.start = std::min(cursor.position, cursor.anchor),
+                     .end     = std::max(cursor.position, cursor.anchor)}));
+        return {.handled = true, .changed = true};
+    }
+    return {.handled = true, .changed = false};
+}
+
+// Handles WM_KEYDOWN end-to-end: Ctrl+C/X/V first (Phase 4b6c), falling
+// through to the regular movement/edit/undo path otherwise. Pulled all the
+// way out of wireNormalMode's onKeyDown lambda body (not just the branching
+// logic) - a lambda defined inline inside wireNormalMode has its body
+// counted toward wireNormalMode's own cognitive complexity even when the
+// branching it does is itself delegated to helper functions, so leaving any
+// nontrivial control flow in the lambda itself re-creates the problem
+// dispatchMouseDown()/handleClipboardKey() were extracted to avoid.
+void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
+                        CommandDispatcher& dispatcher, SelectionModel& selectionModel,
+                        Viewport& viewport, const Document& document, RenderPipeline& renderPipeline) {
+    const auto clipboardResult =
+        handleClipboardKey(hwnd, vkCode, ctrlDown, dispatcher, selectionModel, viewport, document);
+    if (clipboardResult.handled) {
+        if (clipboardResult.changed) {
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        }
+        return;
+    }
+    const bool changed = neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, dispatcher,
+                                                      selectionModel, viewport, document);
+    if (changed) {
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    }
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy.
@@ -390,11 +465,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                         HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
-        const bool changed = neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, dispatcher,
-                                                          selectionModel, viewport, document);
-        if (changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
-        }
+        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
+                          document, renderPipeline);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                      HWND hwnd, wchar_t ch) {

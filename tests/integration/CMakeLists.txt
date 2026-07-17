@@ -85,6 +85,34 @@ set_tests_properties(render_text_smoke PROPERTIES
     TIMEOUT 30
 )
 
+# platform_clipboard_test - exercises the real OS clipboard (Phase 4b6c),
+# which the plain unit-test binary avoids entirely.
+add_executable(neomifes_platform_clipboard_test
+    platform_clipboard_test.cpp
+)
+
+target_link_libraries(neomifes_platform_clipboard_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::platform
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_platform_clipboard_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    platform_clipboard
+    COMMAND neomifes_platform_clipboard_test
+)
+
+set_tests_properties(platform_clipboard PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # frame_measure_test - exercises --measure-frame (Phase 3c, ADR-011)
 # end-to-end via subprocess spawn, same pattern as startup_measure_test.cpp
 # (custom main() to receive the built NeoMIFES.exe path as argv[1]).

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -11,6 +13,7 @@
 #include "neomifes/core/edit_commands.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 
 namespace neomifes::app {
@@ -19,9 +22,11 @@ namespace {
 
 using core::CommandDispatcher;
 using core::Cursor;
+using core::InsertTextCommand;
 using core::MovementKind;
 using core::MultiCursorEditCommand;
 using core::PerCursorEdit;
+using core::ReplaceRangeCommand;
 using core::SelectionModel;
 using core::Viewport;
 using document::Document;
@@ -187,6 +192,27 @@ bool handleAltClick(document::TextPos pos, SelectionModel& selection, Viewport& 
                     const Document& document) {
     selection.addCursor(pos);
     viewport.ensureVisible(pos, document);
+    return true;
+}
+
+std::optional<std::u16string> textToCopy(const SelectionModel& selection, const Document& document) {
+    const Cursor& cursor = selection.primaryCursor();
+    if (!cursor.hasSelection()) {
+        return std::nullopt;
+    }
+    return document.snapshot()->extract(selectionRange(cursor));
+}
+
+bool handlePaste(std::u16string_view text, CommandDispatcher& dispatcher, SelectionModel& selection,
+                 Viewport& viewport, const Document& document) {
+    const Cursor&        cursor = selection.primaryCursor();
+    const std::u16string pasted(text);
+    if (cursor.hasSelection()) {
+        dispatcher.dispatch(std::make_unique<ReplaceRangeCommand>(selectionRange(cursor), pasted));
+    } else {
+        dispatcher.dispatch(std::make_unique<InsertTextCommand>(cursor.position, pasted));
+    }
+    viewport.ensureVisible(selection.primaryCursor().position, document);
     return true;
 }
 

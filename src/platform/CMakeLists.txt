@@ -1,4 +1,5 @@
 add_library(neomifes_platform STATIC
+    src/clipboard.cpp
     src/file_mapping.cpp
     src/perf_clock.cpp
     src/process_metrics.cpp
@@ -15,6 +16,7 @@ target_link_libraries(neomifes_platform
         # System libraries needed by public headers or callers.
     PRIVATE
         neomifes::compile_options
+        neomifes::util
         Psapi
 )
 

@@ -14,6 +14,10 @@
 
 #include <windows.h>
 
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "neomifes/document/text_pos.h"
 
 namespace neomifes::document {
@@ -75,5 +79,21 @@ bool handleTripleClick(document::TextPos pos, core::SelectionModel& selection,
 // existing cursor at the same position (Phase 4a). Always returns true.
 bool handleAltClick(document::TextPos pos, core::SelectionModel& selection,
                     core::Viewport& viewport, const document::Document& document);
+
+// Returns the primary cursor's selected text (Phase 4b6c - Ctrl+C/X), or
+// nullopt if there's no active selection. Read-only: touches neither the
+// document nor the clipboard - callers combine this with
+// platform::setClipboardText() (src/platform/clipboard.h, kept out of this
+// Win32-API-free module) and, for Cut, a follow-up delete of the same range.
+[[nodiscard]] std::optional<std::u16string> textToCopy(const core::SelectionModel& selection,
+                                                        const document::Document&  document);
+
+// Inserts `text` at the primary cursor, replacing its selection if it has
+// one. Scoped to the primary cursor only (Phase 4b6c) - distributing a
+// paste across multiple cursors is a separate, unscoped design question.
+// Always returns true.
+bool handlePaste(std::u16string_view text, core::CommandDispatcher& dispatcher,
+                 core::SelectionModel& selection, core::Viewport& viewport,
+                 const document::Document& document);
 
 }  // namespace neomifes::app
