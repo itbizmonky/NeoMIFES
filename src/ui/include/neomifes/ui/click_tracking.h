@@ -18,6 +18,8 @@ namespace neomifes::ui {
 struct ClickPoint {
     std::int32_t x = 0;
     std::int32_t y = 0;
+
+    friend constexpr bool operator==(const ClickPoint&, const ClickPoint&) = default;
 };
 
 struct ClickTrackerState {
