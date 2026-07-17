@@ -64,6 +64,7 @@ $tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64
 - 変更を加えてローカル検証が green になったら `git add` → `git commit` → **ユーザーに `git push` を依頼** (エージェントは push しない方針)
 - push 後も `gh run list --limit 3` で CI 結果を確認する。**ローカルとCIでMSVCバージョンが異なりうる** (CI は 14.44、ローカルは 14.44/14.50 両方) ため、ローカル green は「ほぼ確実」であって「絶対」ではない
 - CI が失敗した場合は `gh run view <id> --log-failed` でログを取得。Windows/MSVC/clang-tidy 特有の落とし穴は Claude のメモリ機能内 `reference_windows_cpp_ci_gotchas.md` に集約済み
+- **(2026-07-17 追加)** 通常のローカル検証 (`--preset debug`/`release`) は MSVC のみを使う。`= default` の比較演算子 (`operator==`) を新規に書いたときは、メンバ型全てが同様に比較可能かを確認すること — MSVCは「暗黙的に削除されたdefaulted関数」を無診断で通すが、CIのUBSanジョブが使うclang-clは`-Werror -Wdefaulted-function-deleted`で検出し fail する (Phase 4b5bで実際に発生、`reference_windows_cpp_ci_gotchas.md` 項目6参照)。該当する変更をした場合は `cmake --preset ubsan && cmake --build --preset ubsan` (VS付属LLVMのclang-cl.exeで動作) をpush前に一度実行するとよい
 
 ---
 
