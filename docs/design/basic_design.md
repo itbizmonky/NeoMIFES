@@ -118,10 +118,10 @@
 - スナップショット共有で読み取り並列化
 
 ### 3.6 Search Engine (L3)
-- **Boyer-Moore / SIMD (SSE4.2 pcmpistri, AVX2)** による通常検索
-- 正規表現は **std::regex 非採用**。**Google RE2** または **Hyperscan** を候補 (ADR 化)
-- Grep は Search Worker Pool で並列化。結果は Grep 表示モードにストリーム表示
-- 巨大ファイル検索は Piece Table のチャンク単位で並列走査
+- **Boyer-Moore / SIMD (SSE4.2 pcmpistri, AVX2)** による通常検索 — 未着手。Phase 5aは正規表現エンジン(RE2)を通常検索にも一律使用しており、この最適化は計測してから要否判断する(detailed_design.md §7参照)
+- 正規表現は **std::regex 非採用**。**Google RE2** を採用 (ADR-002で確定、Phase 5aで実装。Hyperscanは不採用/将来の再評価候補として明記)
+- Grep は Search Worker Pool で並列化。結果は Grep 表示モードにストリーム表示 — 未着手 (Phase 5b以降)
+- 巨大ファイル検索は Piece Table のチャンク単位で並列走査 — 未着手。Phase 5aは同期・単一行スコープの`SearchService::findAll`のみ (詳細設計 §7 参照)
 
 ### 3.7 Encoding Engine (L3)
 - 対応: UTF-8/8-BOM/16LE/16BE/32/Shift-JIS/EUC-JP/ISO-2022-JP

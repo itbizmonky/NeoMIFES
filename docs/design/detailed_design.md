@@ -930,19 +930,42 @@ private:
 
 ## 7. Search Engine 詳細
 
-### 7.1 SearchService
+**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装済み。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceAllCommand`/`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40) — 下記§7.1''で修正済み。
+
+### 7.1' SearchService (Phase 5a 実装)
+```cpp
+// src/search/include/neomifes/search/search_service.h
+namespace neomifes::search {
+
+struct Query {
+    std::u16string pattern;
+    bool caseSensitive = true;
+    bool wholeWord     = false;
+    bool regex         = false;
+};
+
+struct Match { document::TextRange range; };
+
+class SearchService {
+public:
+    // 同期・ヘッドレス・単一行スコープ (マッチが '\n' をまたぐケースは対象外)。
+    // static:現時点でインスタンス状態を持たない。
+    [[nodiscard]] static std::vector<Match> findAll(const document::Document& doc,
+                                                     const Query&              query);
+};
+
+}  // namespace neomifes::search
+```
+- リテラル検索・正規表現検索いずれも**RE2の1本のコードパス**で実装(リテラルは`RE2::QuoteMeta()`でエスケープ)。`wholeWord`はRE2の`\b`(ASCII単語境界のみ、既存の`selectWordAt()`のCJK対応`classify()`とは非連携 — 既知の制限として明記)
+- Document内部はUTF-16(`std::u16string`)だがRE2はUTF-8バイト列を対象とするため、新規`neomifes::util::toUtf8WithOffsets()`(`src/util/include/neomifes/util/utf8_convert.h`)でUTF-16→UTF-8変換とバイトオフセット→UTF-16オフセットの対応表を1行ごとに構築してからRE2へ渡す
+- 空行(`lineStart >= lineEnd`)はスキャン対象から除外(RE2の空入力に対する`submatch[i].data()==NULL`という仕様上、オフセット計算が意味を持たないため)
+
+### 7.1'' 元スケッチ (Phase 5b 以降のスコープ、未実装)
 ```cpp
 class SearchService {
 public:
-    struct Query {
-        std::u16string pattern;
-        bool caseSensitive = true;
-        bool wholeWord     = false;
-        bool regex         = false;
-    };
-    struct Match { TextRange range; };
-
-    // 非同期 (Search Worker Pool)
+    // 非同期 (Search Worker Pool) - Phase 5aでは同期のみ実装、UI配線で
+    // 実際にブロッキング回避が必要になってから導入する
     std::future<std::vector<Match>> findAll(const BufferSnapshot&, const Query&);
 
     // ストリーム (Grep 用): 部分結果を随時 push
@@ -962,7 +985,7 @@ public:
 };
 
 // 全置換 Command (Undo 可能)
-class ReplaceAllCommand final : public application::ICommand {
+class ReplaceAllCommand final : public core::ICommand {
 public:
     ReplaceAllCommand(SearchService::Query, std::u16string replacement);
     // execute: findAll → 位置降順で置換適用 (オフセットずれ回避)
@@ -970,7 +993,7 @@ public:
 };
 
 // 複数ファイル置換 Command (ファイル単位でトランザクション化)
-class ReplaceInFilesCommand final : public application::ICommand {
+class ReplaceInFilesCommand final : public core::ICommand {
 public:
     ReplaceInFilesCommand(std::vector<std::filesystem::path>,
                           SearchService::Query, std::u16string replacement);
@@ -981,14 +1004,14 @@ public:
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |
 |---|---|
-| 通常 (case-sensitive, ASCII) | Boyer-Moore-Horspool + AVX2 pcmpeqb |
-| 通常 (Unicode) | Two-way String Matching (需要に応じ SIMD) |
-| 正規表現 | **RE2 採用予定** (ADR-002 で確定させる) |
-| Grep (複数ファイル) | Worker Pool、ファイル単位 memory-map |
+| 通常 (case-sensitive, ASCII) | Phase 5aでは未実装。RE2経由の1本のコードパスで代替 (下記) — Boyer-Moore-Horspool + AVX2 pcmpeqbは計測してから要否判断する将来の最適化候補として温存 |
+| 通常 (Unicode) | 同上 |
+| 正規表現 | **RE2 採用・実装済み** (ADR-002、Phase 5a) |
+| Grep (複数ファイル) | 未実装 (Phase 5b以降)。Worker Pool、ファイル単位 memory-map |
 
 ### 7.3 巨大ファイル検索
-- Piece Table のチャンク単位で並列走査
-- キャンセルは `std::stop_token`
+- **未実装 (Phase 5b以降)。** Phase 5aは`BufferSnapshot::extract()`による1行ずつの逐次走査のみで、Piece Tableのチャンク単位並列走査は行わない
+- 実測: 20万行(約10MB相当)の合成ログ風ドキュメントに対する`findAll()`をRelease構成でgoogle-benchmark実測した結果、約60〜66ms(スパースマッチ/無マッチいずれも同程度)。単純換算で約150MB/s相当 — 要件定義書§5「検索: 数GBファイルでも高速」の達成には、この同期・単一スレッドの実装のままでは数GB規模で数十秒かかる計算になり、非同期化・チャンク並列化(本節の未実装項目)が実際に必要になることを示す最初の実測データとなった
 
 ---
 
