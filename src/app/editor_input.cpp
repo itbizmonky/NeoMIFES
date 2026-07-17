@@ -40,8 +40,10 @@ bool applyMovementKey(UINT vkCode, bool shiftDown, bool ctrlDown, SelectionModel
                       const Document& document, document::LineNumber pageSize) {
     MovementKind kind{};
     switch (vkCode) {
-        case VK_LEFT:  kind = MovementKind::Left;  break;
-        case VK_RIGHT: kind = MovementKind::Right; break;
+        // Ctrl+Left/Right (Phase 4b6b) take priority over the plain
+        // Left/Right cases below - checked first so ctrlDown isn't ignored.
+        case VK_LEFT:  kind = ctrlDown ? MovementKind::WordLeft  : MovementKind::Left;  break;
+        case VK_RIGHT: kind = ctrlDown ? MovementKind::WordRight : MovementKind::Right; break;
         case VK_UP:    kind = MovementKind::Up;    break;
         case VK_DOWN:  kind = MovementKind::Down;  break;
         case VK_HOME:  kind = ctrlDown ? MovementKind::DocumentStart : MovementKind::LineStart; break;

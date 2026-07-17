@@ -94,6 +94,32 @@ TEST(EditorInputTest, ShiftPageDownExtendsSelection) {
     EXPECT_TRUE(env.selection.primaryCursor().hasSelection());
 }
 
+TEST(EditorInputTest, CtrlLeftAndCtrlRightMoveByWord) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    env.selection.moveAllTo(0);
+
+    const bool rightChanged = handleKeyDown(VK_RIGHT, false, /*ctrlDown=*/true, env.dispatcher,
+                                            env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(rightChanged);
+    EXPECT_EQ(env.selection.primaryCursor().position, 6U);  // start of "world"
+
+    const bool leftChanged = handleKeyDown(VK_LEFT, false, /*ctrlDown=*/true, env.dispatcher,
+                                           env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(leftChanged);
+    EXPECT_EQ(env.selection.primaryCursor().position, 0U);  // back to start of "hello"
+}
+
+TEST(EditorInputTest, PlainLeftRightWithoutCtrlAreUnaffected) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    env.selection.moveAllTo(6);
+
+    handleKeyDown(VK_RIGHT, false, /*ctrlDown=*/false, env.dispatcher, env.selection, env.viewport,
+                 env.doc);
+    EXPECT_EQ(env.selection.primaryCursor().position, 7U);  // moved by one character, not a word
+}
+
 TEST(EditorInputTest, EndAndCtrlEndMoveToLineAndDocumentEnd) {
     Env env;
     env.doc.insertText(0, u"hello\nworld");

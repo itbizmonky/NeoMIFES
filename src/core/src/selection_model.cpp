@@ -52,6 +52,71 @@ namespace {
     return std::min(targetLineStart + column, targetLineEnd);
 }
 
+// Simple character-class boundaries, shared by moveByWord() (Ctrl+Left/
+// Right, Phase 4b6b) and selectWordAt() (double-click, Phase 4b4 - see
+// ADR-012's MovementUnit deferral for why this simplified rule was chosen
+// over full Unicode UAX #29 segmentation). ASCII alnum/underscore and CJK
+// ranges (hiragana, katakana, CJK unified ideographs, halfwidth/fullwidth
+// forms) count as "word" characters and merge into runs; everything else
+// that isn't whitespace is its own single-character "word" (so punctuation
+// is selectable/skippable individually, matching most editors).
+enum class CharKind : std::uint8_t { Word, Whitespace, Other };
+
+[[nodiscard]] CharKind classify(char16_t ch) noexcept {
+    if (ch == u' ' || ch == u'\t' || ch == u'\r' || ch == u'\n') {
+        return CharKind::Whitespace;
+    }
+    const bool isAsciiWord = (ch >= u'a' && ch <= u'z') || (ch >= u'A' && ch <= u'Z') ||
+                             (ch >= u'0' && ch <= u'9') || ch == u'_';
+    const bool isCjk = (ch >= 0x3040 && ch <= 0x30FF) ||   // hiragana + katakana
+                       (ch >= 0x4E00 && ch <= 0x9FFF) ||   // CJK unified ideographs
+                       (ch >= 0xFF00 && ch <= 0xFFEF);     // halfwidth/fullwidth forms
+    return (isAsciiWord || isCjk) ? CharKind::Word : CharKind::Other;
+}
+
+// Ctrl+Left/Right (Phase 4b6b): skip to the start of the previous/next
+// "word", using the same simple character-class rule as selectWordAt()
+// (Phase 4b4) - confined to the current line, deliberately not crossing into
+// the previous/next line (see MovementKind::WordLeft/WordRight's doc
+// comment). At a line's start (backward) or end (forward), this is a no-op,
+// matching LineStart/LineEnd's clamping behavior for the other movement
+// kinds.
+[[nodiscard]] document::TextPos moveByWord(const document::Document& doc,
+                                           document::TextPos position, bool forward) {
+    const document::LineNumber line      = doc.offsetToLine(position);
+    const document::TextPos    lineStart = doc.lineToOffset(line);
+    const document::TextPos    lineEnd   = lineContentEnd(doc, line);
+    if (lineStart >= lineEnd) {
+        return position;  // empty line - nothing to skip over
+    }
+    const std::u16string lineText =
+        doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
+    auto col = static_cast<std::size_t>(std::clamp(position, lineStart, lineEnd) - lineStart);
+
+    if (forward) {
+        if (col < lineText.size() && classify(lineText[col]) != CharKind::Whitespace) {
+            const CharKind kind = classify(lineText[col]);
+            while (col < lineText.size() && classify(lineText[col]) == kind) {
+                ++col;
+            }
+        }
+        while (col < lineText.size() && classify(lineText[col]) == CharKind::Whitespace) {
+            ++col;
+        }
+    } else {
+        while (col > 0 && classify(lineText[col - 1]) == CharKind::Whitespace) {
+            --col;
+        }
+        if (col > 0) {
+            const CharKind kind = classify(lineText[col - 1]);
+            while (col > 0 && classify(lineText[col - 1]) == kind) {
+                --col;
+            }
+        }
+    }
+    return lineStart + col;
+}
+
 [[nodiscard]] document::TextPos moveOne(MovementKind kind, const document::Document& doc,
                                          document::TextPos position, document::LineNumber pageSize) {
     switch (kind) {
@@ -75,30 +140,13 @@ namespace {
             return moveVertically(doc, position, -static_cast<std::int64_t>(pageSize));
         case MovementKind::PageDown:
             return moveVertically(doc, position, static_cast<std::int64_t>(pageSize));
+        case MovementKind::WordLeft:
+            return moveByWord(doc, position, /*forward=*/false);
+        case MovementKind::WordRight:
+            return moveByWord(doc, position, /*forward=*/true);
     }
     assert(false && "unhandled MovementKind");
     return position;
-}
-
-// Simple character-class boundaries for word selection (Phase 4b4, user
-// confirmed over full Unicode UAX #29 segmentation - see ADR-012's
-// MovementUnit deferral). ASCII alnum/underscore and CJK ranges (hiragana,
-// katakana, CJK unified ideographs, halfwidth/fullwidth forms) count as
-// "word" characters and merge into runs; everything else that isn't
-// whitespace is its own single-character "word" (so punctuation is
-// selectable individually, matching most editors' double-click behavior).
-enum class CharKind : std::uint8_t { Word, Whitespace, Other };
-
-[[nodiscard]] CharKind classify(char16_t ch) noexcept {
-    if (ch == u' ' || ch == u'\t' || ch == u'\r' || ch == u'\n') {
-        return CharKind::Whitespace;
-    }
-    const bool isAsciiWord = (ch >= u'a' && ch <= u'z') || (ch >= u'A' && ch <= u'Z') ||
-                             (ch >= u'0' && ch <= u'9') || ch == u'_';
-    const bool isCjk = (ch >= 0x3040 && ch <= 0x30FF) ||   // hiragana + katakana
-                       (ch >= 0x4E00 && ch <= 0x9FFF) ||   // CJK unified ideographs
-                       (ch >= 0xFF00 && ch <= 0xFFEF);     // halfwidth/fullwidth forms
-    return (isAsciiWord || isCjk) ? CharKind::Word : CharKind::Other;
 }
 
 }  // namespace

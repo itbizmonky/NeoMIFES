@@ -83,6 +83,78 @@ TEST(SelectionModelTest, PageDownWithZeroPageSizeIsNoOp) {
     EXPECT_EQ(model.primaryCursor().position, 2U);       // unchanged
 }
 
+TEST(SelectionModelTest, WordRightSkipsToStartOfNextWord) {
+    Document doc;
+    doc.insertText(0, u"hello world");
+    SelectionModel model(0);  // start of "hello"
+
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 6U);  // start of "world"
+}
+
+TEST(SelectionModelTest, WordRightFromMidWhitespaceAlsoLandsAtNextWordStart) {
+    Document doc;
+    doc.insertText(0, u"hello world");
+    SelectionModel model(5);  // right after "hello", before the space
+
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 6U);
+}
+
+TEST(SelectionModelTest, WordRightAtLineEndIsNoOp) {
+    Document doc;
+    doc.insertText(0, u"abc");
+    SelectionModel model(3);  // already at line/document end
+
+    model.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 3U);
+}
+
+TEST(SelectionModelTest, WordLeftSkipsToStartOfPreviousWord) {
+    Document doc;
+    doc.insertText(0, u"hello world");
+    SelectionModel model(11);  // end of "world"
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 6U);  // start of "world"
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 0U);  // start of "hello"
+}
+
+TEST(SelectionModelTest, WordLeftAtLineStartIsNoOp) {
+    Document doc;
+    doc.insertText(0, u"abc");
+    SelectionModel model(0);
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 0U);
+}
+
+TEST(SelectionModelTest, WordLeftRightStayWithinCurrentLine) {
+    Document doc;
+    doc.insertText(0, u"foo\nbar");
+    SelectionModel model(0);  // start of "foo"
+
+    model.moveAll(MovementKind::WordLeft, doc, false);
+    EXPECT_EQ(model.primaryCursor().position, 0U);  // clamped, doesn't cross into a previous line
+
+    SelectionModel model2(3);  // end of "foo", right before '\n'
+    model2.moveAll(MovementKind::WordRight, doc, false);
+    EXPECT_EQ(model2.primaryCursor().position, 3U);  // clamped, doesn't cross into "bar"
+}
+
+TEST(SelectionModelTest, ShiftWordRightExtendsSelection) {
+    Document doc;
+    doc.insertText(0, u"hello world");
+    SelectionModel model(0);
+
+    model.moveAll(MovementKind::WordRight, doc, /*extendSelection=*/true);
+    EXPECT_EQ(model.primaryCursor().anchor, 0U);
+    EXPECT_EQ(model.primaryCursor().position, 6U);
+    EXPECT_TRUE(model.primaryCursor().hasSelection());
+}
+
 TEST(SelectionModelTest, UpDownPreserveColumnAndClampToShorterLines) {
     Document doc;
     doc.insertText(0, u"ab\nlonger line\nc");
