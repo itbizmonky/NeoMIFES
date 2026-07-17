@@ -48,6 +48,41 @@ TEST(SelectionModelTest, LineStartAndLineEndMoveWithinLine) {
     EXPECT_EQ(model.primaryCursor().position, 11U);  // end of document, no trailing newline
 }
 
+TEST(SelectionModelTest, PageUpPageDownJumpByPageSizeAndPreserveColumn) {
+    Document doc;
+    doc.insertText(0, u"0\n1\n2\n3\n4\n5\n6\n7\n8\n9");  // 10 single-char lines, offset = 2*line
+    SelectionModel model(10);                            // line 5
+
+    model.moveAll(MovementKind::PageUp, doc, false, /*pageSize=*/3);
+    EXPECT_EQ(model.primaryCursor().position, 4U);  // line 5-3=2 -> offset 4
+
+    SelectionModel model2(10);
+    model2.moveAll(MovementKind::PageDown, doc, false, /*pageSize=*/3);
+    EXPECT_EQ(model2.primaryCursor().position, 16U);  // line 5+3=8 -> offset 16
+}
+
+TEST(SelectionModelTest, PageUpPageDownClampAtDocumentBoundaries) {
+    Document doc;
+    doc.insertText(0, u"0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
+    SelectionModel model(10);  // line 5
+
+    model.moveAll(MovementKind::PageUp, doc, false, /*pageSize=*/100);
+    EXPECT_EQ(model.primaryCursor().position, 0U);  // clamped to line 0
+
+    SelectionModel model2(10);
+    model2.moveAll(MovementKind::PageDown, doc, false, /*pageSize=*/100);
+    EXPECT_EQ(model2.primaryCursor().position, 18U);  // clamped to last line (offset of '9')
+}
+
+TEST(SelectionModelTest, PageDownWithZeroPageSizeIsNoOp) {
+    Document doc;
+    doc.insertText(0, u"0\n1\n2\n3\n4");
+    SelectionModel model(2);  // line 1
+
+    model.moveAll(MovementKind::PageDown, doc, false);  // pageSize defaults to 0
+    EXPECT_EQ(model.primaryCursor().position, 2U);       // unchanged
+}
+
 TEST(SelectionModelTest, UpDownPreserveColumnAndClampToShorterLines) {
     Document doc;
     doc.insertText(0, u"ab\nlonger line\nc");

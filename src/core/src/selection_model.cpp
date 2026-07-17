@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -28,17 +29,23 @@ namespace {
     return doc.lineToOffset(line + 1) - 1;
 }
 
+// `lineDelta` generalizes the old up/bool parameter to an arbitrary line
+// count (negative = up, positive = down) so Up/Down (delta = ±1, Phase 4a)
+// and PageUp/PageDown (delta = ±pageSize, Phase 4b6a) share one column-
+// preserving implementation.
 [[nodiscard]] document::TextPos moveVertically(const document::Document& doc,
-                                                document::TextPos current, bool up) {
+                                                document::TextPos current,
+                                                std::int64_t       lineDelta) {
     const document::LineNumber currentLine = doc.offsetToLine(current);
     const document::TextPos    column      = current - doc.lineToOffset(currentLine);
+    const document::LineNumber lastLine    = doc.lineCount() > 0 ? doc.lineCount() - 1 : 0;
     document::LineNumber       targetLine  = currentLine;
-    if (up) {
-        if (currentLine > 0) {
-            targetLine = currentLine - 1;
-        }
-    } else if (currentLine + 1 < doc.lineCount()) {
-        targetLine = currentLine + 1;
+    if (lineDelta < 0) {
+        const auto up = static_cast<document::LineNumber>(-lineDelta);
+        targetLine     = (currentLine >= up) ? currentLine - up : 0;
+    } else if (lineDelta > 0) {
+        const auto down = static_cast<document::LineNumber>(lineDelta);
+        targetLine       = std::min(currentLine + down, lastLine);
     }
     const document::TextPos targetLineStart = doc.lineToOffset(targetLine);
     const document::TextPos targetLineEnd   = lineContentEnd(doc, targetLine);
@@ -46,16 +53,16 @@ namespace {
 }
 
 [[nodiscard]] document::TextPos moveOne(MovementKind kind, const document::Document& doc,
-                                         document::TextPos position) {
+                                         document::TextPos position, document::LineNumber pageSize) {
     switch (kind) {
         case MovementKind::Left:
             return position > 0 ? position - 1 : 0;
         case MovementKind::Right:
             return position < doc.length() ? position + 1 : doc.length();
         case MovementKind::Up:
-            return moveVertically(doc, position, /*up=*/true);
+            return moveVertically(doc, position, -1);
         case MovementKind::Down:
-            return moveVertically(doc, position, /*up=*/false);
+            return moveVertically(doc, position, 1);
         case MovementKind::LineStart:
             return doc.lineToOffset(doc.offsetToLine(position));
         case MovementKind::LineEnd:
@@ -64,6 +71,10 @@ namespace {
             return 0;
         case MovementKind::DocumentEnd:
             return doc.length();
+        case MovementKind::PageUp:
+            return moveVertically(doc, position, -static_cast<std::int64_t>(pageSize));
+        case MovementKind::PageDown:
+            return moveVertically(doc, position, static_cast<std::int64_t>(pageSize));
     }
     assert(false && "unhandled MovementKind");
     return position;
@@ -102,9 +113,9 @@ void SelectionModel::addCursor(document::TextPos position) {
 }
 
 void SelectionModel::moveAll(MovementKind kind, const document::Document& doc,
-                              bool extendSelection) {
+                              bool extendSelection, document::LineNumber pageSize) {
     for (Cursor& cursor : m_cursors) {
-        const document::TextPos newPosition = moveOne(kind, doc, cursor.position);
+        const document::TextPos newPosition = moveOne(kind, doc, cursor.position, pageSize);
         cursor.position                     = newPosition;
         if (!extendSelection) {
             cursor.anchor = newPosition;

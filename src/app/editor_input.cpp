@@ -32,10 +32,12 @@ using document::TextRange;
                      .end   = std::max(cursor.position, cursor.anchor)};
 }
 
-// Arrow/Home/End navigation. Returns false for any vkCode that isn't a
-// movement key (caller then tries other interpretations).
+// Arrow/Home/End/PageUp/PageDown navigation. Returns false for any vkCode
+// that isn't a movement key (caller then tries other interpretations).
+// `pageSize` (Phase 4b6a) is only consulted for PageUp/PageDown - callers
+// pass the viewport's visible line count.
 bool applyMovementKey(UINT vkCode, bool shiftDown, bool ctrlDown, SelectionModel& selection,
-                      const Document& document) {
+                      const Document& document, document::LineNumber pageSize) {
     MovementKind kind{};
     switch (vkCode) {
         case VK_LEFT:  kind = MovementKind::Left;  break;
@@ -44,10 +46,12 @@ bool applyMovementKey(UINT vkCode, bool shiftDown, bool ctrlDown, SelectionModel
         case VK_DOWN:  kind = MovementKind::Down;  break;
         case VK_HOME:  kind = ctrlDown ? MovementKind::DocumentStart : MovementKind::LineStart; break;
         case VK_END:   kind = ctrlDown ? MovementKind::DocumentEnd   : MovementKind::LineEnd;   break;
+        case VK_PRIOR: kind = MovementKind::PageUp;   break;
+        case VK_NEXT:  kind = MovementKind::PageDown; break;
         default:
             return false;
     }
-    selection.moveAll(kind, document, shiftDown);
+    selection.moveAll(kind, document, shiftDown, pageSize);
     return true;
 }
 
@@ -99,7 +103,9 @@ bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown, CommandDispatcher
     } else if (ctrlDown && vkCode == 'Y') {
         changed = dispatcher.redo();
     } else {
-        changed = applyMovementKey(vkCode, shiftDown, ctrlDown, selection, document);
+        const auto visible = viewport.visibleLines();
+        changed = applyMovementKey(vkCode, shiftDown, ctrlDown, selection, document,
+                                   visible.end - visible.start);
     }
     if (changed) {
         viewport.ensureVisible(selection.primaryCursor().position, document);

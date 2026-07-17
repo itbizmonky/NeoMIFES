@@ -66,6 +66,34 @@ TEST(EditorInputTest, HomeAndCtrlHomeMoveToLineAndDocumentStart) {
     EXPECT_EQ(env.selection.primaryCursor().position, 0U);
 }
 
+TEST(EditorInputTest, PageDownAndPageUpJumpByViewportVisibleLineCount) {
+    Env env;
+    env.doc.insertText(0, u"0\n1\n2\n3\n4\n5\n6\n7\n8\n9");  // 10 single-char lines
+    env.viewport.setVisibleLineCount(3);
+    env.selection.moveAllTo(10);  // line 5
+
+    const bool downChanged = handleKeyDown(VK_NEXT, false, false, env.dispatcher, env.selection,
+                                           env.viewport, env.doc);
+    EXPECT_TRUE(downChanged);
+    EXPECT_EQ(env.selection.primaryCursor().position, 16U);  // line 5+3=8
+
+    const bool upChanged = handleKeyDown(VK_PRIOR, false, false, env.dispatcher, env.selection,
+                                         env.viewport, env.doc);
+    EXPECT_TRUE(upChanged);
+    EXPECT_EQ(env.selection.primaryCursor().position, 10U);  // line 8-3=5, back to start
+}
+
+TEST(EditorInputTest, ShiftPageDownExtendsSelection) {
+    Env env;
+    env.doc.insertText(0, u"0\n1\n2\n3\n4\n5");
+    env.viewport.setVisibleLineCount(2);
+
+    handleKeyDown(VK_NEXT, /*shiftDown=*/true, false, env.dispatcher, env.selection, env.viewport,
+                 env.doc);
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 0U);
+    EXPECT_TRUE(env.selection.primaryCursor().hasSelection());
+}
+
 TEST(EditorInputTest, EndAndCtrlEndMoveToLineAndDocumentEnd) {
     Env env;
     env.doc.insertText(0, u"hello\nworld");

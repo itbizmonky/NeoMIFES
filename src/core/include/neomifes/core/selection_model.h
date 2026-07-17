@@ -30,6 +30,8 @@ enum class MovementKind : std::uint8_t {
     LineEnd,
     DocumentStart,
     DocumentEnd,
+    PageUp,    // Phase 4b6a - moveAll()'s pageSize argument supplies the jump size
+    PageDown,  // Phase 4b6a
 };
 
 class SelectionModel {
@@ -44,7 +46,10 @@ public:
     // Applies `kind` to every cursor. When `extendSelection` is false, each
     // cursor's anchor collapses to the new position (selection cleared);
     // when true, the anchor is left in place (Shift+move semantics).
-    void moveAll(MovementKind kind, const document::Document& doc, bool extendSelection);
+    // `pageSize` (line count) is only consulted for PageUp/PageDown (Phase
+    // 4b6a) - callers of the other MovementKinds don't need to pass it.
+    void moveAll(MovementKind kind, const document::Document& doc, bool extendSelection,
+                document::LineNumber pageSize = 0);
 
     // Drops every cursor but the primary one, collapsing its selection.
     void collapseToPrimary();
