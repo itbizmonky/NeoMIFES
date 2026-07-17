@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-17 (Phase 4b4 完了後)
+> **最終更新:** 2026-07-17 (Phase 4b5b 完了後)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
@@ -28,7 +28,9 @@
 | Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) | ✅ 完了 |
 | Phase 4b3 (ドラッグ選択) | ✅ 完了 |
 | Phase 4b4 (ダブルクリック単語選択・トリプルクリック行選択) | ✅ 完了 |
-| **Phase 4b5 (Alt+クリック複数カーソル)** | ⏭️ **次回着手** |
+| Phase 4b5a (複数カーソル編集コマンド基盤、core層ヘッドレス) | ✅ 完了 |
+| Phase 4b5b (Alt+クリック複数カーソル追加、入力配線) | ✅ 完了 |
+| **Phase 4b6 (未スコープ — 候補: 選択範囲クリップボードコピー、PageUp/PageDown、Ctrl+矢印 単語移動等)** | ⏭️ **次回スコープ確認から着手** |
 
 ---
 
@@ -272,6 +274,33 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 **スコープ外 (Phase 4b5 へ持ち越し):** Alt+クリックによる複数カーソル追加(編集コマンドの複数カーソル対応も必要)、選択範囲のクリップボードコピー、ダブルクリック→ドラッグでの単語単位ドラッグ拡張
 
+### 3.13 Phase 4b5a/4b5b (複数カーソル編集コマンド基盤 + Alt+クリック入力配線) 完了記録
+
+Alt+クリックでカーソルを追加できても編集コマンドが複数カーソルに対応していなければ機能として不完全という Phase 4b4 完了時の指摘を受け、調査の結果 core 層のインターフェース変更(`ICommand`)が避けられないと判明したため、CLAUDE.mdルール8に従い **4b5a(core層、ヘッドレス)→4b5b(入力配線)** に分割 (Phase 4a→4b1 と同じ「ヘッドレスcore実装→UI配線」パターン)。
+
+**4b5a 成果物:**
+- `ICommand::cursorPositionAfterExecute()`/`cursorPositionAfterUndo()`(単一`TextPos`、全カーソルを1点に強制収束)を `cursorsAfterExecute()`/`cursorsAfterUndo()`(`std::vector<Cursor>`)に置き換え。既存3コマンド(`InsertTextCommand`/`DeleteRangeCommand`/`ReplaceRangeCommand`)は要素数1のvectorを返すだけの機械的変更
+- 新規 `MultiCursorEditCommand`(`edit.multiCursor`): N個のカーソルへの同時編集を累積オフセット法(VSCode等と同種の手法)で1回のundoステップとして適用。`PerCursorEdit{range, insertedText}` を`SelectionModel::cursors()`と同じ昇順・非重複の順序で受け取り、昇順1パスで`cumulativeShift`を足し込みながら適用、undoは降順(execute時に捕捉した実位置を使うためシフト再計算不要)。カーソル復元はexecute前のスナップショットをそのまま返す(選択範囲込みで完全復元)
+- `SelectionModel::setCursors(std::vector<Cursor>)` 新設。`CommandDispatcher::dispatch()`/`UndoStack::undo()`/`redo()` の `moveAllTo(pos)` 呼び出しを `setCursors(cmd->cursorsAfterExecute()/AfterUndo())` に置き換え
+- テスト数: 207 → 213 (単体+6: `MultiCursorEditCommand`4件+`setCursors`2件)
+
+**4b5b 成果物:**
+- `neomifes::app::handleAltClick()` 新設 — 既存(Phase 4a)の`SelectionModel::addCursor()`を呼ぶだけの薄い実装
+- `editor_input.cpp`の`handleChar`/`applyDeleteKey`を全カーソル対応に書き換え — `selection.cursors()`全件から`PerCursorEdit`を1:1で組み立て`MultiCursorEditCommand`を1回ディスパッチする形に統一(単一/複数カーソルで分岐しない)。境界(文書先頭でのBackspace等)で動けないカーソルは空range/空文字列の"no-op edit"として1エントリを必ず作る(全カーソルがno-opならディスパッチ自体をしない、既存の単一カーソル時の挙動を維持)
+- Win32側: `WM_LBUTTONDOWN`のwParamには`MK_ALT`が存在しない(Shift/Ctrlとは非対称)ため`::GetKeyState(VK_MENU)`で都度取得。`MainWindowConfig::onMouseDown`に`bool altDown`追加
+- `main.cpp`: `onMouseDown`ラムダの分岐を新規フリー関数`dispatchMouseDown()`に切り出し(altDown追加でcognitive complexity閾値25を超えたため)。`altDown`が最優先分岐
+- テスト数: 213 → 217 (単体+4: `handleAltClick`1件、複数カーソル`handleChar`/`handleKeyDown`3件)
+- 実アプリでAlt+クリック2箇所→文字入力→Alt+クリック→Backspace→Ctrl+Z/Ctrl+YをP/Invokeでシミュレートしクラッシュなし・応答性維持を確認
+
+**完了条件:**
+- [x] Alt+クリックで新しいカーソルが追加される(ユニットテスト+実アプリ確認)
+- [x] 複数カーソル状態での文字入力/Backspace/Deleteが全カーソルに反映される(ユニットテスト、累積オフセットの正しさを含む)
+- [x] Undo/Redoで複数カーソルの編集前状態(選択範囲込み)が厳密に復元される(ユニットテスト)
+- [x] ローカル Debug/Release 全217テスト green、変更ファイルの clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み) 新規警告0 (2件検出・修正: `hicpp-use-auto`/`modernize-use-auto`、`readability-function-cognitive-complexity`)
+- [ ] 複数カーソルの視覚的な正しさ(各カーソルの描画位置・全カーソルへの文字挿入の見た目)は自動検証していない — Phase 4b1〜4b4と同じ理由([[reference-no-win32-gui-automation]])、ユーザー自身による目視確認を推奨
+
+**スコープ外 (Phase 4b6 以降へ持ち越し):** Alt+Shift+クリック(追加カーソルの選択範囲拡張)、Alt+ドラッグでの追加カーソルの選択拡張、選択範囲のクリップボードコピー、ダブルクリック→ドラッグでの単語単位ドラッグ拡張、`WM_CAPTURECHANGED`の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール、PageUp/PageDown、Ctrl+矢印(単語移動)
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -318,10 +347,9 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 4b5 (Alt+クリック複数カーソル) に着手せよ。
-着手前に detailed_design.md §5.3 の Phase 4b1〜4b4 実装済み範囲と、
-本ファイル §3.12 のスコープ外一覧を確認すること。
-複数カーソルは編集コマンド (InsertTextCommand等) の多カーソル対応も併せて必要。
+Phase 4b6 のスコープをユーザーと確認した上で着手せよ。
+着手前に detailed_design.md §5.3 の Phase 4b1〜4b5b 実装済み範囲と、
+本ファイル §3.13 のスコープ外一覧 (Phase 4b6候補) を確認すること。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
@@ -344,10 +372,12 @@ Phase 3 は [`docs/phase_reports/phase_3_report.md`](../phase_reports/phase_3_re
 
 **Phase 4b4 (ダブルクリック単語選択・トリプルクリック行選択) は完了済み (§3.12 参照)。** 単語境界はユーザー確認済みの簡易文字種ベース。クリック回数判定はヘッダオンリーの純粋関数 `click_tracking.h`(`src/render/`のmath系ヘッダと同じパターン)で実装し、`MainWindow`のロジックが初めてユニットテスト可能になった。
 
-**Phase 4b5 (次回) 着手時に確認すること:**
-1. Alt+クリックによる複数カーソル追加。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する入力経路がまだ無い。**編集コマンド (`InsertTextCommand`等) が `primaryCursor()` のみを前提としており複数カーソルを考慮していない点(Phase 4aレビューのPLAUSIBLE指摘)を併せて設計すること** — Alt+クリックでカーソルを追加できても、その状態で文字を打った時に全カーソル位置に同時挿入されないなら機能として不完全
-2. `docs/design/detailed_design.md` §5.3 に Phase 4b1〜4b4 の実装内容と Phase 4b5 へのスコープ外一覧を明記済み — まずここを読む
-3. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1〜4b4 では未判断のまま)
+**Phase 4b5a (複数カーソル編集コマンド基盤) / Phase 4b5b (Alt+クリック複数カーソル追加) は完了済み (§3.13 参照)。** `ICommand::cursorsAfterExecute()`/`cursorsAfterUndo()`(`std::vector<Cursor>`)+新規 `MultiCursorEditCommand`(累積オフセット法)で編集コマンドが複数カーソルに対応し、`handleAltClick()`(`SelectionModel::addCursor()`を呼ぶだけ)でAlt+クリックからカーソルを追加できるようになった。`editor_input.cpp`の`handleChar`/`applyDeleteKey`は単一/複数カーソルを区別せず`MultiCursorEditCommand`経由で統一的に処理する。
+
+**Phase 4b6 (次回) 着手時に確認すること:**
+1. Phase 4b6 のスコープ自体が未確定 — §3.13 末尾のスコープ外一覧(Alt+Shift+クリック、Alt+ドラッグでの選択拡張、クリップボードコピー、単語単位ドラッグ拡張、`WM_CAPTURECHANGED`、ウィンドウ端オートスクロール、PageUp/PageDown、Ctrl+矢印単語移動)から次に着手する範囲をユーザーに確認すること
+2. `docs/design/detailed_design.md` §5.3 に Phase 4b1〜4b5b の実装内容とスコープ外一覧を明記済み — まずここを読む
+3. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1〜4b5b では未判断のまま)
 4. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
 
 ## 7. 履歴を辿りたいとき

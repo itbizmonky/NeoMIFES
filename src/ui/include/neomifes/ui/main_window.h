@@ -56,10 +56,14 @@ struct MainWindowConfig {
     // Optional: invoked from WM_LBUTTONDOWN with the client-area pixel
     // coordinate, the live Shift modifier state (Phase 4b2, read from the
     // message's own wParam per mouse-message convention, not GetKeyState),
-    // and the click count (1/2/3, capped - Phase 4b4, tracked via
-    // click_tracking.h's nextClickState() rather than WM_LBUTTONDBLCLK,
-    // which has no notion of a third click).
-    std::function<void(HWND, std::int32_t x, std::int32_t y, bool shiftDown, int clickCount)>
+    // the live Alt modifier state (Phase 4b5b - unlike Shift/Ctrl, mouse
+    // message wParams have no MK_ALT bit, so this one IS read via
+    // GetKeyState(VK_MENU) rather than the message itself), and the click
+    // count (1/2/3, capped - Phase 4b4, tracked via click_tracking.h's
+    // nextClickState() rather than WM_LBUTTONDBLCLK, which has no notion of
+    // a third click).
+    std::function<void(HWND, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
+                       int clickCount)>
         onMouseDown;
     // Optional: invoked from WM_MOUSEMOVE with the client-area pixel
     // coordinate, but only while a drag is in progress (between
@@ -121,7 +125,7 @@ private:
     std::function<void(HWND, UINT, bool, bool)> m_onKeyDown;
     std::function<void(HWND, wchar_t)>          m_onChar;
     std::function<void(HWND, short)>            m_onMouseWheel;
-    std::function<void(HWND, std::int32_t, std::int32_t, bool, int)> m_onMouseDown;
+    std::function<void(HWND, std::int32_t, std::int32_t, bool, bool, int)> m_onMouseDown;
     std::function<void(HWND, std::int32_t, std::int32_t)>            m_onMouseDrag;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;

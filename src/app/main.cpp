@@ -335,6 +335,29 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
+// applies it. Pulled out of wireNormalMode's onMouseDown lambda to keep that
+// function's cognitive complexity down (same rationale as
+// loadStartupDocument()/prepareDocument() above) - Phase 4b5b's altDown
+// branch pushed the inline version over clang-tidy's threshold.
+bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
+                       SelectionModel& selectionModel, Viewport& viewport, const Document& document) {
+    // Alt+click always adds a cursor, regardless of click count -
+    // Alt+double/triple-click's meaning is left undefined rather than
+    // guessed at. Otherwise (Phase 4b4) click count dispatches to word/line
+    // selection instead of plain cursor placement.
+    if (altDown) {
+        return neomifes::app::handleAltClick(hit, selectionModel, viewport, document);
+    }
+    if (clickCount >= 3) {
+        return neomifes::app::handleTripleClick(hit, selectionModel, viewport, document);
+    }
+    if (clickCount == 2) {
+        return neomifes::app::handleDoubleClick(hit, selectionModel, viewport, document);
+    }
+    return neomifes::app::handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy.
@@ -386,25 +409,17 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline](
-                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown,
+                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
                           int clickCount) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
-        // Phase 4b4: click count dispatches to word/line selection instead
-        // of plain cursor placement. Drag (onMouseDrag below) is unaffected -
-        // it always calls handleMouseDown directly regardless of the click
-        // count that started the drag.
-        bool changed = false;
-        if (clickCount >= 3) {
-            changed = neomifes::app::handleTripleClick(*hit, selectionModel, viewport, document);
-        } else if (clickCount == 2) {
-            changed = neomifes::app::handleDoubleClick(*hit, selectionModel, viewport, document);
-        } else {
-            changed =
-                neomifes::app::handleMouseDown(*hit, shiftDown, selectionModel, viewport, document);
-        }
+        // Drag (onMouseDrag below) is unaffected by any of dispatchMouseDown's
+        // branches - it always calls handleMouseDown directly regardless of
+        // what started the drag.
+        const bool changed =
+            dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel, viewport, document);
         if (changed) {
             syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
         }

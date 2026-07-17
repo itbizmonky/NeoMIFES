@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -17,10 +19,9 @@ namespace {
 
 using core::CommandDispatcher;
 using core::Cursor;
-using core::DeleteRangeCommand;
-using core::InsertTextCommand;
 using core::MovementKind;
-using core::ReplaceRangeCommand;
+using core::MultiCursorEditCommand;
+using core::PerCursorEdit;
 using core::SelectionModel;
 using core::Viewport;
 using document::Document;
@@ -50,27 +51,39 @@ bool applyMovementKey(UINT vkCode, bool shiftDown, bool ctrlDown, SelectionModel
     return true;
 }
 
-// Backspace/Delete. Deletes the active selection if there is one, regardless
-// of which of the two keys was pressed; otherwise deletes one code unit in
-// the key's direction, clamped at the document's start/end (no-op there).
+// Backspace/Delete, applied to every cursor (Phase 4b5b). Deletes each
+// cursor's active selection if it has one, regardless of which of the two
+// keys was pressed; otherwise deletes one code unit in the key's direction.
+// A cursor at the document's start (Backspace) or end (Delete) with no
+// selection contributes an empty (no-op) edit rather than being dropped from
+// the edit list - MultiCursorEditCommand expects exactly one PerCursorEdit
+// per cursor, 1:1 by index (see edit_commands.h). If every cursor's edit
+// ends up empty, nothing is dispatched (mirrors the single-cursor "nothing
+// happened" early return this replaced).
 bool applyDeleteKey(UINT vkCode, CommandDispatcher& dispatcher, const SelectionModel& selection,
                     const Document& document) {
-    const Cursor& cursor = selection.primaryCursor();
-    TextRange     range;
-    if (cursor.hasSelection()) {
-        range = selectionRange(cursor);
-    } else if (vkCode == VK_BACK) {
-        if (cursor.position == 0) {
-            return false;
+    std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
+    std::vector<PerCursorEdit> edits;
+    edits.reserve(before.size());
+    bool anyChange = false;
+    for (const Cursor& cursor : before) {
+        TextRange range{.start = cursor.position, .end = cursor.position};
+        if (cursor.hasSelection()) {
+            range = selectionRange(cursor);
+        } else if (vkCode == VK_BACK) {
+            if (cursor.position > 0) {
+                range = TextRange{.start = cursor.position - 1, .end = cursor.position};
+            }
+        } else if (cursor.position < document.length()) {
+            range = TextRange{.start = cursor.position, .end = cursor.position + 1};
         }
-        range = TextRange{.start = cursor.position - 1, .end = cursor.position};
-    } else {
-        if (cursor.position >= document.length()) {
-            return false;
-        }
-        range = TextRange{.start = cursor.position, .end = cursor.position + 1};
+        anyChange = anyChange || !range.empty();
+        edits.push_back(PerCursorEdit{.range = range, .insertedText = u""});
     }
-    dispatcher.dispatch(std::make_unique<DeleteRangeCommand>(range));
+    if (!anyChange) {
+        return false;
+    }
+    dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
     return true;
 }
 
@@ -107,13 +120,22 @@ bool handleChar(wchar_t ch, CommandDispatcher& dispatcher, SelectionModel& selec
     if (ch == u'\r') {
         inserted = u'\n';
     }
-    const Cursor&         cursor  = selection.primaryCursor();
-    const std::u16string  text(1, inserted);
-    if (cursor.hasSelection()) {
-        dispatcher.dispatch(std::make_unique<ReplaceRangeCommand>(selectionRange(cursor), text));
-    } else {
-        dispatcher.dispatch(std::make_unique<InsertTextCommand>(cursor.position, text));
+    const std::u16string text(1, inserted);
+
+    // Every cursor gets the same inserted text (Phase 4b5b): a plain insert
+    // at cursors with no selection, or a replace at cursors that have one -
+    // same per-cursor rule as applyDeleteKey above, generalizing the
+    // pre-4b5b single-cursor InsertTextCommand/ReplaceRangeCommand dispatch.
+    std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
+    std::vector<PerCursorEdit> edits;
+    edits.reserve(before.size());
+    for (const Cursor& cursor : before) {
+        const TextRange range = cursor.hasSelection()
+                                    ? selectionRange(cursor)
+                                    : TextRange{.start = cursor.position, .end = cursor.position};
+        edits.push_back(PerCursorEdit{.range = range, .insertedText = text});
     }
+    dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
     viewport.ensureVisible(selection.primaryCursor().position, document);
     return true;
 }
@@ -150,6 +172,13 @@ bool handleTripleClick(document::TextPos pos, SelectionModel& selection, Viewpor
                        const Document& document) {
     selection.selectLineAt(pos, document);
     viewport.ensureVisible(selection.primaryCursor().position, document);
+    return true;
+}
+
+bool handleAltClick(document::TextPos pos, SelectionModel& selection, Viewport& viewport,
+                    const Document& document) {
+    selection.addCursor(pos);
+    viewport.ensureVisible(pos, document);
     return true;
 }
 

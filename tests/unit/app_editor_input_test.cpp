@@ -11,6 +11,7 @@
 namespace {
 
 using neomifes::app::applyMouseWheelScroll;
+using neomifes::app::handleAltClick;
 using neomifes::app::handleChar;
 using neomifes::app::handleDoubleClick;
 using neomifes::app::handleKeyDown;
@@ -286,6 +287,71 @@ TEST(EditorInputTest, HandleTripleClickSelectsLineAtPosition) {
     EXPECT_TRUE(changed);
     EXPECT_EQ(env.selection.primaryCursor().anchor, 6U);
     EXPECT_EQ(env.selection.primaryCursor().position, 12U);  // includes trailing '\n'
+}
+
+TEST(EditorInputTest, HandleAltClickAddsNewCursorWithoutDisturbingThePrimary) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+
+    const bool changed = handleAltClick(6, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 0U);  // untouched primary
+    EXPECT_EQ(env.selection.cursors()[1].position, 6U);  // new cursor at the click
+}
+
+TEST(EditorInputTest, HandleCharWithMultipleCursorsInsertsAtEachCursor) {
+    // Phase 4b5b end-to-end: two cursors (0 and 3 in "ab cd", right before
+    // 'a' and right before 'c') both receive the typed character, and the
+    // second cursor's final position accounts for the shift the first
+    // cursor's insert introduced (MultiCursorEditCommand's cumulative-offset
+    // math, exercised here through the actual handleChar/dispatcher path).
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.addCursor(3);
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = handleChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"Xab Xcd");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 1U);
+    EXPECT_EQ(env.selection.cursors()[1].position, 5U);
+}
+
+TEST(EditorInputTest, BackspaceWithMultipleCursorsDeletesAtEachCursor) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.moveAllTo(1);  // right after 'a'
+    env.selection.addCursor(4);  // right after 'c'
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = handleKeyDown(VK_BACK, false, false, env.dispatcher, env.selection,
+                                       env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"b d");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 0U);
+    EXPECT_EQ(env.selection.cursors()[1].position, 2U);
+}
+
+TEST(EditorInputTest, BackspaceWithOneCursorAtStartStillDeletesForOtherCursors) {
+    // A cursor that can't move (document start) contributes a no-op edit but
+    // doesn't block the rest - only "every cursor is a no-op" suppresses the
+    // dispatch entirely (see BackspaceAtDocumentStartIsNoOp for that case).
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(0);
+    env.selection.addCursor(2);  // end of "ab"
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = handleKeyDown(VK_BACK, false, false, env.dispatcher, env.selection,
+                                       env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"a");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 0U);  // unchanged, was already at start
+    EXPECT_EQ(env.selection.cursors()[1].position, 1U);
 }
 
 }  // namespace

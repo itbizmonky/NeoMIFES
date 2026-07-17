@@ -69,4 +69,11 @@ bool handleDoubleClick(document::TextPos pos, core::SelectionModel& selection,
 bool handleTripleClick(document::TextPos pos, core::SelectionModel& selection,
                        core::Viewport& viewport, const document::Document& document);
 
+// Adds a new, non-primary cursor at `pos` (Phase 4b5b - Alt+click). `pos` is
+// already hit-tested by the caller. Delegates to
+// SelectionModel::addCursor(), which already handles merging with an
+// existing cursor at the same position (Phase 4a). Always returns true.
+bool handleAltClick(document::TextPos pos, core::SelectionModel& selection,
+                    core::Viewport& viewport, const document::Document& document);
+
 }  // namespace neomifes::app

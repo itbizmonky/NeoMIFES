@@ -279,7 +279,10 @@ void MainWindow::handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept {
         return;
     }
     const bool shiftDown = (wParam & MK_SHIFT) != 0;
-    m_onMouseDown(m_hwnd, x, y, shiftDown, m_clickState.count);
+    // Alt has no MK_* bit in mouse message wParams (unlike Shift/Ctrl), so it
+    // must be queried separately (Phase 4b5b).
+    const bool altDown = (::GetKeyState(VK_MENU) & 0x8000) != 0;
+    m_onMouseDown(m_hwnd, x, y, shiftDown, altDown, m_clickState.count);
 }
 
 void MainWindow::handleMouseMove(LPARAM lParam) noexcept {
