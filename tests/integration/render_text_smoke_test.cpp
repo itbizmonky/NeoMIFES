@@ -21,6 +21,7 @@ namespace {
 
 using neomifes::document::Document;
 using neomifes::document::TextRange;
+using neomifes::render::CursorVisual;
 using neomifes::render::RenderPipeline;
 
 // RAII helper so every TEST body doesn't repeat the hidden-window dance.
@@ -193,7 +194,7 @@ TEST(RenderTextSmokeTest, CaretOnlyMovementForcesRedrawInsteadOfFrameSkip) {
     Document doc;
     doc.insertText(0, u"line0\nline1\nline2");
     pipeline.setDocument(&doc);
-    pipeline.setCaretPosition(0);
+    pipeline.setCursorVisuals({CursorVisual{.position = 0}});
 
     const auto first = pipeline.render();
     ASSERT_TRUE(first.has_value())
@@ -201,7 +202,7 @@ TEST(RenderTextSmokeTest, CaretOnlyMovementForcesRedrawInsteadOfFrameSkip) {
     const auto statsAfterFirst = pipeline.layoutCacheStats();
 
     // Move the caret only - everything else stays identical.
-    pipeline.setCaretPosition(3);
+    pipeline.setCursorVisuals({CursorVisual{.position = 3}});
     const auto second = pipeline.render();
     ASSERT_TRUE(second.has_value())
         << "second render() (caret moved) failed: " << neomifes::render::describe(second.error());
@@ -276,7 +277,8 @@ TEST(RenderTextSmokeTest, SelectionRangeRendersWithoutErrorAndForcesRedraw) {
         << "first render() failed: " << neomifes::render::describe(first.error());
     const auto statsAfterFirst = pipeline.layoutCacheStats();
 
-    pipeline.setSelectionRange(TextRange{.start = 0, .end = 4});
+    pipeline.setCursorVisuals(
+        {CursorVisual{.position = 4, .selectionRange = TextRange{.start = 0, .end = 4}}});
     const auto second = pipeline.render();
     ASSERT_TRUE(second.has_value())
         << "second render() (selection set) failed: " << neomifes::render::describe(second.error());
@@ -284,6 +286,51 @@ TEST(RenderTextSmokeTest, SelectionRangeRendersWithoutErrorAndForcesRedraw) {
     EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
                 statsAfterSecond.misses != statsAfterFirst.misses)
         << "selection-only change was frame-skipped instead of triggering a redraw";
+}
+
+TEST(RenderTextSmokeTest, MultipleCursorVisualsRenderWithoutErrorAndForceRedraw) {
+    // Phase 4b7a: setCursorVisuals() replaces the old single-caret/single-
+    // selection setters with a full vector, so every SelectionModel cursor
+    // (not just the primary) gets drawn. Exercises 3 cursors spread across
+    // different lines, some with a selection and some without, mirroring
+    // what Alt+click multi-cursor produces. Same "render() succeeds, and
+    // changing cursor state alone isn't frame-skipped" scope as the single-
+    // cursor tests above - pixel-level highlight correctness is out of
+    // scope (see file header).
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+    pipeline.setCursorVisuals({CursorVisual{.position = 0}});
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // 3 cursors: one plain caret on line 0, one with a selection spanning
+    // line 1, one plain caret on line 2 - only this vector changes.
+    pipeline.setCursorVisuals({
+        CursorVisual{.position = 2},
+        CursorVisual{.position = 11, .selectionRange = TextRange{.start = 6, .end = 11}},
+        CursorVisual{.position = 17},
+    });
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (3 cursors) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "multi-cursor change was frame-skipped instead of triggering a redraw";
 }
 
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {

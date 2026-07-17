@@ -26,6 +26,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include "neomifes/document/text_pos.h"
 #include "neomifes/render/render_device.h"
@@ -38,6 +40,18 @@ class BufferSnapshot;
 }  // namespace neomifes::document
 
 namespace neomifes::render {
+
+// One cursor's visual state: where its caret sits, and what (if anything) it
+// has selected. Deliberately document::-typed only (not core::Cursor) - same
+// "independent, concurrently runnable engines" reasoning as the rest of this
+// class's public surface (Phase 4b7a, generalizing the single caret/
+// selection fields Phase 4b1/4b2 introduced).
+struct CursorVisual {
+    document::TextPos   position       = 0;
+    document::TextRange selectionRange{};  // start==end: no selection for this cursor
+
+    friend constexpr bool operator==(const CursorVisual&, const CursorVisual&) = default;
+};
 
 class RenderPipeline {
 public:
@@ -74,17 +88,17 @@ public:
     void setTopLine(document::LineNumber line) noexcept { m_topLine = line; }
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
 
-    // Caret position, as a flat document::TextPos (Phase 4b1). Not
+    // The full set of cursors to draw - one caret + (optionally) one
+    // selection highlight each (Phase 4b7a, generalizing Phase 4b1's
+    // setCaretPosition()/Phase 4b2's setSelectionRange() from a single
+    // primary-cursor value to every cursor SelectionModel holds). Not
     // core::Cursor-typed - RenderPipeline stays independent of
     // neomifes::core (same "independent, concurrently runnable engines"
-    // reasoning as Viewport's header comment). The app layer reads
-    // SelectionModel::primaryCursor().position and forwards it here.
-    void setCaretPosition(document::TextPos pos) noexcept { m_caretPosition = pos; }
-
-    // Selection range to highlight, as a flat document::TextRange (Phase
-    // 4b2) - same core-agnostic reasoning as setCaretPosition. An empty
-    // range (start == end) means no selection to draw.
-    void setSelectionRange(document::TextRange range) noexcept { m_selectionRange = range; }
+    // reasoning as Viewport's header comment). The app layer builds this
+    // from SelectionModel::cursors() and forwards it here in one call.
+    void setCursorVisuals(std::vector<CursorVisual> cursors) noexcept {
+        m_cursorVisuals = std::move(cursors);
+    }
 
     // Converts a client-area point (device pixels, e.g. from
     // WM_LBUTTONDOWN's lParam) to the nearest document::TextPos, using the
@@ -115,14 +129,11 @@ private:
         document::LineNumber  topLine         = 0;
         std::uint32_t         width = 0, height = 0;
         float                 dpiScale = 0.0F;
-        // Included so caret-only movement (document/topLine/size unchanged)
-        // still forces a redraw instead of being coarse-frame-skipped
-        // (Phase 4b1 - the frame-skip in render() predates the caret).
-        document::TextPos     caretPosition = 0;
-        // Same reasoning as caretPosition, for selection-only changes
-        // (e.g. Shift+click extending the selection without moving topLine)
-        // (Phase 4b2).
-        document::TextRange   selectionRange{};
+        // Included so caret-only movement, selection-only changes, or a
+        // change in how many cursors exist (document/topLine/size
+        // unchanged) still force a redraw instead of being coarse-frame-
+        // skipped (Phase 4b1/4b2, generalized to N cursors in Phase 4b7a).
+        std::vector<CursorVisual> cursorVisuals;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -135,17 +146,41 @@ private:
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
+
+    // Precomputed line/column for one cursor's caret (Phase 4b1, N-cursor
+    // generalization Phase 4b7a). A line outside the visible range simply
+    // never matches inside drawCaretsOnLine()'s per-line loop.
+    struct CaretDraw {
+        document::LineNumber line;
+        std::uint32_t         column;
+    };
+    // One offsetToLine()/lineToOffset() pair per cursor in m_cursorVisuals,
+    // done once per frame rather than once per (visible line x cursor) pair
+    // - pulled out of drawVisibleLines() to keep its cognitive complexity
+    // down (Phase 4b7a; same rationale as main.cpp's dispatchMouseDown()/
+    // handleClipboardKey() extractions).
+    [[nodiscard]] std::vector<CaretDraw> computeCaretDraws() const noexcept;
+    // Draws whichever of `caretDraws` land on `line`, at vertical offset
+    // `y` within `layout`. Called from drawVisibleLines() per visible line,
+    // after DrawTextLayout so carets render on top of the glyphs.
+    void drawCaretsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                         document::LineNumber line, const std::vector<CaretDraw>& caretDraws) noexcept;
+    // Draws a translucent highlight rectangle for every m_cursorVisuals
+    // selection range that overlaps [lineStart, lineEnd), at vertical
+    // offset `y` within `layout`. Called from drawVisibleLines() BEFORE
+    // DrawTextLayout for the current visible line, so highlights sit
+    // behind the glyphs (Phase 4b2, N-cursor generalization Phase 4b7a).
+    void drawSelectionsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                             document::TextPos lineStart, document::TextPos lineEnd) noexcept;
     // Draws a thin solid caret bar at `column` (UTF-16 code units into the
     // line) within `layout`, at vertical offset `y`. Called from
-    // drawVisibleLines() for whichever visible line the caret is on, reusing
+    // drawCaretsOnLine() for whichever visible line a caret is on, reusing
     // that line's already-fetched layout and m_textBrush (Phase 4b1).
     void drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                          std::uint32_t column) noexcept;
     // Draws a translucent highlight rectangle spanning [startColumn,
     // endColumn) of `layout`, at vertical offset `y`. Called from
-    // drawVisibleLines() BEFORE DrawTextLayout for any visible line that
-    // intersects m_selectionRange, so the highlight sits behind the glyphs
-    // (Phase 4b2).
+    // drawSelectionsOnLine() once per overlapping selection range.
     void drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                              std::uint32_t startColumn, std::uint32_t endColumn) noexcept;
 
@@ -164,8 +199,7 @@ private:
     std::uint64_t                                     m_cachedDocumentVersion = 0;
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
-    document::TextPos                                 m_caretPosition         = 0;
-    document::TextRange                               m_selectionRange{};  // start==end: no selection
+    std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush/m_selectionBrush are bound to the device

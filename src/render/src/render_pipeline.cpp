@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
@@ -74,8 +75,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .width           = m_width,
         .height          = m_height,
         .dpiScale        = m_dpiScale,
-        .caretPosition   = m_caretPosition,
-        .selectionRange  = m_selectionRange,
+        .cursorVisuals   = m_cursorVisuals,
     };
 }
 
@@ -262,47 +262,26 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     const std::u16string text =
         m_cachedSnapshot->extract(TextRange{.start = startOffset, .end = endOffset});
 
-    // Caret line/column, computed once (Phase 4b1). Only meaningful if it
-    // falls within [startLine, endLineExclusive) - checked per-iteration
-    // below rather than skipped here, since a caret outside the visible
-    // range (e.g. ensureVisible() hasn't run yet for this frame) simply
-    // never matches `line == caretLine` in the loop.
-    const LineNumber caretLine = m_document->offsetToLine(m_caretPosition);
-    const auto caretColumn =
-        static_cast<std::uint32_t>(m_caretPosition - m_document->lineToOffset(caretLine));
+    const std::vector<CaretDraw> caretDraws = computeCaretDraws();
 
     std::u16string_view remaining(text);
-    float                y = 0.0F;
+    float                y         = 0.0F;
+    TextPos              lineStart = startOffset;
     for (LineNumber line = startLine; line < endLineExclusive; ++line) {
         const auto newlinePos = remaining.find(u'\n');
         const std::u16string_view lineSpan =
             (newlinePos == std::u16string_view::npos) ? remaining : remaining.substr(0, newlinePos);
+        const TextPos lineEnd = lineStart + lineSpan.size();
 
         const auto layoutResult =
             m_layoutCache.getOrCreate(line, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
                                       kMaxLayoutWidthDips, kMaxLayoutHeightDips);
         if (layoutResult.has_value()) {
             // Drawn before DrawTextLayout so glyphs render on top of the
-            // highlight (Phase 4b2). Skipped entirely when there's no
-            // selection - avoids a lineToOffset() lookup on the common
-            // no-selection path.
-            if (!m_selectionRange.empty()) {
-                const TextPos lineStart    = m_document->lineToOffset(line);
-                const TextPos lineEnd      = lineStart + lineSpan.size();
-                const TextPos selStart     = std::min(m_selectionRange.start, m_selectionRange.end);
-                const TextPos selEnd       = std::max(m_selectionRange.start, m_selectionRange.end);
-                const TextPos overlapStart = std::max(lineStart, selStart);
-                const TextPos overlapEnd   = std::min(lineEnd, selEnd);
-                if (overlapStart < overlapEnd) {
-                    drawSelectionOnLine(dc, **layoutResult, y,
-                                        static_cast<std::uint32_t>(overlapStart - lineStart),
-                                        static_cast<std::uint32_t>(overlapEnd - lineStart));
-                }
-            }
+            // highlight (Phase 4b2, N-cursor generalization Phase 4b7a).
+            drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
             dc.DrawTextLayout(D2D1::Point2F(0.0F, y), *layoutResult, m_textBrush.Get());
-            if (line == caretLine) {
-                drawCaretOnLine(dc, **layoutResult, y, caretColumn);
-            }
+            drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
         }
         // A layout-creation failure for a single line is no worse than the
         // pre-Phase-3c behavior of DrawText() silently failing per-call - it
@@ -312,7 +291,47 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         if (newlinePos == std::u16string_view::npos) {
             break;
         }
+        lineStart = lineEnd + 1;  // +1 for the '\n' this line's span excluded
         remaining = remaining.substr(newlinePos + 1);
+    }
+}
+
+std::vector<RenderPipeline::CaretDraw> RenderPipeline::computeCaretDraws() const noexcept {
+    std::vector<CaretDraw> draws;
+    draws.reserve(m_cursorVisuals.size());
+    for (const CursorVisual& cv : m_cursorVisuals) {
+        const LineNumber cursorLine = m_document->offsetToLine(cv.position);
+        draws.push_back(CaretDraw{
+            .line   = cursorLine,
+            .column = static_cast<std::uint32_t>(cv.position - m_document->lineToOffset(cursorLine)),
+        });
+    }
+    return draws;
+}
+
+void RenderPipeline::drawCaretsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                                      LineNumber line, const std::vector<CaretDraw>& caretDraws) noexcept {
+    for (const CaretDraw& caret : caretDraws) {
+        if (caret.line == line) {
+            drawCaretOnLine(dc, layout, y, caret.column);
+        }
+    }
+}
+
+void RenderPipeline::drawSelectionsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                                          TextPos lineStart, TextPos lineEnd) noexcept {
+    for (const CursorVisual& cv : m_cursorVisuals) {
+        if (cv.selectionRange.empty()) {
+            continue;
+        }
+        const TextPos selStart     = std::min(cv.selectionRange.start, cv.selectionRange.end);
+        const TextPos selEnd       = std::max(cv.selectionRange.start, cv.selectionRange.end);
+        const TextPos overlapStart = std::max(lineStart, selStart);
+        const TextPos overlapEnd   = std::min(lineEnd, selEnd);
+        if (overlapStart < overlapEnd) {
+            drawSelectionOnLine(dc, layout, y, static_cast<std::uint32_t>(overlapStart - lineStart),
+                               static_cast<std::uint32_t>(overlapEnd - lineStart));
+        }
     }
 }
 

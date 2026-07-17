@@ -325,17 +325,23 @@ void wireMeasureStartupOrMemoryMode(MainWindowConfig& cfg, StartupProfile& profi
 // Bridges core::Viewport/SelectionModel state into RenderPipeline and
 // requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel/
 // onMouseDown below (Phase 4b1/4b2). RenderPipeline stays core-agnostic
-// (setTopLine/setCaretPosition/setSelectionRange take plain document
-// types), so this glue lives here in the app layer rather than in either
-// core or render.
+// (setTopLine/setCursorVisuals take plain document types), so this glue
+// lives here in the app layer rather than in either core or render.
+// Phase 4b7a: builds one CursorVisual per SelectionModel cursor (not just
+// the primary) so every cursor's caret/selection actually gets drawn.
 void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
                                   const SelectionModel& selection, const Viewport& viewport) {
     renderPipeline.setTopLine(viewport.topLine());
-    const auto& cursor = selection.primaryCursor();
-    renderPipeline.setCaretPosition(cursor.position);
-    renderPipeline.setSelectionRange(
-        TextRange{.start = std::min(cursor.position, cursor.anchor),
-                 .end     = std::max(cursor.position, cursor.anchor)});
+    std::vector<neomifes::render::CursorVisual> visuals;
+    visuals.reserve(selection.cursors().size());
+    for (const auto& cursor : selection.cursors()) {
+        visuals.push_back(neomifes::render::CursorVisual{
+            .position       = cursor.position,
+            .selectionRange = TextRange{.start = std::min(cursor.position, cursor.anchor),
+                                        .end     = std::max(cursor.position, cursor.anchor)},
+        });
+    }
+    renderPipeline.setCursorVisuals(std::move(visuals));
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
