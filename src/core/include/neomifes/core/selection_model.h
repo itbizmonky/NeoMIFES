@@ -87,6 +87,18 @@ public:
     // resulting selection removes the line cleanly (Phase 4b4).
     void selectLineAt(document::TextPos pos, const document::Document& doc);
 
+    // Extends exactly one cursor - the one whose anchor equals
+    // `identifyingAnchor` - to `newPos`, leaving every other cursor
+    // untouched (Phase 4b6d: Alt+Shift+click / Alt+drag extending the
+    // cursor a prior Alt+click added, as opposed to moveAll()/moveAllTo(),
+    // which always apply to every cursor uniformly). A cursor's anchor
+    // stays fixed while its position moves during a single extend gesture,
+    // so the caller can keep passing the same `identifyingAnchor` across
+    // repeated calls (e.g. successive WM_MOUSEMOVE events) to keep
+    // targeting the same cursor. A no-op if no cursor's anchor matches
+    // (e.g. it merged into another cursor since - see mergeOverlapping()).
+    void moveCursorMatching(document::TextPos identifyingAnchor, document::TextPos newPos);
+
     [[nodiscard]] std::span<const Cursor> cursors() const noexcept { return m_cursors; }
     [[nodiscard]] const Cursor&           primaryCursor() const noexcept;
 

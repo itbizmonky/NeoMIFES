@@ -407,4 +407,39 @@ TEST(SelectionModelTest, SelectLineAtIncludesTrailingNewlineExceptOnLastLine) {
     EXPECT_EQ(model.primaryCursor().position, doc.length());  // no trailing '\n' to include
 }
 
+TEST(SelectionModelTest, MoveCursorMatchingExtendsOnlyTheIdentifiedCursor) {
+    SelectionModel model(0);
+    model.addCursor(6);  // primary at 0, secondary at 6 (its anchor is 6)
+    ASSERT_EQ(model.cursors().size(), 2U);
+
+    model.moveCursorMatching(/*identifyingAnchor=*/6, /*newPos=*/9);
+    ASSERT_EQ(model.cursors().size(), 2U);
+    EXPECT_EQ(model.cursors()[0].position, 0U);  // untouched
+    EXPECT_EQ(model.cursors()[0].anchor, 0U);
+    EXPECT_EQ(model.cursors()[1].anchor, 6U);   // unchanged - identity for further calls
+    EXPECT_EQ(model.cursors()[1].position, 9U);  // extended
+    EXPECT_TRUE(model.cursors()[1].hasSelection());
+}
+
+TEST(SelectionModelTest, MoveCursorMatchingCanBeCalledRepeatedlyWithTheSameAnchor) {
+    SelectionModel model(0);
+    model.addCursor(6);
+
+    model.moveCursorMatching(6, 9);
+    model.moveCursorMatching(6, 3);  // simulates a drag moving back past the anchor
+    ASSERT_EQ(model.cursors().size(), 2U);
+    EXPECT_EQ(model.cursors()[1].anchor, 6U);
+    EXPECT_EQ(model.cursors()[1].position, 3U);
+}
+
+TEST(SelectionModelTest, MoveCursorMatchingIsNoOpWhenNoAnchorMatches) {
+    SelectionModel model(0);
+    model.addCursor(6);
+
+    model.moveCursorMatching(/*identifyingAnchor=*/999, /*newPos=*/3);
+    ASSERT_EQ(model.cursors().size(), 2U);
+    EXPECT_EQ(model.cursors()[0].position, 0U);
+    EXPECT_EQ(model.cursors()[1].position, 6U);
+}
+
 }  // namespace

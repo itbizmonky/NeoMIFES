@@ -244,6 +244,17 @@ void SelectionModel::selectLineAt(document::TextPos pos, const document::Documen
     mergeOverlapping();
 }
 
+void SelectionModel::moveCursorMatching(document::TextPos identifyingAnchor,
+                                        document::TextPos newPos) {
+    for (Cursor& cursor : m_cursors) {
+        if (cursor.anchor == identifyingAnchor) {
+            cursor.position = newPos;
+            mergeOverlapping();
+            return;
+        }
+    }
+}
+
 const Cursor& SelectionModel::primaryCursor() const noexcept {
     for (const Cursor& cursor : m_cursors) {
         if (cursor.isPrimary) {

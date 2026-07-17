@@ -344,15 +344,35 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
 // function's cognitive complexity down (same rationale as
 // loadStartupDocument()/prepareDocument() above) - Phase 4b5b's altDown
 // branch pushed the inline version over clang-tidy's threshold.
+//
+// `altCursorAnchor` (Phase 4b6d) is wireNormalMode's session-lifetime state
+// tracking the anchor of the cursor a prior plain Alt+click added, so a
+// later Alt+Shift+click (and onMouseDrag below, for Alt+drag) can extend
+// that specific cursor - SelectionModel::moveAllTo()/moveAll() always apply
+// to every cursor uniformly, so this targeted extension needs the caller to
+// remember which cursor is "active" across separate mouse events.
 bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
-                       SelectionModel& selectionModel, Viewport& viewport, const Document& document) {
-    // Alt+click always adds a cursor, regardless of click count -
-    // Alt+double/triple-click's meaning is left undefined rather than
-    // guessed at. Otherwise (Phase 4b4) click count dispatches to word/line
-    // selection instead of plain cursor placement.
+                       SelectionModel& selectionModel, Viewport& viewport, const Document& document,
+                       std::optional<neomifes::document::TextPos>& altCursorAnchor) {
     if (altDown) {
-        return neomifes::app::handleAltClick(hit, selectionModel, viewport, document);
+        // Alt+Shift+click extends the cursor the last plain Alt+click added
+        // (if any); otherwise (including a bare Alt+Shift+click with no
+        // prior Alt+click to extend) it falls through to adding a new
+        // cursor, same as plain Alt+click. Alt+double/triple-click's
+        // meaning is left undefined rather than guessed at - click count is
+        // not consulted here at all.
+        if (shiftDown && altCursorAnchor) {
+            selectionModel.moveCursorMatching(*altCursorAnchor, hit);
+            viewport.ensureVisible(hit, document);
+            return true;
+        }
+        const bool changed = neomifes::app::handleAltClick(hit, selectionModel, viewport, document);
+        altCursorAnchor    = hit;
+        return changed;
     }
+    // A plain click abandons any in-progress Alt-cursor extension - the next
+    // drag should extend the primary selection again, not the old target.
+    altCursorAnchor.reset();
     if (clickCount >= 3) {
         return neomifes::app::handleTripleClick(hit, selectionModel, viewport, document);
     }
@@ -438,7 +458,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
 // forever; there is no retry policy.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                    Viewport& viewport) {
+                    Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
@@ -480,33 +500,40 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         viewport.scrollTo(neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
-    cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline](
+    cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor](
                           HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
                           int clickCount) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
-        // Drag (onMouseDrag below) is unaffected by any of dispatchMouseDown's
-        // branches - it always calls handleMouseDown directly regardless of
-        // what started the drag.
-        const bool changed =
-            dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel, viewport, document);
+        const bool changed = dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel,
+                                              viewport, document, altCursorAnchor);
         if (changed) {
             syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
         }
     };
-    cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline](
+    cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor](
                           HWND hwnd, std::int32_t x, std::int32_t y) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
-        // A drag always extends from whatever anchor onMouseDown established
+        // If the drag started with a plain Alt+click (altCursorAnchor set),
+        // it extends that one cursor (Phase 4b6d) instead of the primary
+        // selection - otherwise, same as before Phase 4b6d, a drag always
+        // extends from whatever anchor onMouseDown established
         // (shiftDown=true), regardless of whether the drag started with
-        // Shift held (Phase 4b3) - see plan doc rationale.
-        const bool changed =
-            neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, selectionModel, viewport, document);
+        // Shift held (Phase 4b3).
+        bool changed = false;
+        if (altCursorAnchor) {
+            selectionModel.moveCursorMatching(*altCursorAnchor, *hit);
+            viewport.ensureVisible(*hit, document);
+            changed = true;
+        } else {
+            changed =
+                neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, selectionModel, viewport, document);
+        }
         if (changed) {
             syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
         }
@@ -572,6 +599,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     SelectionModel    selectionModel{0};
     CommandDispatcher dispatcher{document, selectionModel};
     Viewport          viewport;
+    // Phase 4b6d: anchor of the cursor a plain Alt+click most recently
+    // added, so a later Alt+Shift+click or Alt+drag can extend that one
+    // cursor specifically. Reset to nullopt by any non-Alt click.
+    std::optional<neomifes::document::TextPos> altCursorAnchor;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -586,7 +617,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireMeasureFrameMode(cfg, window, renderPipeline, document, frameProfile,
                              syntheticLineCountUsed);
     } else {
-        wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport);
+        wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
+                       altCursorAnchor);
     }
 
     if (!window.create(hInstance, cfg)) {
