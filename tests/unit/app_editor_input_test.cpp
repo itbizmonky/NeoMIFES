@@ -12,8 +12,10 @@ namespace {
 
 using neomifes::app::applyMouseWheelScroll;
 using neomifes::app::handleChar;
+using neomifes::app::handleDoubleClick;
 using neomifes::app::handleKeyDown;
 using neomifes::app::handleMouseDown;
+using neomifes::app::handleTripleClick;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
@@ -264,6 +266,26 @@ TEST(EditorInputTest, RepeatedShiftedMouseDownSimulatesDragExtendingFromOriginal
     handleMouseDown(1, /*shiftDown=*/true, env.selection, env.viewport, env.doc);  // move back past start
     EXPECT_EQ(env.selection.primaryCursor().anchor, 3U);    // anchor never moves mid-drag
     EXPECT_EQ(env.selection.primaryCursor().position, 1U);
+}
+
+TEST(EditorInputTest, HandleDoubleClickSelectsWordAtPosition) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+
+    const bool changed = handleDoubleClick(2, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 0U);
+    EXPECT_EQ(env.selection.primaryCursor().position, 5U);
+}
+
+TEST(EditorInputTest, HandleTripleClickSelectsLineAtPosition) {
+    Env env;
+    env.doc.insertText(0, u"line0\nline1\nline2");
+
+    const bool changed = handleTripleClick(8, env.selection, env.viewport, env.doc);  // in "line1"
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.selection.primaryCursor().anchor, 6U);
+    EXPECT_EQ(env.selection.primaryCursor().position, 12U);  // includes trailing '\n'
 }
 
 }  // namespace

@@ -58,6 +58,18 @@ public:
     // extendSelection parameter.
     void moveAllTo(document::TextPos position, bool extendSelection = false);
 
+    // Selects the "word" (or single punctuation character, or run of
+    // whitespace) at `pos`, using simple character-class boundaries rather
+    // than full Unicode word segmentation (Phase 4b4 - see ADR-012's
+    // MovementUnit deferral; the user confirmed this simplified rule over
+    // UAX #29). Applies to every cursor, same convention as moveAllTo.
+    void selectWordAt(document::TextPos pos, const document::Document& doc);
+
+    // Selects the entire line containing `pos`. Includes the trailing '\n'
+    // when one exists (i.e. not the last line), so Backspace/Delete on the
+    // resulting selection removes the line cleanly (Phase 4b4).
+    void selectLineAt(document::TextPos pos, const document::Document& doc);
+
     [[nodiscard]] std::span<const Cursor> cursors() const noexcept { return m_cursors; }
     [[nodiscard]] const Cursor&           primaryCursor() const noexcept;
 

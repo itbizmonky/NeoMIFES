@@ -261,13 +261,25 @@ void MainWindow::handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept {
     // leaves the client area mid-drag.
     ::SetCapture(m_hwnd);
     m_isDragging = true;
+
+    // Click-count tracking (Phase 4b4): WM_LBUTTONDBLCLK (needs CS_DBLCLKS,
+    // not set on this window class) has no notion of a third click, so
+    // every WM_LBUTTONDOWN is run through the pure nextClickState() helper
+    // instead, using the same thresholds Windows itself uses for
+    // double-clicks.
+    const auto x = static_cast<std::int32_t>(GET_X_LPARAM(lParam));
+    const auto y = static_cast<std::int32_t>(GET_Y_LPARAM(lParam));
+    m_clickState = nextClickState(m_clickState, ClickPoint{.x = x, .y = y},
+                                  static_cast<std::uint32_t>(::GetMessageTime()),
+                                  ::GetDoubleClickTime(),
+                                  ::GetSystemMetrics(SM_CXDOUBLECLK) / 2,
+                                  ::GetSystemMetrics(SM_CYDOUBLECLK) / 2);
+
     if (!m_onMouseDown) {
         return;
     }
-    const auto x         = static_cast<std::int32_t>(GET_X_LPARAM(lParam));
-    const auto y         = static_cast<std::int32_t>(GET_Y_LPARAM(lParam));
     const bool shiftDown = (wParam & MK_SHIFT) != 0;
-    m_onMouseDown(m_hwnd, x, y, shiftDown);
+    m_onMouseDown(m_hwnd, x, y, shiftDown, m_clickState.count);
 }
 
 void MainWindow::handleMouseMove(LPARAM lParam) noexcept {

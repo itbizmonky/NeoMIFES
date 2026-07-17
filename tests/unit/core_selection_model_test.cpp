@@ -200,4 +200,78 @@ TEST(SelectionModelTest, MoveAllToWithoutExtendCollapsesExistingSelection) {
     EXPECT_FALSE(model.primaryCursor().hasSelection());
 }
 
+TEST(SelectionModelTest, SelectWordAtSelectsAsciiWordInMiddleOfLine) {
+    Document doc;
+    doc.insertText(0, u"hello world");
+    SelectionModel model(0);
+
+    model.selectWordAt(2, doc);  // inside "hello"
+    EXPECT_EQ(model.primaryCursor().anchor, 0U);
+    EXPECT_EQ(model.primaryCursor().position, 5U);
+}
+
+TEST(SelectionModelTest, SelectWordAtClickAtVeryEndOfLineSelectsLastWord) {
+    Document doc;
+    doc.insertText(0, u"abc");
+    SelectionModel model(0);
+
+    model.selectWordAt(3, doc);  // == doc.length(), one past the last char
+    EXPECT_EQ(model.primaryCursor().anchor, 0U);
+    EXPECT_EQ(model.primaryCursor().position, 3U);
+}
+
+TEST(SelectionModelTest, SelectWordAtOnPunctuationSelectsSingleCharacter) {
+    Document doc;
+    doc.insertText(0, u"a.b");
+    SelectionModel model(0);
+
+    model.selectWordAt(1, doc);  // the '.'
+    EXPECT_EQ(model.primaryCursor().anchor, 1U);
+    EXPECT_EQ(model.primaryCursor().position, 2U);
+}
+
+TEST(SelectionModelTest, SelectWordAtOnWhitespaceSelectsWhitespaceRun) {
+    Document doc;
+    doc.insertText(0, u"a   b");  // 3 spaces
+    SelectionModel model(0);
+
+    model.selectWordAt(2, doc);  // middle space
+    EXPECT_EQ(model.primaryCursor().anchor, 1U);
+    EXPECT_EQ(model.primaryCursor().position, 4U);
+}
+
+TEST(SelectionModelTest, SelectWordAtGroupsContiguousCjkCharactersAsOneWord) {
+    Document doc;
+    doc.insertText(0, u"hello こんにちは world");  // "hello こんにちは world"
+    SelectionModel model(0);
+
+    model.selectWordAt(8, doc);  // inside the hiragana run (offset 6-11)
+    EXPECT_EQ(model.primaryCursor().anchor, 6U);
+    EXPECT_EQ(model.primaryCursor().position, 11U);
+}
+
+TEST(SelectionModelTest, SelectWordAtOnEmptyLineIsNoOp) {
+    Document doc;
+    doc.insertText(0, u"a\n\nb");  // line 1 (offset 2) is empty
+    SelectionModel model(0);
+
+    model.selectWordAt(2, doc);
+    EXPECT_FALSE(model.primaryCursor().hasSelection());
+    EXPECT_EQ(model.primaryCursor().position, 2U);
+}
+
+TEST(SelectionModelTest, SelectLineAtIncludesTrailingNewlineExceptOnLastLine) {
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    SelectionModel model(0);
+
+    model.selectLineAt(8, doc);  // inside "line1" (offset 6-11)
+    EXPECT_EQ(model.primaryCursor().anchor, 6U);
+    EXPECT_EQ(model.primaryCursor().position, 12U);  // includes the '\n' before "line2"
+
+    model.selectLineAt(15, doc);  // inside "line2", the last line
+    EXPECT_EQ(model.primaryCursor().anchor, 12U);
+    EXPECT_EQ(model.primaryCursor().position, doc.length());  // no trailing '\n' to include
+}
+
 }  // namespace

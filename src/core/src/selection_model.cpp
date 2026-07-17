@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <string>
 
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 
 namespace neomifes::core {
@@ -65,6 +68,27 @@ namespace {
     return position;
 }
 
+// Simple character-class boundaries for word selection (Phase 4b4, user
+// confirmed over full Unicode UAX #29 segmentation - see ADR-012's
+// MovementUnit deferral). ASCII alnum/underscore and CJK ranges (hiragana,
+// katakana, CJK unified ideographs, halfwidth/fullwidth forms) count as
+// "word" characters and merge into runs; everything else that isn't
+// whitespace is its own single-character "word" (so punctuation is
+// selectable individually, matching most editors' double-click behavior).
+enum class CharKind : std::uint8_t { Word, Whitespace, Other };
+
+[[nodiscard]] CharKind classify(char16_t ch) noexcept {
+    if (ch == u' ' || ch == u'\t' || ch == u'\r' || ch == u'\n') {
+        return CharKind::Whitespace;
+    }
+    const bool isAsciiWord = (ch >= u'a' && ch <= u'z') || (ch >= u'A' && ch <= u'Z') ||
+                             (ch >= u'0' && ch <= u'9') || ch == u'_';
+    const bool isCjk = (ch >= 0x3040 && ch <= 0x30FF) ||   // hiragana + katakana
+                       (ch >= 0x4E00 && ch <= 0x9FFF) ||   // CJK unified ideographs
+                       (ch >= 0xFF00 && ch <= 0xFFEF);     // halfwidth/fullwidth forms
+    return (isAsciiWord || isCjk) ? CharKind::Word : CharKind::Other;
+}
+
 }  // namespace
 
 SelectionModel::SelectionModel(document::TextPos initialPosition) {
@@ -100,6 +124,57 @@ void SelectionModel::moveAllTo(document::TextPos position, bool extendSelection)
         if (!extendSelection) {
             cursor.anchor = position;
         }
+    }
+    mergeOverlapping();
+}
+
+void SelectionModel::selectWordAt(document::TextPos pos, const document::Document& doc) {
+    const document::LineNumber line      = doc.offsetToLine(pos);
+    const document::TextPos    lineStart = doc.lineToOffset(line);
+    const document::TextPos    lineEnd   = lineContentEnd(doc, line);
+    if (lineStart >= lineEnd) {
+        moveAllTo(pos);  // empty line - nothing to select
+        return;
+    }
+    const std::u16string lineText =
+        doc.snapshot()->extract(document::TextRange{.start = lineStart, .end = lineEnd});
+
+    // Clamp the click column into the line's bounds - a click at lineEnd
+    // (the very end of the line) must look at the last character, not one
+    // past it.
+    const document::TextPos clamped = std::min(pos, lineEnd);
+    auto                    col     = static_cast<std::size_t>(clamped - lineStart);
+    if (col >= lineText.size()) {
+        col = lineText.size() - 1;
+    }
+
+    const CharKind kind = classify(lineText[col]);
+    std::size_t    start = col;
+    while (start > 0 && classify(lineText[start - 1]) == kind) {
+        --start;
+    }
+    std::size_t end = col + 1;
+    while (end < lineText.size() && classify(lineText[end]) == kind) {
+        ++end;
+    }
+
+    for (Cursor& cursor : m_cursors) {
+        cursor.anchor   = lineStart + start;
+        cursor.position = lineStart + end;
+    }
+    mergeOverlapping();
+}
+
+void SelectionModel::selectLineAt(document::TextPos pos, const document::Document& doc) {
+    const document::LineNumber line      = doc.offsetToLine(pos);
+    const document::TextPos    lineStart = doc.lineToOffset(line);
+    const document::TextPos    lineEnd   = (line + 1 < doc.lineCount())
+                                               ? doc.lineToOffset(line + 1)  // includes the trailing '\n'
+                                               : lineContentEnd(doc, line);  // last line: no '\n' to include
+
+    for (Cursor& cursor : m_cursors) {
+        cursor.anchor   = lineStart;
+        cursor.position = lineEnd;
     }
     mergeOverlapping();
 }

@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-17 (Phase 4b3 完了後)
+> **最終更新:** 2026-07-17 (Phase 4b4 完了後)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 
@@ -27,7 +27,8 @@
 | Phase 4b1 (キーボード入力配線・キャレット描画・マウスホイールスクロール) | ✅ 完了 |
 | Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) | ✅ 完了 |
 | Phase 4b3 (ドラッグ選択) | ✅ 完了 |
-| **Phase 4b4 (ダブル/トリプルクリック・複数カーソル)** | ⏭️ **次回着手** |
+| Phase 4b4 (ダブルクリック単語選択・トリプルクリック行選択) | ✅ 完了 |
+| **Phase 4b5 (Alt+クリック複数カーソル)** | ⏭️ **次回着手** |
 
 ---
 
@@ -251,6 +252,26 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 **スコープ外 (Phase 4b4 へ持ち越し):** ダブルクリック(単語選択)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加、選択範囲のクリップボードコピー、`WM_CAPTURECHANGED` の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール
 
+### 3.12 Phase 4b4 (ダブルクリック単語選択 + トリプルクリック行選択) 完了記録
+
+単語境界判定の方式についてユーザーに確認し「簡易文字種ベース」(推奨案)を採用 — ASCII英数字+`_`の連続・CJK文字の連続をそれぞれ1単語、それ以外の記号は1文字ずつ。Unicode UAX #29 準拠は外部ライブラリ導入とADR起票を要するため見送り。
+
+**成果物:**
+- 新規 `src/ui/include/neomifes/ui/click_tracking.h`: 純粋関数 `nextClickState()`。`src/render/resize_math.h`/`viewport_math.h` と同じ「ヘッダオンリー・SDK非依存・ユニットテスト可能」パターンを `src/ui/` に初適用 — `MainWindow` のロジックが初めてテスト可能になった部分
+- `SelectionModel::selectWordAt()`/`selectLineAt()` 新設。単語境界は簡易文字種ベース、行選択は既存`lineContentEnd()`を再利用し最終行以外は`\n`を含める
+- `neomifes::app::handleDoubleClick()`/`handleTripleClick()` 新設(`handleMouseDown`の既存契約は不変)
+- `MainWindow::onMouseDown` に `clickCount` パラメータ追加(`WM_LBUTTONDBLCLK`は「3回目」の概念が無いため使わず、`WM_LBUTTONDOWN`単体で手動判定)
+- テスト数: 190 → 207 (単体+17、CJK単語選択のテストを含む)
+- 実アプリでダブルクリック・トリプルクリック・CJKテキストでのダブルクリックをP/Invokeでシミュレートしクラッシュなしを確認
+
+**完了条件:**
+- [x] ダブルクリックで単語が選択される(ASCII/CJK両方でユニットテスト+実アプリ確認)
+- [x] トリプルクリックで行が選択される(`\n`込み、ユニットテスト+実アプリ確認)
+- [x] ローカル Debug/Release 全207テスト green、変更 `.cpp` 4ファイルの clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み) 新規警告0 (1件検出・修正: `hicpp-use-auto`/`modernize-use-auto`)
+- [ ] 単語選択・行選択の視覚的な正しさは自動検証していない — Phase 4b1〜4b3と同じ理由([[reference-no-win32-gui-automation]])、ユーザー自身による目視確認を推奨
+
+**スコープ外 (Phase 4b5 へ持ち越し):** Alt+クリックによる複数カーソル追加(編集コマンドの複数カーソル対応も必要)、選択範囲のクリップボードコピー、ダブルクリック→ドラッグでの単語単位ドラッグ拡張
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -297,10 +318,10 @@ Phase 4b をさらに 4b1/4b2 に分割 (Phase 3 の 3a/3b/3c 分割と同じ理
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握し、
-Phase 4b4 (ダブル/トリプルクリック・複数カーソル) に着手せよ。
-着手前に detailed_design.md §5.3 の Phase 4b1/4b2/4b3 実装済み範囲と、
-本ファイル §3.11 のスコープ外一覧を確認すること。
-ダブルクリック(単語選択)は単語境界判定の仕様についてユーザー確認が必要 (ADR-012 参照)。
+Phase 4b5 (Alt+クリック複数カーソル) に着手せよ。
+着手前に detailed_design.md §5.3 の Phase 4b1〜4b4 実装済み範囲と、
+本ファイル §3.12 のスコープ外一覧を確認すること。
+複数カーソルは編集コマンド (InsertTextCommand等) の多カーソル対応も併せて必要。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
@@ -321,12 +342,13 @@ Phase 3 は [`docs/phase_reports/phase_3_report.md`](../phase_reports/phase_3_re
 
 **Phase 4b3 (ドラッグ選択) は完了済み (§3.11 参照)。** Phase 4b2 の `handleMouseDown(pos, shiftDown=true, ...)` がドラッグの継続移動に必要な挙動と完全に一致していたため、新規の core/app ロジックは不要で、`MainWindow` の `SetCapture`/`WM_MOUSEMOVE`/`WM_LBUTTONUP` 配線のみで実現した。
 
-**Phase 4b4 (次回) 着手時に確認すること:**
-1. ダブルクリック(単語選択)・トリプルクリック(行選択)。`WM_LBUTTONDBLCLK` の配線 + 単語境界判定 (`MovementUnit` 未実装、ADR-012 で「Unicode UAX #29 準拠か簡易ASCII判定か等の仕様がユーザーと合意された時点」を再評価トリガーとして明記済み) — **着手前にユーザーへ単語境界判定の仕様を確認すること**
-2. Alt+クリックによる複数カーソル追加。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する入力経路がまだ無い。編集コマンド (`InsertTextCommand`等) が複数カーソルを考慮していない点 (Phase 4aレビューのPLAUSIBLE指摘) も併せて要検討
-3. `docs/design/detailed_design.md` §5.3 に Phase 4b1/4b2/4b3 の実装内容と Phase 4b4 へのスコープ外一覧を明記済み — まずここを読む
-4. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1/4b2/4b3 では未判断のまま)
-5. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
+**Phase 4b4 (ダブルクリック単語選択・トリプルクリック行選択) は完了済み (§3.12 参照)。** 単語境界はユーザー確認済みの簡易文字種ベース。クリック回数判定はヘッダオンリーの純粋関数 `click_tracking.h`(`src/render/`のmath系ヘッダと同じパターン)で実装し、`MainWindow`のロジックが初めてユニットテスト可能になった。
+
+**Phase 4b5 (次回) 着手時に確認すること:**
+1. Alt+クリックによる複数カーソル追加。`SelectionModel::addCursor()`/`moveAll()` は Phase 4a から複数カーソルに対応済みだが、UI からカーソルを追加する入力経路がまだ無い。**編集コマンド (`InsertTextCommand`等) が `primaryCursor()` のみを前提としており複数カーソルを考慮していない点(Phase 4aレビューのPLAUSIBLE指摘)を併せて設計すること** — Alt+クリックでカーソルを追加できても、その状態で文字を打った時に全カーソル位置に同時挿入されないなら機能として不完全
+2. `docs/design/detailed_design.md` §5.3 に Phase 4b1〜4b4 の実装内容と Phase 4b5 へのスコープ外一覧を明記済み — まずここを読む
+3. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1〜4b4 では未判断のまま)
+4. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。

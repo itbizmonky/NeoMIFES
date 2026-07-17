@@ -386,13 +386,25 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline](
-                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown) {
+                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown,
+                          int clickCount) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
-        const bool changed =
-            neomifes::app::handleMouseDown(*hit, shiftDown, selectionModel, viewport, document);
+        // Phase 4b4: click count dispatches to word/line selection instead
+        // of plain cursor placement. Drag (onMouseDrag below) is unaffected -
+        // it always calls handleMouseDown directly regardless of the click
+        // count that started the drag.
+        bool changed = false;
+        if (clickCount >= 3) {
+            changed = neomifes::app::handleTripleClick(*hit, selectionModel, viewport, document);
+        } else if (clickCount == 2) {
+            changed = neomifes::app::handleDoubleClick(*hit, selectionModel, viewport, document);
+        } else {
+            changed =
+                neomifes::app::handleMouseDown(*hit, shiftDown, selectionModel, viewport, document);
+        }
         if (changed) {
             syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
         }

@@ -139,4 +139,18 @@ bool handleMouseDown(document::TextPos pos, bool shiftDown, SelectionModel& sele
     return true;
 }
 
+bool handleDoubleClick(document::TextPos pos, SelectionModel& selection, Viewport& viewport,
+                       const Document& document) {
+    selection.selectWordAt(pos, document);
+    viewport.ensureVisible(selection.primaryCursor().position, document);
+    return true;
+}
+
+bool handleTripleClick(document::TextPos pos, SelectionModel& selection, Viewport& viewport,
+                       const Document& document) {
+    selection.selectLineAt(pos, document);
+    viewport.ensureVisible(selection.primaryCursor().position, document);
+    return true;
+}
+
 }  // namespace neomifes::app

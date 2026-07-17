@@ -28,7 +28,7 @@
 - [Session 20: Phase 3b (DirectWrite テキストレイアウト + Document 実描画)](#session-20-2026-07-16-phase-3b-directwrite-テキストレイアウト--document-実描画)
 - [Session 21: Phase 3c (TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame`) — Phase 3 全体完了](#session-21-2026-07-16-phase-3c-textlayoutcache--粗粒度フレームスキップ--measure-frame--phase-3-全体完了)
 - [Session 22: Phase 4a (Command/Undo/Selection、ヘッドレス) — 100万Undo DoD 実測](#session-22-2026-07-16-phase-4a-commandundoselectionヘッドレス--100万undo-dod-実測)
-- [Session 23: Phase 4a レビュー + Phase 4b1/4b2/4b3 (入力配線・キャレット・選択・ドラッグ)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
+- [Session 23: Phase 4a レビュー + Phase 4b1〜4b4 (入力配線・キャレット・選択・ドラッグ・単語/行選択)](#session-23-2026-07-17-phase-4a-レビュー--phase-4b1-キーボード入力配線--キャレット描画--マウスホイールスクロール)
 
 ---
 
@@ -586,6 +586,26 @@
 
 **教訓 (Phase 4b3):** Phase 4b2で`handleMouseDown`に`shiftDown`という汎用的な「anchor保持で拡張するか」フラグを設計したことが、Phase 4b3で「ドラッグは実質的に繰り返しのShift+クリック」という洞察につながり、新規コードをほぼ書かずに済んだ。個別の入力イベント(クリック・ドラッグ)ごとに専用のハンドラを都度新設するのではなく、「選択操作の共通の型は何か」という抽象度で設計しておくと、後続の入力手段(この場合ドラッグ)が驚くほど安く実装できることを示す一例。この累積的な設計効率は、Phase 4b1で`moveAllTo`にShift+クリック用の`extendSelection`を足した判断が、Phase 4b3でさらに一段先まで効いた結果でもある。
 
-**次回 (Phase 4b4):** ダブルクリック(単語選択、単語境界判定の仕様についてユーザー確認が必要)・トリプルクリック(行選択)、Alt+クリックによる複数カーソル追加(編集コマンドの複数カーソル対応も必要)、選択範囲のクリップボードコピー。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.11/§6 参照。
+**Phase 4b3 完了後:** ユーザーが「Phase 4b4の方針について」と質問。ダブルクリック単語選択の境界判定方式(簡易文字種ベース vs Unicode UAX #29準拠)についてAskUserQuestionでユーザーに確認し、「簡易文字種ベース(推奨)」を選択いただいた。
+
+**計画フェーズ (Phase 4b4):** 既存の `MainWindow`/`editor_input`/`SelectionModel` を直接精読して調査した結果、Win32 の `WM_LBUTTONDBLCLK`(要`CS_DBLCLKS`)には「3回目」の概念が無いため、`WM_LBUTTONDOWN` 単体でのクリック回数手動判定が必要と判断。判定ロジックを `src/render/resize_math.h`/`viewport_math.h` と同じ「ヘッダオンリー・Windows SDK非依存・ユニットテスト可能」パターンで `src/ui/click_tracking.h` として切り出す設計を採用(`MainWindow`のロジックが初めてテスト可能になる部分)。Plan Modeで、Alt+クリック複数カーソル(編集コマンドの複数カーソル対応を要する別の大きめの設計変更)は Phase 4b5 へ延期し、本フェーズはダブルクリック単語選択・トリプルクリック行選択のみに絞る計画を立案。ExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物 (Phase 4b4):**
+- 新規 `src/ui/include/neomifes/ui/click_tracking.h`: 純粋関数 `nextClickState()`。時間閾値(`GetDoubleClickTime()`)・距離閾値(`GetSystemMetrics(SM_CXDOUBLECLK/SM_CYDOUBLECLK)`)を呼び出し側から受け取り、クリック回数(1/2/3、3で頭打ち)を返す
+- `SelectionModel::selectWordAt()`/`selectLineAt()` 新設。単語境界は簡易文字種ベース(ASCII英数字+`_`の連続・CJK文字の連続をそれぞれ1単語、それ以外の記号は1文字ずつ)。行選択は既存`lineContentEnd()`を再利用し、最終行以外は`\n`を選択範囲に含める
+- `neomifes::app::handleDoubleClick()`/`handleTripleClick()` 新設 — `handleMouseDown`の既存契約は変更せず新規の兄弟関数として追加
+- `MainWindow::onMouseDown` フックに `clickCount` パラメータ追加、`m_clickState`(`ClickTrackerState`)を保持
+- `main.cpp`: `clickCount>=3`→`handleTripleClick`、`==2`→`handleDoubleClick`、それ以外→既存の`handleMouseDown`に分岐
+- テスト数: 190→207 (単体+17: `ui_click_tracking_test.cpp`新設8件、`selectWordAt`/`selectLineAt`のケース7件、`handleDoubleClick`/`handleTripleClick`のケース2件)。CJK単語選択のテストを含む
+- 実アプリでダブルクリック・トリプルクリック(P/Invokeで同一座標への複数回クリックをシミュレート)、および日本語(CJK)テキストでのダブルクリックをテストしクラッシュなし・正常終了を確認
+
+**検証 (Phase 4b4):**
+- ローカル Debug/Release 両方でフルビルド・全207テスト pass
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、変更 `.cpp` 4ファイル対象) で1件検出・修正: `hicpp-use-auto`/`modernize-use-auto` (`std::size_t col = static_cast<std::size_t>(...)` を `auto` に)。再スキャンで0警告確認
+- **既知の限界:** Phase 4b1〜4b3と同様、単語選択・行選択の視覚的な正しさは自動検証できない ([[reference-no-win32-gui-automation]])
+
+**教訓 (Phase 4b4):** クリック回数判定という、一見Win32メッセージ処理そのもの(`WM_LBUTTONDBLCLK`等)に見える機能も、実際には「時刻+座標の近さからリピートクリックを判定する」という純粋な計算に分解できた。`src/render/`で確立していた「ヘッダオンリー・SDK非依存の純粋関数」パターンを他レイヤー(`src/ui/`)に転用することで、このコードベースでこれまでテスト不可能だった`MainWindow`のロジックの一部が初めてユニットテスト可能になった — Win32依存に見える処理でも、実際に外部APIを呼ぶ部分と純粋な判定ロジックを意識的に分離すれば、テスト可能な範囲を継続的に広げられることを示す一例。
+
+**次回 (Phase 4b5):** Alt+クリックによる複数カーソル追加(編集コマンドの複数カーソル対応も必要)、選択範囲のクリップボードコピー。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.12/§6 参照。
 
 <!-- 次セッションはここに追記 -->

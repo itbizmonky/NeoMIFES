@@ -59,4 +59,14 @@ bool handleChar(wchar_t ch, core::CommandDispatcher& dispatcher, core::Selection
 bool handleMouseDown(document::TextPos pos, bool shiftDown, core::SelectionModel& selection,
                      core::Viewport& viewport, const document::Document& document);
 
+// Selects the word (simple character-class boundaries, Phase 4b4) at `pos`.
+// `pos` is already hit-tested by the caller. Always returns true.
+bool handleDoubleClick(document::TextPos pos, core::SelectionModel& selection,
+                       core::Viewport& viewport, const document::Document& document);
+
+// Selects the entire line containing `pos` (Phase 4b4). `pos` is already
+// hit-tested by the caller. Always returns true.
+bool handleTripleClick(document::TextPos pos, core::SelectionModel& selection,
+                       core::Viewport& viewport, const document::Document& document);
+
 }  // namespace neomifes::app
