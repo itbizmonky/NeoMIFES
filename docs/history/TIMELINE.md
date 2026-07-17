@@ -637,6 +637,45 @@
 
 **教訓:** 「ローカル検証はMSVCのみで実施」という運用が定着していたため、MSVCとclang-clで診断結果が異なるバグ(defaulted比較演算子の暗黙的削除)が2フェーズ分(4b4→4b5a/4b5b)気づかれずに積み重なった。この種のバグはCIに存在するUBSan(clang-cl)ジョブでしか検出できないため、`= default`な比較演算子を新規に書いた際はローカルでも`ubsan`プリセットを一度実行する習慣が必要と判断し、`RESUME_HERE.md`§2と`reference_windows_cpp_ci_gotchas.md`(項目6)に記録した(コミット`8fdecc5`)。「ローカルgreen ≈ ほぼ確実だが絶対ではない」という既存の注記が、今回はMSVCバージョン差異ではなくコンパイラ自体の差異という新しいパターンで実証された。
 
-**次回 (Phase 4b6):** スコープ未確定。候補: Alt+Shift+クリック(追加カーソルの選択範囲拡張)、Alt+ドラッグでの追加カーソルの選択拡張、選択範囲のクリップボードコピー、ダブルクリック→ドラッグでの単語単位ドラッグ拡張、`WM_CAPTURECHANGED`の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール、PageUp/PageDown、Ctrl+矢印(単語移動)。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.13/§6 参照。次セッション開始時にユーザーとスコープを確認すること。
+**Phase 4b6 スコープ確認:** ユーザーが「継続実施せよ」と指示。CIの docs-only push 完了・green確認後、Phase 4b6 のスコープをAskUserQuestionで確認したところ、候補4項目(選択範囲クリップボードコピー、PageUp/PageDown、Ctrl+矢印単語移動、Alt+Shift+クリック/Alt+ドラッグ選択拡張)**全て**が選択された。CLAUDE.mdルール8「1PR=1責務」に従い、Plan Modeで **4b6a(PageUp/PageDown)→4b6b(Ctrl+矢印単語移動)→4b6c(クリップボード)→4b6d(Alt+Shift拡張)** の4サブフェーズに複雑度の低い順で分割する計画を立案。既存コード(`Viewport`/`selection_model.cpp`の`classify()`/`handle_guard.h`)を直接精読して各サブフェーズの実現方式を検討した上でExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物 (Phase 4b6a — PageUp/PageDown):**
+- `MovementKind::PageUp`/`PageDown`追加。`moveVertically(doc, current, bool up)`を`moveVertically(doc, current, int64_t lineDelta)`に一般化し、既存`Up`/`Down`(delta=±1)と新規PageUp/PageDown(delta=±pageSize)が同じ列保持ロジックを共有
+- `SelectionModel::moveAll()`に`document::LineNumber pageSize = 0`をデフォルト引数で追加(既存呼び出し元は変更不要、Phase 4b2の`extendSelection`追加と同じパターン)
+- `editor_input.cpp`の`applyMovementKey()`に`VK_PRIOR`/`VK_NEXT`ケース追加、`handleKeyDown()`が`viewport.visibleLines()`からpageSizeを算出して渡す
+- ページ送り後のスクロールは既存`ensureVisible()`が自然に実現、新規スクロールロジック不要と判明
+- テスト数: 217→222。ローカルDebug/Release全green、clang-tidy新規警告0
+
+**成果物 (Phase 4b6b — Ctrl+矢印単語移動):**
+- `MovementKind::WordLeft`/`WordRight`追加。`selectWordAt()`(Phase 4b4)が持っていた`classify(char16_t)`/`CharKind`を無名namespace内で先頭に再配置し、新規`moveByWord()`と共有する形にリファクタ(単語境界の定義を1箇所に保つ)
+- **単語移動は現在行内に限定**(行頭/行末で停止)— `selectWordAt()`と同じ単一行スコープを踏襲、複数行走査という新たな設計判断を回避
+- `editor_input.cpp`の既存`VK_LEFT`/`VK_RIGHT`ケースに`ctrlDown`分岐を追加(`VK_HOME`/`VK_END`と同型)
+- テスト数: 222→231。ローカルDebug/Release全green、clang-tidy新規警告0
+
+**成果物 (Phase 4b6c — クリップボードコピー Ctrl+C/X/V):**
+- **スコープをプライマリカーソルの選択範囲のみに限定**(複数カーソルを跨いだコピー/ペーストの分配は新たな仕様判断を要するため次点課題)
+- 新規`src/platform/clipboard.h/.cpp`: `setClipboardText()`/`getClipboardText()`。`ClipboardScope`(OpenClipboard/CloseClipboardのRAII、HandleGuardの汎用テンプレートは使えないため独自実装)、`GlobalAlloc`/`GlobalLock`/`SetClipboardData`の定番手順(成功後はGlobalFreeしない)
+- `editor_input.cpp`に`textToCopy()`/`handlePaste()`追加。Cutはクリップボード書き込み失敗時に選択範囲を削除しない設計(データ消失防止)
+- `main.cpp`: `handleClipboardKey()`新設に加え、**`onKeyDown`ラムダの本体全体**を`handleKeyDownEvent()`という独立関数に切り出す必要が判明 — clang-tidyの`readability-function-cognitive-complexity`は、ラムダが`wireNormalMode`内にインライン定義されている場合その本体の複雑度を外側関数に積算する仕様のため、分岐ロジックだけを`handleClipboardKey()`に切り出しても(38→26)閾値25を超えたまま。ラムダ本体そのものを外に出して初めて解消した
+- 新規`tests/integration/platform_clipboard_test.cpp`: 実クリップボードのラウンドトリップ検証、`GTEST_SKIP()`で環境非対応時に緩やかにスキップ(`render_device_smoke_test.cpp`と同じパターン)
+- clang-tidyで2件検出・修正: `ClipboardScope`のspecial-member-functions不足(move ctor/assignの明示的delete追加)、`bugprone-suspicious-stringview-data-usage`(`memcpy`+`.data()`を`std::ranges::copy`に置き換え)
+- テスト数: 231→236。ローカルDebug/Release全green、**Phase 4b5bの教訓を踏まえ`ubsan`(clang-cl)プリセットでも追加検証**(全236テストgreenを確認、この教訓が実際に活きた最初のケース)
+
+**成果物 (Phase 4b6d — Alt+Shift+クリック/Alt+ドラッグ選択拡張):**
+- 新規`SelectionModel::moveCursorMatching(identifyingAnchor, newPos)`: `anchor`が指定値と一致する1個のカーソルだけを拡張、他のカーソルには触れない。`moveAll()`/`moveAllTo()`が常に全カーソルへ一様適用する既存設計とは異なる新プリミティブ。カーソルの安定した識別キーとして`anchor`(拡張中は不変)を採用— 配列添字は`mergeOverlapping()`のたびに再ソートされ不安定なため使えないと判断
+- `main.cpp`の`wWinMain`に`std::optional<TextPos> altCursorAnchor`新設。`wireNormalMode`のローカル変数ではなく`wWinMain`側に置き、参照で渡す設計にした — `wireNormalMode`はウィンドウ作成前に一度呼ばれて戻るだけの関数なので、そのローカル変数はメッセージループ開始前にスタックごと消える。`MainWindow::m_isDragging`がメンバ変数である理由と全く同じ制約
+- `dispatchMouseDown()`を拡張: プレーンAlt+クリックで`altCursorAnchor`を設定、Alt+Shift+クリックでこれを使い`moveCursorMatching()`を呼ぶ、Alt無しクリックでリセット。`onMouseDrag`も同様に`altCursorAnchor`があれば専用カーソルを拡張、無ければ既存の全カーソル拡張(`shiftDown=true`)にフォールバック
+- テスト数: 236→239 (単体+3: `moveCursorMatching`の対象カーソル限定・繰り返し呼び出し安定性・非該当時no-op)
+- 実アプリでPageUp/PageDown・Ctrl+矢印(通常/Shift拡張)・Ctrl+C/X/V+Undo/Redo・Alt+クリック/Alt+Shift+クリック/Alt+ドラッグの複合操作を1回のP/Invokeシナリオでシミュレートし、クラッシュなし・応答性維持を確認
+- **既知の制限として明記**: `RenderPipeline`はプライマリカーソルのキャレット/選択範囲しか保持・描画しないため、Alt+クリックで追加した非プライマリカーソルは`SelectionModel`レベルでは正しく拡張されるが画面には見えない。これはPhase 4b5a以降ずっと存在していた制限で4b6d固有の問題ではないが、今回のAlt+Shift拡張機能が「見た目に効果がない」ことにつながるため完了記録に明示
+
+**検証 (Phase 4b6a〜4b6d 通し):**
+- ローカル Debug/Release 両方でフルビルド・全239テスト pass (各サブフェーズ完了ごとに実施、累積)
+- clang-tidy (`src/.clang-tidy` の `WarningsAsErrors: '*'` 込み、変更ファイル全対象) で計2件検出・修正 (4b6cのみ、上述)。再スキャンで0警告確認
+- 4b6cのみ`ubsan`(clang-cl)プリセットでも追加検証、全236テストgreen
+
+**教訓 (Phase 4b6a〜4b6d):** (1) 「既存の単一カーソル向けプリミティブを一般化してから複数のユースケースで共有する」パターンが本フェーズでも繰り返し有効だった — `moveVertically`のUp/Down→PageUp/PageDown一般化、`classify()`のselectWordAt→moveByWord共有、いずれも新規ロジックをほぼ書かずに済んだ。(2) clang-tidyのcognitive complexityチェックは「ラムダの本体がどこで実行されるか」ではなく「ラムダがどこに書かれているか(字面上のネスト)」を見るため、分岐を関数に切り出しても、ラムダ自体がまだ大きい関数の中にインライン定義されていれば複雑度は下がりきらない — 呼び出し元の複雑度を本当に下げるには、ラムダ本体そのものを外に出す必要がある。(3) Phase 4b5bのUBSan(clang-cl)障害を踏まえて「新規Win32 API面を追加したら`ubsan`プリセットも試す」を4b6cで実践した結果、実際に2件のclang-cl固有の指摘(special-member-functions、bugprone-suspicious-stringview-data-usage)を事前に検出できた — 教訓が実運用で機能した最初の確認事例。
+
+**次回 (Phase 4b7):** スコープ未確定。候補: 複数行にまたがる単語移動、複数カーソルを跨いだクリップボードコピー/ペーストの分配、**複数カーソルの視覚的描画**(RenderPipelineが複数のキャレット/選択範囲を保持・描画できるようにする、Phase 4b5a以降の既知の制限で優先度検討の価値あり)、ダブルクリック→ドラッグでの単語単位ドラッグ拡張、`WM_CAPTURECHANGED`の明示的ハンドリング、ドラッグ中のウィンドウ端オートスクロール、段落単位移動。詳細は `detailed_design.md` §5.3・`RESUME_HERE.md` §3.14/§6 参照。次セッション開始時にユーザーとスコープを確認すること。
 
 <!-- 次セッションはここに追記 -->
