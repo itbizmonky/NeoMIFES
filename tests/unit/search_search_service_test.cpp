@@ -170,4 +170,40 @@ TEST(SearchServiceTest, ZeroWidthRegexMatchDoesNotInfiniteLoop) {
     }
 }
 
+TEST(SearchServiceTest, ZeroWidthRegexMatchNearMultiByteCharacterDoesNotDuplicate) {
+    // "あ"(UTF-16 offset 0, 3 UTF-8 bytes) + "b"(offset 1). A byte-granularity
+    // (rather than codepoint-granularity) advance past a zero-length match
+    // would land mid-sequence inside "あ"'s encoding and report offset 0
+    // three times instead of once.
+    const Document doc = makeDoc(u"あb");
+    const Query query{.pattern = u"a*", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 3U);
+    EXPECT_EQ(result[0], (TextRange{.start = 0, .end = 0}));
+    EXPECT_EQ(result[1], (TextRange{.start = 1, .end = 1}));
+    EXPECT_EQ(result[2], (TextRange{.start = 2, .end = 2}));
+}
+
+TEST(SearchServiceTest, EmptyLineMatchesZeroWidthPattern) {
+    // "foo" (line 0, offsets 0-3) + '\n' (offset 3) + "" (line 1, empty,
+    // starts at offset 4) + '\n' (offset 4) + "bar" (line 2, offsets 5-8).
+    const Document doc = makeDoc(u"foo\n\nbar");
+    const Query query{.pattern = u"^$", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_EQ(result[0], (TextRange{.start = 4, .end = 4}));
+}
+
+TEST(SearchServiceTest, EmptyLineDoesNotMatchNonEmptyPattern) {
+    const Document doc = makeDoc(u"foo\n\nbar");
+    const Query query{.pattern = u"o", .regex = false};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 2U);
+    EXPECT_EQ(result[0], (TextRange{.start = 1, .end = 2}));
+    EXPECT_EQ(result[1], (TextRange{.start = 2, .end = 3}));
+}
+
 }  // namespace

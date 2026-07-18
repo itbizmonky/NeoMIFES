@@ -1,9 +1,13 @@
 # -----------------------------------------------------------------------------
-# Dependencies.
-#   - RE2 + Abseil: core runtime dependency (Search Engine, ADR-002), fetched
-#     unconditionally - the app itself links these, not just the test binary.
-#   - GoogleTest / google/benchmark: test-only, fetched only when
-#     NEOMIFES_BUILD_TESTS=ON.
+# Dependencies. This whole file is only include()'d when NEOMIFES_BUILD_TESTS
+# is ON (see root CMakeLists.txt) - every dependency declared here is
+# currently a test/bench-only consumer:
+#   - GoogleTest / google/benchmark: test infrastructure itself.
+#   - RE2 + Abseil (Search Engine, ADR-002): only tests/bench link
+#     neomifes::search today (src/app/CMakeLists.txt's NeoMIFES target does
+#     not yet). Move this file's RE2/Abseil section to be unconditionally
+#     include()'d once Phase 5b actually wires SearchService into the app -
+#     at that point it becomes a genuine core runtime dependency.
 # -----------------------------------------------------------------------------
 include(FetchContent)
 
@@ -105,39 +109,37 @@ foreach(_tp ${_neomifes_absl_targets} re2)
     endif()
 endforeach()
 
-if(NEOMIFES_BUILD_TESTS)
-    # ---- GoogleTest -------------------------------------------------------------
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.15.2
-        GIT_SHALLOW    TRUE
-    )
-    set(BUILD_GMOCK        OFF CACHE BOOL "" FORCE)
-    set(INSTALL_GTEST      OFF CACHE BOOL "" FORCE)
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)   # Match /MDd / /MD used by our targets
+# ---- GoogleTest -------------------------------------------------------------
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        v1.15.2
+    GIT_SHALLOW    TRUE
+)
+set(BUILD_GMOCK        OFF CACHE BOOL "" FORCE)
+set(INSTALL_GTEST      OFF CACHE BOOL "" FORCE)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)   # Match /MDd / /MD used by our targets
 
-    # ---- google/benchmark -------------------------------------------------------
-    FetchContent_Declare(
-        benchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG        v1.9.1
-        GIT_SHALLOW    TRUE
-    )
-    set(BENCHMARK_ENABLE_TESTING     OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_INSTALL     OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_WERROR      OFF CACHE BOOL "" FORCE)
+# ---- google/benchmark -------------------------------------------------------
+FetchContent_Declare(
+    benchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG        v1.9.1
+    GIT_SHALLOW    TRUE
+)
+set(BENCHMARK_ENABLE_TESTING     OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_INSTALL     OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_WERROR      OFF CACHE BOOL "" FORCE)
 
-    FetchContent_MakeAvailable(googletest benchmark)
+FetchContent_MakeAvailable(googletest benchmark)
 
-    # Third-party targets should not be linted with our strict flags.
-    foreach(_tp gtest gtest_main gmock gmock_main benchmark benchmark_main)
-        if(TARGET ${_tp})
-            set_target_properties(${_tp} PROPERTIES
-                FOLDER "third_party"
-                COMPILE_WARNING_AS_ERROR OFF
-            )
-        endif()
-    endforeach()
-endif()
+# Third-party targets should not be linted with our strict flags.
+foreach(_tp gtest gtest_main gmock gmock_main benchmark benchmark_main)
+    if(TARGET ${_tp})
+        set_target_properties(${_tp} PROPERTIES
+            FOLDER "third_party"
+            COMPILE_WARNING_AS_ERROR OFF
+        )
+    endif()
+endforeach()
