@@ -980,4 +980,40 @@
 
 **次回 (Phase 5b3c):** コマンドパレット(Ctrl+Shift+P)から着手。`master_roadmap.md` §5.2後半(元スケッチ)を先に読む。コマンドパレットは完全に独立したUI表面のため、Phase 5b3aで確立したWC_EDIT+サブクラス化パターンを再利用しつつ新規クラスとして設計する(`FindBar`への機能追加ではない)。**保留中のPhase 4b8**に戻る選択肢も次セッション開始時にユーザーへ提示すること。**実アプリでのCtrl+F/Ctrl+H/日本語IME/マッチハイライトの視覚確認がまだの場合はセッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施。
 
+## Session 31 (2026-07-19): Phase 5b3c (コマンドパレット: Ctrl+Shift+P + ファジー検索) 完了、roadmap §5 全体完了
+
+**着手経緯:** ユーザーが「継続せよ」と指示し、あわせて「私へのアウトプットは日本語とせよと過去に伝えた、これは重要事項なので忘れずにメモリに記載せよ」と明示的に念押し。直前ターンで英語応答してしまっていたため、まず`feedback_respond_in_japanese.md`(新規メモリ)を起票し`user_communication_style.md`を強化してから作業を再開した。Phase 5b3c(コマンドパレット)に着手し、既存コード(`find_bar.h/.cpp`・`main_window.h`・`command_dispatcher.h`・`editor_input.cpp`)を直接調査した上でPlan Modeへ移行。今回はPlan agentのセッション制限エラーは発生せず、正常にレビューを完了できた。
+
+**Plan agentによる設計検証で判明した1件の必須修正(+実装トレース中に自己発見した1件):**
+1. **標準`WC_LISTBOX`は自身の`WM_LBUTTONDOWN`処理内で自分自身に`SetFocus`を呼ぶ。** 「Editのみサブクラス化しフォーカスを固定し続ける」当初設計のままだと、結果行を1回クリックしただけでフォーカスが奪われ、以降Up/Down/Enter/Escapeが素のリストボックスの`DefWindowProc`に届いて無反応になる。リストボックスも同一パターンでサブクラス化し、`DefSubclassProc`処理直後に`::SetFocus(m_hwndEdit)`でフォーカスを奪い返す設計へ修正
+2. **[このセッション自身が実装トレース中に発見]** 上記の「フォーカス奪回」をダブルクリックにも適用すると、`WM_LBUTTONDBLCLK`の`DefSubclassProc`処理がネストした`SendMessage`で`LBN_DBLCLK`を親へ同期送出し、親がその場でコマンドの`action()`を実行して`hide()`する場合(例: `findBar.show()`で別の子HWNDへフォーカスが移る)、直後の無条件`SetFocus`がそのコマンドから今開いたばかりのUIのフォーカスを奪い返してしまう競合バグになるところだった。`isVisible()`確認によるガードで対処。Plan agentのレビューだけでは拾いきれない、実装の詳細に踏み込んだトレースでしか見つからないクラスの不具合が実際にあることを示す実例
+
+**成果物:**
+- 新規`util::fuzzyMatchScore()`(`src/util/include/neomifes/util/fuzzy_matcher.{h,cpp}`) — ASCII範囲casefoldのみの簡略化された部分列マッチ(VSCode等のDP最適スコアラーより意図的に簡素化、コマンド候補が最大数十件の定型英語文字列であるため)。貪欲最左マッチ+連続一致ボーナス+単語境界ボーナス
+- 新規`ui::CommandDescriptor`(`command_descriptor.h`)・`ui::filterAndRankCommands()`(`command_palette_filter.h`、ヘッダオンリー) — `find_navigation.h`/`click_tracking.h`と同系統の「Win32非依存の純粋ロジック」パターンをそのまま踏襲
+- 新規`ui::CommandPalette`(`command_palette.{h,cpp}`) — `FindBar`を直接モデルにしつつ、`WC_EDITW`+`WC_LISTBOXW`という**異なる2種類のコントロール型**を同一`SetWindowSubclass`コールバック/`dwRefData=this`で扱う初のケース(FindBarのFind/Replace editは同一型2つの共有だった)。フォーカスはクエリEdit側に固定し続け、Up/Down/Enterはすべてそちら側のサブクラスで横取りして`LB_SETCURSEL`のみでハイライトを動かす設計(VSCode実際のUXに合わせた)。デバウンス無し(候補が最大数十件、roadmap性能目標「500件で20ms」に対し十分)
+- `main.cpp`: `buildCommandRegistry()`(6コマンド構築 — Find/Find+Replace/Find Next/Find Previous/Undo/Redo、**すべて既存実装済みキーバインドの再露出のみ**。File Open/Save等の未実装機能はコマンドパレット用に新規実装しない方針をコメントで明記、CLAUDE.mdルール3の推測実装回避)、`handleCommandPaletteKey()`(Ctrl+Shift+P)、`wireNormalMode()`/`wWinMain`への配線
+- テスト数: 310→322(+12件、`util_fuzzy_matcher_test.cpp`7件・`ui_command_palette_filter_test.cpp`5件)
+
+**実装時に発覚したビルド/静的解析問題と対処:**
+1. **新規発見: clang-cl(ubsanプリセット)の`-Wmissing-designated-field-initializers`が、MSVCでは無診断のdesignated initializerフィールド省略をエラー扱いする。** `ui_command_palette_filter_test.cpp`の`CommandDescriptor{...}`が`.action`を省略していた4箇所で発覚。`.action = nullptr`を明示して解消。「MSVCのローカル通常検証では見えないclang-cl固有の診断がある」という既存の教訓([[reference-windows-cpp-ci-gotchas]]項目6・7と同系統)に項目8として追記
+2. clang-tidyで`command_palette.cpp`/`fuzzy_matcher.cpp`/`main.cpp`/新規テスト2ファイルを個別チェック、新規警告0(前セッションのfind_bar.cpp/main.cppと異なり、今回は`readability`系の指摘は発生しなかった — helper抽出の粒度が最初から妥当だったため)
+
+**検証:**
+- ローカル **Debug/Release/ubsan(clang-cl) 全green**、全322テストpass
+- 実アプリを起動し3秒間クラッシュしないことを確認(基本的な起動安定性のスモークテストのみ)。**Ctrl+Shift+P操作・入力フィルタ・クリック選択・ダブルクリック実行・Enter実行・Escapeの視覚的動作確認は、この環境にWin32 GUI自動化手段が無いため未実施 — 次セッション冒頭でユーザーに依頼すること(Phase 5b3a/5b3bから持ち越しのCtrl+F/Ctrl+H/日本語IME視覚確認と合わせて)**
+
+**意図的にスコープ外とした項目:**
+- サブメニュー、絵文字アイコン、最近使用ボーナス、検索履歴共有、Quick Open(Ctrl+P)・行ジャンプ(Ctrl+G)、Grep、クリックできるReplace/Allボタン — いずれもroadmap v2.0の拡張項目でありUIの消費者/要件確定が別途必要なため
+
+**ドキュメント同期:**
+- `docs/design/detailed_design.md` §7に新規§7.1''''''(Phase 5b3c実装リファレンス)追加
+- `docs/design/master_roadmap.md` §5.8を「Phase 5b3a・5b3b・5b3c 完了」に更新、5b3c固有の確定事項を追記。§3の進行フェーズ早見表(5b2/5b3/5cの状態が数セッション前から古いままだった)も併せて修正
+- `docs/handoff/RESUME_HERE.md`に新規§3.21(完了記録)追加、§1状態表・§6推奨プロンプトを更新(次はPhase 5cまたはPhase 4b8のいずれかをユーザーに選択させる)
+- メモリ: `feedback_respond_in_japanese.md`新規起票、`user_communication_style.md`強化、`reference_windows_cpp_ci_gotchas.md`に項目8追加
+
+**教訓:** (1) Plan agentの設計レビューは有用だが万能ではない — 今回、レビュー自体は正しく1件の必須修正(リストボックスのフォーカス窃取)を検出したが、その修正案(「クリック後に無条件でフォーカスを奪い返す」)自体に潜む二次的な副作用(ダブルクリックでコマンドが既に別のUIを開いていた場合の競合)は、レビューの応答文には含まれておらず、実装コードを実際に書きながら「このSetFocusが呼ばれる全ての経路を辿るとどうなるか」を手で追跡する過程で初めて見つかった。設計レビューを受けた後も、実装者自身が実際のメッセージフローを最後までトレースする作業を省略してはならない。(2) 「MSVCのローカルビルドでは見えないがclang-cl(ubsanプリセット)だけが検出する診断」という部類の落とし穴は、これで3件目(defaulted operator==、MSVC_RUNTIME_LIBRARY上書き、designated initializer省略)に達した — 新しいコードパターンを書くたびに、それがこの部類に該当しうるかを意識し、pushする前に必ずubsanプリセットを一度通す運用の価値が改めて裏付けられた。(3) 「既存実装済みキーバインドの再露出のみ」という自己制約(File Open/Save等の未実装機能をコマンドパレットのために新規実装しない)を明文化してからコマンド一覧を構築したことで、6件という具体的で検証可能なスコープが得られた — 「コマンドパレットに何を入れるか」という一見無限に広がりうる設計判断も、既存実装済み機能への限定というルールを先に立てることで推測実装を避けられる。
+
+**次回 (Phase 5cまたはPhase 4b8):** roadmap §5全体(Find bar + 置換行 + コマンドパレット)がPhase 5b3a/5b3b/5b3cで完了した。次はPhase 5c(Grep/複数フォルダ検索/検索履歴/タグジャンプ、`master_roadmap.md` §5.5)か、**保留中のPhase 4b8**(矩形選択・タブ変換・分配・フリーカーソル・マーカー、`master_roadmap.md` §3)のいずれかをユーザーに選択させてから着手すること。**実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/日本語IME視覚確認がまだの場合はセッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施。
+
 <!-- 次セッションはここに追記 -->

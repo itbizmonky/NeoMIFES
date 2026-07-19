@@ -1155,7 +1155,49 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Docum
 - **マッチ順序の安全性。** `search::SearchService::findAll()`は「document order、非重複」を保証し(`search_service.h`)、`core`側の`applyEditsWithCumulativeShift()`(`cumulative_shift_edit.h`)は「ascending, non-overlapping」順を前提とするため、`state.currentMatches`をソートせずそのまま`PerCursorEdit`列に変換して`ReplaceAllCommand`へ渡せる
 - **キャプチャグループ展開は編集前に実施。** `search::expandReplacementTemplate()`はドキュメントへの累積オフセット計算を持たない(§7.1'''の契約どおり)ため、`replaceCurrentMatch()`/`replaceAllMatches()`ともに編集適用前の(まだ変更されていない)ドキュメント状態に対して呼ぶ
 
-**本PRのスコープ外(意図的に延期):** クリックできる「Replace」/「All」ボタン(Case/Word/Regexトグルと同じ簡略化方針、キーバインドのみ)。コマンドパレット(Ctrl+Shift+P、Phase 5b3c)。
+**本PRのスコープ外(意図的に延期):** クリックできる「Replace」/「All」ボタン(Case/Word/Regexトグルと同じ簡略化方針、キーバインドのみ)。コマンドパレット(Ctrl+Shift+P、Phase 5b3c) → **Phase 5b3c で実装済み(下記 §7.1'''''' 参照)**。
+
+### 7.1'''''' コマンドパレット (Phase 5b3c 実装)
+
+`ui::CommandPalette`(`src/ui/include/neomifes/ui/command_palette.{h,cpp}`)は`ui::FindBar`を直接踏襲した設計だが、**異なる2種類のコントロール型**(`WC_EDITW` + `WC_LISTBOXW`)を同一サブクラス機構で扱う初めてのケースという点でFindBarのFind/Replace edit(同一型2つ)から一段複雑になる。
+
+```cpp
+// src/ui/include/neomifes/ui/command_descriptor.h
+struct CommandDescriptor {
+    std::u16string id;
+    std::u16string title;
+    std::u16string keybindingLabel;  // 表示専用
+    std::function<void()> action;
+};
+
+// src/ui/include/neomifes/ui/command_palette_filter.h (ヘッダオンリー、find_navigation.hと同系統)
+[[nodiscard]] std::vector<std::size_t> filterAndRankCommands(std::u16string_view query,
+                                                              std::span<const CommandDescriptor> commands);
+
+// src/util/include/neomifes/util/fuzzy_matcher.h
+[[nodiscard]] std::optional<int> fuzzyMatchScore(std::u16string_view query,
+                                                  std::u16string_view target) noexcept;
+
+// src/ui/include/neomifes/ui/command_palette.h
+class CommandPalette {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const CommandPaletteConfig& config,
+                              std::vector<CommandDescriptor> commands);
+    void show() noexcept;
+    void hide() noexcept;
+    // ...
+};
+```
+
+**設計上の要点:**
+- **フォーカスはクエリEditに固定し続け、リストボックスへは移さない。** VSCode実際のUXに合わせ、Up/Down/Enterはすべてクエリedit側のサブクラスで横取りし`LB_SETCURSEL`でハイライトのみ動かす。デバウンス無し、`EN_CHANGE`毎に同期的に`filterAndRankCommands()`を再実行(対象は最大数十件程度でroadmapの性能目標「500件で20ms」に対し十分余裕があるため、FindBarの150msデバウンスは不要と判断)
+- **標準`WC_LISTBOX`は自身の`WM_LBUTTONDOWN`処理内で自分自身に`SetFocus`する。** これを放置すると結果行を1回クリックしただけでクエリeditからフォーカスが奪われ、以降Up/Down/Enter/Escapeが素のリストボックスの`DefWindowProc`に届いて無反応になる(設計時のPlan agentレビューで検出)。**対策としてリストボックスも同一パターンでサブクラス化し、`WM_LBUTTONDOWN`/`WM_LBUTTONDBLCLK`を`DefSubclassProc`に処理させた直後に`::SetFocus(m_hwndEdit)`でフォーカスを奪い返す。**
+- **ダブルクリックでフォーカス奪回とコマンド実行が競合する落とし穴。** `WM_LBUTTONDBLCLK`の`DefSubclassProc`処理はネストした`SendMessage`で`LBN_DBLCLK`を親へ同期的に送出し、親の`handleCommand()`がその場で`action()`を実行し`hide()`する場合がある(例: `findBar.show()`でフォーカスが別の子HWNDへ移る)。この`DefSubclassProc`呼び出しの直後に無条件で`::SetFocus(m_hwndEdit)`すると、コマンドが直前に開いたばかりのUIからフォーカスを奪い返してしまう。**`isVisible()`を確認してから`SetFocus`する**ことで、コマンド実行によって既に閉じられていた場合はフォーカス奪回をスキップする(このセッション自身がPlan agentのレビュー後、実装トレース中に発見・修正した設計不備)
+- **`LOWORD(wParam)`/`HIWORD(wParam)`によるコントロール判別はFindBarの`EN_CHANGE`判定と同じ規約。** 追加でマウス操作による選択変更は`m_selectedIndex`を経由しないため、`LBN_SELCHANGE`/`LBN_DBLCLK`受信時は`LB_GETCURSEL`で実際の選択位置を都度取得し同期する(キーボード操作は`m_selectedIndex`→`LB_SETCURSEL`、マウス操作は`LB_GETCURSEL`→`m_selectedIndex`の双方向設計)
+- **ファジーマッチはASCII範囲のみの大文字小文字無視、貪欲最左マッチ。** VSCode等のDP最適スコアラーより意図的に簡略化(コマンド候補が最大数十件の定型英語文字列であるため、実用上の精度差は問題にならない判断)
+- **登録6コマンドはすべて既存実装済みキーバインドの再露出。** Find/Find+Replace/Find Next/Find Previous/Undo/Redo — File Open/Save等の未実装機能はコマンドパレット用に新規実装しない(CLAUDE.mdルール3の推測実装回避、`buildCommandRegistry()`のコメント参照)
+
+**本PRのスコープ外(意図的に延期):** サブメニュー、絵文字アイコン、最近使用ボーナス、検索履歴共有、Quick Open(Ctrl+P)・行ジャンプ(Ctrl+G) — roadmap v2.0の拡張項目でありUIの消費者/要件確定が別途必要なため。
 
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |

@@ -1,5 +1,6 @@
 add_library(neomifes_ui STATIC
     src/find_bar.cpp
+    src/command_palette.cpp
     src/main_window.cpp
 )
 add_library(neomifes::ui ALIAS neomifes_ui)

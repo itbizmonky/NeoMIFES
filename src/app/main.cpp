@@ -64,6 +64,8 @@
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/search/replacement.h"
 #include "neomifes/search/search_service.h"
+#include "neomifes/ui/command_descriptor.h"
+#include "neomifes/ui/command_palette.h"
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/find_navigation.h"
 #include "neomifes/ui/main_window.h"
@@ -95,6 +97,9 @@ using neomifes::search::expandReplacementTemplate;
 using neomifes::search::Match;
 using neomifes::search::Query;
 using neomifes::search::SearchService;
+using neomifes::ui::CommandDescriptor;
+using neomifes::ui::CommandPalette;
+using neomifes::ui::CommandPaletteConfig;
 using neomifes::ui::FindBar;
 using neomifes::ui::FindBarConfig;
 using neomifes::ui::kWindowClassName;
@@ -496,6 +501,18 @@ bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Fin
     return false;
 }
 
+// Ctrl+Shift+P while the document editing area has focus (Phase 5b3c) -
+// mirrors handleFindBarKey()'s single-purpose shape. Not fired while the
+// palette's own query edit has focus (same reasoning as handleFindBarKey's
+// comment: Win32 routes keyboard input straight to the focused child HWND).
+bool handleCommandPaletteKey(UINT vkCode, bool shiftDown, bool ctrlDown, CommandPalette& commandPalette) {
+    if (ctrlDown && shiftDown && vkCode == 'P') {
+        commandPalette.show();
+        return true;
+    }
+    return false;
+}
+
 // Enter while the replace edit has focus (FindBarConfig::onReplaceCurrent,
 // Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
 // `replacementTemplate` expanded against the match's capture groups, then
@@ -659,7 +676,11 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                         Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
-                        FindBar& findBar, FindReplaceState& findReplaceState) {
+                        FindBar& findBar, FindReplaceState& findReplaceState,
+                        CommandPalette& commandPalette) {
+    if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
+        return;
+    }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
                          viewport, document, renderPipeline)) {
         return;
@@ -721,6 +742,60 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
     return config;
 }
 
+// Builds the command palette's static registry (Phase 5b3c) - 6 entries,
+// each re-exposing an already-implemented keybinding through the palette
+// (Find/Find+Replace/Find Next/Find Previous/Undo/Redo). Deliberately does
+// not invent commands for features this project hasn't built yet (File
+// Open/Save has no runtime UI - see this file's header comment), matching
+// CLAUDE.md rule 3 (no speculative implementation). Pulled out of
+// wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
+// reason documented above handleKeyDownEvent().
+std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
+                                                     CommandDispatcher& dispatcher,
+                                                     FindReplaceState& findReplaceState,
+                                                     SelectionModel& selectionModel, Viewport& viewport,
+                                                     Document& document, RenderPipeline& renderPipeline) {
+    std::vector<CommandDescriptor> commands;
+    commands.push_back(CommandDescriptor{.id              = u"find.show",
+                                         .title           = u"Find",
+                                         .keybindingLabel = u"Ctrl+F",
+                                         .action          = [&findBar]() { findBar.show(); }});
+    commands.push_back(
+        CommandDescriptor{.id              = u"find.replace",
+                          .title           = u"Find and Replace",
+                          .keybindingLabel = u"Ctrl+H",
+                          .action          = [&findBar]() { findBar.showWithReplace(); }});
+    commands.push_back(CommandDescriptor{
+        .id = u"find.next", .title = u"Find Next", .keybindingLabel = u"F3",
+        .action = [hwnd, &findReplaceState, &selectionModel, &viewport, &document, &renderPipeline,
+                   &findBar]() {
+            navigateToMatch(true, hwnd, findReplaceState, selectionModel, viewport, document,
+                            renderPipeline, findBar);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"find.previous", .title = u"Find Previous", .keybindingLabel = u"Shift+F3",
+        .action = [hwnd, &findReplaceState, &selectionModel, &viewport, &document, &renderPipeline,
+                   &findBar]() {
+            navigateToMatch(false, hwnd, findReplaceState, selectionModel, viewport, document,
+                            renderPipeline, findBar);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z",
+        .action = [hwnd, &dispatcher, &selectionModel, &viewport, &renderPipeline]() {
+            if (dispatcher.undo()) {
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            }
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y",
+        .action = [hwnd, &dispatcher, &selectionModel, &viewport, &renderPipeline]() {
+            if (dispatcher.redo()) {
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            }
+        }});
+    return commands;
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
@@ -729,9 +804,10 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                    HINSTANCE hInstance, FindBar& findBar, FindReplaceState& findReplaceState) {
+                    HINSTANCE hInstance, FindBar& findBar, FindReplaceState& findReplaceState,
+                    CommandPalette& commandPalette) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
-                          &selectionModel, &viewport, &findReplaceState](HWND hwnd) {
+                          &selectionModel, &viewport, &findReplaceState, &commandPalette](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -748,9 +824,19 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             buildFindBarConfig(hwnd, document, dispatcher, selectionModel, viewport, renderPipeline,
                                findBar, findReplaceState);
         [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
+
+        // Same non-fatal treatment as findBar.create() above - a palette
+        // that fails to create simply isn't available this session.
+        CommandPaletteConfig commandPaletteConfig{};
+        commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
+        auto commands = buildCommandRegistry(hwnd, findBar, dispatcher, findReplaceState, selectionModel,
+                                             viewport, document, renderPipeline);
+        [[maybe_unused]] const bool commandPaletteCreated =
+            commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
-    cfg.onResize = [&renderPipeline, &findBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+    cfg.onResize = [&renderPipeline, &findBar, &commandPalette](HWND, std::uint32_t w, std::uint32_t h,
+                                                                float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
@@ -758,14 +844,17 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             }
         }
         findBar.onParentResized(w, dpiScale);
+        commandPalette.onParentResized(w, dpiScale);
     };
-    cfg.onCommand = [&findBar](HWND, WPARAM wParam, LPARAM lParam) {
+    cfg.onCommand = [&findBar, &commandPalette](HWND, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
+        commandPalette.handleCommand(wParam, lParam);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &findReplaceState, &commandPalette](HWND hwnd, UINT vkCode, bool shiftDown,
+                                                         bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
-                          document, renderPipeline, findBar, findReplaceState);
+                          document, renderPipeline, findBar, findReplaceState, commandPalette);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                      HWND hwnd, wchar_t ch) {
@@ -892,6 +981,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // docs/history/TIMELINE.md's Phase 5b3a entry).
     FindBar           findBar;
     FindReplaceState findReplaceState;
+    // Command palette state (Phase 5b3c) - a second, independent overlay
+    // reusing the WC_EDIT+SetWindowSubclass pattern findBar established
+    // (see command_palette.h's class comment for how it differs: a second
+    // control type, WC_LISTBOX, is subclassed too).
+    CommandPalette commandPalette;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -907,7 +1001,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                              syntheticLineCountUsed);
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
-                       altCursorAnchor, hInstance, findBar, findReplaceState);
+                       altCursorAnchor, hInstance, findBar, findReplaceState, commandPalette);
     }
 
     if (!window.create(hInstance, cfg)) {
