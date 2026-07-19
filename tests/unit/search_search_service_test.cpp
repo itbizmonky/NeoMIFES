@@ -136,16 +136,82 @@ TEST(SearchServiceTest, MatchesOnDifferentLinesGetCorrectAbsoluteOffsets) {
     EXPECT_EQ(result[1], (TextRange{.start = 4, .end = 7}));
 }
 
-TEST(SearchServiceTest, MatchDoesNotCrossLineBoundary) {
-    // Phase 5a scope: the pattern spans what would be a '\n' in the
-    // document, so it must not be found even though "foo" and "bar" each
-    // individually appear.
+TEST(SearchServiceTest, LiteralQueryWithoutEmbeddedNewlineDoesNotSpanLines) {
+    // A literal query with no '\n' in it can never match text that has a
+    // '\n' in the middle, regardless of the Phase 5b1 whole-buffer scan -
+    // "foobar" simply isn't a substring of "foo\nbar".
     const Document doc = makeDoc(u"foo\nbar");
-    const Query literalQuery{.pattern = u"foobar", .regex = false};
-    const Query regexQuery{.pattern = u"foo.bar", .regex = true};
+    const Query query{.pattern = u"foobar", .regex = false};
 
-    EXPECT_TRUE(SearchService::findAll(doc, literalQuery).empty());
-    EXPECT_TRUE(SearchService::findAll(doc, regexQuery).empty());
+    EXPECT_TRUE(SearchService::findAll(doc, query).empty());
+}
+
+TEST(SearchServiceTest, DotDoesNotMatchNewlineByDefault) {
+    // RE2's dot_nl option is left at its default (false, see
+    // search_service.h's Scope comment): "." does not implicitly cross a
+    // line boundary even now that the whole document is one search buffer.
+    // Cross-line matching requires an explicit '\n' or a char class like
+    // "[\s\S]" - see the tests below.
+    const Document doc = makeDoc(u"foo\nbar");
+    const Query query{.pattern = u"foo.bar", .regex = true};
+
+    EXPECT_TRUE(SearchService::findAll(doc, query).empty());
+}
+
+TEST(SearchServiceTest, LiteralQueryWithEmbeddedNewlineMatchesAcrossLines) {
+    // Phase 5b1: findAll() now scans the whole document as one buffer, so a
+    // query that itself contains '\n' can match text spanning a line break.
+    const Document doc = makeDoc(u"foo\nbar\nbaz");
+    const Query query{.pattern = u"bar\nbaz", .regex = false};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_EQ(result[0], (TextRange{.start = 4, .end = 11}));  // "bar\nbaz", offsets 4..11
+}
+
+TEST(SearchServiceTest, CharacterClassCanMatchAcrossLines) {
+    // "[\s\S]" is the conventional RE2/PCRE idiom for "any character
+    // including newline" without relying on the dot_nl option.
+    const Document doc = makeDoc(u"foo\nbar");
+    const Query query{.pattern = u"foo[\\s\\S]bar", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_EQ(result[0], (TextRange{.start = 0, .end = 7}));
+}
+
+TEST(SearchServiceTest, CaretAndDollarStillAnchorToLineNotWholeDocument) {
+    // The (?m) prefix findAll() adds internally (search_service.cpp's
+    // buildPattern()) must keep ^/$ meaning "start/end of line" even though
+    // the whole document is now a single RE2 search buffer - this is the
+    // exact behaviour Phase 5a's line-per-buffer scan gave for free.
+    const Document doc = makeDoc(u"foo\nbar\nbaz");
+    const Query startQuery{.pattern = u"^bar", .regex = true};
+    const Query endQuery{.pattern = u"foo$", .regex = true};
+
+    const std::vector<TextRange> startResult = ranges(SearchService::findAll(doc, startQuery));
+    ASSERT_EQ(startResult.size(), 1U);
+    EXPECT_EQ(startResult[0], (TextRange{.start = 4, .end = 7}));
+
+    const std::vector<TextRange> endResult = ranges(SearchService::findAll(doc, endQuery));
+    ASSERT_EQ(endResult.size(), 1U);
+    EXPECT_EQ(endResult[0], (TextRange{.start = 0, .end = 3}));
+}
+
+TEST(SearchServiceTest, DocumentAnchorsStillTargetWholeDocumentDespiteMultilineFlag) {
+    // \A/\z are unaffected by (?m) (RE2 syntax reference: "\A at beginning
+    // of text", "\z at end of text") - the documented escape hatch for
+    // whole-document anchoring now that ^/$ mean "line".
+    const Document doc = makeDoc(u"foo\nbar\nbaz");
+    const Query query{.pattern = u"\\Afoo", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_EQ(result[0], (TextRange{.start = 0, .end = 3}));
+
+    // \Abar (bar is not at the true start of the document) must not match.
+    const Query noMatchQuery{.pattern = u"\\Abar", .regex = true};
+    EXPECT_TRUE(SearchService::findAll(doc, noMatchQuery).empty());
 }
 
 TEST(SearchServiceTest, DocumentWithEmptyLinesDoesNotCrash) {
@@ -153,7 +219,7 @@ TEST(SearchServiceTest, DocumentWithEmptyLinesDoesNotCrash) {
     const Query query{.pattern = u"o", .regex = false};
 
     const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
-    ASSERT_EQ(result.size(), 2U);  // both 'o' in "foo", empty lines skipped without error
+    ASSERT_EQ(result.size(), 2U);  // both 'o' in "foo"
     EXPECT_EQ(result[0], (TextRange{.start = 1, .end = 2}));
     EXPECT_EQ(result[1], (TextRange{.start = 2, .end = 3}));
 }
