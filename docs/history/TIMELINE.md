@@ -772,4 +772,47 @@
 
 **次回 (Phase 5b2):** 置換(`ReplaceAllCommand`)の詳細設計から着手。Explore調査で判明済みの制約: 既存`MultiCursorEditCommand`は「edit数とカーソル数が1:1」前提のため転用不可、`core::ICommand`を直接実装する新規クラスが必要(累積オフセット適用のアルゴリズム自体は`MultiCursorEditCommand::execute()`/`undo()`のパターンを再利用可能、`cursorsAfterExecute()`/`cursorsAfterUndo()`は置換前のカーソル位置をスナップショットして返す設計になる見込み)。完了後はPhase 5b3(Find bar UI配線、WC_EDIT子コントロール使用が決定済み)へ進む。**保留中のPhase 4b8**に戻る選択肢もあわせて次セッション開始時にユーザーへ提示すること。詳細は `detailed_design.md` §7・`RESUME_HERE.md` §3.17/§6 参照。
 
+## Session 27 (2026-07-19): マスターロードマップ v1.0 発行 (Phase 4b8/5b2/5b3/6-12 一気通貫詳細設計)
+
+**背景・動機:** Phase 5b1 完了 + CI green を確認した直後、ユーザーが「今後のフェーズについて具体的実装案を明確にすべきではないか？次フェーズのたびに実装内容が未確定では完成イメージがブレるためである。NeoMifesの存在価値である秀丸/サクラ/MIFES の良いとこ取り機能・世界最高峰のUI/UX・世界最高速の動作体験を使命として完成までの実装詳細を設計せよ」と指示。これまでフェーズ毎にセッション開始時にスコープを再確認する運用だったため「完成に近づいているか」の再確認コストが毎回発生していた問題を、一気通貫の計画文書で解消することを狙う。
+
+**成果物 (Session 27):**
+- **[`docs/design/master_roadmap.md`](../design/master_roadmap.md) v1.0 新設** (1183行、16章構成)
+  - §0: 位置づけ・関連文書との役割分担 (詳細設計書は「実装済み機能のリファレンス」、本書は「未実装フェーズの Plan-of-Record」)
+  - §1: 完成イメージ (三大エディタからの継承マトリクス、17カテゴリ × 4エディタで機能の位置づけを明示)
+  - §2: 全フェーズ俯瞰
+  - §3: **Phase 4b8** — 矩形選択 (既存複数カーソル基盤への写像) / タブ⇔スペース変換 / N対N分配クリップボード (VSCode互換 `CF_NEOMIFES_MULTICURSOR` 実装案)
+  - §4: **Phase 5b2** — ReplaceAllCommand (キャプチャグループ `$1..$9`/`$$`/`$0` 対応、逆順適用アルゴリズム)
+  - §5: **Phase 5b3 + 5c** — Find bar UI (WC_EDIT + FindBarState 状態管理、`SetTimer`ベースのデバウンス150ms) / Grep (Worker Pool、ストリーミングコールバック)
+  - §6: **Phase 6** — 全8エンコーディング + 行末3種 + 自動判定3段階 (BOM/統計/N-gram)
+  - §7: **Phase 7** — TextMate vs tree-sitter PoC (ADR-013 として発行予定)、非同期増分解析、折り畳み、アウトライン
+  - §8: **Phase 8** — C ABI プラグイン (関数ポインタで CoreApi を渡す境界設計)、ホットロード、SEH隔離、権限モデル
+  - §9: **Phase 9** — Claude/GPT/Gemini/OpenAI互換の統一 `IAiProvider` 抽象、WinHTTP vs libcurl PoC (ADR-004 Superseded 予告)、Credential Manager (DPAPI) キー保管、AI無効時の完全ネットワークI/O封鎖 (要件定義書 §7 絶対条件対応)
+  - §10: **Phase 10** — 本ソフト最大の差別化点であるログ解析モード (12種の組込パターン、非同期チャンクインデックス、レベル/時系列フィルタ) / CSV (1000万行対応、列オフセット表遅延構築) / JSON+XML Tree (差別化点、XPath/JSONPath 自前実装)
+  - §11: **Phase 11** — Git (libgit2、Diff/Blame/3-Way Merge) / LSP (C++/TS/Python 3言語限定、stdio JSON-RPC 自前実装) / マクロ (Lua 5.4 + QuickJS)
+  - §12: **Phase 12** — 出荷判定チェックリスト (16項目)
+  - §13: UI/UX トップレベル方針 (キーバインドプリセット4種: 標準/秀丸互換/サクラ互換/MIFES互換)
+  - §14: **パフォーマンス予算表** (全機能横断、要件定義書 §5 の目標数値を Phase 単位に配分)
+  - §15: リスク・未決事項の再整理 (basic_design.md §8/§9 を Phase 対応表として再構造化、U#9-11の3件を新規追記)
+- **[`docs/handoff/RESUME_HERE.md`](../handoff/RESUME_HERE.md) 更新** — ヘッダに master_roadmap.md への導線を追加、§5ドキュメント地図に master_roadmap を追加、§6 次回推奨プロンプトを「master_roadmap.md §4 を読んでから Plan Mode」形式に書き換え
+
+**設計上の主要判断 (master_roadmap.md 執筆時に確定):**
+- **マクロ言語 (要件定義書 U#5 の未決):** Lua 5.4 + QuickJS の両対応で確定。両方ともマクロランタイム DLL としてプラグイン境界の上で動作
+- **LSP初期対応 (U#6):** C++ (clangd) / TypeScript (typescript-language-server) / Python (pylsp) の3言語で確定 (basic_design.md R4 のリスク対策通り)
+- **Phase 5c 位置づけ:** Grep/複数フォルダ検索は Phase 5b3 (Find bar UI) 完了後の独立サブフェーズとして分離。ストリーミングコールバック方式・専用モード `Mode::GrepResult` で結果表示する設計
+- **Phase 9 プライバシー方針:** AI コンテキストに「ユーザー選択範囲 + カーソル前後N行以外は送信しない」を設計原則として文書化。監査ログにトークン数のみ記録 (内容は非記録)
+- **Phase 10 ログ解析モードを本ソフト最大の差別化点として位置づけ確定:** 対象12種、非同期インデックス、時系列ジャンプ、レベル色分けを詳細まで規定
+- **未決だった正規表現エンジン再評価 (U#3/R2)、シンタックス定義形式 (U#4/R3):** Phase 5c/7a での PoC 実施 → ADR 発行という運用に格上げ
+
+**運用ルール確定:**
+1. 各フェーズ着手前に master_roadmap.md の該当章を読み、Plan Mode でセッション個別の詳細プランを起こす
+2. 各フェーズ完了時に実装で確定した詳細を `detailed_design.md` へ吸収し、master_roadmap.md の該当章末尾に「実装後の確定事項/変更点」を追記
+3. master_roadmap.md 自体は「実装前の計画」を残し続ける歴史的計画文書として保持
+
+**検証:** ドキュメントのみの変更のためビルド不要。要件定義書 §5/§6/§8-13 の全項目が master_roadmap.md のいずれかの Phase §で拾われていることを目視確認 (17継承マトリクスと 15パフォーマンス予算表で網羅)。
+
+**教訓:** 「各セッション開始時にスコープを再確認する」運用は柔軟性が高い反面、完成イメージのブレと再確認コストが累積する。マクロレベルの完成計画を先に一気通貫で立てておくことで、Phase 単位の意思決定は「マスタープランからの差分」に還元でき、判断の一貫性が担保される — CLAUDE.md ルール3 (推測実装をしない) と両立させるには「計画は詳細に立てるが実装は必ずフェーズ単位で Plan Mode を通す」二段階制が有効。
+
+**次回 (Phase 5b2 継続):** 本 Session 27 は計画文書追加のみで実装コード変更なし。次セッションは master_roadmap.md §4 を読み、Phase 5b2 の Plan Mode 詳細プラン → 実装 → 検証の順に進める。Phase 4b8 保留オプションも並行して提示すること。
+
 <!-- 次セッションはここに追記 -->
