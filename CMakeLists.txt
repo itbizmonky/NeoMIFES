@@ -60,16 +60,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompileOptions)
 include(Sanitizers)
 
+# Dependencies.cmake fetches RE2/Abseil (Search Engine, ADR-002).
+# Unconditional since Phase 5b3a: src/app/CMakeLists.txt's NeoMIFES target
+# now links neomifes::search (Find bar UI), so RE2/Abseil are a genuine
+# runtime dependency of the app itself, not just of tests/bench.
+include(Dependencies)
+
 if(NEOMIFES_BUILD_TESTS)
-    # Dependencies.cmake fetches RE2/Abseil (Search Engine, ADR-002) plus
-    # GoogleTest/benchmark. RE2/Abseil are gated here rather than fetched
-    # unconditionally: as of Phase 5a, neomifes::search is only actually
-    # linked by tests/bench (src/app/CMakeLists.txt's NeoMIFES target does
-    # not link it yet), so an app-only configure has no real need for them.
-    # Move this include out of the NEOMIFES_BUILD_TESTS guard once Phase 5b
-    # actually wires SearchService into the NeoMIFES executable - at that
-    # point RE2/Abseil genuinely become an unconditional runtime dependency.
-    include(Dependencies)
+    # TestDependencies.cmake fetches GoogleTest/benchmark - test-only, so
+    # stays gated (an app-only configure must not fetch these).
+    include(TestDependencies)
     enable_testing()
 endif()
 

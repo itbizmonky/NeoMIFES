@@ -71,6 +71,13 @@ struct MainWindowConfig {
     // shiftDown parameter - a drag always extends the selection from
     // whatever anchor onMouseDown established (Phase 4b3).
     std::function<void(HWND, std::int32_t x, std::int32_t y)> onMouseDrag;
+    // Optional: invoked from WM_COMMAND (Phase 5b3a). Win32 directs child-
+    // control notifications - e.g. EN_CHANGE from the Find bar's WC_EDIT -
+    // to the PARENT HWND, never to the child itself, so this is the only
+    // place such notifications can be observed. wParam/lParam are passed
+    // through unexamined; the caller decodes LOWORD(wParam)/HIWORD(wParam)
+    // per the control that sent the notification.
+    std::function<void(HWND, WPARAM, LPARAM)> onCommand;
 };
 
 class MainWindow {
@@ -116,6 +123,7 @@ private:
     void handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept;
     void handleMouseMove(LPARAM lParam) noexcept;
     void handleMouseUp() noexcept;
+    void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
@@ -127,6 +135,7 @@ private:
     std::function<void(HWND, short)>            m_onMouseWheel;
     std::function<void(HWND, std::int32_t, std::int32_t, bool, bool, int)> m_onMouseDown;
     std::function<void(HWND, std::int32_t, std::int32_t)>            m_onMouseDrag;
+    std::function<void(HWND, WPARAM, LPARAM)>                         m_onCommand;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;

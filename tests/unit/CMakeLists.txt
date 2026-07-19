@@ -25,6 +25,7 @@ add_executable(neomifes_unit_tests
     core_viewport_test.cpp
     app_editor_input_test.cpp
     ui_click_tracking_test.cpp
+    ui_find_navigation_test.cpp
     search_search_service_test.cpp
     search_replacement_test.cpp
 )

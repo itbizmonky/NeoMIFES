@@ -46,6 +46,8 @@ RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
     m_device->setDpi(m_dpiScale);
     m_textBrush.Reset();       // stale binding to whatever device context existed before
     m_selectionBrush.Reset();
+    m_matchBrush.Reset();
+    m_currentMatchBrush.Reset();
     return {};
 }
 
@@ -76,6 +78,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .height          = m_height,
         .dpiScale        = m_dpiScale,
         .cursorVisuals   = m_cursorVisuals,
+        .matchVisuals    = m_matchVisuals,
     };
 }
 
@@ -120,6 +123,8 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_device.reset();
     m_textBrush.Reset();       // bound to the device context that just went away
     m_selectionBrush.Reset();
+    m_matchBrush.Reset();
+    m_currentMatchBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -234,6 +239,32 @@ RenderExpected<void> RenderPipeline::ensureSelectionBrush(ID2D1DeviceContext6& d
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_matchBrush) {
+        // Translucent yellow (RGB 255,220,0) - the conventional "found text"
+        // highlight color (Notepad++/VSCode Find), distinct enough from the
+        // selection blue above to layer visibly underneath an active
+        // selection. R channel written as 1.0F directly (not 255.0F/255.0F)
+        // since that self-division trips clang-tidy's misc-redundant-expression.
+        constexpr D2D1_COLOR_F kMatchColor = {1.0F, 220.0F / 255.0F, 0.0F / 255.0F, 0.35F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kMatchColor, m_matchBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_currentMatchBrush) {
+        // More saturated orange (RGB 255,140,0) for the "active" (F3-
+        // navigated-to) match, so it stands out among many highlighted
+        // matches. R channel written as 1.0F, see kMatchColor's comment above.
+        constexpr D2D1_COLOR_F kCurrentMatchColor = {1.0F, 140.0F / 255.0F, 0.0F / 255.0F, 0.55F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kCurrentMatchColor, m_currentMatchBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
@@ -279,6 +310,10 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         if (layoutResult.has_value()) {
             // Drawn before DrawTextLayout so glyphs render on top of the
             // highlight (Phase 4b2, N-cursor generalization Phase 4b7a).
+            // Matches drawn first (Phase 5b3a) so an active text selection
+            // layers visibly above match highlighting, both still behind
+            // the glyphs.
+            drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
             drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
             dc.DrawTextLayout(D2D1::Point2F(0.0F, y), *layoutResult, m_textBrush.Get());
             drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
@@ -335,6 +370,21 @@ void RenderPipeline::drawSelectionsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLa
     }
 }
 
+void RenderPipeline::drawMatchesOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                                       TextPos lineStart, TextPos lineEnd) noexcept {
+    for (const MatchVisual& match : m_matchVisuals) {
+        if (match.range.empty()) {
+            continue;
+        }
+        const TextPos overlapStart = std::max(lineStart, match.range.start);
+        const TextPos overlapEnd   = std::min(lineEnd, match.range.end);
+        if (overlapStart < overlapEnd) {
+            drawMatchOnLine(dc, layout, y, static_cast<std::uint32_t>(overlapStart - lineStart),
+                           static_cast<std::uint32_t>(overlapEnd - lineStart), match.isCurrent);
+        }
+    }
+}
+
 void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                                      std::uint32_t column) noexcept {
     if (!m_textBrush) {
@@ -374,6 +424,31 @@ void RenderPipeline::drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLay
     }
     const D2D1_RECT_F selectionRect = D2D1::RectF(startX, y, endX, y + m_lineHeightDips);
     dc.FillRectangle(selectionRect, m_selectionBrush.Get());
+}
+
+void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                                     std::uint32_t startColumn, std::uint32_t endColumn,
+                                     bool isCurrent) noexcept {
+    ID2D1SolidColorBrush* brush = isCurrent ? m_currentMatchBrush.Get() : m_matchBrush.Get();
+    if (brush == nullptr) {
+        return;
+    }
+    DWRITE_HIT_TEST_METRICS startMetrics{};
+    DWRITE_HIT_TEST_METRICS endMetrics{};
+    float   startX = 0.0F;
+    float   startY = 0.0F;
+    float   endX   = 0.0F;
+    float   endY   = 0.0F;
+    HRESULT hr = layout.HitTestTextPosition(startColumn, FALSE, &startX, &startY, &startMetrics);
+    if (FAILED(hr)) {
+        return;
+    }
+    hr = layout.HitTestTextPosition(endColumn, FALSE, &endX, &endY, &endMetrics);
+    if (FAILED(hr)) {
+        return;
+    }
+    const D2D1_RECT_F matchRect = D2D1::RectF(startX, y, endX, y + m_lineHeightDips);
+    dc.FillRectangle(matchRect, brush);
 }
 
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
@@ -470,6 +545,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!selectionBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return selectionBrushResult;
+    }
+    auto matchBrushResult = ensureMatchBrushes(*dc);
+    if (!matchBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return matchBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

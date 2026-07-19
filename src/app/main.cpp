@@ -34,6 +34,7 @@
 // Search Engine integration arrives in a later phase.
 
 #include <windows.h>
+#include <commctrl.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -58,6 +59,9 @@
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
 #include "neomifes/render/render_pipeline.h"
+#include "neomifes/search/search_service.h"
+#include "neomifes/ui/find_bar.h"
+#include "neomifes/ui/find_navigation.h"
 #include "neomifes/ui/main_window.h"
 
 #include "frame_profile.h"
@@ -68,6 +72,7 @@ namespace {
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::core::CommandDispatcher;
+using neomifes::core::Cursor;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
@@ -77,7 +82,13 @@ using neomifes::document::TextRange;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
+using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
+using neomifes::search::Match;
+using neomifes::search::Query;
+using neomifes::search::SearchService;
+using neomifes::ui::FindBar;
+using neomifes::ui::FindBarConfig;
 using neomifes::ui::kWindowClassName;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
@@ -169,6 +180,16 @@ LaunchArgs parseArgs() noexcept {
     // an explicit reinterpret_cast to acknowledge the intent.
     ::LocalFree(reinterpret_cast<HLOCAL>(argv));
     return args;
+}
+
+// Defensive: FindBar's SetWindowSubclass/DefSubclassProc (Phase 5b3a, first
+// comctl32 usage in this codebase) do not strictly require this per
+// Microsoft's docs (it is only load-bearing for visual-styles-aware
+// controls), but calling it costs nothing and removes any doubt about
+// comctl32 being loaded before the first CreateWindowExW(WC_EDITW, ...).
+void initCommonControls() noexcept {
+    const INITCOMMONCONTROLSEX icc{.dwSize = sizeof(icc), .dwICC = ICC_STANDARD_CLASSES};
+    ::InitCommonControlsEx(&icc);
 }
 
 // Enable Per-Monitor V2 DPI awareness. Falls back silently on older Win10 builds.
@@ -342,6 +363,108 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Rebuilds RenderPipeline's match highlight set from `matches`, marking
+// index `currentMatchIndex` as the "active" one (Phase 5b3a). Pulled out of
+// runFindQuery()/navigateToMatch() since both need to do this identically.
+void syncMatchVisuals(const std::vector<Match>& matches, std::size_t currentMatchIndex,
+                      RenderPipeline& renderPipeline) {
+    std::vector<MatchVisual> visuals;
+    visuals.reserve(matches.size());
+    for (std::size_t i = 0; i < matches.size(); ++i) {
+        visuals.push_back(MatchVisual{.range = matches[i].range, .isCurrent = (i == currentMatchIndex)});
+    }
+    renderPipeline.setMatchVisuals(std::move(visuals));
+}
+
+// Moves the selection/viewport to `matches[currentMatchIndex]` and pushes
+// the resulting state to FindBar/RenderPipeline (Phase 5b3a). Shared by
+// runFindQuery() (jump to the first match after a new search) and
+// navigateToMatch() (F3/Shift+F3) - both end up wanting exactly this.
+void jumpToMatch(HWND hwnd, const std::vector<Match>& matches, std::size_t currentMatchIndex,
+                 SelectionModel& selectionModel, Viewport& viewport, const Document& document,
+                 RenderPipeline& renderPipeline, FindBar& findBar) {
+    const Match& match = matches[currentMatchIndex];
+    selectionModel.setCursors(
+        {Cursor{.position = match.range.end, .anchor = match.range.start, .isPrimary = true}});
+    viewport.ensureVisible(match.range.start, document);
+    findBar.setMatchCount(currentMatchIndex, matches.size());
+    syncMatchVisuals(matches, currentMatchIndex, renderPipeline);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+}
+
+// Runs SearchService::findAll() for FindBar's onQueryChanged callback and
+// jumps to the first match, if any (Phase 5b3a). An empty/no-match result
+// clears all highlighting and shows FindBar's "no results" state.
+void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord, bool regex, HWND hwnd,
+                  const Document& document, std::vector<Match>& currentMatches,
+                  std::size_t& currentMatchIndex, SelectionModel& selectionModel, Viewport& viewport,
+                  RenderPipeline& renderPipeline, FindBar& findBar) {
+    currentMatches    = SearchService::findAll(document, Query{.pattern       = std::u16string(query),
+                                                               .caseSensitive = caseSensitive,
+                                                               .wholeWord     = wholeWord,
+                                                               .regex         = regex});
+    currentMatchIndex = 0;
+    findBar.setMatchCount(currentMatchIndex, currentMatches.size());
+    syncMatchVisuals(currentMatches, currentMatchIndex, renderPipeline);
+    if (currentMatches.empty()) {
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    jumpToMatch(hwnd, currentMatches, currentMatchIndex, selectionModel, viewport, document,
+               renderPipeline, findBar);
+}
+
+// F3 (forward=true) / Shift+F3 (forward=false), wrapping around - shared by
+// FindBarConfig::onFindNext/onFindPrevious (fired while the find edit has
+// focus) and the F3/Shift+F3 branch of handleFindBarKey() below (fired
+// while the document editing area has focus instead) - same "one shared
+// helper, two call sites" pattern as dispatchMouseDown()/handleClipboardKey().
+void navigateToMatch(bool forward, HWND hwnd, const std::vector<Match>& matches,
+                     std::size_t& currentMatchIndex, SelectionModel& selectionModel,
+                     Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
+                     FindBar& findBar) {
+    if (matches.empty()) {
+        return;
+    }
+    currentMatchIndex = forward ? neomifes::ui::nextMatchIndex(currentMatchIndex, matches.size())
+                                 : neomifes::ui::previousMatchIndex(currentMatchIndex, matches.size());
+    jumpToMatch(hwnd, matches, currentMatchIndex, selectionModel, viewport, document, renderPipeline,
+               findBar);
+}
+
+// Escape while the find edit has focus (FindBarConfig::onClosed) - hides
+// the bar, clears match highlighting, and restores focus to the document
+// editing area (FindBar itself does not know where that is).
+void closeFindBar(HWND hwnd, FindBar& findBar, std::vector<Match>& currentMatches,
+                  RenderPipeline& renderPipeline) {
+    findBar.hide();
+    currentMatches.clear();
+    renderPipeline.setMatchVisuals({});
+    ::SetFocus(hwnd);
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Ctrl+F (show) / F3 / Shift+F3 (navigate) while the document editing area
+// has focus (not the find edit - see find_bar.h's class comment for why
+// these same keys are ALSO handled inside FindBar's own subclass proc when
+// the find edit itself has focus). Returns true if the key was one this
+// handles, mirroring handleClipboardKey()'s ClipboardKeyResult.handled shape.
+bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
+                      std::vector<Match>& currentMatches, std::size_t& currentMatchIndex,
+                      SelectionModel& selectionModel, Viewport& viewport, const Document& document,
+                      RenderPipeline& renderPipeline) {
+    if (ctrlDown && vkCode == 'F') {
+        findBar.show();
+        return true;
+    }
+    if (vkCode == VK_F3) {
+        navigateToMatch(!shiftDown, hwnd, currentMatches, currentMatchIndex, selectionModel, viewport,
+                        document, renderPipeline, findBar);
+        return true;
+    }
+    return false;
+}
+
 // Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
 // applies it. Pulled out of wireNormalMode's onMouseDown lambda to keep that
 // function's cognitive complexity down (same rationale as
@@ -438,7 +561,13 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
 // dispatchMouseDown()/handleClipboardKey() were extracted to avoid.
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                        Viewport& viewport, const Document& document, RenderPipeline& renderPipeline) {
+                        Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
+                        FindBar& findBar, std::vector<Match>& currentMatches,
+                        std::size_t& currentMatchIndex) {
+    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, currentMatches, currentMatchIndex,
+                         selectionModel, viewport, document, renderPipeline)) {
+        return;
+    }
     const auto clipboardResult =
         handleClipboardKey(hwnd, vkCode, ctrlDown, dispatcher, selectionModel, viewport, document);
     if (clipboardResult.handled) {
@@ -454,13 +583,50 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     }
 }
 
+// Builds the FindBarConfig callbacks (Phase 5b3a) - pulled out of
+// wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
+// reason documented above handleKeyDownEvent(). All captured references
+// outlive the returned FindBarConfig (they are wWinMain-scope locals; the
+// config itself is only used immediately, inside findBar.create()).
+FindBarConfig buildFindBarConfig(HWND hwnd, const Document& document, SelectionModel& selectionModel,
+                                 Viewport& viewport, RenderPipeline& renderPipeline, FindBar& findBar,
+                                 std::vector<Match>& currentMatches, std::size_t& currentMatchIndex) {
+    FindBarConfig config{};
+    config.onQueryChanged = [hwnd, &document, &currentMatches, &currentMatchIndex, &selectionModel,
+                             &viewport, &renderPipeline, &findBar](std::u16string_view query,
+                                                                   bool caseSensitive, bool wholeWord,
+                                                                   bool regex) {
+        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, document, currentMatches,
+                    currentMatchIndex, selectionModel, viewport, renderPipeline, findBar);
+    };
+    config.onFindNext = [hwnd, &currentMatches, &currentMatchIndex, &selectionModel, &viewport,
+                         &document, &renderPipeline, &findBar]() {
+        navigateToMatch(true, hwnd, currentMatches, currentMatchIndex, selectionModel, viewport,
+                        document, renderPipeline, findBar);
+    };
+    config.onFindPrevious = [hwnd, &currentMatches, &currentMatchIndex, &selectionModel, &viewport,
+                             &document, &renderPipeline, &findBar]() {
+        navigateToMatch(false, hwnd, currentMatches, currentMatchIndex, selectionModel, viewport,
+                        document, renderPipeline, findBar);
+    };
+    config.onClosed = [hwnd, &findBar, &currentMatches, &renderPipeline]() {
+        closeFindBar(hwnd, findBar, currentMatches, renderPipeline);
+    };
+    return config;
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
-// forever; there is no retry policy.
+// forever; there is no retry policy. Same non-fatal treatment for
+// findBar.create() (Phase 5b3a) - a Find bar that fails to create simply
+// isn't available this session, no retry policy either.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                    Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor) {
-    cfg.onDeferredInit = [&window, &renderPipeline, &document](HWND hwnd) {
+                    Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                    HINSTANCE hInstance, FindBar& findBar, std::vector<Match>& currentMatches,
+                    std::size_t& currentMatchIndex) {
+    cfg.onDeferredInit = [&window, &renderPipeline, &document, hInstance, &findBar, &selectionModel,
+                          &viewport, &currentMatches, &currentMatchIndex](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -473,21 +639,29 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                 debugLogRenderError("RenderPipeline::render", rendered.error());
             }
         });
+        const FindBarConfig findBarConfig =
+            buildFindBarConfig(hwnd, document, selectionModel, viewport, renderPipeline, findBar,
+                               currentMatches, currentMatchIndex);
+        [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
-    cfg.onResize = [&renderPipeline](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
-        if (!renderPipeline.isAttached()) {
-            return;
+    cfg.onResize = [&renderPipeline, &findBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+        if (renderPipeline.isAttached()) {
+            const auto resized = renderPipeline.resize(w, h, dpiScale);
+            if (!resized) {
+                debugLogRenderError("RenderPipeline::resize", resized.error());
+            }
         }
-        const auto resized = renderPipeline.resize(w, h, dpiScale);
-        if (!resized) {
-            debugLogRenderError("RenderPipeline::resize", resized.error());
-        }
+        findBar.onParentResized(w, dpiScale);
     };
-    cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
-                        HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+    cfg.onCommand = [&findBar](HWND, WPARAM wParam, LPARAM lParam) {
+        findBar.handleCommand(wParam, lParam);
+    };
+    cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
+                     &currentMatches, &currentMatchIndex](HWND hwnd, UINT vkCode, bool shiftDown,
+                                                          bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
-                          document, renderPipeline);
+                          document, renderPipeline, findBar, currentMatches, currentMatchIndex);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                      HWND hwnd, wchar_t ch) {
@@ -585,6 +759,9 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     }
 
     enableHighDpi();
+    // Phase 5b3a: defensive, see initCommonControls()'s comment. Cheap and
+    // harmless even on modes that never create a FindBar (Measure*).
+    initCommonControls();
 
     // Declared before window/renderPipeline so it outlives both (reverse
     // destruction order) - RenderPipeline::setDocument() below hands out a
@@ -604,6 +781,13 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // added, so a later Alt+Shift+click or Alt+drag can extend that one
     // cursor specifically. Reset to nullopt by any non-Alt click.
     std::optional<neomifes::document::TextPos> altCursorAnchor;
+    // Find bar state (Phase 5b3a) - lives here (not inside FindBar itself)
+    // so FindBar can stay decoupled from neomifes::search, same rationale
+    // as core::ReplaceAllCommand staying decoupled from neomifes::search in
+    // Phase 5b2 (see docs/history/TIMELINE.md's Phase 5b3a entry).
+    FindBar             findBar;
+    std::vector<Match>   currentMatches;
+    std::size_t           currentMatchIndex = 0;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -619,7 +803,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                              syntheticLineCountUsed);
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
-                       altCursorAnchor);
+                       altCursorAnchor, hInstance, findBar, currentMatches, currentMatchIndex);
     }
 
     if (!window.create(hInstance, cfg)) {

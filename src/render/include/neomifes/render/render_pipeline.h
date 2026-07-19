@@ -53,6 +53,18 @@ struct CursorVisual {
     friend constexpr bool operator==(const CursorVisual&, const CursorVisual&) = default;
 };
 
+// One search-match highlight (Phase 5b3a, Find bar UI). Deliberately
+// document::-typed only, same "independent, concurrently runnable engines"
+// reasoning as CursorVisual above - RenderPipeline does not know about
+// search::Match; the app layer (main.cpp) builds these from
+// search::SearchService::findAll()'s results.
+struct MatchVisual {
+    document::TextRange range;
+    bool                isCurrent = false;  // true: the "active" match (F3-navigated-to), drawn in a distinct color
+
+    friend constexpr bool operator==(const MatchVisual&, const MatchVisual&) = default;
+};
+
 class RenderPipeline {
 public:
     // Queries the current client-area size and DPI itself (GetClientRect /
@@ -100,6 +112,14 @@ public:
         m_cursorVisuals = std::move(cursors);
     }
 
+    // The full set of search-match highlights to draw (Phase 5b3a, Find bar
+    // UI). Same non-owning, document::-typed-only shape as setCursorVisuals()
+    // above. The app layer rebuilds and passes the whole vector after every
+    // search/navigation change; empty clears all highlighting.
+    void setMatchVisuals(std::vector<MatchVisual> matches) noexcept {
+        m_matchVisuals = std::move(matches);
+    }
+
     // Converts a client-area point (device pixels, e.g. from
     // WM_LBUTTONDOWN's lParam) to the nearest document::TextPos, using the
     // same TextLayoutCache/DPI/line-height state drawVisibleLines() already
@@ -134,6 +154,10 @@ private:
         // unchanged) still force a redraw instead of being coarse-frame-
         // skipped (Phase 4b1/4b2, generalized to N cursors in Phase 4b7a).
         std::vector<CursorVisual> cursorVisuals;
+        // Same rationale as cursorVisuals above, Phase 5b3a: a match-
+        // highlight-only change (new search, F3 navigation) must not be
+        // coarse-frame-skipped either.
+        std::vector<MatchVisual> matchVisuals;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -144,6 +168,7 @@ private:
     [[nodiscard]] RenderExpected<void> ensureTextFormat() noexcept;
     [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
+    [[nodiscard]] RenderExpected<void> ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
 
@@ -172,6 +197,13 @@ private:
     // behind the glyphs (Phase 4b2, N-cursor generalization Phase 4b7a).
     void drawSelectionsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                              document::TextPos lineStart, document::TextPos lineEnd) noexcept;
+    // Draws a translucent highlight rectangle for every m_matchVisuals entry
+    // that overlaps [lineStart, lineEnd), at vertical offset `y` within
+    // `layout`. Called from drawVisibleLines() BEFORE drawSelectionsOnLine()
+    // (Phase 5b3a) - matches sit visually behind an active text selection,
+    // which itself sits behind the glyphs.
+    void drawMatchesOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                           document::TextPos lineStart, document::TextPos lineEnd) noexcept;
     // Draws a thin solid caret bar at `column` (UTF-16 code units into the
     // line) within `layout`, at vertical offset `y`. Called from
     // drawCaretsOnLine() for whichever visible line a caret is on, reusing
@@ -183,6 +215,12 @@ private:
     // drawSelectionsOnLine() once per overlapping selection range.
     void drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                              std::uint32_t startColumn, std::uint32_t endColumn) noexcept;
+    // Draws a translucent highlight rectangle spanning [startColumn,
+    // endColumn) of `layout`, at vertical offset `y`, using m_matchBrush or
+    // m_currentMatchBrush depending on `isCurrent`. Called from
+    // drawMatchesOnLine() once per overlapping match range (Phase 5b3a).
+    void drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
+                         std::uint32_t startColumn, std::uint32_t endColumn, bool isCurrent) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -200,6 +238,7 @@ private:
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
+    std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush/m_selectionBrush are bound to the device
@@ -209,6 +248,11 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat>     m_textFormat;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_selectionBrush;
+    // Phase 5b3a: separate brushes for ordinary vs. "current" (F3-navigated-
+    // to) match highlights, same device-bound reset lifecycle as
+    // m_selectionBrush above.
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_matchBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_currentMatchBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
 
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not

@@ -63,6 +63,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onMouseWheel   = config.onMouseWheel;
     m_onMouseDown    = config.onMouseDown;
     m_onMouseDrag    = config.onMouseDrag;
+    m_onCommand      = config.onCommand;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -152,6 +153,9 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_LBUTTONUP:
             handleMouseUp();
+            return 0;
+        case WM_COMMAND:
+            handleCommand(wParam, lParam);
             return 0;
         case WM_ERASEBKGND:
             // We paint the full client rect in WM_PAINT; suppress default erase to
@@ -300,6 +304,12 @@ void MainWindow::handleMouseUp() noexcept {
     }
     m_isDragging = false;
     ::ReleaseCapture();
+}
+
+void MainWindow::handleCommand(WPARAM wParam, LPARAM lParam) noexcept {
+    if (m_onCommand) {
+        m_onCommand(m_hwnd, wParam, lParam);
+    }
 }
 
 }  // namespace neomifes::ui

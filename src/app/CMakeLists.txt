@@ -43,6 +43,9 @@ target_link_libraries(NeoMIFES
         neomifes::render
         neomifes::ui
         neomifes::app_input
+        # Find bar UI (Phase 5b3a) - the first real app-level consumer of
+        # SearchService::findAll(); previously only tests/bench linked this.
+        neomifes::search
         user32
         shell32
 )

@@ -931,7 +931,7 @@ private:
 
 ## 7. Search Engine 詳細
 
-**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装、Phase 5b1 (2026-07-19実装) で複数行にまたがるマッチに対応、Phase 5b2 (2026-07-19実装) で置換(`core::ReplaceAllCommand` + `search::expandReplacementTemplate`)を実装。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b3以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'/§7.1'''を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40)ほか、`master_roadmap.md` §4.3のPhase 5b2スケッチも実在しない`document::EditResult`/`SelectionModel::Snapshot`という型を前提にしていたことが判明した — いずれも実装確定前の高レベルスケッチに過ぎず、実際のシグネチャは下記§7.1'''参照。
+**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装、Phase 5b1 (2026-07-19実装) で複数行にまたがるマッチに対応、Phase 5b2 (2026-07-19実装) で置換(`core::ReplaceAllCommand` + `search::expandReplacementTemplate`)を実装、Phase 5b3a (2026-07-19実装) でFind bar UI(`ui::FindBar`、WC_EDIT子コントロール)を実装しここで初めて`search::`が実アプリ本体へリンクされた。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b3b以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'/§7.1'''/§7.1''''を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40)ほか、`master_roadmap.md` §4.3のPhase 5b2スケッチも実在しない`document::EditResult`/`SelectionModel::Snapshot`という型を前提にしていたことが判明した — いずれも実装確定前の高レベルスケッチに過ぎず、実際のシグネチャは下記§7.1'''/§7.1''''参照。
 
 ### 7.1' SearchService (Phase 5a 実装、Phase 5b1 で複数行対応)
 ```cpp
@@ -1047,6 +1047,69 @@ namespace neomifes::search {
 - `search::Match`に`groups`フィールド(キャプチャグループ1-9、RE2の`NumberOfCapturingGroups()`を`std::min(9, ...)`でキャップ — `expandReplacementTemplate()`が`$1`-`$9`しか消費しないため)を追加。非参加の任意グループ(例: `(a)|(b)`が"b"にマッチした場合のグループ1)はマッチ開始位置での空レンジとして表現
 - **本PRのスコープ外(意図的に延期):** Preview API(`master_roadmap.md` §4.3の`preview()`静的メソッド)・ベンチマーク・チャンク圧縮Undoは、UIの消費者がまだ無い状態(Phase 5b3のFind bar UI配線待ち)で作るのはCLAUDE.mdルール3の推測実装にあたるため見送り。`search::`と`core::`を実際に繋ぐグルーコード(`search::Match` → `core::PerCursorEdit`変換)もPhase 5b3まで書かない(現時点ではテストのみでパイプライン全体の合成可能性を証明、`tests/unit/core_replace_all_command_test.cpp`の`IntegrationFindAllExpandTemplateThenReplaceAllProducesExpectedDocument`参照)
 - **既知の未解決コスト:** `BufferSnapshot::extract()`は毎回ピースリストを先頭から再走査するため、`ReplaceAllCommand`が数十万件規模のマッチを処理する場合はO(matches×pieces)になりうる(`docs/issues/replace_all_buffer_snapshot_extract_scaling.md`に記録、Phase 5b3で実際に大量マッチ経路ができてから再評価)
+
+### 7.1'''' Find bar UI + マッチハイライト (Phase 5b3a 実装)
+
+`ui::FindBar`(`src/ui/include/neomifes/ui/find_bar.h`)は本プロジェクト初の子HWND。`ui::MainWindow`と全く同じ分離方針(`neomifes::search`/`document`/`core`を一切知らない、Win32機構のみのクラス)を踏襲 — roadmap `master_roadmap.md` §5.3の`FindBarState`スケッチ(検索状態をFind bar自身の構造体に持たせる想定)から意図的に乖離し、`currentQuery`/`currentMatches`/`currentMatchIndex`は`src/app/main.cpp`の`wWinMain`スコープにローカル状態として置いた(`altCursorAnchor`と同じ寿命上の理由)。
+
+```cpp
+// src/ui/include/neomifes/ui/find_bar.h
+namespace neomifes::ui {
+
+struct FindBarConfig {
+    // デバウンス済み(内部150ms)。呼び出し側が実際の検索を行いsetMatchCount()で返す。
+    std::function<void(std::u16string_view query, bool caseSensitive, bool wholeWord, bool regex)>
+        onQueryChanged;
+    std::function<void()> onFindNext;      // Enter/F3 (Find edit フォーカス時)
+    std::function<void()> onFindPrevious;  // Shift+Enter/Shift+F3 (同上)
+    std::function<void()> onClosed;        // Escape (同上)
+};
+
+class FindBar {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const FindBarConfig& config);
+    void show() noexcept;
+    void hide() noexcept;
+    [[nodiscard]] bool isVisible() const noexcept;
+    void setMatchCount(std::size_t currentIndex, std::size_t count) noexcept;
+    void onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept;
+    void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;  // WM_COMMAND (EN_CHANGE)
+    // ...
+};
+
+}  // namespace neomifes::ui
+```
+
+**設計上の要点:**
+- **子HWND生成 + サブクラス化。** `WC_EDITW`を`CreateWindowExW`で生成し、`SetWindowSubclass`/`DefSubclassProc`(`<commctrl.h>`)でEnter/Escape/F3/Shift+F3/Ctrl+Fを横取りする。Win32はキーボード入力をフォーカスを持つHWNDへ直接ルーティングするため、Find editにフォーカスがある間は`MainWindow::wndProc`の`WM_KEYDOWN`ケースは発火しない — この横取りが唯一の手段
+- **IME安全性(必須設計判断)。** `WM_IME_STARTCOMPOSITION`/`WM_IME_ENDCOMPOSITION`で変換状態を追跡し、日本語/中国語/韓国語の変換中はEnter/Escape/F3をFind barショートカットとして解釈せず`DefSubclassProc`(IME自身)へ委譲する。設計時のPlan agentレビューで指摘された必須修正 — 見落とすと日本語入力時にFind barが誤操作される
+- **Alt+C/W/RはWM_SYSKEYDOWNで届く。** Altはシステムキー修飾子のため通常の`WM_KEYDOWN`では届かず、専用の`WM_SYSKEYDOWN`ハンドラで処理し、処理した3キーは既定の(存在しないシステムメニューを開こうとする)処理へフォールスルーさせないよう`return 0`する
+- **デバウンスタイマーは発火後に`KillTimer`。** `EN_CHANGE`受信毎に`KillTimer`→`SetTimer(150ms)`で再武装し、タイマー発火時(`WM_TIMER`、対象HWNDがFind edit自身のためサブクラスプロシージャに届く)は`KillTimer`してから1回だけ`onQueryChanged`を呼ぶ(単純な`SetTimer`だけでは入力停止後も無限に再発火する)
+- **DPI追従フォント。** `WC_EDIT`は既定では素のシステムフォントを使うため、`onParentResized(parentWidth, dpiScale)`が`CreateFontW`でDPIスケール済み`HFONT`を生成し`WM_SETFONT`で送る(`platform::GdiObjectHandle`で所有)
+- `platform::WindowHandle`/`platform::GdiObjectHandle`(`handle_guard.h`、既存だが未使用のまま存在していた)をHWND/HFONT所有に採用
+- **`ui::MainWindow`に`onCommand`フック追加。** Win32は子コントロールの通知(`EN_CHANGE`等)を常に親HWNDへ`WM_COMMAND`で送るため、既存の`onKeyDown`等と同じ`MainWindowConfig`フックパターンで追加(`main_window.h`)
+
+**マッチハイライト描画:**
+```cpp
+// src/render/include/neomifes/render/render_pipeline.h (CursorVisualと同じファイル、
+// roadmapが示唆した別ファイルmatch_visual.hからは意図的に乖離 - 既存CursorVisualの配置と一貫性を取るため)
+struct MatchVisual {
+    document::TextRange range;
+    bool                isCurrent = false;  // F3で移動した「現在」のマッチ、別色で描画
+};
+
+class RenderPipeline {
+public:
+    void setMatchVisuals(std::vector<MatchVisual> matches) noexcept;
+};
+```
+`drawMatchesOnLine()`/`drawMatchOnLine()`は既存`drawSelectionsOnLine()`/`drawSelectionOnLine()`と全く同じ構造(overlap計算+`HitTestTextPosition()`2回+`FillRectangle()`)。`drawVisibleLines()`内で`drawSelectionsOnLine()`の直前に呼ぶ(マッチが最背面、選択がその上、グリフが最前面)。`FrameState`に`matchVisuals`を追加(damage-tracking対象、`cursorVisuals`と同じ扱い)。
+
+**CMakeガード解除。** `search::`を`NeoMIFES.exe`へ実際にリンクするため、`cmake/Dependencies.cmake`をRE2/Abseil専用に整理して無条件`include()`化、GoogleTest/benchmarkは新規`cmake/TestDependencies.cmake`へ分離し`NEOMIFES_BUILD_TESTS`ガード内に残した(単純に1ファイルを丸ごとガード解除すると、テスト専用の依存まで無条件フェッチされてしまうため)。`NEOMIFES_BUILD_TESTS=OFF`でも`NeoMIFES.exe`単独ビルドが成立することを確認済み。
+
+**本PRのスコープ外(意図的に延期、Phase 5b3b以降):** 置換行(Ctrl+H)配線、コマンドパレット(Ctrl+Shift+P)、Case/Word/Regexのクリック可能なトグルボタン(Alt+C/W/Rキーバインドのみ実装)、Grep(Phase 5c)。
+
+**既知の未解決コスト:** `drawMatchesOnLine()`は可視行ごとに`m_matchVisuals`全件を線形走査するため、マッチ件数が数千〜数万件規模になると60fps目標に抵触しうる(`docs/issues/match_highlight_linear_scan_scaling.md`に記録、Phase 5c等で大量マッチ経路ができてから再評価)。
 
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |

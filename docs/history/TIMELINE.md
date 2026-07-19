@@ -904,4 +904,44 @@
 
 **次回 (Phase 5b3):** Find bar UI + コマンドパレット配線の詳細設計から着手。master_roadmap.md §5に既に詳細規定済み(WC_EDIT子コントロール、FindBarState、コマンドパレットのファジー検索設計まで含む)。ここで初めて`search::`が実アプリ本体へリンクされ、`search::Match` + `expandReplacementTemplate()` → `core::PerCursorEdit` → `core::ReplaceAllCommand`を繋ぐ実際のグルーコードをUIコードとして書くことになる。**保留中のPhase 4b8**に戻る選択肢も次セッション開始時にユーザーへ提示すること。push は本セッション終了時点で未実施 — 次回開始時にユーザーへ確認すること。
 
+## Session 29 (2026-07-19): Phase 5b3a (Find bar UI基盤 + マッチハイライト) 完了
+
+**着手経緯:** ユーザーが「Phase 5b3に進め」と指示。master_roadmap.md §5(Find bar UI + コマンドパレット + マッチハイライト)に着手する前に、既存コード(`main.cpp`・`main_window.h/.cpp`・`render_pipeline.h/.cpp`・`viewport.h`・`CMakeLists.txt`群)を直接調査し、本プロジェクト初の子HWND導入という前例の無い工学的挑戦であることを確認。roadmap §5が「Find bar UI + コマンドパレット」を1章にまとめていたが、CLAUDE.mdルール8に従い**5b3a(Find bar UI基盤)→5b3b(置換行配線)→5b3c(コマンドパレット)**の3段階分割を採用(Grepは元々roadmap上も別フェーズ5cとして区別済み)。
+
+**Plan agentによる設計検証で判明した4件の必須修正:**
+1. **Alt+C/W/RはWM_KEYDOWNではなくWM_SYSKEYDOWNで届く**(Altはシステムキー修飾子のため)。専用ハンドラが必要で、処理した3キーはフォールスルーさせず`return 0`する必要がある(でないと既定処理が存在しないシステムメニューを開こうとする)
+2. **IME変換中はEnter/Escape/F3をFind barショートカットとして横取りしてはいけない。** `WM_IME_STARTCOMPOSITION`/`WM_IME_ENDCOMPOSITION`で変換状態を追跡し、変換中は`DefSubclassProc`(IME自身)へ委譲する必要がある — 本プロジェクトの「CJK IME一級市民」という方針に直結する必須修正、見落とすと日本語入力が壊れる
+3. **デバウンスタイマーは発火後に`KillTimer`が必要。** 単純な`SetTimer`のままでは入力停止後も150ms間隔で無限に検索が再実行される
+4. **`cmake/Dependencies.cmake`の`NEOMIFES_BUILD_TESTS`ガード解除は単純な`include()`移動では不十分。** RE2/AbseilとGoogleTest/benchmarkが同一ファイルに同居しており、単純に無条件化するとテスト専用依存まで無条件フェッチされる。既存コード自身のコメント(`CMakeLists.txt`・`cmake/Dependencies.cmake`)がこの分割を予告していたことも確認
+
+**成果物:**
+- 新規`ui::FindBar`(`src/ui/include/neomifes/ui/find_bar.{h,cpp}`) — `WC_EDIT`子コントロール、`SetWindowSubclass`/`DefSubclassProc`でEnter/Escape/F3/Shift+F3/Ctrl+F/Alt+C/W/Rを横取り。`ui::MainWindow`と同じ「search::/document::/core::を一切知らない」設計、`FindBarConfig`の4コールバックで`main.cpp`と疎結合連携。`platform::WindowHandle`/`platform::GdiObjectHandle`(既存だが未使用だったRAIIラッパー)をHWND/HFONT所有に採用
+- 新規`ui::find_navigation.h`(ヘッダオンリー純粋関数) — `nextMatchIndex`/`previousMatchIndex`(ラップアラウンド)・`formatMatchCountLabel`。`click_tracking.h`と同じパターンでユニットテスト可能に
+- `render::MatchVisual` + `RenderPipeline::setMatchVisuals`/`drawMatchesOnLine`/`drawMatchOnLine` — 既存`CursorVisual`/`drawSelectionsOnLine`と全く同じ構造を踏襲(roadmapが示唆した別ファイル`match_visual.h`ではなく既存`CursorVisual`と同じ`render_pipeline.h`に配置、実際の既存配置との一貫性を優先)。`FrameState`に`matchVisuals`を追加しdamage-tracking対象化
+- `ui::MainWindow`に`onCommand`フック追加(`WM_COMMAND`、既存フックと同じパターン)
+- **CMakeガード解除:** `cmake/Dependencies.cmake`をRE2/Abseil専用に整理して無条件`include()`化、新規`cmake/TestDependencies.cmake`にGoogleTest/benchmarkを分離し`NEOMIFES_BUILD_TESTS`限定のまま維持。`src/CMakeLists.txt`の`add_subdirectory(search)`を無条件化、`src/app/CMakeLists.txt`に`neomifes::search`を追加 — `NeoMIFES.exe`が初めて`search::`を実リンク
+- `main.cpp`に`navigateToMatch`/`runFindQuery`/`jumpToMatch`/`closeFindBar`/`handleFindBarKey`/`buildFindBarConfig`(既存の`dispatchMouseDown`/`handleClipboardKey`と同じ「ヘルパー抽出でcognitive complexity対策」パターン)を追加、`wireNormalMode`にFind bar関連の5パラメータを追加(既に8パラメータあった関数がさらに拡張、5b3bで更に伸びる見込みだが今回は範囲外としてリファクタしない判断)
+- `wWinMain`冒頭に`InitCommonControlsEx()`呼び出しを追加(comctl32初期化、厳密な必要性は未確定だが防御的に追加)
+- テスト数: 300→310(+10件、`ui_find_navigation_test.cpp`新規)
+
+**検証:**
+- ローカル **Debug/Release/ubsan(clang-cl) 全green**、全310テストpass
+- **`NEOMIFES_BUILD_TESTS=OFF`での単独アプリビルドを別ビルドディレクトリ(`build/debug-appOnly`、検証後削除)で実施** — RE2/Abseilのみフェッチされ、GoogleTest/benchmarkはフェッチされないことを確認(CMakeガード解除の正しさを実測で裏付け)
+- clang-tidy: 新規/変更4ファイル(`find_bar.cpp`/`main_window.cpp`/`render_pipeline.cpp`/`main.cpp`)全てチェック、`misc-redundant-expression`3件(`DEFAULT_PITCH | FF_DONTCARE`のWin32慣用句、`255.0F / 255.0F`の自己除算×2)・`misc-const-correctness`1件を検出・修正、再検証でゼロ警告
+- 実アプリを起動し3秒間クラッシュしないことを確認(基本的な起動安定性のスモークテストのみ)。**Ctrl+F操作・日本語IME変換中のEnter/Escape動作・マッチハイライトの視覚的な色/重なり順の確認は、この環境にWin32 GUI自動化手段が無いため未実施 — 次セッション冒頭でユーザーに依頼すること**
+
+**意図的にスコープ外とした項目 (Phase 5b3b/5b3c/5cへ延期):**
+- 置換行(Ctrl+H)配線、コマンドパレット(Ctrl+Shift+P)、Case/Word/Regexのクリック可能なトグルボタン(Alt+C/W/Rキーバインドのみ実装)、検索履歴、タグジャンプ、Grep — UIの消費者が無い状態でこれらを作るのはCLAUDE.mdルール3の推測実装にあたるため
+
+**新規発見・記録した既知の制約:** `drawMatchesOnLine()`が可視行ごとに`m_matchVisuals`全件を線形走査するため、マッチ件数が数千〜数万件規模になると60fps目標に抵触しうる(`docs/issues/match_highlight_linear_scan_scaling.md`として起票、Phase 5c等で大量マッチ経路ができてから再評価)。
+
+**ドキュメント同期:**
+- `docs/design/detailed_design.md` §7に新規§7.1''''(Phase 5b3a実装リファレンス)追加
+- `docs/design/master_roadmap.md` §5に新規§5.8(実装後の確定事項)追加 — 5b3a/5b3b/5b3c分割の記録、`FindBarState`スケッチからの状態配置の乖離、CMakeガード解除の詳細
+- `docs/handoff/RESUME_HERE.md`に新規§3.19(完了記録)追加、§1状態表・§6推奨プロンプトをPhase 5b3b向けに更新
+
+**教訓:** (1) 「Win32メッセージがどのHWNDに届くか」という基礎知識(子コントロールにフォーカスがある間は親のWM_KEYDOWNは発火しない、EN_CHANGE等の通知は常に親へWM_COMMANDで届く)を実装前にPlan agentで検証したことで、後から「Ctrl+Fが反応しない」「入力中に検索が走らない」といった実機デバッグでしか気づけない類の不具合を設計段階で回避できた。(2) 「日本語IME一級市民」という掲げた方針は、具体的な機能(サロゲートペア対応等)だけでなく、こういう地味だが見落としやすいキーボードメッセージの横取りタイミングにも一貫して適用しないと簡単に破られる — 方針を掲げた時点で終わりではなく、個々の実装判断のたびに立ち返って確認する必要がある。(3) `misc-redundant-expression`のような一見些細なclang-tidy警告も、`255.0F / 255.0F`(自己除算)のような「意図せず本当に冗長な式」を実際に検出しており、無視せず都度対処する価値がある。
+
+**次回 (Phase 5b3b):** 置換行(Ctrl+H)配線から着手。`detailed_design.md` §7.1''''を先に読む。`currentMatches`/`currentMatchIndex`は既に`main.cpp`側にローカル状態として存在するため、Replace用の2つ目の子HWNDと既存`core::ReplaceAllCommand`/`search::expandReplacementTemplate`への配線を追加するだけでよく、`FindBar`自体の作り直しは不要。**保留中のPhase 4b8**に戻る選択肢も次セッション開始時にユーザーへ提示すること。**実アプリでのCtrl+F/日本語IME/マッチハイライトの視覚確認がまだの場合はセッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施。
+
 <!-- 次セッションはここに追記 -->

@@ -578,6 +578,17 @@ v2.0 追加: **検索履歴**、**タグジャンプ** (Grep 結果や error out
 - **変更:** `src/app/main.cpp` (状態変数群、Ctrl+F/Ctrl+H/Ctrl+Shift+P/Ctrl+G/Ctrl+P 配線)、`src/render/render_pipeline.{h,cpp}` (setMatchVisuals / drawMatchesOnLine)、`src/core/mode.h` (Mode::GrepResult)、`src/search/include/neomifes/search/search_service.h` (async `findAllAsync`)
 - **新規テスト:** `tests/unit/{ui_find_bar,ui_command_palette,util_fuzzy_matcher,util_tag_jump_parser,search_grep_service}_test.cpp`
 
+### 5.8 実装後の確定事項/変更点 (2026-07-19、Phase 5b3a 完了)
+
+**§5全体はFind bar + コマンドパレット + Grepをまとめて記述していたが、実装は3段階(5b3a/5b3b/5b3c)に分割した。** 本節は§5.1-5.4(Find bar UI基盤)に対応する**Phase 5b3aのみ**が完了した状態を記す。§5.5(Phase 5c、Grep)・コマンドパレット(§5.2後半、Phase 5b3c)・置換行配線(Ctrl+H、Phase 5b3b)は未着手のまま。
+
+- **`ui::FindBar`はsearch::/document::/core::を一切知らない設計(スケッチから変更)。** §5.3の`FindBarState`スケッチは検索状態(`currentQuery`/`currentMatches`/`currentMatchIndex`)をFind bar自身の構造体に持たせる想定だったが、既存`ui::MainWindow`と同じ「Win32機構のみ、上位ドメインを知らない」分離方針を優先し、この状態は`src/app/main.cpp`の`wWinMain`スコープにローカル変数として置いた。Phase 5b2で`core::ReplaceAllCommand`をsearch::から疎結合に保った判断と同じ系統の設計選択(`detailed_design.md` §7.1'''参照)
+- **`MatchVisual`は`match_visual.h`ではなく`render_pipeline.h`に配置(スケッチから変更)。** 既存`CursorVisual`が別ファイルではなく`render_pipeline.h`に直接定義されている実際の配置と一貫性を取るため
+- **CMakeガード解除は単純な`include(Dependencies)`移動では不十分だった。** `cmake/Dependencies.cmake`はRE2/Abseil**と**GoogleTest/benchmarkの両方を含む1ファイルであり、単純に無条件化するとテスト専用依存まで無条件フェッチされてしまうことが実装時に判明。新規`cmake/TestDependencies.cmake`へGoogleTest/benchmarkを分離し、RE2/Abseilのみを含む`Dependencies.cmake`を無条件`include()`化した。`NEOMIFES_BUILD_TESTS=OFF`でも`NeoMIFES.exe`単独ビルドが成立し、GoogleTest/benchmarkはフェッチされないことを確認済み
+- **IME安全性・WM_SYSKEYDOWN・デバウンスタイマーのKillTimerは、設計時のPlan agentレビューで指摘され実装に組み込んだ必須修正。** これらはFind bar UIの本質的な正しさに関わる項目で、スコープ外への先送りは行わなかった(§5.1「日本語検索が最初から自然に動く」という目標に直結するため)
+- **意図的にスコープ外とした項目 (Phase 5b3b/5b3c/5cへ延期):** 置換行(Ctrl+H)配線、コマンドパレット(Ctrl+Shift+P)、Case/Word/Regexのクリック可能なトグルボタン(Alt+C/W/Rキーバインドのみ実装)、検索履歴、タグジャンプ、Grep。UIの消費者が無い状態でこれらを作るのはCLAUDE.mdルール3の推測実装にあたるため
+- **既知の未解決コスト:** `drawMatchesOnLine()`の可視行ごと線形走査(`docs/issues/match_highlight_linear_scan_scaling.md`に記録)
+
 ---
 
 ## 6. Phase 6 — エンコーディング + 自動判定 + 10GB mmap + 遅延デコード

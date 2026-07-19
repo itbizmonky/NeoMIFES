@@ -1,4 +1,5 @@
 add_library(neomifes_ui STATIC
+    src/find_bar.cpp
     src/main_window.cpp
 )
 add_library(neomifes::ui ALIAS neomifes_ui)
@@ -13,8 +14,14 @@ target_link_libraries(neomifes_ui
         neomifes::platform
     PRIVATE
         neomifes::compile_options
+        # find_bar.cpp: wchar_cast.h (char16_t/wchar_t boundary conversion
+        # for the edit control's text, Phase 5b3a).
+        neomifes::util
         user32
         gdi32
+        # find_bar.cpp: SetWindowSubclass/DefSubclassProc (Phase 5b3a, this
+        # project's first child HWND).
+        comctl32
 )
 
 set_target_properties(neomifes_ui PROPERTIES
