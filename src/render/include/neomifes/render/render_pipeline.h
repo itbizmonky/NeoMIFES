@@ -120,6 +120,17 @@ public:
         m_matchVisuals = std::move(matches);
     }
 
+    // The full set of bookmarked lines to mark in the gutter (Phase 4b8c).
+    // Same non-owning shape as setMatchVisuals() above - the app layer
+    // rebuilds and passes the whole vector after every toggle. Sorted
+    // ascending, same convention as core::BookmarkManager::lines() (this
+    // class deliberately does not depend on neomifes::core - it takes a
+    // plain LineNumber vector, same "independent, concurrently runnable
+    // engines" reasoning as CursorVisual/MatchVisual above).
+    void setBookmarkedLines(std::vector<document::LineNumber> lines) noexcept {
+        m_bookmarkedLines = std::move(lines);
+    }
+
     // Converts a client-area point (device pixels, e.g. from
     // WM_LBUTTONDOWN's lParam) to the nearest document::TextPos, using the
     // same TextLayoutCache/DPI/line-height state drawVisibleLines() already
@@ -158,6 +169,9 @@ private:
         // highlight-only change (new search, F3 navigation) must not be
         // coarse-frame-skipped either.
         std::vector<MatchVisual> matchVisuals;
+        // Same rationale, Phase 4b8c: a bookmark toggle alone (document/
+        // topLine/size unchanged) must not be coarse-frame-skipped either.
+        std::vector<document::LineNumber> bookmarkedLines;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -169,6 +183,7 @@ private:
     [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept;
+    [[nodiscard]] RenderExpected<void> ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
 
@@ -221,6 +236,13 @@ private:
     // drawMatchesOnLine() once per overlapping match range (Phase 5b3a).
     void drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                          std::uint32_t startColumn, std::uint32_t endColumn, bool isCurrent) noexcept;
+    // Fills a small bookmark dot in the gutter strip ([0, kGutterWidthDips))
+    // at vertical offset `y` if `line` is bookmarked (Phase 4b8c). Called
+    // from drawVisibleLines() once per visible line - deliberately minimal
+    // (no line numbers, no folding arrows - see bookmark_manager.h's file
+    // header for why the full "Line Gutter" feature stays a separate,
+    // already-deferred future phase).
+    void drawGutterOnLine(ID2D1DeviceContext6& dc, float y, document::LineNumber line) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -239,6 +261,7 @@ private:
     document::LineNumber                              m_topLine               = 0;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
+    std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush/m_selectionBrush are bound to the device
@@ -253,6 +276,9 @@ private:
     // m_selectionBrush above.
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_matchBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_currentMatchBrush;
+    // Phase 4b8c: the bookmark gutter dot's brush, same device-bound reset
+    // lifecycle as the brushes above.
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_bookmarkBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
 
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not

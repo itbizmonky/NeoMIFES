@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "neomifes/app/editor_input.h"
+#include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
 #include "neomifes/core/replace_all_command.h"
@@ -79,6 +80,7 @@ namespace {
 
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
+using neomifes::core::BookmarkManager;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::Cursor;
 using neomifes::core::PerCursorEdit;
@@ -527,6 +529,37 @@ bool handleGotoLineKey(UINT vkCode, bool ctrlDown, GotoLineBar& gotoLineBar) {
     return false;
 }
 
+// Ctrl+F2 (toggle a bookmark on the current line) / F2 (jump to next
+// bookmark) / Shift+F2 (jump to previous), Phase 4b8c. Mirrors
+// handleGotoLineKey()'s single-purpose shape. `bookmarks.next()`/
+// `previous()` already wrap around and return the nearest bookmark
+// *strictly* after/before the current line, so re-pressing F2 while
+// sitting on a bookmarked line correctly cycles to the next one rather than
+// staying put.
+bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, BookmarkManager& bookmarks,
+                       SelectionModel& selectionModel, Viewport& viewport, const Document& document,
+                       RenderPipeline& renderPipeline) {
+    if (vkCode != VK_F2) {
+        return false;
+    }
+    const auto currentLine = document.offsetToLine(selectionModel.primaryCursor().position);
+    if (ctrlDown) {
+        bookmarks.toggle(currentLine);
+        renderPipeline.setBookmarkedLines(
+            std::vector<neomifes::document::LineNumber>(bookmarks.lines().begin(), bookmarks.lines().end()));
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+    const auto target = shiftDown ? bookmarks.previous(currentLine) : bookmarks.next(currentLine);
+    if (target) {
+        const auto pos = document.lineToOffset(*target);
+        selectionModel.moveAllTo(pos);
+        viewport.ensureVisible(pos, document);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    }
+    return true;
+}
+
 // Enter while the replace edit has focus (FindBarConfig::onReplaceCurrent,
 // Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
 // `replacementTemplate` expanded against the match's capture groups, then
@@ -713,11 +746,16 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                         Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
                         FindBar& findBar, FindReplaceState& findReplaceState,
-                        CommandPalette& commandPalette, GotoLineBar& gotoLineBar) {
+                        CommandPalette& commandPalette, GotoLineBar& gotoLineBar,
+                        BookmarkManager& bookmarks) {
     if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
         return;
     }
     if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
+        return;
+    }
+    if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, bookmarks, selectionModel, viewport,
+                          document, renderPipeline)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
@@ -890,7 +928,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
                     std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
                     FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
-                    GotoLineBar& gotoLineBar) {
+                    GotoLineBar& gotoLineBar, BookmarkManager& bookmarks) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette,
                           &gotoLineBar](HWND hwnd) {
@@ -944,11 +982,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPalette.handleCommand(wParam, lParam);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState, &commandPalette, &gotoLineBar](HWND hwnd, UINT vkCode,
-                                                                      bool shiftDown, bool ctrlDown) {
+                     &findReplaceState, &commandPalette, &gotoLineBar,
+                     &bookmarks](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
-                          gotoLineBar);
+                          gotoLineBar, bookmarks);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                      HWND hwnd, wchar_t ch) {
@@ -1099,6 +1137,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Ctrl+G goto-line/column overlay (Phase 4b8b) - simplest of the three
     // overlays (single WC_EDIT, no debounce/listbox).
     GotoLineBar gotoLineBar;
+    // Line bookmarks (Phase 4b8c, Ctrl+F2/F2/Shift+F2) - headless, no Win32
+    // overlay of its own; RenderPipeline::setBookmarkedLines() is pushed
+    // from handleBookmarkKey() whenever the set changes.
+    BookmarkManager bookmarks;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -1115,7 +1157,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette, gotoLineBar);
+                       commandPalette, gotoLineBar, bookmarks);
     }
 
     if (!window.create(hInstance, cfg)) {

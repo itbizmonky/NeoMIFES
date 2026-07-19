@@ -25,6 +25,15 @@ using document::TextRange;
 // since both fetch line layouts through the same TextLayoutCache.
 constexpr float kMaxLayoutWidthDips  = 65536.0F;
 constexpr float kMaxLayoutHeightDips = 65536.0F;
+
+// Phase 4b8c: minimal bookmark-only gutter width. Every x-coordinate
+// consumer in this file (DrawTextLayout's origin, hitTest()'s xDip, and the
+// three draw*OnLine() rect-builders below) must agree on this offset - see
+// drawCaretOnLine()/drawSelectionOnLine()/drawMatchOnLine()'s comments for
+// why HitTestTextPosition()'s layout-local coordinates do not automatically
+// inherit DrawTextLayout()'s origin shift.
+constexpr float kGutterWidthDips  = 24.0F;
+constexpr float kBookmarkDotSizeDips = 8.0F;
 }  // namespace
 
 RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
@@ -79,6 +88,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .dpiScale        = m_dpiScale,
         .cursorVisuals   = m_cursorVisuals,
         .matchVisuals    = m_matchVisuals,
+        .bookmarkedLines = m_bookmarkedLines,
     };
 }
 
@@ -125,6 +135,7 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_selectionBrush.Reset();
     m_matchBrush.Reset();
     m_currentMatchBrush.Reset();
+    m_bookmarkBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -265,6 +276,19 @@ RenderExpected<void> RenderPipeline::ensureMatchBrushes(ID2D1DeviceContext6& dc)
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_bookmarkBrush) {
+        // Solid red (RGB 220,20,20) - the conventional bookmark/marker dot
+        // color (VSCode's own bookmark extensions, MIFES's marker column).
+        constexpr D2D1_COLOR_F kBookmarkColor = {220.0F / 255.0F, 20.0F / 255.0F, 20.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kBookmarkColor, m_bookmarkBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
@@ -315,8 +339,9 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
             // the glyphs.
             drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
             drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
-            dc.DrawTextLayout(D2D1::Point2F(0.0F, y), *layoutResult, m_textBrush.Get());
+            dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, y), *layoutResult, m_textBrush.Get());
             drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
+            drawGutterOnLine(dc, y, line);
         }
         // A layout-creation failure for a single line is no worse than the
         // pre-Phase-3c behavior of DrawText() silently failing per-call - it
@@ -398,8 +423,15 @@ void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
         return;
     }
     constexpr float kCaretWidthDips = 1.5F;
-    const D2D1_RECT_F caretRect =
-        D2D1::RectF(caretX, y, caretX + kCaretWidthDips, y + m_lineHeightDips);
+    // HitTestTextPosition() returns coordinates local to `layout`'s own
+    // origin (0,0), independent of whatever origin DrawTextLayout() is
+    // called with - kGutterWidthDips must be added explicitly here to line
+    // up with the glyphs, which DO get shifted by DrawTextLayout()'s origin
+    // parameter (Phase 4b8c, confirmed by reading the actual D2D/DWrite
+    // call sequence - see drawVisibleLines()).
+    const D2D1_RECT_F caretRect = D2D1::RectF(kGutterWidthDips + caretX, y,
+                                              kGutterWidthDips + caretX + kCaretWidthDips,
+                                              y + m_lineHeightDips);
     dc.FillRectangle(caretRect, m_textBrush.Get());
 }
 
@@ -422,7 +454,10 @@ void RenderPipeline::drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLay
     if (FAILED(hr)) {
         return;
     }
-    const D2D1_RECT_F selectionRect = D2D1::RectF(startX, y, endX, y + m_lineHeightDips);
+    // See drawCaretOnLine()'s comment - layout-local coordinates need the
+    // gutter offset added explicitly (Phase 4b8c).
+    const D2D1_RECT_F selectionRect = D2D1::RectF(kGutterWidthDips + startX, y, kGutterWidthDips + endX,
+                                                  y + m_lineHeightDips);
     dc.FillRectangle(selectionRect, m_selectionBrush.Get());
 }
 
@@ -447,8 +482,25 @@ void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     if (FAILED(hr)) {
         return;
     }
-    const D2D1_RECT_F matchRect = D2D1::RectF(startX, y, endX, y + m_lineHeightDips);
+    // See drawCaretOnLine()'s comment - layout-local coordinates need the
+    // gutter offset added explicitly (Phase 4b8c).
+    const D2D1_RECT_F matchRect =
+        D2D1::RectF(kGutterWidthDips + startX, y, kGutterWidthDips + endX, y + m_lineHeightDips);
     dc.FillRectangle(matchRect, brush);
+}
+
+void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumber line) noexcept {
+    if (!m_bookmarkBrush) {
+        return;
+    }
+    if (std::ranges::find(m_bookmarkedLines, line) == m_bookmarkedLines.end()) {
+        return;
+    }
+    const float centerX = kGutterWidthDips / 2.0F;
+    const float centerY = y + (m_lineHeightDips / 2.0F);
+    const float radius  = kBookmarkDotSizeDips / 2.0F;
+    const D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(centerX, centerY), radius, radius);
+    dc.FillEllipse(dot, m_bookmarkBrush.Get());
 }
 
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
@@ -461,7 +513,10 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
         return std::nullopt;
     }
 
-    const float xDip = static_cast<float>(xPx) / m_dpiScale;
+    // Clicks within the gutter strip itself clamp to column 0 of that line -
+    // no separate "toggle bookmark on gutter click" interaction exists yet
+    // (Phase 4b8c, deliberately deferred).
+    const float xDip = std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - kGutterWidthDips);
     const float yDip = static_cast<float>(yPx) / m_dpiScale;
 
     const LineNumber startLine =
@@ -550,6 +605,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!matchBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return matchBrushResult;
+    }
+    auto bookmarkBrushResult = ensureBookmarkBrush(*dc);
+    if (!bookmarkBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return bookmarkBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

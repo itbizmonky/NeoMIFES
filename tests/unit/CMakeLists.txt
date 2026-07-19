@@ -18,6 +18,7 @@ add_executable(neomifes_unit_tests
     render_viewport_math_test.cpp
     render_text_layout_cache_test.cpp
     core_selection_model_test.cpp
+    core_bookmark_manager_test.cpp
     core_edit_commands_test.cpp
     core_replace_all_command_test.cpp
     core_undo_stack_test.cpp

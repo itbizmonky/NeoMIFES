@@ -1,4 +1,5 @@
 add_library(neomifes_core STATIC
+    src/bookmark_manager.cpp
     src/command_dispatcher.cpp
     src/cumulative_shift_edit.cpp
     src/edit_commands.cpp
