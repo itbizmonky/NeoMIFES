@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,6 +51,8 @@
 
 #include "neomifes/app/editor_input.h"
 #include "neomifes/core/command_dispatcher.h"
+#include "neomifes/core/edit_commands.h"
+#include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/document.h"
@@ -59,6 +62,7 @@
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
 #include "neomifes/render/render_pipeline.h"
+#include "neomifes/search/replacement.h"
 #include "neomifes/search/search_service.h"
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/find_navigation.h"
@@ -73,6 +77,9 @@ using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::Cursor;
+using neomifes::core::PerCursorEdit;
+using neomifes::core::ReplaceAllCommand;
+using neomifes::core::ReplaceRangeCommand;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
@@ -84,6 +91,7 @@ using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
 using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
+using neomifes::search::expandReplacementTemplate;
 using neomifes::search::Match;
 using neomifes::search::Query;
 using neomifes::search::SearchService;
@@ -363,55 +371,81 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// Rebuilds RenderPipeline's match highlight set from `matches`, marking
-// index `currentMatchIndex` as the "active" one (Phase 5b3a). Pulled out of
-// runFindQuery()/navigateToMatch() since both need to do this identically.
-void syncMatchVisuals(const std::vector<Match>& matches, std::size_t currentMatchIndex,
-                      RenderPipeline& renderPipeline) {
+// Bundles the Find/Replace feature's session-lifetime state (Phase 5b3b) -
+// replaces 3 separate reference parameters (currentQuery didn't exist
+// before; currentMatches/currentMatchIndex were threaded individually) that
+// had pushed wireNormalMode to 12 parameters. currentQuery is new: it is
+// needed so replaceCurrentMatch() can re-run the identical search after a
+// document mutation shifts offsets (previously each search's Query was
+// discarded immediately after SearchService::findAll()).
+struct FindReplaceState {
+    Query               currentQuery;
+    std::vector<Match>  currentMatches;
+    std::size_t          currentMatchIndex = 0;
+};
+
+// Rebuilds RenderPipeline's match highlight set from `state.currentMatches`,
+// marking `state.currentMatchIndex` as the "active" one (Phase 5b3a).
+// Pulled out of runFindQuery()/navigateToMatch() since both need to do this
+// identically.
+void syncMatchVisuals(const FindReplaceState& state, RenderPipeline& renderPipeline) {
     std::vector<MatchVisual> visuals;
-    visuals.reserve(matches.size());
-    for (std::size_t i = 0; i < matches.size(); ++i) {
-        visuals.push_back(MatchVisual{.range = matches[i].range, .isCurrent = (i == currentMatchIndex)});
+    visuals.reserve(state.currentMatches.size());
+    for (std::size_t i = 0; i < state.currentMatches.size(); ++i) {
+        visuals.push_back(MatchVisual{.range     = state.currentMatches[i].range,
+                                      .isCurrent = (i == state.currentMatchIndex)});
     }
     renderPipeline.setMatchVisuals(std::move(visuals));
 }
 
-// Moves the selection/viewport to `matches[currentMatchIndex]` and pushes
-// the resulting state to FindBar/RenderPipeline (Phase 5b3a). Shared by
-// runFindQuery() (jump to the first match after a new search) and
+// Moves the selection/viewport to `state.currentMatches[state.currentMatchIndex]`
+// and pushes the resulting state to FindBar/RenderPipeline (Phase 5b3a).
+// Shared by runFindQuery() (jump to the first match after a new search) and
 // navigateToMatch() (F3/Shift+F3) - both end up wanting exactly this.
-void jumpToMatch(HWND hwnd, const std::vector<Match>& matches, std::size_t currentMatchIndex,
-                 SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                 RenderPipeline& renderPipeline, FindBar& findBar) {
-    const Match& match = matches[currentMatchIndex];
+void jumpToMatch(HWND hwnd, const FindReplaceState& state, SelectionModel& selectionModel,
+                 Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
+                 FindBar& findBar) {
+    const Match& match = state.currentMatches[state.currentMatchIndex];
     selectionModel.setCursors(
         {Cursor{.position = match.range.end, .anchor = match.range.start, .isPrimary = true}});
     viewport.ensureVisible(match.range.start, document);
-    findBar.setMatchCount(currentMatchIndex, matches.size());
-    syncMatchVisuals(matches, currentMatchIndex, renderPipeline);
+    findBar.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
+    syncMatchVisuals(state, renderPipeline);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+}
+
+// Runs SearchService::findAll() and updates `state.currentQuery`/
+// `state.currentMatches`/`state.currentMatchIndex` (reset to 0) plus
+// RenderPipeline's highlight set - but does NOT move the
+// selection/viewport (Phase 5b3b: extracted from runFindQuery()'s previous
+// body, which always jumped to match #0. replaceCurrentMatch() needs the
+// search-and-update-state half without the jump, since it wants to land on
+// "the match nearest the one just replaced", not unconditionally #0).
+void refreshMatches(const Query& query, const Document& document, FindReplaceState& state,
+                    RenderPipeline& renderPipeline, FindBar& findBar) {
+    state.currentQuery      = query;
+    state.currentMatches    = SearchService::findAll(document, query);
+    state.currentMatchIndex = 0;
+    findBar.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
+    syncMatchVisuals(state, renderPipeline);
 }
 
 // Runs SearchService::findAll() for FindBar's onQueryChanged callback and
 // jumps to the first match, if any (Phase 5b3a). An empty/no-match result
 // clears all highlighting and shows FindBar's "no results" state.
 void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord, bool regex, HWND hwnd,
-                  const Document& document, std::vector<Match>& currentMatches,
-                  std::size_t& currentMatchIndex, SelectionModel& selectionModel, Viewport& viewport,
-                  RenderPipeline& renderPipeline, FindBar& findBar) {
-    currentMatches    = SearchService::findAll(document, Query{.pattern       = std::u16string(query),
-                                                               .caseSensitive = caseSensitive,
-                                                               .wholeWord     = wholeWord,
-                                                               .regex         = regex});
-    currentMatchIndex = 0;
-    findBar.setMatchCount(currentMatchIndex, currentMatches.size());
-    syncMatchVisuals(currentMatches, currentMatchIndex, renderPipeline);
-    if (currentMatches.empty()) {
+                  const Document& document, FindReplaceState& state, SelectionModel& selectionModel,
+                  Viewport& viewport, RenderPipeline& renderPipeline, FindBar& findBar) {
+    refreshMatches(Query{.pattern       = std::u16string(query),
+                        .caseSensitive = caseSensitive,
+                        .wholeWord     = wholeWord,
+                        .regex         = regex},
+                  document, state, renderPipeline, findBar);
+    if (state.currentMatches.empty()) {
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
-    jumpToMatch(hwnd, currentMatches, currentMatchIndex, selectionModel, viewport, document,
-               renderPipeline, findBar);
+    jumpToMatch(hwnd, state, selectionModel, viewport, document, renderPipeline, findBar);
 }
 
 // F3 (forward=true) / Shift+F3 (forward=false), wrapping around - shared by
@@ -419,26 +453,24 @@ void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord,
 // focus) and the F3/Shift+F3 branch of handleFindBarKey() below (fired
 // while the document editing area has focus instead) - same "one shared
 // helper, two call sites" pattern as dispatchMouseDown()/handleClipboardKey().
-void navigateToMatch(bool forward, HWND hwnd, const std::vector<Match>& matches,
-                     std::size_t& currentMatchIndex, SelectionModel& selectionModel,
+void navigateToMatch(bool forward, HWND hwnd, FindReplaceState& state, SelectionModel& selectionModel,
                      Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
                      FindBar& findBar) {
-    if (matches.empty()) {
+    if (state.currentMatches.empty()) {
         return;
     }
-    currentMatchIndex = forward ? neomifes::ui::nextMatchIndex(currentMatchIndex, matches.size())
-                                 : neomifes::ui::previousMatchIndex(currentMatchIndex, matches.size());
-    jumpToMatch(hwnd, matches, currentMatchIndex, selectionModel, viewport, document, renderPipeline,
-               findBar);
+    state.currentMatchIndex = forward
+        ? neomifes::ui::nextMatchIndex(state.currentMatchIndex, state.currentMatches.size())
+        : neomifes::ui::previousMatchIndex(state.currentMatchIndex, state.currentMatches.size());
+    jumpToMatch(hwnd, state, selectionModel, viewport, document, renderPipeline, findBar);
 }
 
 // Escape while the find edit has focus (FindBarConfig::onClosed) - hides
 // the bar, clears match highlighting, and restores focus to the document
 // editing area (FindBar itself does not know where that is).
-void closeFindBar(HWND hwnd, FindBar& findBar, std::vector<Match>& currentMatches,
-                  RenderPipeline& renderPipeline) {
+void closeFindBar(HWND hwnd, FindBar& findBar, FindReplaceState& state, RenderPipeline& renderPipeline) {
     findBar.hide();
-    currentMatches.clear();
+    state.currentMatches.clear();
     renderPipeline.setMatchVisuals({});
     ::SetFocus(hwnd);
     ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -450,19 +482,84 @@ void closeFindBar(HWND hwnd, FindBar& findBar, std::vector<Match>& currentMatche
 // the find edit itself has focus). Returns true if the key was one this
 // handles, mirroring handleClipboardKey()'s ClipboardKeyResult.handled shape.
 bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
-                      std::vector<Match>& currentMatches, std::size_t& currentMatchIndex,
-                      SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                      RenderPipeline& renderPipeline) {
+                      FindReplaceState& state, SelectionModel& selectionModel, Viewport& viewport,
+                      const Document& document, RenderPipeline& renderPipeline) {
     if (ctrlDown && vkCode == 'F') {
         findBar.show();
         return true;
     }
     if (vkCode == VK_F3) {
-        navigateToMatch(!shiftDown, hwnd, currentMatches, currentMatchIndex, selectionModel, viewport,
-                        document, renderPipeline, findBar);
+        navigateToMatch(!shiftDown, hwnd, state, selectionModel, viewport, document, renderPipeline,
+                        findBar);
         return true;
     }
     return false;
+}
+
+// Enter while the replace edit has focus (FindBarConfig::onReplaceCurrent,
+// Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
+// `replacementTemplate` expanded against the match's capture groups, then
+// re-runs state.currentQuery and jumps to whichever match now occupies the
+// same index (clamped, since a replace can only ever remove exactly one
+// match, so the count shrinks by at most 1 - see the plan's Context section
+// for the out-of-bounds trace).
+void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, Document& document,
+                         CommandDispatcher& dispatcher, FindReplaceState& state,
+                         SelectionModel& selectionModel, Viewport& viewport,
+                         RenderPipeline& renderPipeline, FindBar& findBar) {
+    if (state.currentMatches.empty()) {
+        return;
+    }
+    const std::size_t replacedIndex = state.currentMatchIndex;
+    const Match&       match         = state.currentMatches[replacedIndex];
+    const std::u16string expanded = expandReplacementTemplate(replacementTemplate, document, match);
+    dispatcher.dispatch(std::make_unique<ReplaceRangeCommand>(match.range, expanded));
+
+    refreshMatches(state.currentQuery, document, state, renderPipeline, findBar);
+    if (state.currentMatches.empty()) {
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        return;
+    }
+    state.currentMatchIndex = std::min(replacedIndex, state.currentMatches.size() - 1);
+    jumpToMatch(hwnd, state, selectionModel, viewport, document, renderPipeline, findBar);
+}
+
+// Ctrl+Enter while the replace edit has focus (FindBarConfig::onReplaceAll,
+// Phase 5b3b) - replaces every current match atomically as one undo step.
+// state.currentMatches is already in ascending document order
+// (SearchService::findAll()'s guarantee - search_service.h), matching
+// applyEditsWithCumulativeShift()'s ordering requirement
+// (cumulative_shift_edit.h) directly, so no re-sort is needed before
+// building the PerCursorEdit vector. Each replacement's capture-group
+// expansion is resolved against the pre-edit document (expandReplacementTemplate()'s
+// contract, replacement.h) before any edit is applied.
+//
+// Does not re-search afterward: match highlighting is simply cleared, same
+// as closeFindBar() - re-matching the just-replaced text against the same
+// query would be confusing (looks like the replace silently didn't work)
+// rather than informative.
+void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Document& document,
+                       CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
+                       FindReplaceState& state, RenderPipeline& renderPipeline, FindBar& findBar) {
+    if (state.currentMatches.empty()) {
+        return;
+    }
+    std::vector<PerCursorEdit> edits;
+    edits.reserve(state.currentMatches.size());
+    for (const Match& match : state.currentMatches) {
+        edits.push_back(PerCursorEdit{.range        = match.range,
+                                      .insertedText = expandReplacementTemplate(replacementTemplate,
+                                                                                document, match)});
+    }
+    const std::vector<Cursor> cursorsBefore(selectionModel.cursors().begin(),
+                                            selectionModel.cursors().end());
+    dispatcher.dispatch(std::make_unique<ReplaceAllCommand>(std::move(edits), cursorsBefore));
+
+    state.currentMatches.clear();
+    state.currentMatchIndex = 0;
+    findBar.setMatchCount(0, 0);
+    renderPipeline.setMatchVisuals({});
+    ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 // Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
@@ -562,10 +659,9 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                         Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
-                        FindBar& findBar, std::vector<Match>& currentMatches,
-                        std::size_t& currentMatchIndex) {
-    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, currentMatches, currentMatchIndex,
-                         selectionModel, viewport, document, renderPipeline)) {
+                        FindBar& findBar, FindReplaceState& findReplaceState) {
+    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
+                         viewport, document, renderPipeline)) {
         return;
     }
     const auto clipboardResult =
@@ -588,29 +684,39 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
 // reason documented above handleKeyDownEvent(). All captured references
 // outlive the returned FindBarConfig (they are wWinMain-scope locals; the
 // config itself is only used immediately, inside findBar.create()).
-FindBarConfig buildFindBarConfig(HWND hwnd, const Document& document, SelectionModel& selectionModel,
-                                 Viewport& viewport, RenderPipeline& renderPipeline, FindBar& findBar,
-                                 std::vector<Match>& currentMatches, std::size_t& currentMatchIndex) {
+FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatcher& dispatcher,
+                                 SelectionModel& selectionModel, Viewport& viewport,
+                                 RenderPipeline& renderPipeline, FindBar& findBar,
+                                 FindReplaceState& findReplaceState) {
     FindBarConfig config{};
-    config.onQueryChanged = [hwnd, &document, &currentMatches, &currentMatchIndex, &selectionModel,
-                             &viewport, &renderPipeline, &findBar](std::u16string_view query,
-                                                                   bool caseSensitive, bool wholeWord,
-                                                                   bool regex) {
-        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, document, currentMatches,
-                    currentMatchIndex, selectionModel, viewport, renderPipeline, findBar);
+    config.onQueryChanged = [hwnd, &document, &findReplaceState, &selectionModel, &viewport,
+                             &renderPipeline, &findBar](std::u16string_view query, bool caseSensitive,
+                                                        bool wholeWord, bool regex) {
+        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, document, findReplaceState,
+                    selectionModel, viewport, renderPipeline, findBar);
     };
-    config.onFindNext = [hwnd, &currentMatches, &currentMatchIndex, &selectionModel, &viewport,
-                         &document, &renderPipeline, &findBar]() {
-        navigateToMatch(true, hwnd, currentMatches, currentMatchIndex, selectionModel, viewport,
-                        document, renderPipeline, findBar);
+    config.onFindNext = [hwnd, &findReplaceState, &selectionModel, &viewport, &document,
+                         &renderPipeline, &findBar]() {
+        navigateToMatch(true, hwnd, findReplaceState, selectionModel, viewport, document,
+                        renderPipeline, findBar);
     };
-    config.onFindPrevious = [hwnd, &currentMatches, &currentMatchIndex, &selectionModel, &viewport,
-                             &document, &renderPipeline, &findBar]() {
-        navigateToMatch(false, hwnd, currentMatches, currentMatchIndex, selectionModel, viewport,
-                        document, renderPipeline, findBar);
+    config.onFindPrevious = [hwnd, &findReplaceState, &selectionModel, &viewport, &document,
+                             &renderPipeline, &findBar]() {
+        navigateToMatch(false, hwnd, findReplaceState, selectionModel, viewport, document,
+                        renderPipeline, findBar);
     };
-    config.onClosed = [hwnd, &findBar, &currentMatches, &renderPipeline]() {
-        closeFindBar(hwnd, findBar, currentMatches, renderPipeline);
+    config.onClosed = [hwnd, &findBar, &findReplaceState, &renderPipeline]() {
+        closeFindBar(hwnd, findBar, findReplaceState, renderPipeline);
+    };
+    config.onReplaceCurrent = [hwnd, &document, &dispatcher, &findReplaceState, &selectionModel,
+                               &viewport, &renderPipeline, &findBar](std::u16string_view replacementText) {
+        replaceCurrentMatch(replacementText, hwnd, document, dispatcher, findReplaceState,
+                           selectionModel, viewport, renderPipeline, findBar);
+    };
+    config.onReplaceAll = [hwnd, &document, &dispatcher, &selectionModel, &findReplaceState,
+                           &renderPipeline, &findBar](std::u16string_view replacementText) {
+        replaceAllMatches(replacementText, hwnd, document, dispatcher, selectionModel, findReplaceState,
+                         renderPipeline, findBar);
     };
     return config;
 }
@@ -623,10 +729,9 @@ FindBarConfig buildFindBarConfig(HWND hwnd, const Document& document, SelectionM
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                    HINSTANCE hInstance, FindBar& findBar, std::vector<Match>& currentMatches,
-                    std::size_t& currentMatchIndex) {
-    cfg.onDeferredInit = [&window, &renderPipeline, &document, hInstance, &findBar, &selectionModel,
-                          &viewport, &currentMatches, &currentMatchIndex](HWND hwnd) {
+                    HINSTANCE hInstance, FindBar& findBar, FindReplaceState& findReplaceState) {
+    cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
+                          &selectionModel, &viewport, &findReplaceState](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -640,8 +745,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             }
         });
         const FindBarConfig findBarConfig =
-            buildFindBarConfig(hwnd, document, selectionModel, viewport, renderPipeline, findBar,
-                               currentMatches, currentMatchIndex);
+            buildFindBarConfig(hwnd, document, dispatcher, selectionModel, viewport, renderPipeline,
+                               findBar, findReplaceState);
         [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
@@ -658,10 +763,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         findBar.handleCommand(wParam, lParam);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &currentMatches, &currentMatchIndex](HWND hwnd, UINT vkCode, bool shiftDown,
-                                                          bool ctrlDown) {
+                     &findReplaceState](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
-                          document, renderPipeline, findBar, currentMatches, currentMatchIndex);
+                          document, renderPipeline, findBar, findReplaceState);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                      HWND hwnd, wchar_t ch) {
@@ -781,13 +885,13 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // added, so a later Alt+Shift+click or Alt+drag can extend that one
     // cursor specifically. Reset to nullopt by any non-Alt click.
     std::optional<neomifes::document::TextPos> altCursorAnchor;
-    // Find bar state (Phase 5b3a) - lives here (not inside FindBar itself)
-    // so FindBar can stay decoupled from neomifes::search, same rationale
-    // as core::ReplaceAllCommand staying decoupled from neomifes::search in
-    // Phase 5b2 (see docs/history/TIMELINE.md's Phase 5b3a entry).
-    FindBar             findBar;
-    std::vector<Match>   currentMatches;
-    std::size_t           currentMatchIndex = 0;
+    // Find bar state (Phase 5b3a, bundled into FindReplaceState in Phase
+    // 5b3b) - lives here (not inside FindBar itself) so FindBar can stay
+    // decoupled from neomifes::search, same rationale as core::ReplaceAllCommand
+    // staying decoupled from neomifes::search in Phase 5b2 (see
+    // docs/history/TIMELINE.md's Phase 5b3a entry).
+    FindBar           findBar;
+    FindReplaceState findReplaceState;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -803,7 +907,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                              syntheticLineCountUsed);
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
-                       altCursorAnchor, hInstance, findBar, currentMatches, currentMatchIndex);
+                       altCursorAnchor, hInstance, findBar, findReplaceState);
     }
 
     if (!window.create(hInstance, cfg)) {

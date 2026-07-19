@@ -1107,9 +1107,55 @@ public:
 
 **CMakeガード解除。** `search::`を`NeoMIFES.exe`へ実際にリンクするため、`cmake/Dependencies.cmake`をRE2/Abseil専用に整理して無条件`include()`化、GoogleTest/benchmarkは新規`cmake/TestDependencies.cmake`へ分離し`NEOMIFES_BUILD_TESTS`ガード内に残した(単純に1ファイルを丸ごとガード解除すると、テスト専用の依存まで無条件フェッチされてしまうため)。`NEOMIFES_BUILD_TESTS=OFF`でも`NeoMIFES.exe`単独ビルドが成立することを確認済み。
 
-**本PRのスコープ外(意図的に延期、Phase 5b3b以降):** 置換行(Ctrl+H)配線、コマンドパレット(Ctrl+Shift+P)、Case/Word/Regexのクリック可能なトグルボタン(Alt+C/W/Rキーバインドのみ実装)、Grep(Phase 5c)。
+**本PRのスコープ外(意図的に延期、Phase 5b3b で置換行を実装、残りは 5b3c 以降):** 置換行(Ctrl+H)配線 → **Phase 5b3b で実装済み(下記 §7.1''''' 参照)**。コマンドパレット(Ctrl+Shift+P)、Case/Word/Regexのクリック可能なトグルボタン(Alt+C/W/Rキーバインドのみ実装)、Grep(Phase 5c)は引き続き未実装。
 
 **既知の未解決コスト:** `drawMatchesOnLine()`は可視行ごとに`m_matchVisuals`全件を線形走査するため、マッチ件数が数千〜数万件規模になると60fps目標に抵触しうる(`docs/issues/match_highlight_linear_scan_scaling.md`に記録、Phase 5c等で大量マッチ経路ができてから再評価)。
+
+### 7.1''''' 置換行UI配線 (Phase 5b3b 実装)
+
+Phase 5b2で実装済みの`core::ReplaceAllCommand`/`search::expandReplacementTemplate`(§7.1'''参照)は、`search::Match` → `core::PerCursorEdit`変換のグルーコードを意図的に書かず、`search::`が実際に`NeoMIFES.exe`へリンクされるタイミング(Phase 5b3a)まで延期していた。本フェーズがそのグルーコードを書く最初の実装。
+
+```cpp
+// src/ui/include/neomifes/ui/find_bar.h (Phase 5b3b 追加分)
+struct FindBarConfig {
+    // ... (onQueryChanged/onFindNext/onFindPrevious/onClosedは5b3aのまま)
+    std::function<void(std::u16string_view replacementText)> onReplaceCurrent;  // Enter (Replace edit)
+    std::function<void(std::u16string_view replacementText)> onReplaceAll;      // Ctrl+Enter (Replace edit)
+};
+
+class FindBar {
+public:
+    // ...
+    void showWithReplace() noexcept;  // Ctrl+H: Find edit + Replace edit を表示、Find editへフォーカス
+};
+```
+
+```cpp
+// src/app/main.cpp (Phase 5b3b 追加分)
+// currentQuery/currentMatches/currentMatchIndexを1つにまとめ、wireNormalMode以下の
+// 呼び出し連鎖への引数を削減(wireNormalModeが12引数に達していたため)。
+struct FindReplaceState {
+    Query               currentQuery;
+    std::vector<Match>  currentMatches;
+    std::size_t          currentMatchIndex = 0;
+};
+
+void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, Document& document,
+                         CommandDispatcher& dispatcher, FindReplaceState& state, /* ... */);
+void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Document& document,
+                       CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
+                       FindReplaceState& state, /* ... */);
+```
+
+**設計上の要点:**
+- **Find edit / Replace edit は同一サブクラスプロシージャを共有。** `FindBar::create()`が2つ目の`WC_EDITW`を生成し、同じ`&FindBar::subclassProc`/`dwRefData=this`で`SetWindowSubclass`する。`handleSubclassMessage`/`handleSubclassKeyDown`が既に受け取っている`HWND hwnd`引数だけで両エディットを区別する(サブクラス登録・メッセージルーティング機構を複製しない)
+- **Tabキーによるフォーカス巡回は自前実装。** 本アプリのメッセージループ(`runMessageLoop()`)は`IsDialogMessageW`を使わない素の`GetMessageW`/`TranslateMessage`/`DispatchMessageW`ループのため、ダイアログなら無料で手に入るTabキー巡回が自動では効かない。`FindBar::cycleFocus(HWND)`が2要素間のトグルとして実装 — 2要素の巡回はA→B/B→Aが同一操作のため、Shift+Tabは意図的に未特別扱い
+- **`replaceCurrentMatch()`のインデックス再取得。** 現在マッチを`core::ReplaceRangeCommand`で置換した後、`state.currentQuery`で再検索(`refreshMatches()`、`runFindQuery()`から検索実行+状態更新部分のみ抽出したヘルパー)し、置換前のインデックスを`std::min(replacedIndex, count-1)`でクランプして次に近いマッチへジャンプ。置換は1件ずつしかマッチ数を減らさないため、クランプで範囲外アクセスは起きない
+- **`replaceAllMatches()`は再検索しない。** `core::ReplaceAllCommand`で全マッチを1回のUndoステップとして一括置換した後、ハイライトを単純にクリアする(`closeFindBar()`と同じ扱い)。置換後のテキストが同じクエリに再マッチして見えると「置換できていない」ように誤解されるため
+- **マッチ順序の安全性。** `search::SearchService::findAll()`は「document order、非重複」を保証し(`search_service.h`)、`core`側の`applyEditsWithCumulativeShift()`(`cumulative_shift_edit.h`)は「ascending, non-overlapping」順を前提とするため、`state.currentMatches`をソートせずそのまま`PerCursorEdit`列に変換して`ReplaceAllCommand`へ渡せる
+- **キャプチャグループ展開は編集前に実施。** `search::expandReplacementTemplate()`はドキュメントへの累積オフセット計算を持たない(§7.1'''の契約どおり)ため、`replaceCurrentMatch()`/`replaceAllMatches()`ともに編集適用前の(まだ変更されていない)ドキュメント状態に対して呼ぶ
+
+**本PRのスコープ外(意図的に延期):** クリックできる「Replace」/「All」ボタン(Case/Word/Regexトグルと同じ簡略化方針、キーバインドのみ)。コマンドパレット(Ctrl+Shift+P、Phase 5b3c)。
 
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |

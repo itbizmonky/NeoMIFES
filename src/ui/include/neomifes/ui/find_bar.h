@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <string>
 #include <string_view>
 
 #include "neomifes/platform/handle_guard.h"
@@ -37,6 +38,13 @@ struct FindBarConfig {
     // restoring focus to the document editing area - FindBar does not know
     // where that is.
     std::function<void()> onClosed;
+    // Enter while the replace edit has focus (Phase 5b3b) - replaces just
+    // the current match. Passes the replace edit's current text verbatim
+    // (a raw template, e.g. containing "$1") - same "push the current text"
+    // shape as onQueryChanged, not a separate pull-style getter.
+    std::function<void(std::u16string_view replacementText)> onReplaceCurrent;
+    // Ctrl+Enter while the replace edit has focus - replaces every match.
+    std::function<void(std::u16string_view replacementText)> onReplaceAll;
 };
 
 class FindBar {
@@ -56,10 +64,18 @@ public:
     // Must be called once, after `parent` exists.
     [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const FindBarConfig& config);
 
-    // Reveals both child HWNDs, focuses the find edit, and selects any
-    // existing query text (standard Ctrl+F convention - re-pressing Ctrl+F
-    // while already focused re-selects rather than doing nothing).
+    // Reveals the find edit + info label, focuses the find edit, and
+    // selects any existing query text (standard Ctrl+F convention -
+    // re-pressing Ctrl+F while already focused re-selects rather than doing
+    // nothing).
     void show() noexcept;
+    // Reveals everything show() does, plus the replace edit (Ctrl+H
+    // convention - Phase 5b3b). Still focuses the find edit, matching
+    // VSCode: the user Tabs to the replace edit rather than starting there.
+    void showWithReplace() noexcept;
+    // Hides every child HWND, including the replace edit if visible, and
+    // resets replace-mode off - the next show()/showWithReplace() call
+    // decides fresh rather than a hidden bar "remembering" replace-mode.
     void hide() noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
 
@@ -82,11 +98,19 @@ private:
     static LRESULT CALLBACK subclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                          UINT_PTR subclassId, DWORD_PTR refData) noexcept;
     LRESULT handleSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
-    // Returns true if `vkCode` was one FindBar handles (caller should
-    // consume the message, i.e. return 0 rather than falling through to
+    // `hwnd` distinguishes which of the two edit controls fired the key -
+    // both are subclassed through the same subclassProc/dwRefData=this
+    // (Phase 5b3b), so Enter/Ctrl+Enter mean "find next"/n-a in the find
+    // edit but "replace current"/"replace all" in the replace edit. Returns
+    // true if the key was one FindBar handles (caller should consume the
+    // message, i.e. return 0 rather than falling through to
     // DefSubclassProc) - false lets ordinary typing/navigation keys reach
     // the stock edit control unchanged.
-    [[nodiscard]] bool handleSubclassKeyDown(UINT vkCode) noexcept;
+    [[nodiscard]] bool handleSubclassKeyDown(HWND hwnd, UINT vkCode) noexcept;
+    // Enter/Ctrl+Enter on the replace edit - split out of
+    // handleSubclassKeyDown()'s VK_RETURN case to stay under clang-tidy's
+    // cognitive-complexity threshold.
+    void handleReplaceReturn(HWND hwnd, bool ctrlDown) noexcept;
     // Alt+C/W/R arrive as WM_SYSKEYDOWN (Alt is a "system key" modifier),
     // never WM_KEYDOWN - see the .cpp for why this needs its own handler.
     void handleSubclassSysKeyDown(UINT vkCode) noexcept;
@@ -94,9 +118,20 @@ private:
     // event, not a burst of typing) and from the debounce WM_TIMER once it
     // fires (which it kills first, so it only ever fires once per burst).
     void fireQueryChanged() noexcept;
+    // Moves focus between the find/replace edits (Phase 5b3b) - only
+    // meaningful while the replace row is visible; a no-op (falls through
+    // to DefSubclassProc, ordinary Tab navigation) otherwise, since there is
+    // nothing to cycle to.
+    void cycleFocus(HWND hwnd) noexcept;
     void ensureFont(float dpiScale) noexcept;
+    // Reads `hwnd`'s current text (WM_GETTEXT) as a u16string - shared by
+    // fireQueryChanged() (find edit) and handleReplaceReturn() (replace
+    // edit), which need the identical GetWindowTextLengthW/GetWindowTextW/
+    // fromWstringView() sequence. static: touches no instance state.
+    [[nodiscard]] static std::u16string readEditText(HWND hwnd);
 
     neomifes::platform::WindowHandle    m_hwndFindEdit;
+    neomifes::platform::WindowHandle    m_hwndReplaceEdit;
     neomifes::platform::WindowHandle    m_hwndInfoLabel;
     neomifes::platform::GdiObjectHandle m_font;
     // Tracks WM_IME_STARTCOMPOSITION/WM_IME_ENDCOMPOSITION so Enter/Escape/F3
@@ -107,6 +142,7 @@ private:
     bool m_caseSensitive = false;
     bool m_wholeWord     = false;
     bool m_regex         = false;
+    bool m_replaceVisible = false;
     FindBarConfig m_config;
 };
 

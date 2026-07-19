@@ -2,7 +2,7 @@
 
 - **起票日:** 2026-07-19 (Phase 5b2 実装時に設計検証で判明、`/code-review` 未実施だが Plan agent によるレビューで指摘)
 - **対象:** [`src/core/src/cumulative_shift_edit.cpp`](../../src/core/src/cumulative_shift_edit.cpp) の `applyEditsWithCumulativeShift()`(`MultiCursorEditCommand`/`ReplaceAllCommand` 共通の適用ループ)
-- **優先度:** 低 (現時点で顕在化する実利用経路が存在しない。Phase 5b3 で Find bar UI から実際に大量マッチの置換が可能になった時点で再評価)
+- **優先度:** 低 (Phase 5b3b (2026-07-19) で Find bar UI から実際にマッチの置換 (Enter/Ctrl+Enter → `replaceCurrentMatch()`/`replaceAllMatches()`, `src/app/main.cpp`) が可能になり、再評価条件は満たされた。ただしベンチマーク実施は本 Issue の完了条件のとおり依然未着手 — 下記「再評価条件成立の記録」参照)
 
 ## 背景
 
@@ -19,8 +19,14 @@
    - `BufferSnapshot` に「連続した range 群を1パスで抽出する」バッチ API を追加(`extract()` を N 回呼ぶ代わりに 1 回のピース走査で全編集分のテキストを取得)
    - Piece Table 側にランダムアクセス用のインデックス(`docs/issues/piece_table_rb_tree.md` / `line_index_o_log_n.md` に近い発想)を持たせる
 
+## 再評価条件成立の記録 (Phase 5b3b, 2026-07-19)
+
+「Phase 5b3 で Find bar UI から実際に大量マッチの置換が可能になった時点」という上記の再評価トリガーは、Phase 5b3b (Ctrl+H 置換行配線) の実装により成立した。`replaceCurrentMatch()`/`replaceAllMatches()` (`src/app/main.cpp`) が `core::ReplaceRangeCommand`/`core::ReplaceAllCommand` 経由で実際に UI から到達可能になっている。
+
+**ただし本セッションではベンチマーク自体は実施していない** (計画のスコープ外、下記完了条件は未消化のまま)。次に大量マッチのテストデータ (数十万件規模) が必要になった際、あるいは性能計測のための別セッションで着手すること。
+
 ## 完了条件
 
-- [ ] Phase 5b3 (Find bar UI) 実装後、`replace_all_bench.cpp` で 10万〜100万マッチ規模の実測値を記録
+- [ ] `replace_all_bench.cpp` で 10万〜100万マッチ規模の実測値を記録 (Find bar UI からの到達経路は Phase 5b3b で確立済み、着手可能)
 - [ ] 実測が `master_roadmap.md` §4.4 の目標 (≤5秒) を満たさない場合、上記候補のいずれかで対応し、ベンチマークで改善を実証
 - [ ] 目標を満たす場合は「実測により許容範囲内と確認」の記録を残してこの Issue をクローズ

@@ -944,4 +944,40 @@
 
 **次回 (Phase 5b3b):** 置換行(Ctrl+H)配線から着手。`detailed_design.md` §7.1''''を先に読む。`currentMatches`/`currentMatchIndex`は既に`main.cpp`側にローカル状態として存在するため、Replace用の2つ目の子HWNDと既存`core::ReplaceAllCommand`/`search::expandReplacementTemplate`への配線を追加するだけでよく、`FindBar`自体の作り直しは不要。**保留中のPhase 4b8**に戻る選択肢も次セッション開始時にユーザーへ提示すること。**実アプリでのCtrl+F/日本語IME/マッチハイライトの視覚確認がまだの場合はセッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施。
 
+## Session 30 (2026-07-19): Phase 5b3b (置換行配線: Ctrl+H + FindReplaceState統合) 完了
+
+**着手経緯:** 前セッション(Session 29、Phase 5b3a)終了後、ユーザーが「継続して進めよ」と指示。push は行わず(既存運用どおり明示指示待ち)、次サブフェーズ Phase 5b3b(置換行配線)へ進行。設計検証のため`Plan`サブエージェントを呼び出したところセッション制限エラー("You've hit your session limit")で失敗。ユーザーから改めて「継続実行せよ」と指示を受け、このセッション自身が実装した既存コード(`cumulative_shift_edit.h`の「ascending, non-overlapping」順序要求・`search_service.h`の`findAll()`順序保証・`command_dispatcher.cpp`の3行`dispatch()`実装)を直接再読して設計の妥当性を自己検証し、その旨をプランのContext節に明記した上で`ExitPlanMode`によりユーザー承認を得た。
+
+**設計:**
+- `ui::FindBar`に2つ目の`WC_EDITW`(Replace edit)を追加。既存のFind editと**同一の`SetWindowSubclass`コールバック/`dwRefData=this`を共有**し、`handleSubclassMessage`/`handleSubclassKeyDown`が既に受け取っている`HWND hwnd`引数だけで両エディットを区別する設計とした(サブクラス登録・メッセージルーティング機構の複製を避けるため)
+- `FindBarConfig`に`onReplaceCurrent`(Enter)/`onReplaceAll`(Ctrl+Enter)コールバックを追加。既存`onQueryChanged`と同じ「現在のテキストを引数で渡す」形を踏襲
+- Tabキーによるフォーカス巡回(`FindBar::cycleFocus()`)を自前実装。本アプリのメッセージループ(`runMessageLoop()`)は`IsDialogMessageW`を使わない素の`GetMessageW`/`TranslateMessage`/`DispatchMessageW`ループのため、ダイアログなら無料で手に入るTab巡回が自動では効かない。2要素間のトグルのみのため、Shift+Tabは意図的に未特別扱い(A→B/B→Aが同一操作)
+- `main.cpp`: `currentQuery`(新規)/`currentMatches`/`currentMatchIndex`を`FindReplaceState`構造体へ統合。Phase 5b3a完了時点で`wireNormalMode`が12引数に達しており、Session 29の完了記録が「5b3bのreplace行状態が加わったら検討」と明記していたとおりのタイミングで実施
+- `refreshMatches()`を`runFindQuery()`から抽出(検索実行+状態更新のみ、ジャンプ処理を含まない) — `replaceCurrentMatch()`が「置換後、元のインデックスに近いマッチへジャンプ」したいのに対し`runFindQuery()`は常にマッチ#0へジャンプしたいため、ジャンプ処理を呼び出し側の責務として分離
+- `replaceCurrentMatch()`: 現在マッチを`core::ReplaceRangeCommand`で置換 → 同一`state.currentQuery`で再検索 → 置換前インデックスを`std::min(replacedIndex, count-1)`でクランプして次に近いマッチへジャンプ(置換は1件ずつしかマッチ数を減らさないため範囲外アクセスは起きないことを手計算で確認済み)
+- `replaceAllMatches()`: `state.currentMatches`は`SearchService::findAll()`の「document order、非重複」保証によりソート不要のまま`core::PerCursorEdit`列へ変換し、`core::ReplaceAllCommand`で1Undoステップとして一括置換。置換後は再検索せずハイライトを単純にクリア(`closeFindBar()`と同じ扱い) — 置換後テキストが同じクエリに再マッチして見えると「置換できていない」ように誤解されるため
+- 両関数とも`search::expandReplacementTemplate()`によるキャプチャグループ展開は編集適用**前**の(まだ変更されていない)ドキュメント状態に対して行う(Phase 5b2で確認済みの契約どおり)
+
+**実装時に発覚した2件のビルド/静的解析問題と対処:**
+1. `find_bar.h`に`std::u16string`を公開シグネチャ(`readEditText()`の戻り値)として追加したが`<string>`の`#include`漏れ、MSVCが`C2039`で検出 → `<string_view>`の並びに追加して解消
+2. clang-tidyが`readEditText()`を`readability-convert-member-functions-to-static`(`this`を使わないメンバ関数)、`handleSubclassKeyDown()`を`readability-function-cognitive-complexity`(26 > 閾値25)で検出。前者は`static`化、後者はVK_RETURN/Replace edit分岐(4段ネスト)を新規`handleReplaceReturn()`ヘルパーへ抽出して解消。再検証でゼロ警告
+
+**検証:**
+- ローカル **Debug/Release/ubsan(clang-cl) 全green**、全310テストpass(純粋ロジックの新規切り出しなし、テスト数は5b3aと変わらず)
+- clang-tidy: `find_bar.h`/`find_bar.cpp`/`main.cpp`を個別チェック、上記2件を検出・修正後ゼロ警告
+- 実アプリを起動し3秒間クラッシュしないことを確認(基本的な起動安定性のスモークテストのみ)。**Ctrl+H操作・Replace edit入力・Enter/Ctrl+Enter置換・Tab巡回の視覚的動作確認は、この環境にWin32 GUI自動化手段が無いため未実施 — 次セッション冒頭でユーザーに依頼すること(Phase 5b3aから持ち越しのCtrl+F/日本語IME視覚確認と合わせて)**
+
+**意図的にスコープ外とした項目 (Phase 5b3cへ延期):**
+- コマンドパレット(Ctrl+Shift+P)、クリックできるReplace/Allボタン(Case/Word/Regexトグルと同じ簡略化方針、キーバインドのみ実装) — UIの消費者が無い状態でこれらを作るのはCLAUDE.mdルール3の推測実装にあたるため
+
+**ドキュメント同期:**
+- `docs/design/detailed_design.md` §7に新規§7.1'''''(Phase 5b3b実装リファレンス)追加
+- `docs/design/master_roadmap.md` §5.8を「Phase 5b3a・5b3b 完了」に更新、5b3b固有の確定事項を追記
+- `docs/handoff/RESUME_HERE.md`に新規§3.20(完了記録)追加、§1状態表・§6推奨プロンプトをPhase 5b3c向けに更新
+- `docs/issues/replace_all_buffer_snapshot_extract_scaling.md` — 「Phase 5b3で大量マッチ置換のUI導線ができたら再評価」の条件が本セッションで満たされたことを追記(ベンチマーク実施は依然スコープ外)
+
+**教訓:** (1) Plan agentのようなサブエージェントがセッション制限等で利用不能になった場合でも、設計の正しさを裏付ける根拠(本件では2つのヘッダファイルのコメントに明記された契約)が既存コード自身に残っていれば、それを直接再読することで同水準の検証を代替でき、かつその代替の経緯を計画文書に明記することで透明性を保てる。(2) 同一のサブクラスプロシージャを複数のHWNDで共有する設計は、区別に必要な情報(`HWND hwnd`引数)が既に渡されている場合、新規インフラを追加せずに済む — Phase 5b3aで「`handleSubclassMessage`は`hwnd`を受け取る」という選択をしていたことが、本フェーズでの拡張コストを下げた。(3) 関数のパラメータ数増加は「次のフェーズで検討」と先送りにした場合、実際にそのフェーズで着手する際に必ず立ち返って実施すべき負債であり、Session 29の完了記録に残した見込みどおりのタイミングで解消できたことは、セッション終了時ドキュメント同期の効用の一例。
+
+**次回 (Phase 5b3c):** コマンドパレット(Ctrl+Shift+P)から着手。`master_roadmap.md` §5.2後半(元スケッチ)を先に読む。コマンドパレットは完全に独立したUI表面のため、Phase 5b3aで確立したWC_EDIT+サブクラス化パターンを再利用しつつ新規クラスとして設計する(`FindBar`への機能追加ではない)。**保留中のPhase 4b8**に戻る選択肢も次セッション開始時にユーザーへ提示すること。**実アプリでのCtrl+F/Ctrl+H/日本語IME/マッチハイライトの視覚確認がまだの場合はセッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施。
+
 <!-- 次セッションはここに追記 -->
