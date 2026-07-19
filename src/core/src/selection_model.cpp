@@ -262,6 +262,33 @@ void SelectionModel::setCursors(std::vector<Cursor> cursors) {
     mergeOverlapping();
 }
 
+void SelectionModel::setRectangularSelection(document::TextPos anchor, document::TextPos active,
+                                             const document::Document& doc) {
+    const document::LineNumber anchorLine = doc.offsetToLine(anchor);
+    const document::LineNumber activeLine = doc.offsetToLine(active);
+    const document::TextPos    anchorCol  = anchor - doc.lineToOffset(anchorLine);
+    const document::TextPos    activeCol  = active - doc.lineToOffset(activeLine);
+    const document::LineNumber startLine  = std::min(anchorLine, activeLine);
+    const document::LineNumber endLine    = std::max(anchorLine, activeLine);
+
+    std::vector<Cursor> cursors;
+    cursors.reserve(endLine - startLine + 1);
+    for (document::LineNumber line = startLine; line <= endLine; ++line) {
+        const document::TextPos lineStart  = doc.lineToOffset(line);
+        const document::TextPos lineLength = lineContentEnd(doc, line) - lineStart;
+        // Independently clamped, never swapped by min/max - anchorCol always
+        // feeds Cursor::anchor and activeCol always feeds Cursor::position,
+        // matching the rest of this codebase's convention that a drag only
+        // ever moves `position`, leaving `anchor` fixed.
+        const document::TextPos rowAnchorCol = std::min(anchorCol, lineLength);
+        const document::TextPos rowActiveCol = std::min(activeCol, lineLength);
+        cursors.push_back(Cursor{.position  = lineStart + rowActiveCol,
+                                 .anchor    = lineStart + rowAnchorCol,
+                                 .isPrimary = (line == activeLine)});
+    }
+    setCursors(std::move(cursors));
+}
+
 void SelectionModel::selectWordAt(document::TextPos pos, const document::Document& doc) {
     const document::LineNumber line      = doc.offsetToLine(pos);
     const document::TextPos    lineStart = doc.lineToOffset(line);

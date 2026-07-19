@@ -493,4 +493,100 @@ TEST(SelectionModelTest, MoveCursorMatchingIsNoOpWhenNoAnchorMatches) {
     EXPECT_EQ(model.cursors()[1].position, 6U);
 }
 
+// "abcde" (0-4) '\n'(5) "fg" (6-7) '\n'(8) "hijkl" (9-13). Line 1 ("fg") is
+// deliberately shorter than the other two, for clamping tests below.
+Document threeLineDoc() {
+    Document doc;
+    doc.insertText(0, u"abcde\nfg\nhijkl");
+    return doc;
+}
+
+TEST(SelectionModelTest, SetRectangularSelectionCreatesOneCursorPerLine) {
+    const Document doc = threeLineDoc();
+    SelectionModel model(0);
+
+    model.setRectangularSelection(/*anchor=*/1, /*active=*/12, doc);  // line0 col1 -> line2 col3
+
+    ASSERT_EQ(model.cursors().size(), 3U);
+    EXPECT_EQ(model.cursors()[0].anchor, 1U);
+    EXPECT_EQ(model.cursors()[0].position, 3U);
+    EXPECT_EQ(model.cursors()[2].anchor, 10U);
+    EXPECT_EQ(model.cursors()[2].position, 12U);
+}
+
+TEST(SelectionModelTest, SetRectangularSelectionClampsColumnToShortLineLength) {
+    const Document doc = threeLineDoc();
+    SelectionModel model(0);
+
+    model.setRectangularSelection(/*anchor=*/1, /*active=*/12, doc);  // col range [1,3), line1 "fg" has length 2
+
+    ASSERT_EQ(model.cursors().size(), 3U);
+    const Cursor& middleRow = model.cursors()[1];
+    EXPECT_EQ(middleRow.anchor, 7U);    // lineStart(6) + min(1,2)
+    EXPECT_EQ(middleRow.position, 8U);  // lineStart(6) + min(3,2) - clamped, not 9
+}
+
+TEST(SelectionModelTest, SetRectangularSelectionPositionTracksActiveEndRegardlessOfDragDirection) {
+    const Document doc = threeLineDoc();
+
+    SelectionModel downRight(0);
+    downRight.setRectangularSelection(/*anchor=*/1, /*active=*/12, doc);  // line0->line2, col1->col3
+
+    SelectionModel upLeft(0);
+    upLeft.setRectangularSelection(/*anchor=*/12, /*active=*/1, doc);  // reversed: line2->line0, col3->col1
+
+    // Same set of rows/columns covered, but which field (anchor vs position)
+    // holds which column must flip with the reversed call - this is the
+    // round-1 regression case (position must never jump back to the
+    // anchor's column mid-drag).
+    ASSERT_EQ(downRight.cursors().size(), 3U);
+    ASSERT_EQ(upLeft.cursors().size(), 3U);
+    EXPECT_EQ(downRight.cursors()[0].anchor, 1U);
+    EXPECT_EQ(downRight.cursors()[0].position, 3U);
+    EXPECT_EQ(upLeft.cursors()[0].anchor, 3U);
+    EXPECT_EQ(upLeft.cursors()[0].position, 1U);
+}
+
+TEST(SelectionModelTest, SetRectangularSelectionOnSingleLineIsEquivalentToNormalSelection) {
+    const Document doc = threeLineDoc();
+    SelectionModel model(0);
+
+    model.setRectangularSelection(/*anchor=*/1, /*active=*/3, doc);  // both on line0
+
+    ASSERT_EQ(model.cursors().size(), 1U);
+    EXPECT_EQ(model.cursors()[0].anchor, 1U);
+    EXPECT_EQ(model.cursors()[0].position, 3U);
+    EXPECT_TRUE(model.cursors()[0].isPrimary);
+}
+
+TEST(SelectionModelTest, SetRectangularSelectionSetsIsPrimaryOnActiveLineOnly) {
+    const Document doc = threeLineDoc();
+
+    SelectionModel downRight(0);
+    downRight.setRectangularSelection(/*anchor=*/1, /*active=*/12, doc);  // active on line2 (last row)
+    ASSERT_EQ(downRight.cursors().size(), 3U);
+    EXPECT_FALSE(downRight.cursors()[0].isPrimary);
+    EXPECT_FALSE(downRight.cursors()[1].isPrimary);
+    EXPECT_TRUE(downRight.cursors()[2].isPrimary);
+
+    SelectionModel upLeft(0);
+    upLeft.setRectangularSelection(/*anchor=*/12, /*active=*/1, doc);  // active on line0 (first row)
+    ASSERT_EQ(upLeft.cursors().size(), 3U);
+    EXPECT_TRUE(upLeft.cursors()[0].isPrimary);
+    EXPECT_FALSE(upLeft.cursors()[1].isPrimary);
+    EXPECT_FALSE(upLeft.cursors()[2].isPrimary);
+}
+
+TEST(SelectionModelTest, SetRectangularSelectionHandlesEmptyLinesWithoutCrash) {
+    Document doc;
+    doc.insertText(0, u"ab\n\ncd");  // line1 is empty
+    SelectionModel model(0);
+
+    model.setRectangularSelection(/*anchor=*/1, /*active=*/5, doc);  // line0 col1 -> line2 col1
+
+    ASSERT_EQ(model.cursors().size(), 3U);
+    const Cursor& emptyRow = model.cursors()[1];
+    EXPECT_EQ(emptyRow.anchor, emptyRow.position);  // clamped to 0-length line, no selection on this row
+}
+
 }  // namespace

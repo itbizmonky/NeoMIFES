@@ -1016,4 +1016,37 @@
 
 **次回 (Phase 5cまたはPhase 4b8):** roadmap §5全体(Find bar + 置換行 + コマンドパレット)がPhase 5b3a/5b3b/5b3cで完了した。次はPhase 5c(Grep/複数フォルダ検索/検索履歴/タグジャンプ、`master_roadmap.md` §5.5)か、**保留中のPhase 4b8**(矩形選択・タブ変換・分配・フリーカーソル・マーカー、`master_roadmap.md` §3)のいずれかをユーザーに選択させてから着手すること。**実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/日本語IME視覚確認がまだの場合はセッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施。
 
+## Session 32 (2026-07-19): Phase 4b8a (矩形選択・基本機能) 完了
+
+**着手経緯:** ユーザーが「保留タスクを実施せよ。何故保留となっているのかを実行前に確認したい」と指示。まずPhase 4b8の保留理由を`docs/handoff/RESUME_HERE.md` §3.16から確認し、「技術的ブロッカーではなく、要件定義書§8『ログ解析モード』が検索機能(Phase 5)に構造的に依存するための優先順位判断だった」ことをユーザーへ提示。Phase 5(5a〜5b3c)が全て完了し前提条件が解消されたことを確認した上で着手。`master_roadmap.md` §3が矩形選択・フリーカーソル・マーカー・桁位置ジャンプ・タブ⇔スペース変換・N対N分配クリップボードの6機能を1章にまとめていたため、CLAUDE.mdルール8に従い**矩形選択の基本機能のみ**をPhase 4b8aとして切り出した。
+
+**実装前に発見・解決したキーバインド衝突:** `master_roadmap.md` §3.2は起動キーを`Alt+LMouseドラッグ`と定めていたが、既存コード(`src/app/main.cpp`)を調査したところ、これは既にPhase 4b6dで「Alt+ドラッグ=直前のAlt+クリックで追加したカーソルを拡張する」ジェスチャーとして実装済みであることが判明。roadmapスケッチと既存実装済みコードの衝突を実装着手前に発見し、AskUserQuestionでユーザーに確認 — VSCodeの実際の慣習(Alt+クリック=カーソル追加、Shift+Alt+ドラッグ=矩形選択)に合わせて`Shift+Alt+ドラッグ`へ変更する方針で解決(既存のAlt+ドラッグ挙動は無変更のまま維持)。
+
+**Plan agentへの2ラウンドのレビューで、方針転換自体が引き起こす3件の設計不備を実装前に検出・修正:**
+1. **[1回目のレビューで検出]** `SelectionModel::setRectangularSelection()`の初期案は各行の列を`min(anchorCol,activeCol)`/`max(...)`で`position`/`anchor`に振り分けていたが、これは本コードベースの「ドラッグは`position`のみを動かし`anchor`は固定」という規約に反し、ドラッグがanchorの列を跨いだ瞬間にキャレットが視覚的に後退するバグになる。修正: 各行で`anchorCol`は常に`anchor`側、`activeCol`は常に`position`側に(行の実長でクランプしつつ)独立に書き込むよう変更
+2. **[1回目のレビューで検出]** マウス配線の初期案は、Shift+Alt+クリックの瞬間に「矩形選択かaltCursorAnchor拡張か」を二者択一で判定しようとしていたが、既存`altCursorAnchor`はセッション中ずっと残る(プレーンクリックでのみリセット)ため、無関係な過去のAlt+クリックが新規`rectangularAnchor`ジェスチャーを乗っ取ってしまう不備があった。修正: `dispatchMouseDown`はクリック単体の既存挙動を変更せず`rectangularAnchor`を副次的に記録するだけに留め、実際の判定は`onMouseDrag`側の最優先分岐に一任する設計へ変更(`setRectangularSelection()`が常に`setCursors()`でカーソル集合を丸ごと置き換えるため、クリック単体の既存副作用は無害になる、という性質を利用)
+3. **[2回目のレビューで検出]** 修正版マウス配線の5シナリオをPlan agentにトレースさせたところ、矩形選択ドラッグ後に`altCursorAnchor`が古いカーソル(既に存在しない)を指したまま残留し、次の無関係なShift+Alt+クリックが「何も起きないのにスクロールだけ発生する」不具合になるところだった。修正: `onMouseDrag`の矩形選択分岐で`setRectangularSelection()`呼び出し直後に`altCursorAnchor.reset()`を追加
+
+**成果物:**
+- 新規`core::SelectionModel::setRectangularSelection(TextPos anchor, TextPos active, const Document& doc)`(`src/core/include/neomifes/core/selection_model.h` / `src/core/src/selection_model.cpp`) — 既存の private `lineContentEnd()`ヘルパー(`moveVertically()`が使用中)を再利用し、`anchor`/`active`の行・列を算出、範囲内の各行に1カーソルを生成して`setCursors()`(既存のソート/マージ不変条件をそのまま再利用)へ渡す。短い行は列を実際の行長でクランプ(フリーカーソル未対応、次サブフェーズへ)
+- `SelectionMode`列挙体は不採用(roadmapスケッチから乖離) — 既存`SelectionModel::moveAll()`がカーソル集合へ一様適用される設計のおかげで、矩形選択後の矢印キー操作がVSCode同様「N個の独立カーソルへ降格」する挙動を新規コード無しで得られたため、今回のスコープでは「モード」概念自体が不要と判明
+- `main.cpp`: 新規`rectangularAnchor`状態(`wWinMain`スコープ、`altCursorAnchor`と並行・独立)、`dispatchMouseDown()`/`onMouseDrag`ラムダの配線変更。**描画(`CursorVisual`/`drawSelectionsOnLine`)・クリップボード(`textToCopy`/`handlePaste`)は一切変更不要** — 矩形選択が生成するN個のカーソルを既存の複数カーソル基盤がそのまま処理するため、roadmapが前提としていた「既存の複数カーソル基盤の上に矩形選択を実装する」という設計方針が正しかったことを実装で裏付けた
+- テスト数: 322→328(+6件、`tests/unit/core_selection_model_test.cpp`に追加) — 複数行にまたがるカーソル生成、短い行でのクランプ、ドラッグ方向(上下左右)によるposition/anchor取り違えバグの回帰テスト、単一行での通常選択との等価性、isPrimaryの位置、空行を含む範囲でのクラッシュ耐性
+
+**検証:**
+- ローカル **Debug/Release/ubsan(clang-cl) 全green**、全328テストpass。新規6テストは手計算で期待値を導出した上で実装し、一発でパス(手計算の正しさが実装の正しさの裏付けにもなった)
+- clang-tidy: `selection_model.cpp`/`main.cpp`/新規テストファイルを個別チェック、`misc-const-correctness`5件(テストのDocumentローカル変数、`const`未付与)を検出・修正、再検証でゼロ警告
+- 実アプリを起動し3秒間クラッシュしないことを確認(基本的な起動安定性のスモークテストのみ)。**Shift+Alt+ドラッグでの矩形選択作成・描画・Ctrl+C/V、および既存のAlt+ドラッグ/Alt+Shift+クリックが無変更のまま動作することの視覚的動作確認は、この環境にWin32 GUI自動化手段が無いため未実施 — 次セッション冒頭でユーザーに依頼すること(Phase 5b3a/5b3b/5b3cから持ち越しの視覚確認と合わせて)**
+
+**意図的にスコープ外とした項目 (Phase 4b8の後続サブフェーズへ):**
+- キーボードでの矩形選択拡張(`Alt+Shift+矢印`) — 現在`MainWindow`は`WM_SYSKEYDOWN`を一切処理しておらず(`WM_KEYDOWN`のみ)、Alt同時押しの矢印キーはWin32仕様上`WM_SYSKEYDOWN`で届く(Phase 5b3aのFind bar実装で確認済みの規則と同じ)ため、新規`onSysKeyDown`フックの追加を要する
+- フリーカーソル(虚数位置・仮想空白の視覚表示・自動スペース挿入)、`Shift+Alt+I`(矩形選択→各行末尾に1カーソル変換)、マーカー(Bookmark)、桁位置ジャンプ、タブ⇔スペース変換、N対N分配クリップボードの高度な設定
+
+**ドキュメント同期:**
+- `docs/design/detailed_design.md` §5.1.1(縦編集)を「Phase 4b以降に延期」から実装済み内容へ更新、`SelectionModel::setRectangular`(存在しないメソッド名だった旧記述)を`SelectionModel::setRectangularSelection`へ修正、§5.3にPhase 4b8aの実装リファレンス(キーバインド衝突の経緯・2ラウンドの設計不備検出を含む)を追記
+- `docs/design/master_roadmap.md` §3に新規§3.7(実装後の確定事項)追加、§7フェーズ早見表の4b8行を「4b8a完了・4b8b以降未着手」に分割更新
+- `docs/handoff/RESUME_HERE.md`に新規§3.22(完了記録)追加、§1状態表・§6推奨プロンプトを更新
+
+**教訓:** (1) roadmapのキーバインドスケッチは、それを書いた時点でまだ存在しなかった後続フェーズの実装(本件ではPhase 4b6dのAlt+ドラッグ)と衝突しうる — 「roadmapは実装確定前の高レベル指針」という既存の教訓([[project-neomifes-state]]のPhase 5b2エントリ参照)に、「後から実装されたフェーズがroadmapの未来のスケッチと衝突することもある」という新しいバリエーションが加わった。着手前に必ず実際のキーバインド一覧を`grep`等で洗い出し、roadmapの記述と突き合わせる価値が改めて裏付けられた。(2) 1回のPlan agentレビューで全ての設計不備が出尽くすとは限らない — 修正版の設計に対してもう一度、より具体的なシナリオ(今回は5つの操作シーケンス)をトレースさせる2回目のレビューを行ったことで、1回目のレビューでは見えていなかった追加の不具合(altCursorAnchorの残留)を発見できた。「修正した」で終わらせず、修正後の設計そのものを再度検証する価値がある。(3) 既存の複数カーソル基盤(Phase 4a〜4b7c)が十分に一般的な設計だったおかげで、矩形選択という一見大きな新機能が、実質的に「カーソル集合を構築する1つの新規メソッド」だけで完成した — 早い段階で「Nカーソルへの一様適用」という抽象化を徹底していたことの複利的な効果を示す実例。
+
 <!-- 次セッションはここに追記 -->

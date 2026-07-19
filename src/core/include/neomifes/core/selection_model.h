@@ -76,6 +76,21 @@ public:
     // same final position collapse into one.
     void setCursors(std::vector<Cursor> cursors);
 
+    // Replaces the entire cursor set with one cursor per line spanned by
+    // `anchor`/`active` (Phase 4b8a) - "rectangular selection = one cursor
+    // per row" (master_roadmap.md sec.3.3). Each row's column is
+    // independently clamped to that row's actual content length (no
+    // free-cursor/virtual-space support yet - deferred to a later Phase 4b8
+    // sub-phase). `anchor`'s column always becomes that row's Cursor::anchor
+    // and `active`'s column always becomes that row's Cursor::position
+    // (never swapped by numeric ordering) - callers rely on this to draw the
+    // live caret at the dragged-to column rather than jumping back to the
+    // anchor's column once a drag crosses past it. No `SelectionMode` is
+    // tracked; a subsequent moveAll()/moveAllTo() call naturally treats the
+    // resulting cursors like any other multi-cursor set.
+    void setRectangularSelection(document::TextPos anchor, document::TextPos active,
+                                 const document::Document& doc);
+
     // Selects the "word" (or single punctuation character, or run of
     // whitespace) at `pos`, using simple character-class boundaries rather
     // than full Unicode word segmentation (Phase 4b4 - see ADR-012's

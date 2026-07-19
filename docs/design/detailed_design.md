@@ -443,9 +443,25 @@ private:
 - **`MovementUnit`(単語単位移動)は Phase 4b6b で `MovementKind::WordLeft`/`WordRight` として実装、Phase 4b7b で複数行対応に拡張済み**(Ctrl+矢印、詳細は §5.3)。**段落単位移動は Phase 4b7c 時点でも未実装** — 段落境界の定義(空行区切り等)が未検討。ADR-012 参照。
 - **矩形選択 (`setRectangular`) は Phase 4b6d 時点でも未実装** — §5.1.1 参照。
 
-### 5.1.1 縦編集 (列編集 / MIFES 由来) — Phase 4b 以降に延期 (ADR-012)
+### 5.1.1 縦編集 (列編集 / MIFES 由来)
 
-矩形選択で選んだ範囲の**各行同一列位置に対して同時に**挿入/削除/上書きを行う操作。以下の Command を提供する構想 (未実装)。Rendering Engine に矩形選択のハイライト描画が無く、実装しても視覚的に確認できないため Phase 4a では延期した。
+**Phase 4b8a (2026-07-19) で矩形選択そのものは実装済み** — `SelectionModel::setRectangularSelection(TextPos anchor, TextPos active, const Document& doc)`(下記コード例)。「矩形範囲の各行同一列位置に対して同時に挿入/削除/上書き」という**専用コマンド**(`ColumnInsertCommand`等、下記)は依然未実装のまま。矩形選択後の実際の編集(タイプ入力・Ctrl+V貼り付け等)は、既存の`MultiCursorEditCommand`(Nカーソルへ一様適用、Phase 4b5a)がそのまま処理する — 「短い行はパディングしない・行末で停止」という下記の`ColumnOverwriteCommand`構想の挙動を、専用コマンドを新設せずに`setRectangularSelection()`自身のクランプ処理(各行の列を実際の行長でクランプ)だけで実質的に代替している。
+
+Rendering Engine自体は元々矩形選択専用の描画コードを持たない(§5.3のCursorVisual/drawSelectionsOnLineが「各行1カーソル」を透過的に描画するため新規描画コード不要と判明、Phase 4b8a実装時に確認済み)。
+
+```cpp
+// src/core/include/neomifes/core/selection_model.h に追加 (Phase 4b8a)
+class SelectionModel {
+public:
+    // ...
+    void setRectangularSelection(document::TextPos anchor, document::TextPos active,
+                                 const document::Document& doc);
+};
+```
+
+`SelectionMode`列挙体は採用しなかった(roadmapのスケッチから乖離) — 既存の`moveAll()`がカーソル集合へ一様適用される設計のおかげで、矩形選択後に矢印キーを押すとVSCode同様「N個の独立カーソルへ降格」する挙動が新規コード無しで自然に得られるため、今回のスコープでは「モード」概念自体が不要だった。
+
+**依然未実装の専用コマンド構想 (将来の縦編集フェーズ向け):**
 
 ```cpp
 namespace neomifes::application {
@@ -470,7 +486,7 @@ class ColumnAppendCommand final : public ICommand { ... };
 } // namespace
 ```
 
-- 全行に一意な `TextPos` を持たせて `SelectionModel::setRectangular` の展開結果と同期する。
+- 全行に一意な `TextPos` を持たせて `SelectionModel::setRectangularSelection` の展開結果と同期する。
 - 位置計算は Piece Table のスナップショット下で一括計算し、apply は 1 トランザクションでまとめて Document へ適用。
 
 ### 5.2 Viewport
@@ -749,6 +765,23 @@ bool deleteAllSelections(core::CommandDispatcher&, core::SelectionModel&, core::
                          const document::Document&);
 }
 ```
+
+**Phase 4b8a (2026-07-19実装) で矩形選択のマウス配線を追加:**
+
+`master_roadmap.md` §3.2はキーバインドを`Alt+LMouseドラッグ`と定めていたが、これは既存Phase 4b6dの「Alt+ドラッグ=直前のAlt+クリックで追加したカーソルを拡張する」という同一ジェスチャーと衝突することが判明(実装前にユーザーへAskUserQuestionで確認)。**`Shift+Alt+ドラッグ`に変更**(VSCodeの実際の慣習に整合、既存のAlt+ドラッグ/Alt+Shift+クリックは無変更のまま維持)。
+
+Plan agentへの2ラウンドのレビューで、この方針転換自体が引き起こす2件の設計不備を検出・修正した:
+1. `SelectionModel::setRectangularSelection()`の各行列計算で`min(anchorCol,activeCol)`/`max(...)`により`position`/`anchor`を振り分けると、本コードベースの「ドラッグは`position`のみを動かす」規約に反しキャレットが視覚的に後退するバグになる → 各行で`anchorCol`は常に`anchor`側、`activeCol`は常に`position`側へ独立に(行の実長でクランプしつつ)書き込むよう修正
+2. 既存`altCursorAnchor`(Phase 4b6d、セッション中残り続ける)が無関係な過去のAlt+クリックにより新規`rectangularAnchor`のジェスチャーを乗っ取ってしまう不備、および矩形選択ドラッグ後に`altCursorAnchor`が古いカーソルを指したまま残留し次のShift+Alt+クリックが空振りする不備、の2点
+
+```cpp
+// src/app/main.cpp: wWinMainスコープの新規状態(altCursorAnchorと同じ寿命)
+std::optional<document::TextPos> rectangularAnchor;
+```
+
+`dispatchMouseDown()`のAlt+Shift+クリック分岐は`rectangularAnchor = hit`を(既存の拡張/追加ロジックを変更せず)副次的に記録するだけに留め、実際の矩形選択構築は`onMouseDrag`の最優先分岐(`rectangularAnchor`が真なら`setRectangularSelection()`を呼び、直後に`altCursorAnchor.reset()`)が担う。`setRectangularSelection()`は常に`setCursors()`でカーソル集合を丸ごと置き換えるため、クリック単体(ドラッグに発展しない場合)の既存副作用は無害 — 詳細な検証トレースは`docs/history/TIMELINE.md`のPhase 4b8aセッション参照。
+
+**意図的にスコープ外(次の4b8サブフェーズへ):** キーボードでの矩形選択拡張(`Alt+Shift+矢印`、`MainWindow`が`WM_SYSKEYDOWN`を未処理のため新規フック要)、フリーカーソル、`Shift+Alt+I`変換、マーカー・桁位置ジャンプ・タブ⇔スペース変換・N対N分配クリップボード。
 
 ---
 

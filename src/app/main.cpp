@@ -591,9 +591,22 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Docum
 // that specific cursor - SelectionModel::moveAllTo()/moveAll() always apply
 // to every cursor uniformly, so this targeted extension needs the caller to
 // remember which cursor is "active" across separate mouse events.
+//
+// `rectangularAnchor` (Phase 4b8a) is the equivalent session-lifetime state
+// for Shift+Alt+drag rectangular selection - chosen over the roadmap's
+// literal "Alt+drag" spec specifically to avoid colliding with the existing
+// altCursorAnchor gesture above (confirmed with the user). It is only ever
+// *set* here, on a Shift+Alt+click - never acted upon here, since a click
+// alone (no drag) is deliberately left to fall through to the existing
+// altCursorAnchor/handleAltClick logic unchanged. If the click does turn
+// into a drag, onMouseDrag's rectangularAnchor branch (checked first, see
+// below) fully replaces the cursor set via setRectangularSelection(),
+// superseding whatever this function did as a side effect - so the
+// fallthrough below is harmless rather than a real behavior change.
 bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
                        SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                       std::optional<neomifes::document::TextPos>& altCursorAnchor) {
+                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                       std::optional<neomifes::document::TextPos>& rectangularAnchor) {
     if (altDown) {
         // Alt+Shift+click extends the cursor the last plain Alt+click added
         // (if any); otherwise (including a bare Alt+Shift+click with no
@@ -601,10 +614,18 @@ bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool alt
         // cursor, same as plain Alt+click. Alt+double/triple-click's
         // meaning is left undefined rather than guessed at - click count is
         // not consulted here at all.
-        if (shiftDown && altCursorAnchor) {
-            selectionModel.moveCursorMatching(*altCursorAnchor, hit);
-            viewport.ensureVisible(hit, document);
-            return true;
+        if (shiftDown) {
+            rectangularAnchor = hit;
+            if (altCursorAnchor) {
+                selectionModel.moveCursorMatching(*altCursorAnchor, hit);
+                viewport.ensureVisible(hit, document);
+                return true;
+            }
+        } else {
+            // Plain Alt+click is not a rectangular-selection gesture - clear
+            // any stale anchor a prior Shift+Alt+click left behind, so a
+            // plain Alt+drag that follows isn't mistaken for one.
+            rectangularAnchor.reset();
         }
         const bool changed = neomifes::app::handleAltClick(hit, selectionModel, viewport, document);
         altCursorAnchor    = hit;
@@ -613,6 +634,7 @@ bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool alt
     // A plain click abandons any in-progress Alt-cursor extension - the next
     // drag should extend the primary selection again, not the old target.
     altCursorAnchor.reset();
+    rectangularAnchor.reset();
     if (clickCount >= 3) {
         return neomifes::app::handleTripleClick(hit, selectionModel, viewport, document);
     }
@@ -804,8 +826,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                    HINSTANCE hInstance, FindBar& findBar, FindReplaceState& findReplaceState,
-                    CommandPalette& commandPalette) {
+                    std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
+                    FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
@@ -868,33 +890,44 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         viewport.scrollTo(neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
-    cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor](
-                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
-                          int clickCount) {
+    cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
+                       &rectangularAnchor](HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown,
+                                          bool altDown, int clickCount) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
         const bool changed = dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel,
-                                              viewport, document, altCursorAnchor);
+                                              viewport, document, altCursorAnchor, rectangularAnchor);
         if (changed) {
             syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
         }
     };
-    cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor](
-                          HWND hwnd, std::int32_t x, std::int32_t y) {
+    cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
+                       &rectangularAnchor](HWND hwnd, std::int32_t x, std::int32_t y) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
-        // If the drag started with a plain Alt+click (altCursorAnchor set),
-        // it extends that one cursor (Phase 4b6d) instead of the primary
-        // selection - otherwise, same as before Phase 4b6d, a drag always
-        // extends from whatever anchor onMouseDown established
-        // (shiftDown=true), regardless of whether the drag started with
-        // Shift held (Phase 4b3).
+        // Checked in this priority order: a rectangular-selection drag
+        // (Phase 4b8a, Shift+Alt+drag) takes precedence over a plain
+        // Alt+drag cursor extension (Phase 4b6d), which takes precedence
+        // over the default drag-extends-primary-selection behavior (Phase
+        // 4b3). At most one of rectangularAnchor/altCursorAnchor is ever
+        // meaningfully set at a time - see dispatchMouseDown()'s comment for
+        // why a Shift+Alt+click that turns into a drag safely supersedes
+        // whatever the down-click itself did.
         bool changed = false;
-        if (altCursorAnchor) {
+        if (rectangularAnchor) {
+            selectionModel.setRectangularSelection(*rectangularAnchor, *hit, document);
+            // The rectangle just replaced the entire cursor set, so any
+            // altCursorAnchor left over from an earlier plain Alt+click no
+            // longer identifies a real cursor - clear it so the next
+            // unrelated Shift+Alt+click doesn't silently no-op.
+            altCursorAnchor.reset();
+            viewport.ensureVisible(*hit, document);
+            changed = true;
+        } else if (altCursorAnchor) {
             selectionModel.moveCursorMatching(*altCursorAnchor, *hit);
             viewport.ensureVisible(*hit, document);
             changed = true;
@@ -974,6 +1007,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // added, so a later Alt+Shift+click or Alt+drag can extend that one
     // cursor specifically. Reset to nullopt by any non-Alt click.
     std::optional<neomifes::document::TextPos> altCursorAnchor;
+    // Phase 4b8a: anchor of an in-progress Shift+Alt+drag rectangular
+    // selection. Kept as a separate optional (not folded into
+    // altCursorAnchor) since the two gestures are deliberately independent -
+    // see dispatchMouseDown()'s comment.
+    std::optional<neomifes::document::TextPos> rectangularAnchor;
     // Find bar state (Phase 5b3a, bundled into FindReplaceState in Phase
     // 5b3b) - lives here (not inside FindBar itself) so FindBar can stay
     // decoupled from neomifes::search, same rationale as core::ReplaceAllCommand
@@ -1001,7 +1039,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                              syntheticLineCountUsed);
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
-                       altCursorAnchor, hInstance, findBar, findReplaceState, commandPalette);
+                       altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
+                       commandPalette);
     }
 
     if (!window.create(hInstance, cfg)) {
