@@ -68,6 +68,8 @@
 #include "neomifes/ui/command_palette.h"
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/find_navigation.h"
+#include "neomifes/ui/goto_line_bar.h"
+#include "neomifes/ui/goto_line_parser.h"
 #include "neomifes/ui/main_window.h"
 
 #include "frame_profile.h"
@@ -102,6 +104,8 @@ using neomifes::ui::CommandPalette;
 using neomifes::ui::CommandPaletteConfig;
 using neomifes::ui::FindBar;
 using neomifes::ui::FindBarConfig;
+using neomifes::ui::GotoLineBar;
+using neomifes::ui::GotoLineBarConfig;
 using neomifes::ui::kWindowClassName;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
@@ -513,6 +517,16 @@ bool handleCommandPaletteKey(UINT vkCode, bool shiftDown, bool ctrlDown, Command
     return false;
 }
 
+// Ctrl+G while the document editing area has focus (Phase 4b8b) - same
+// single-purpose shape as handleFindBarKey()/handleCommandPaletteKey().
+bool handleGotoLineKey(UINT vkCode, bool ctrlDown, GotoLineBar& gotoLineBar) {
+    if (ctrlDown && vkCode == 'G') {
+        gotoLineBar.show();
+        return true;
+    }
+    return false;
+}
+
 // Enter while the replace edit has focus (FindBarConfig::onReplaceCurrent,
 // Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
 // `replacementTemplate` expanded against the match's capture groups, then
@@ -699,8 +713,11 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                         Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
                         FindBar& findBar, FindReplaceState& findReplaceState,
-                        CommandPalette& commandPalette) {
+                        CommandPalette& commandPalette, GotoLineBar& gotoLineBar) {
     if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
+        return;
+    }
+    if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
@@ -818,6 +835,51 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     return commands;
 }
 
+// Parses and applies a GotoLineBar submission (Phase 4b8b). Both `target.line`
+// and `target.column` are 1-based (Ctrl+G's user-facing convention, per
+// goto_line_parser.h); converted to this project's 0-based LineNumber/column
+// here at the single point of use. An out-of-range line clamps to the last
+// line (same "never throw on a stale/bad user input" convention as
+// SelectionModel's own clamping); a column beyond the target line's actual
+// length clamps to that line's end.
+void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, Document& document,
+                      SelectionModel& selectionModel, Viewport& viewport,
+                      RenderPipeline& renderPipeline) {
+    const auto lastLine  = document.lineCount() > 0 ? document.lineCount() - 1 : 0;
+    const auto line      = std::min(target.line - 1, lastLine);
+    const auto lineStart = document.lineToOffset(line);
+    const auto lineEnd =
+        (line + 1 < document.lineCount()) ? document.lineToOffset(line + 1) - 1 : document.length();
+    const auto column = target.column.value_or(1) - 1;
+    const auto pos     = std::min(lineStart + column, lineEnd);
+
+    selectionModel.moveAllTo(pos);
+    viewport.ensureVisible(pos, document);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+}
+
+// Builds the GotoLineBarConfig callbacks (Phase 4b8b) - same extraction
+// rationale as buildFindBarConfig()/buildCommandRegistry() above.
+GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Document& document, SelectionModel& selectionModel,
+                                         Viewport& viewport, RenderPipeline& renderPipeline,
+                                         GotoLineBar& gotoLineBar) {
+    GotoLineBarConfig config{};
+    config.onSubmit = [hwnd, &document, &selectionModel, &viewport, &renderPipeline,
+                       &gotoLineBar](std::u16string_view input) {
+        const auto target = neomifes::ui::parseGotoLineInput(input);
+        if (target) {
+            jumpToGotoTarget(*target, hwnd, document, selectionModel, viewport, renderPipeline);
+        }
+        gotoLineBar.hide();
+        ::SetFocus(hwnd);
+    };
+    config.onClosed = [hwnd, &gotoLineBar]() {
+        gotoLineBar.hide();
+        ::SetFocus(hwnd);
+    };
+    return config;
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
@@ -827,9 +889,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
                     std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
-                    FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette) {
+                    FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
+                    GotoLineBar& gotoLineBar) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
-                          &selectionModel, &viewport, &findReplaceState, &commandPalette](HWND hwnd) {
+                          &selectionModel, &viewport, &findReplaceState, &commandPalette,
+                          &gotoLineBar](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -855,10 +919,16 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              viewport, document, renderPipeline);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
+
+        // Same non-fatal treatment as findBar.create() above.
+        const GotoLineBarConfig gotoLineBarConfig =
+            buildGotoLineBarConfig(hwnd, document, selectionModel, viewport, renderPipeline, gotoLineBar);
+        [[maybe_unused]] const bool gotoLineBarCreated =
+            gotoLineBar.create(hwnd, hInstance, gotoLineBarConfig);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
-    cfg.onResize = [&renderPipeline, &findBar, &commandPalette](HWND, std::uint32_t w, std::uint32_t h,
-                                                                float dpiScale) {
+    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar](
+                       HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
@@ -867,16 +937,18 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         }
         findBar.onParentResized(w, dpiScale);
         commandPalette.onParentResized(w, dpiScale);
+        gotoLineBar.onParentResized(w, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette](HWND, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState, &commandPalette](HWND hwnd, UINT vkCode, bool shiftDown,
-                                                         bool ctrlDown) {
+                     &findReplaceState, &commandPalette, &gotoLineBar](HWND hwnd, UINT vkCode,
+                                                                      bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
-                          document, renderPipeline, findBar, findReplaceState, commandPalette);
+                          document, renderPipeline, findBar, findReplaceState, commandPalette,
+                          gotoLineBar);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
                      HWND hwnd, wchar_t ch) {
@@ -1024,6 +1096,9 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // (see command_palette.h's class comment for how it differs: a second
     // control type, WC_LISTBOX, is subclassed too).
     CommandPalette commandPalette;
+    // Ctrl+G goto-line/column overlay (Phase 4b8b) - simplest of the three
+    // overlays (single WC_EDIT, no debounce/listbox).
+    GotoLineBar gotoLineBar;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -1040,7 +1115,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette);
+                       commandPalette, gotoLineBar);
     }
 
     if (!window.create(hInstance, cfg)) {

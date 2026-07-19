@@ -27,6 +27,7 @@ add_executable(neomifes_unit_tests
     ui_click_tracking_test.cpp
     ui_find_navigation_test.cpp
     ui_command_palette_filter_test.cpp
+    ui_goto_line_parser_test.cpp
     util_fuzzy_matcher_test.cpp
     search_search_service_test.cpp
     search_replacement_test.cpp
