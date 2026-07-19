@@ -930,9 +930,9 @@ private:
 
 ## 7. Search Engine 詳細
 
-**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装済み。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceAllCommand`/`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40) — 下記§7.1''で修正済み。
+**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装、Phase 5b1 (2026-07-19実装) で複数行にまたがるマッチに対応。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceAllCommand`/`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b2以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40) — 下記§7.1''で修正済み。
 
-### 7.1' SearchService (Phase 5a 実装)
+### 7.1' SearchService (Phase 5a 実装、Phase 5b1 で複数行対応)
 ```cpp
 // src/search/include/neomifes/search/search_service.h
 namespace neomifes::search {
@@ -948,7 +948,7 @@ struct Match { document::TextRange range; };
 
 class SearchService {
 public:
-    // 同期・ヘッドレス・単一行スコープ (マッチが '\n' をまたぐケースは対象外)。
+    // 同期・ヘッドレス。マッチは行をまたいでよい (Phase 5b1)。
     // static:現時点でインスタンス状態を持たない。
     [[nodiscard]] static std::vector<Match> findAll(const document::Document& doc,
                                                      const Query&              query);
@@ -957,8 +957,11 @@ public:
 }  // namespace neomifes::search
 ```
 - リテラル検索・正規表現検索いずれも**RE2の1本のコードパス**で実装(リテラルは`RE2::QuoteMeta()`でエスケープ)。`wholeWord`はRE2の`\b`(ASCII単語境界のみ、既存の`selectWordAt()`のCJK対応`classify()`とは非連携 — 既知の制限として明記)
-- Document内部はUTF-16(`std::u16string`)だがRE2はUTF-8バイト列を対象とするため、新規`neomifes::util::toUtf8WithOffsets()`(`src/util/include/neomifes/util/utf8_convert.h`)でUTF-16→UTF-8変換とバイトオフセット→UTF-16オフセットの対応表を1行ごとに構築してからRE2へ渡す
-- 空行(`lineStart >= lineEnd`)はスキャン対象から除外(RE2の空入力に対する`submatch[i].data()==NULL`という仕様上、オフセット計算が意味を持たないため)
+- Document内部はUTF-16(`std::u16string`)だがRE2はUTF-8バイト列を対象とするため、新規`neomifes::util::toUtf8WithOffsets()`(`src/util/include/neomifes/util/utf8_convert.h`)でUTF-16→UTF-8変換とバイトオフセット→UTF-16オフセットの対応表を構築してからRE2へ渡す
+- **Phase 5b1: `scanDocument()`が`pieceView()`で文書全体を1つの`std::u16string`バッファへ連結し、1回だけ検索するよう変更**(Phase 5aは1行ごとに`findAllInLine()`を呼んでいた)。これにより`\n`を含むリテラルクエリや`[\s\S]`等の文字クラスを使ったパターンが行をまたいでマッチできるようになった。`.`は`dot_nl`オプションを既定`false`のままにしているため引き続き改行をまたがない(明示的な指定が必要、一般的なエディタの慣習に合わせた意図的な選択)
+- **`^`/`$`のセマンティクス維持:** RE2は`posix_syntax=false`(本プロジェクトのモード)では`^`/`$`が既定でテキスト全体の先頭/末尾にのみアンカーする。文書全体を1バッファ化したことでこの既定動作のまま使うと`^`/`$`が「行の先頭/末尾」ではなく「文書全体の先頭/末尾」を意味するように変わってしまうため、`buildPattern()`が生成する最終パターンの先頭に`"(?m)"`を付与し、Phase 5a時点の暗黙動作(`^`/`$`=行の先頭/末尾)を維持している。文書全体の先頭/末尾を明示したい場合はRE2の`\A`/`\z`を使う
+- **既知のメモリスケーリング制約(Phase 5b1で許容):** 文書全体を1つのUTF-16バッファ+UTF-8変換+オフセット表へ連結するため、検索1回あたりのメモリ使用量が文書サイズに比例する(Phase 5aは最長1行分だけで済んでいた)。要件定義書の「10GB」目標とは緊張関係にあるが、下記§7.3のチャンク並列走査は依然未実装であり、この制約は実測が必要になった時点で改めてIssue化する方針
+- 空バッファ(文書全体が空、または個々のマッチがゼロ幅で位置0)はRE2の空入力に対する`submatch[i].data()==NULL`という仕様上、オフセット計算を特別扱いする(`findAllInBuffer()`)
 
 ### 7.1'' 元スケッチ (Phase 5b 以降のスコープ、未実装)
 ```cpp
@@ -1010,8 +1013,9 @@ public:
 | Grep (複数ファイル) | 未実装 (Phase 5b以降)。Worker Pool、ファイル単位 memory-map |
 
 ### 7.3 巨大ファイル検索
-- **未実装 (Phase 5b以降)。** Phase 5aは`BufferSnapshot::extract()`による1行ずつの逐次走査のみで、Piece Tableのチャンク単位並列走査は行わない
-- 実測: 20万行(約10MB相当)の合成ログ風ドキュメントに対する`findAll()`をRelease構成でgoogle-benchmark実測した結果、約60〜66ms(スパースマッチ/無マッチいずれも同程度)。単純換算で約150MB/s相当 — 要件定義書§5「検索: 数GBファイルでも高速」の達成には、この同期・単一スレッドの実装のままでは数GB規模で数十秒かかる計算になり、非同期化・チャンク並列化(本節の未実装項目)が実際に必要になることを示す最初の実測データとなった
+- **未実装 (Phase 5b2以降)。** Phase 5b1で`pieceView()`ベースのO(文書長)走査(§7.1'参照)に改善したが、Piece Tableのチャンク単位**並列**走査は依然未実装。加えてPhase 5b1は文書全体を1バッファへ連結する設計のため、検索1回あたりのメモリ使用量が文書サイズに比例するようになった(§7.1'の既知の制約参照)
+- 実測 (Phase 5a時点): 20万行(約10MB相当)の合成ログ風ドキュメントに対する`findAll()`をRelease構成でgoogle-benchmark実測した結果、約60〜66ms(スパースマッチ/無マッチいずれも同程度)。単純換算で約150MB/s相当
+- 実測 (Phase 5b1、同一ベンチマークで再測定): 約33〜39ms(スパースマッチ/無マッチいずれも同程度)。単純換算で約260〜300MB/s相当 — 1行ごとのUTF-8変換・RE2呼び出しの繰り返しオーバーヘッドが無くなったことで、単一ピースの合成ドキュメントに対しては改善した。ただし既存ベンチマークは依然として単一ピース文書のみが対象であり、実際の編集で発生する多ピース文書での挙動(Phase 5aで修正したO(pieces)問題が再発しないこと)は本ベンチマークでは検証できていない — 要件定義書§5「検索: 数GBファイルでも高速」の達成には、この同期・単一スレッドかつメモリ比例の実装のままでは数GB規模で数十秒+相応のメモリを要する計算になり、非同期化・チャンク並列化(本節の未実装項目)が実際に必要になることを示すデータであることに変わりはない
 
 ---
 

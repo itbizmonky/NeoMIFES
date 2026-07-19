@@ -748,6 +748,28 @@
 
 **教訓:** レビュー対象を明示的に指定する運用(ユーザーが「Phase 4b8」と誤指定したが、実装されていないことをその場で`git log`で確認しユーザーに選択肢を提示した)により、存在しないコードへのレビューという無駄な作業を避けられた — レビュー依頼を受けたら対象コミット範囲の実在を確認してから着手する価値がある。また、8角度並列レビューでは複数のエージェントが独立に同じ問題(`extract()`のO(pieces)再走査、`lineContentEnd()`の重複)へ到達しており、独立した角度からの収束は所見の信頼度を裏付ける強いシグナルになることを確認した。
 
-**次回 (Phase 5b):** スコープ未確定。候補: Find bar UI配線(新規UI基盤、WC_EDIT子コントロール or 自前描画の設計判断を要する)、インクリメンタル検索(`IncrementalFindService`)、複数行にまたがるマッチ対応、置換(`ReplaceAllCommand`/`ReplaceInFilesCommand`、`application::ICommand`ではなく`core::ICommand`に修正済みのスケッチをdetailed_design.md §7.1''参照)、Grep(複数ファイル横断)、巨大ファイルでのチャンク並列走査・SIMD最適化(今回の実測値を踏まえて要否判断)。**保留中のPhase 4b8**(矩形選択・タブ⇔スペース変換・複数カーソルクリップボードのN対N分配等)に戻る選択肢もあわせて次セッション開始時にユーザーへ提示すること。レビュー未修正のPLAUSIBLE所見6件(`MSVC_RUNTIME_LIBRARY`修正の脆弱性、CRLF行末未対応、`decodeOne()`のnoexcept欠如、サロゲート変換ロジックの重複、パターン変換時の無駄なオフセット表構築)もIssue化を検討すること。詳細は `detailed_design.md` §7・`RESUME_HERE.md` §3.16/§6 参照。
+## Session 26 (2026-07-19): Phase 5b1 (複数行にまたがるマッチ対応) + レビュー残台のIssue化
+
+**スコープ確認:** ユーザーが「Phase 5b着手せよ」と指示。Phase 5b自体のスコープが未確定だったためAskUserQuestionで確認したところ、Find bar UI配線(推奨案として提示)・複数行マッチ対応・置換(ReplaceAllCommand)・レビュー残台のIssue化の4項目全てが選択された。
+
+**レビュー残台のIssue化(即実施):** Phase 5aコードレビューで未修正のPLAUSIBLE所見6件(うち1件はCONFIRMEDだが「fix 1〜4」の対象外だったもの)を、テーマ別に3つのIssueへ集約して起票: `docs/issues/search_crlf_line_ending.md`(CRLF行末未対応)、`docs/issues/cmake_msvc_runtime_library_fragility.md`(`MSVC_RUNTIME_LIBRARY`事後上書きの脆弱性、より根本的な`ABSL_MSVC_STATIC_RUNTIME`案も記録)、`docs/issues/search_utf8_convert_minor_cleanup.md`(`decodeOne()`のnoexcept欠如・サロゲート変換ロジックの重複・パターン変換時の無駄なオフセット表構築の3件をまとめて1つに)。コミット`27147fd`。
+
+**計画フェーズ:** Explore agent 1体で(1) `core::ICommand`/`MultiCursorEditCommand`の設計制約(edit数とカーソル数の1:1前提がReplace-Allには転用できないこと)、(2) `CommandDispatcher::dispatch()`が`SelectionModel::setCursors()`を無条件に呼ぶため「カーソルに触れないコマンド」は存在しないこと、(3) `src/ui/`に子HWND/標準コントロールの前例が依然として皆無なこと(Phase 5a時点の調査を再確認)、(4) `main.cpp`の`wWinMain`スコープ状態変数パターン(Phase 4b6dの`altCursorAnchor`)がFind bar状態にも転用できる見込みであること、(5) `RenderPipeline`の`CursorVisual`+行ごと重なり判定描画パターンがマッチハイライトにも転用できる見込みであること、を調査。CLAUDE.mdルール8に従い**Issue化→5b1(複数行マッチ対応)→5b2(置換)→5b3(Find bar UI配線)**の順に分割し、Plan Modeで5b1のみを詳細設計(未着手の後続サブフェーズを先行設計するのは推測実装になるため)。Find bar UIの入力方式についてAskUserQuestionで確認し、**WC_EDIT子コントロール**(IME/カーソル点滅/クリップボード操作をOSに委譲、日本語入力も最初から正しく動作)が選ばれた(自前描画D2D入力ボックスは対象外)。ExitPlanModeでユーザー承認を得て実装着手。
+
+**成果物 (Phase 5b1):**
+- `SearchService::findAll()`の内部実装(`scanDocument()`)を「1行ごとに`findAllInLine()`を呼ぶ」から「`pieceView()`で文書全体を1つの`std::u16string`バッファへ連結し`findAllInBuffer()`(改名)を1回だけ呼ぶ」方式に全面書き換え。パターンに`\n`を含むリテラルクエリや`[\s\S]`等の文字クラスを使ったマッチが行をまたげるようになった
+- **設計上の要点: `^`/`$`のセマンティクス維持。** RE2は`posix_syntax=false`(本プロジェクトのモード)では`^`/`$`が既定でテキスト全体の先頭/末尾にのみアンカーし、行ごとにアンカーさせるには`(?m)`が必要(RE2ドキュメント "to perform multi-line matching...begin the regexp with (?m)" で確認)。Phase 5aは1行を1バッファとして渡していたため`^`/`$`は暗黙的に行アンカーとして機能していたが、文書全体を1バッファ化するとこの暗黙動作が壊れる。`buildPattern()`が生成する最終パターンの先頭に`"(?m)"`を付与することで解消し、既存の`EmptyLineMatchesZeroWidthPattern`等の`^`/`$`依存テストが変更なしでpassし続けることを確認した
+- `.`は`dot_nl`オプションを既定`false`のままにし、複数行マッチは明示的な`\n`や`[\s\S]`を書いた場合にのみ発生するよう意図的に制限(VSCode等の一般的なエディタの慣習に合わせた設計判断)
+- メモリスケーリングの既知の制約を`search_service.h`/`detailed_design.md`に明記: 文書全体を1バッファへ連結するため検索1回あたりのメモリ使用量が文書サイズに比例するようになった(Phase 5aは最長1行分で済んでいた)。要件定義書の「10GB」目標との緊張関係は認識しつつ、チャンク並列走査(未実装のまま)は今回のPhase 5bスコープに含まれないためCLAUDE.mdルール3に従い着手しなかった
+- テスト数: 274→279。新規6件(複数行にまたがるリテラル/文字クラスマッチ、`^`/`$`が引き続き行アンカーであることの回帰、`\A`/`\z`が文書全体アンカーとして機能することの確認)、既存`MatchDoesNotCrossLineBoundary`を`LiteralQueryWithoutEmbeddedNewlineDoesNotSpanLines`+`DotDoesNotMatchNewlineByDefault`に分割・改名(いずれも実装変更なしでpassし続けた — 事前の設計時点で「`.`のdot_nl=false継続」と「リテラル`"foobar"`は`\n`を含まない」という2条件から予測済みの結果)
+- ベンチマーク再実測: 20万行合成ドキュメントで約33〜39ms(Phase 5a時点は約60〜66ms) — 1行ごとのUTF-8変換・RE2呼び出しの繰り返しオーバーヘッドが無くなったことによる改善。単純換算で約260〜300MB/s相当。ただし単一ピース文書のみが対象のベンチマークである点は変わらず、多ピース文書での挙動は未検証のまま
+
+**検証:**
+- ローカル **Debug/Release/ubsan(clang-cl) 全green**、全279テストpass
+- clang-tidy (`search_service.cpp`) で新規警告0
+
+**教訓:** (1) RE2の`^`/`$`セマンティクス(`posix_syntax=false`時は`(?m)`が無いと行アンカーにならない)という非自明なAPI詳細を、実装前にRE2公式ドキュメントで確認してから設計したことで、既存テストを壊す実装のやり直しを避けられた — 「まず動かしてから直す」ではなく「既知の外部ライブラリの挙動を先に確認してから設計する」ことが、テスト駆動での手戻りコストを最初から回避する形で機能した実例。(2) 実装前の設計段階で「既存の`MatchDoesNotCrossLineBoundary`テストは新機能によって壊れるはずだ」という直感に反し、実際には`.`のdot_nl=false継続と対象パターンの性質から「変更なしでpassし続ける」という結論に事前に到達でき、その予測が実装後も的中した — 新機能追加時に「既存テストが本当に影響を受けるか」を実装前に手計算で検証する価値を示す一例。(3) レビュー残タスクのIssue化を「軽く流す」のではなくテーマ別に集約した3件の正式なIssueドキュメントとして起票したことで、Phase 5b2/5b3着手時に何が未解決として残っているかが一目で追跡可能になった。
+
+**次回 (Phase 5b2):** 置換(`ReplaceAllCommand`)の詳細設計から着手。Explore調査で判明済みの制約: 既存`MultiCursorEditCommand`は「edit数とカーソル数が1:1」前提のため転用不可、`core::ICommand`を直接実装する新規クラスが必要(累積オフセット適用のアルゴリズム自体は`MultiCursorEditCommand::execute()`/`undo()`のパターンを再利用可能、`cursorsAfterExecute()`/`cursorsAfterUndo()`は置換前のカーソル位置をスナップショットして返す設計になる見込み)。完了後はPhase 5b3(Find bar UI配線、WC_EDIT子コントロール使用が決定済み)へ進む。**保留中のPhase 4b8**に戻る選択肢もあわせて次セッション開始時にユーザーへ提示すること。詳細は `detailed_design.md` §7・`RESUME_HERE.md` §3.17/§6 参照。
 
 <!-- 次セッションはここに追記 -->
