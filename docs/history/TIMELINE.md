@@ -815,4 +815,50 @@
 
 **次回 (Phase 5b2 継続):** 本 Session 27 は計画文書追加のみで実装コード変更なし。次セッションは master_roadmap.md §4 を読み、Phase 5b2 の Plan Mode 詳細プラン → 実装 → 検証の順に進める。Phase 4b8 保留オプションも並行して提示すること。
 
+## Session 28 (2026-07-19): master_roadmap.md v2.0 — Google/MS 責任者視点の徹底レビュー反映
+
+**背景・動機:** Session 27 で発行した master_roadmap.md v1.0 (1183 行) に対しユーザーが「本当に『秀丸/サクラ/MIFES の良いとこ取り』『世界最高峰の UI/UX』『世界最高速の動作体験』を実現する内容になっているか、Google/Microsoft のソフトウェア開発責任者の立場で徹底レビューを行い、更なるブラッシュアップを行なって欲しい」と指示。v1.0 は Phase 単位の粒度で書かれていたが、シニアテックリーダー視点で見ると 18 項目の構造的欠陥があった。
+
+**特定した v1.0 の 18 項目の構造的欠陥:**
+- A: 「良いとこ取り」の網羅性不足 (秀丸のキーマクロ・grep 結果ジャンプ・DIFF ビュー・タグジャンプ、サクラのフリーカーソル・タイプ別設定、MIFES の桁位置ジャンプ・マーカー・全角罫線 が全て漏れていた)
+- B: 「世界最高峰の UI/UX」の裏付け欠如 (ミニマップ・Breadcrumb・Sticky scroll・Indent guides が完全に欠落、コマンドパレット深掘り不足、Zen mode/分割ビュー/タブグループ空白、タッチ/ペン/スタイラス無視、ligature/カラーエモジ抜け)
+- C: 「世界最高速」の裏付け技術要素の欠如 (SIMD 戦略が「BM+SIMD (未着手)」の一言のみ、GPU 未検討、Direct Storage 未検討、Frame pacing/VRR 未検討、キャッシュレイアウト浅い)
+- D: AI 統合が浅い (Copilot 型リアルタイム予測補完がゼロ、エージェント/RAG/ローカル LLM 表層のみ)
+- E: アクセシビリティ・国際化・セキュリティ・プロダクト運営基盤が総じて欠落 (UI Automation、CJK IME、RTL、grapheme cluster、サンドボックス、SBOM、脆弱性開示、テレメトリ、KPI/SLO、自動更新、フィーチャーフラグ、クラッシュ収集、bisect、シェル統合)
+
+**成果物: master_roadmap.md v2.0 (2026 行、v1.0 から +844 行の大幅拡張、23 章構成):**
+- §1 完成イメージ全面拡張: 差別化 5→10、**ペルソナ 7 種 (P1: SAP コンサル / P2: Windows インフラ / P3: Web 開発者 / P4: 技術ライター / P5: OSS 開発者 / P6: エンタープライズ管理者 / P7: エディタホッパー)**、**競合ポジショニング (VSCode/Sublime/Notepad++/UltraEdit/秀丸/サクラ/MIFES/Vim/Emacs との比較表)**、**60 機能継承マトリクス** (v1.0 の 17 機能から 60 機能へ精緻化、22 の差別化点を明示)
+- §3 (Phase 4b8) にフリーカーソル (虚数位置)、マーカー (Bookmark)、桁位置ジャンプ、ブックマーク列を追加
+- §5 (Phase 5b3) に**コマンドパレット** (VSCode 相当、Ctrl+Shift+P、ファジー検索、最近使用ボーナス) を Find bar と同時実装する設計を追加、§5.5 (Phase 5c) に検索履歴・タグジャンプ・秀丸互換 Grep 結果ペインを追加
+- §7 (Phase 7) に**ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting** を統合 (VSCode 相当の全モダン UI を Phase 7 に集約)
+- §8 (Phase 8) に**プラグインサンドボックス** 3 レベル (SEH 隔離 / Job Object / Windows AppContainer)、マーケットプレース基盤を追加
+- §9 (Phase 9) 大幅拡張: **Copilot 型ゴーストテキスト補完・RAG (Retrieval-Augmented Generation)・AI エージェント (Tool use)・マルチモデル並列比較・ローカル LLM (Ollama) 対応** を統合、`InlineCompletionEngine`/`RagIndexer`/`VectorStore`/`Agent` の型スケッチを提示
+- §10 (Phase 10) ログ解析拡張: **リアルタイムテール、分散トレース ID 対応、Structured Log (JSON/Logfmt)、OpenTelemetry/AWS X-Ray/Loki/Fluentd 対応、統計ダッシュボード** を追加
+- §11 (Phase 11) LSP 完全実装: Semantic tokens/Code lens/Inlay hints/Workspace symbols/Rename/Code actions/Signature help/Call hierarchy/Type hierarchy の 15 機能に拡張、マクロに**秀丸互換 API レイヤ**を追加
+- §13 UI/UX トップレベル方針大幅拡張: Zen mode/分割ビュー/タブグループ/ピン留め/Mica/Acrylic/HDR/VRR/タッチ/ペン/スタイラス
+- §15 世界最高速の裏付け技術要素 (新規): SIMD 動的 dispatch (SSE4.2/AVX2/AVX-512/NEON)、GPU compute shader 検索検討、Direct Storage、Frame pacing/VRR、キャッシュ最適レイアウト、Lock-free 並行データ構造、PGO/LTO
+- §16 国際化・アクセシビリティ (新規): CJK IME (日中韓)、RTL、grapheme cluster (Unicode 16 UAX #29)、UI Automation、高コントラスト、カラーブラインドネスモード、WCAG 2.2 AA 準拠
+- §17 セキュリティ (新規): サンドボックス 3 レベル、Code signing、SBOM (CycloneDX)、脆弱性開示プロセス、データ暗号化 (Undo/Session/AI キー/RAG)、権限最小化
+- §18 リリース・配布・自動更新 (新規): MSIX/Portable Zip/MSI、カナリア→ステーブル 2 チャネル、差分更新 (bsdiff)、ロールバック、月次/四半期/年次リリースサイクル
+- §19 KPI/SLO/メトリクス (新規): DAU/リテンション/NPS 目標、パフォーマンス SLI/SLO、テレメトリ opt-in 原則
+- §20 エコシステム戦略 (新規): プラグインマーケットプレース (公式初期 10 種)、テーマギャラリー、スニペット/マクロ共有、ライセンス戦略 (Apache 2.0 候補)
+- §21 開発品質基盤 (新規): テストピラミッド (unit/integration/E2E/soak/fuzz)、パフォーマンス回帰検出、フィーチャーフラグ、クラッシュ収集、Bisect ツール、Windows シェル統合 (右クリック/Jump List/Windows Terminal)
+- §22 リスク・未決事項 12→20 に拡張 (GPU compute/Direct Storage/AppContainer/HDR/RTL/秀丸互換カバレッジ/テレメトリ項目/マーケットプレース運営/ライセンス を追加)
+
+**設計上の主要判断 (v2.0 で追加確定):**
+- **AI 統合の方針:** Copilot 相当のゴーストテキスト補完を標準機能として Phase 9 に組込 (プラグイン境界の内側で完結、AI 無効時は完全非ロード)。RAG/エージェント/マルチモデル比較も Phase 9 スコープに含める
+- **UI/UX の VSCode 相当到達目標:** Zen mode/分割ビュー/タブグループ/ミニマップ/Breadcrumb/Sticky scroll/Indent guides を全て標準機能として実装、"VSCode に慣れたユーザーが違和感なく移行できる" を到達点に設定
+- **アクセシビリティ:** WCAG 2.2 AA 準拠を Phase 12 の出荷判定条件に組込。NVDA/JAWS 手動確認を必須化
+- **セキュリティ運営基盤:** 脆弱性開示プロセスを事前に文書化 (`security@neomifes.dev` 仮)、SBOM を CI で自動生成、Coordinated Disclosure 90 日ポリシーを採用
+- **テレメトリ:** 完全 opt-in、送信内容は明示同意項目のみ、個人特定情報一切送信しない、匿名ユニーク ID は opt-out で削除可
+- **マーケットプレース戦略:** Phase 8 で基盤実装、Phase 12 出荷後に運営開始、初期は公式プラグイン 10 種 (Vim/Emacs/AI/Git/LSP マネージャ/Markdown プレビュー/LaTeX/HTML/Docker/AWS CLI)
+
+**検証:** ドキュメントのみの変更のためビルド不要。要件定義書 §5/§6/§8-13 の全項目・§20 の最終目標・§18 の非機能要件 全て が v2.0 のいずれかの章で拾われていることを目視確認。**60 機能継承マトリクスで秀丸/サクラ/MIFES 各エディタの固有機能が全て網羅されていることを再確認**。
+
+**教訓:** (1) 「設計文書のブラッシュアップ」は複数の視点 (テックリード / プロダクト責任者 / セキュリティ / アクセシビリティ / エコシステム) からの独立レビューで大幅に強化できる。単一視点の設計は必然的にブラインドスポットを持つ。(2) 「三大エディタの良いとこ取り」を主張するには、三大エディタの固有機能を全て列挙して「対応 Phase」を割り当てるマトリクスが必要 — v1.0 の 17 機能では網羅性不足、v2.0 の 60 機能で初めて主張の裏付けが取れた。(3) 「世界最高速」を主張するには、他エディタが実装していない/実装が浅い高速化技術を明示する必要がある (SIMD/GPU/Direct Storage/Frame pacing/PGO/LTO)。ただ「速い」と言うだけでは差別化にならない。(4) 「世界最高峰の UI/UX」は VSCode 相当を到達点に設定し、VSCode の全モダン UI (ミニマップ/Breadcrumb/Sticky scroll/Zen mode/分割ビュー) を明示的にスコープに含めることで達成基準が具体化される
+
+**追加確認事項:** Phase 5b1 push 後の CI (run `29668590762`) は 4 ジョブ全 green を確認 (Build & Test release 3m50s / debug 4m6s、UBSan clang-cl 3m4s、clang-tidy 32m45s)。予約していた ScheduleWakeup (25 分後の CI 確認用) は本セッションで CI green が確定したためキャンセル済。
+
+**次回 (Phase 5b2 継続):** 本 Session 28 も計画文書のみの変更で実装コードは変更なし。次セッションは master_roadmap.md v2.0 の §4 (Phase 5b2 詳細設計) を読み、Plan Mode で個別詳細プランを起こしてから実装。Phase 4b8 保留オプションも並行提示。
+
 <!-- 次セッションはここに追記 -->
