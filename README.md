@@ -12,6 +12,7 @@ Windows 向け純粋ネイティブテキストエディタ。C++23 + Win32 API 
 - [プロジェクト運用ガイド (CLAUDE.md)](CLAUDE.md)
 - [基本設計書](docs/design/basic_design.md)
 - [詳細設計書](docs/design/detailed_design.md)
+- [マスターロードマップ (未着手フェーズの実装詳細計画)](docs/design/master_roadmap.md)
 - [自己レビュー](docs/design/self_review.md)
 - [Architecture Decision Records](docs/decisions/README.md)
 - [フェーズレポート](docs/phase_reports/)

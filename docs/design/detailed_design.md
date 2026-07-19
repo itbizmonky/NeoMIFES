@@ -1,8 +1,9 @@
 # NeoMIFES 詳細設計書 v1.0
 
 > 上位: [`basic_design.md`](basic_design.md) / 要件: [`../../NeoMIFES_要件定義書.md`](../../NeoMIFES_要件定義書.md)
+> 未着手フェーズの実装詳細: [`master_roadmap.md`](master_roadmap.md) (Plan-of-Record、Phase 4b8以降はこちらが正)
 
-本書は各モジュールの内部データ構造・クラス設計・アルゴリズム・API 仕様を規定する「How」レベルのドキュメント。
+本書は各モジュールの内部データ構造・クラス設計・アルゴリズム・API 仕様を規定する「How」レベルのドキュメント。**本書は実装済み機能のリファレンス。未着手フェーズの計画は `master_roadmap.md` を参照。フェーズ完了時に該当章がここへ吸収される。**
 
 ---
 

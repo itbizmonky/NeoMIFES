@@ -3,6 +3,7 @@
 このファイルは Claude Code が本リポジトリで作業する際に必ず最初に参照するガイドです。要件定義書 [`NeoMIFES_要件定義書.md`](NeoMIFES_要件定義書.md) と併せて読むこと。
 
 > 🔖 **セッション再開時は先に [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) を読み、現在のフェーズと未検証の宿題を把握すること。**
+> 🗺️ **未着手フェーズ (Phase 4b8・5b2・5b3・5c・6〜12) の実装詳細は [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) に一気通貫で規定済み (2026-07-19 v2.0 発行、Google/MS 責任者視点レビュー済、23章)。これらのフェーズについて「何を作るか」を推測・再設計する前に必ずこのファイルの該当章を読むこと。本書は Plan-of-Record であり、要件定義書と同格の拘束力を持つ。矛盾が生じた場合はユーザーに確認する (CLAUDE.md 絶対ルール3)。**
 > 📜 **過去の設計判断・方針転換の経緯は [`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) にセッション単位で時系列集約。「なぜ今この設計か」の一次資料。**
 > 📝 **各セッション終了時、TIMELINE.md の末尾に「そのセッションで決めたこと・作ったもの」を 1 セクション追記すること。**
 
@@ -177,6 +178,8 @@ NeoMIFES/
 | 10 | ログ解析モード / CSV モード / JSON-XML Tree | 各モード動作 |
 | 11 | Git 統合 / LSP 統合 / マクロ | 個別 DoD |
 | 12 | 総合品質保証 (静的解析/Sanitizer/クラッシュテスト) | 出荷判定 |
+
+> ⚠️ **上表は v0 時点の粗い提案であり、Phase 4b8 以降の実装詳細としては [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) が正 (Plan-of-Record)。** 各フェーズのサブスコープ・UI/UX 設計・データ構造・性能目標・影響ファイルは master_roadmap.md 側にのみ記載されている。着手前に必ずそちらの該当章を読むこと。
 
 ---
 

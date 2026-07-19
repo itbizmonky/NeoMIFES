@@ -2,8 +2,9 @@
 
 > 対象要件: [`NeoMIFES_要件定義書.md`](../../NeoMIFES_要件定義書.md) v1.0
 > 上位ガイド: [`CLAUDE.md`](../../CLAUDE.md)
+> 未着手フェーズの実装詳細: [`master_roadmap.md`](master_roadmap.md) (Plan-of-Record)
 
-本書はプロジェクト全体のアーキテクチャ・レイヤ責務・非機能要件の実現方針を規定する「What」レベルのドキュメントである。実装レベル (「How」) は [`detailed_design.md`](detailed_design.md) を参照。
+本書はプロジェクト全体のアーキテクチャ・レイヤ責務・非機能要件の実現方針を規定する「What」レベルのドキュメントである。実装レベル (「How」) は [`detailed_design.md`](detailed_design.md) を参照。未着手フェーズの詳細計画 (フェーズごとの機能・UI/UX・性能目標) は [`master_roadmap.md`](master_roadmap.md) を参照。
 
 ---
 
