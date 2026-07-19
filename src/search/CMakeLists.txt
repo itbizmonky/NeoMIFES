@@ -1,4 +1,5 @@
 add_library(neomifes_search STATIC
+    src/replacement.cpp
     src/search_service.cpp
 )
 add_library(neomifes::search ALIAS neomifes_search)

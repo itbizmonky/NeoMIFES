@@ -931,7 +931,7 @@ private:
 
 ## 7. Search Engine 詳細
 
-**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装、Phase 5b1 (2026-07-19実装) で複数行にまたがるマッチに対応。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceAllCommand`/`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b2以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40) — 下記§7.1''で修正済み。
+**Phase 5a (2026-07-18実装) で本節冒頭のスケッチのうち`SearchService::findAll`(同期・単一行スコープ)を実装、Phase 5b1 (2026-07-19実装) で複数行にまたがるマッチに対応、Phase 5b2 (2026-07-19実装) で置換(`core::ReplaceAllCommand` + `search::expandReplacementTemplate`)を実装。** 元のスケッチは非同期(`std::future`)・`grep()`・`IncrementalFindService`・`ReplaceInFilesCommand`まで見込んでいたが、これらはPhase 5b3以降のスコープとして未着手のまま残す(実装済み範囲との対比を明確にするため、実際に動く§7.1'/§7.1'''を先に示し、元のスケッチは§7.1''として残す)。実装時に、元スケッチの`ReplaceAllCommand : public application::ICommand`という表記が実在しない名前空間だったことが判明した(実際は`neomifes::core::ICommand`、command.h:40)ほか、`master_roadmap.md` §4.3のPhase 5b2スケッチも実在しない`document::EditResult`/`SelectionModel::Snapshot`という型を前提にしていたことが判明した — いずれも実装確定前の高レベルスケッチに過ぎず、実際のシグネチャは下記§7.1'''参照。
 
 ### 7.1' SearchService (Phase 5a 実装、Phase 5b1 で複数行対応)
 ```cpp
@@ -945,7 +945,13 @@ struct Query {
     bool regex         = false;
 };
 
-struct Match { document::TextRange range; };
+struct Match {
+    document::TextRange range;
+    // Phase 5b2: capture groups 1..9 (RE2 1-indexed, capped at 9 - see
+    // search_service.h), empty for a literal query. Consumed by
+    // expandReplacementTemplate() below.
+    std::vector<document::TextRange> groups;
+};
 
 class SearchService {
 public:
@@ -964,7 +970,7 @@ public:
 - **既知のメモリスケーリング制約(Phase 5b1で許容):** 文書全体を1つのUTF-16バッファ+UTF-8変換+オフセット表へ連結するため、検索1回あたりのメモリ使用量が文書サイズに比例する(Phase 5aは最長1行分だけで済んでいた)。要件定義書の「10GB」目標とは緊張関係にあるが、下記§7.3のチャンク並列走査は依然未実装であり、この制約は実測が必要になった時点で改めてIssue化する方針
 - 空バッファ(文書全体が空、または個々のマッチがゼロ幅で位置0)はRE2の空入力に対する`submatch[i].data()==NULL`という仕様上、オフセット計算を特別扱いする(`findAllInBuffer()`)
 
-### 7.1'' 元スケッチ (Phase 5b 以降のスコープ、未実装)
+### 7.1'' 元スケッチ (Phase 5b3 以降のスコープ、未実装)
 ```cpp
 class SearchService {
 public:
@@ -988,15 +994,8 @@ public:
     void  cancel(State& state); // origin へカーソル戻し
 };
 
-// 全置換 Command (Undo 可能)
-class ReplaceAllCommand final : public core::ICommand {
-public:
-    ReplaceAllCommand(SearchService::Query, std::u16string replacement);
-    // execute: findAll → 位置降順で置換適用 (オフセットずれ回避)
-    // undo:    逆順に元テキストへ復元
-};
-
-// 複数ファイル置換 Command (ファイル単位でトランザクション化)
+// 複数ファイル置換 Command (ファイル単位でトランザクション化) - ReplaceAllCommand
+// 自体は Phase 5b2 で実装済み (§7.1''' 参照)、こちらはまだ未実装
 class ReplaceInFilesCommand final : public core::ICommand {
 public:
     ReplaceInFilesCommand(std::vector<std::filesystem::path>,
@@ -1004,6 +1003,50 @@ public:
     // 各ファイルに ReplaceAllCommand を適用し、履歴を統合
 };
 ```
+
+### 7.1''' 置換 (Phase 5b2 実装)
+
+`core::ReplaceAllCommand`(`src/core/include/neomifes/core/replace_all_command.h`)は`search::`を一切知らない疎結合設計 — `master_roadmap.md` §4.3のスケッチ(`ReplaceAllCommand`が`search::Match`を直接受け取る想定)から意図的に乖離した。理由: `search::`モジュールは`NEOMIFES_BUILD_TESTS`限定でしかビルドされておらず(実アプリ本体`NeoMIFES.exe`は未リンク、Phase 5aレビューのFix#4参照)、`core::`(常時ビルド対象)が`search::`へ依存すると、このガードを外しRE2/Abseilの取得を全ビルドで必須化する必要が生じる。Phase 5b3でFind bar UIが実際に`search::`を本体へリンクするまで、この結合は先送りする方針をユーザーに確認済み。
+
+```cpp
+// src/core/include/neomifes/core/replace_all_command.h
+namespace neomifes::core {
+
+// N個の独立したrange-replace編集をアトミックに1つのUndoステップとして適用。
+// MultiCursorEditCommand(edit数=カーソル数を前提)は転用不可 - 置換のマッチ数は
+// カーソル数と無関係。cursorsAfterExecute()/cursorsAfterUndo()はカーソルを
+// 一切動かさず、construction時のスナップショットをそのまま返す。
+class ReplaceAllCommand final : public ICommand {
+public:
+    ReplaceAllCommand(std::vector<PerCursorEdit> edits, std::vector<Cursor> cursorsBefore);
+    void execute(ExecutionContext&) override;
+    void undo(ExecutionContext&) override;
+    [[nodiscard]] std::size_t      weight() const noexcept override;
+    [[nodiscard]] std::string_view id() const noexcept override { return "edit.replaceAll"; }
+    [[nodiscard]] std::vector<Cursor> cursorsAfterExecute() const override { return m_cursorsBefore; }
+    [[nodiscard]] std::vector<Cursor> cursorsAfterUndo() const override    { return m_cursorsBefore; }
+    // ...
+};
+
+}  // namespace neomifes::core
+
+// src/search/include/neomifes/search/replacement.h
+namespace neomifes::search {
+
+// $0/$&(全体マッチ)・$1-$9(キャプチャグループ、未参加なら空文字列)・$$(リテラル$)
+// を展開。範囲外の$N・未知のエスケープ・末尾の$はリテラルのまま残す(エラーにしない
+// - SearchService::findAll()の「不完全な正規表現は空結果」という既存方針と同じ)。
+[[nodiscard]] std::u16string expandReplacementTemplate(std::u16string_view replacementTemplate,
+                                                        const document::Document& doc,
+                                                        const Match&               match);
+
+}  // namespace neomifes::search
+```
+
+- `execute()`/`undo()`の累積オフセット適用アルゴリズムは新規`src/core/include/neomifes/core/cumulative_shift_edit.h`(`applyEditsWithCumulativeShift()`/`undoEditsDescending()`)に切り出し、`MultiCursorEditCommand`と`ReplaceAllCommand`の両方が共有する(既存`MultiCursorEditCommand`の挙動は無変更、既存6テストが無変更のままpassすることで確認済み)
+- `search::Match`に`groups`フィールド(キャプチャグループ1-9、RE2の`NumberOfCapturingGroups()`を`std::min(9, ...)`でキャップ — `expandReplacementTemplate()`が`$1`-`$9`しか消費しないため)を追加。非参加の任意グループ(例: `(a)|(b)`が"b"にマッチした場合のグループ1)はマッチ開始位置での空レンジとして表現
+- **本PRのスコープ外(意図的に延期):** Preview API(`master_roadmap.md` §4.3の`preview()`静的メソッド)・ベンチマーク・チャンク圧縮Undoは、UIの消費者がまだ無い状態(Phase 5b3のFind bar UI配線待ち)で作るのはCLAUDE.mdルール3の推測実装にあたるため見送り。`search::`と`core::`を実際に繋ぐグルーコード(`search::Match` → `core::PerCursorEdit`変換)もPhase 5b3まで書かない(現時点ではテストのみでパイプライン全体の合成可能性を証明、`tests/unit/core_replace_all_command_test.cpp`の`IntegrationFindAllExpandTemplateThenReplaceAllProducesExpectedDocument`参照)
+- **既知の未解決コスト:** `BufferSnapshot::extract()`は毎回ピースリストを先頭から再走査するため、`ReplaceAllCommand`が数十万件規模のマッチを処理する場合はO(matches×pieces)になりうる(`docs/issues/replace_all_buffer_snapshot_extract_scaling.md`に記録、Phase 5b3で実際に大量マッチ経路ができてから再評価)
 
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |

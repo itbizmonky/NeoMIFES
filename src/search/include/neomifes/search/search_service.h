@@ -50,6 +50,19 @@ struct Query {
 
 struct Match {
     document::TextRange range;
+    // Capture groups 1..N (RE2 1-indexed) in pattern order, Phase 5b2.
+    // groups[i] corresponds to "$(i+1)" in a replacement template (see
+    // search::expandReplacementTemplate(), replacement.h). Empty for a
+    // literal (non-regex) query, since RE2::QuoteMeta produces no capturing
+    // groups. Capped at 9 entries (groups 10+ are not captured) -
+    // expandReplacementTemplate() only ever consumes $1-$9, and RE2's own
+    // docs note requesting fewer submatches than the pattern has "runs much
+    // faster". A non-participating optional group (e.g. "(a)|(b)" matching
+    // "b" leaves group 1 unmatched) is represented as an empty range
+    // (start == end, positioned at the match's start) rather than a
+    // separate sentinel - callers can test group.start == group.end to
+    // detect "not participating" without a distinct null-range type.
+    std::vector<document::TextRange> groups;
 };
 
 class SearchService {

@@ -2,6 +2,7 @@
 
 #include <re2/re2.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -54,25 +55,55 @@ namespace {
     return re;
 }
 
+// Converts one RE2 submatch to a UTF-16 TextRange, or `fallback` for a
+// non-participating capture group / an empty document (RE2 reports
+// sub.data() as nullptr in both cases - see findAllInBuffer's handling of
+// submatch[0] for the same signal). Used for capture groups only (Phase
+// 5b2) - submatch[0]'s own byteStart/byteEnd are computed inline in
+// findAllInBuffer because they additionally drive the zero-width-match
+// search-position advance below, which this helper does not need to know
+// about.
+[[nodiscard]] document::TextRange submatchToRange(const absl::string_view&    sub,
+                                                    const util::Utf8Conversion& conv,
+                                                    document::TextPos bufferStart,
+                                                    document::TextPos fallback) {
+    if (conv.utf8.empty() || sub.data() == nullptr) {
+        return document::TextRange{.start = fallback, .end = fallback};
+    }
+    const auto         byteStart = static_cast<std::size_t>(sub.data() - conv.utf8.data());
+    const std::size_t byteEnd   = byteStart + sub.size();
+    return document::TextRange{.start = bufferStart + conv.byteToUtf16[byteStart],
+                               .end   = bufferStart + conv.byteToUtf16[byteEnd]};
+}
+
 // Scans an already-UTF-8-converted buffer for every non-overlapping match,
 // appending each as a document::TextRange (bufferStart-relative byte offsets
-// mapped back to UTF-16 via `conv.byteToUtf16`) to `out`. Since Phase 5b1,
-// `conv` covers the whole document (not one line, as in Phase 5a), so a
-// match's UTF-8 bytes - and therefore RE2's search window - may span
-// multiple original lines; nothing below needs to know that. Handles an
-// empty buffer (conv.utf8.empty(), i.e. an empty document) as a special
-// case: RE2 documents submatch[0].data() as indistinguishable from "no
-// match" (always NULL) when the input text itself is empty, so byte-offset
-// pointer arithmetic is skipped there in favour of the one deterministic
-// answer (position 0).
+// mapped back to UTF-16 via `conv.byteToUtf16`) plus its capture groups
+// (Phase 5b2) to `out`. Since Phase 5b1, `conv` covers the whole document
+// (not one line, as in Phase 5a), so a match's UTF-8 bytes - and therefore
+// RE2's search window - may span multiple original lines; nothing below
+// needs to know that. Handles an empty buffer (conv.utf8.empty(), i.e. an
+// empty document) as a special case: RE2 documents every submatch (whole
+// match and every group) as indistinguishable from "no match"/"did not
+// participate" (always NULL) when the input text itself is empty, so
+// byte-offset pointer arithmetic is skipped there in favour of the one
+// deterministic answer (position 0).
 void findAllInBuffer(const re2::RE2& re, const util::Utf8Conversion& conv,
                       document::TextPos bufferStart, std::vector<Match>& out) {
+    // Capture groups beyond $9 are never referenced by
+    // search::expandReplacementTemplate() (Phase 5b2), so capping here
+    // saves RE2 the cost of populating submatches nothing will read (RE2's
+    // own docs note requesting fewer than all groups "runs much faster").
+    const int                      numGroups = std::min(9, re.NumberOfCapturingGroups());
+    std::vector<absl::string_view> submatches(static_cast<std::size_t>(numGroups) + 1);
+
     std::size_t searchPos = 0;
     while (searchPos <= conv.utf8.size()) {
-        absl::string_view submatch;
-        if (!re.Match(conv.utf8, searchPos, conv.utf8.size(), re2::RE2::UNANCHORED, &submatch, 1)) {
+        if (!re.Match(conv.utf8, searchPos, conv.utf8.size(), re2::RE2::UNANCHORED, submatches.data(),
+                      static_cast<int>(submatches.size()))) {
             break;
         }
+        const absl::string_view& submatch = submatches[0];
 
         std::size_t byteStart = 0;
         std::size_t byteEnd   = 0;
@@ -80,11 +111,18 @@ void findAllInBuffer(const re2::RE2& re, const util::Utf8Conversion& conv,
             byteStart = static_cast<std::size_t>(submatch.data() - conv.utf8.data());
             byteEnd   = byteStart + submatch.size();
         }
+        const document::TextPos matchStart = bufferStart + conv.byteToUtf16[byteStart];
+        const document::TextPos matchEnd   = bufferStart + conv.byteToUtf16[byteEnd];
 
-        out.push_back(Match{.range = document::TextRange{
-                                 .start = bufferStart + conv.byteToUtf16[byteStart],
-                                 .end   = bufferStart + conv.byteToUtf16[byteEnd],
-                             }});
+        std::vector<document::TextRange> groups;
+        groups.reserve(static_cast<std::size_t>(numGroups));
+        for (int g = 1; g <= numGroups; ++g) {
+            groups.push_back(
+                submatchToRange(submatches[static_cast<std::size_t>(g)], conv, bufferStart, matchStart));
+        }
+
+        out.push_back(Match{.range  = document::TextRange{.start = matchStart, .end = matchEnd},
+                            .groups = std::move(groups)});
 
         if (conv.utf8.empty()) {
             break;  // only one possible position on an empty document

@@ -871,4 +871,37 @@
 
 **次回 (Phase 5b2 継続):** 本 Session 28 は計画文書・ドキュメント相互参照の追加のみで実装コードは変更なし。次セッションは (1) `CLAUDE.md` 冒頭の誘導により自動的に master_roadmap.md の存在を認識できるはずだが、明示的に master_roadmap.md v2.0 の §4 (Phase 5b2 詳細設計) を読み、Plan Mode で個別詳細プランを起こしてから実装。Phase 4b8 保留オプションも並行提示。
 
+## Session 28 続き (2026-07-19): Phase 5b2 (置換 core::ReplaceAllCommand + search::expandReplacementTemplate) 完了
+
+**着手経緯:** ユーザーが「順次開発を進めよ」と指示。master_roadmap.md(Plan-of-Record)の順序どおりPhase 5b2に着手。Plan Modeへ移行し、まず既存コード(`command.h`/`edit_commands.{h,cpp}`/`search_service.{h,cpp}`/`core_edit_commands_test.cpp`)を実地に読んで設計方針を固めた上で、Plan agentに設計検証を依頼した。
+
+**Plan agentによる設計検証で判明した重要な乖離:** master_roadmap.md §4.3のスケッチは `ReplaceAllCommand` が `search::MatchWithCaptures` を直接コンストラクタで受け取る設計(core→search依存)だったが、これはPhase 5aレビューのFix#4(「searchは実アプリ本体`NeoMIFES.exe`にまだリンクされていないため、RE2/Abseilの取得をNEOMIFES_BUILD_TESTS限定にする」)という既存判断と衝突することが判明。Plan agentは「両方とも根拠のある選択で、ユーザーに明示確認すべき」と指摘し、AskUserQuestionで確認したところ**疎結合を維持する方針**(核心の`core::ReplaceAllCommand`はsearch::を一切知らない)が選ばれた。副次的に、roadmap §4.3が想定していた`ICommand`のシグネチャ(`document::EditResult execute(document::Document&)`、`SelectionModel::Snapshot`)も実際のコードに存在しない型であることが判明し、roadmapのPhase 5b2章は実装確定前の高レベルスケッチに過ぎなかったことが確認された。
+
+**成果物:**
+- 新規`src/core/include/neomifes/core/cumulative_shift_edit.{h,cpp}`(`applyEditsWithCumulativeShift()`/`undoEditsDescending()`) — 既存`MultiCursorEditCommand::execute()`/`undo()`の累積オフセットアルゴリズムを機械的に抽出。既存の`viewport_math.h`/`resize_math.h`と同じ「モジュール直下フラット配置、detail::等のネスト無し」規約に従う
+- `MultiCursorEditCommand`を上記2関数を呼ぶ形にリファクタ(挙動不変、既存4テストが無変更のままpassすることで実証)
+- 新規`src/core/include/neomifes/core/replace_all_command.{h,cpp}` — `core::ReplaceAllCommand`。既存`MultiCursorEditCommand`(edit数=カーソル数前提)は転用不可なため新規クラスとして実装。`cursorsAfterExecute()`/`cursorsAfterUndo()`はどちらも構築時のカーソルスナップショットを無変更のまま返す(置換はカーソルを一切動かさない設計)。`PerCursorEdit`(既存構造体)をそのまま再利用し新規struct無し
+- `search::Match`にキャプチャグループ対応(`std::vector<document::TextRange> groups`)を追加。RE2の`NumberOfCapturingGroups()`を`std::min(9, ...)`でキャップ(`expandReplacementTemplate()`が`$1`-`$9`しか消費しないため、RE2公式ドキュメントの「要求サブマッチ数を絞ると高速化する」という推奨に従う)。非参加の任意グループ(例: `(a)|(b)`が"b"にマッチした場合のグループ1)はマッチ開始位置での空レンジとして表現、RE2が空文書に対して全submatchを`nullptr`扱いする既存の仕様と同じ判定ロジックを再利用する新規`submatchToRange()`ヘルパーで対応
+- 新規`src/search/include/neomifes/search/replacement.{h,cpp}` — `search::expandReplacementTemplate()`。`$0`/`$&`(全体マッチ)・`$1`-`$9`(キャプチャグループ)・`$$`(リテラル`$`)を展開。範囲外の`$N`・未知のエスケープ・末尾の`$`はリテラルのまま残す(エラーにしない、`findAll()`の「不完全な正規表現は空結果」という既存方針と同じ哲学)
+- テスト数: 279→300(+21件)。`core_replace_all_command_test.cpp`(新規6件、`SearchService::findAll`→`expandReplacementTemplate`→`ReplaceAllCommand`のフルパイプラインを検証する統合テスト含む)・`search_replacement_test.cpp`(新規9件)・`search_search_service_test.cpp`(キャプチャグループ関連6件追加)
+
+**検証:**
+- ローカル **Debug/Release/ubsan(clang-cl) 全green**、全300テストpass
+- clang-tidy: 新規5ファイル全てチェック、`hicpp-use-auto`警告1件を検出(`submatchToRange()`内の`const std::size_t byteStart = static_cast<std::size_t>(...)`が型名重複と判定)、`const auto`化で修正・再検証してゼロ警告を確認
+
+**意図的にスコープ外とした項目 (roadmap §4.3との差分):**
+- Preview API(`ReplaceAllCommand::preview()`静的メソッド)・100万件ベンチマーク・チャンク圧縮Undo — UIの消費者(Find bar)がまだ無い状態で作るのはCLAUDE.mdルール3の推測実装にあたるため、Phase 5b3以降へ明示的に延期
+- `search::Match` → `core::PerCursorEdit`変換のグルーコード — Phase 5b3でFind bar UIが実際にsearch::を本体へリンクするまで書かない。現状はテスト内でのみパイプライン全体の合成可能性を証明(本番コードとしては存在しない)
+
+**新規発見・記録した既知の制約:** `BufferSnapshot::extract()`が毎回ピースリストを先頭から再走査するコストは、`MultiCursorEditCommand`から既存のものだが、`ReplaceAllCommand`が数十万件規模のマッチを処理するようになると初めて実務上のボトルネックになりうる(Plan agentのレビューで指摘)。`docs/issues/replace_all_buffer_snapshot_extract_scaling.md`として起票、Phase 5b3で実際の大量マッチ経路ができてから再評価する方針。
+
+**ドキュメント同期:**
+- `docs/design/detailed_design.md` §7に新規§7.1'''(Phase 5b2実装リファレンス)追加、§7.1''から実装済みの`ReplaceAllCommand`を除去
+- `docs/design/master_roadmap.md` §4に新規§4.7(実装後の確定事項)追加 — coupling方針の決定・実際の`ICommand`シグネチャとの乖離・Preview/ベンチ延期を記録
+- `docs/handoff/RESUME_HERE.md`に新規§3.18(完了記録)追加、§1状態表・§6推奨プロンプトをPhase 5b3向けに更新
+
+**教訓:** (1) 実装前に書かれた計画文書(master_roadmap.md)のスケッチは「実装確定前の高レベル指針」であり、実コードのシグネチャや既存のアーキテクチャ判断(Fix#4のガード)と衝突しうる — CLAUDE.mdルール3が要求する「矛盾が生じた場合はユーザーに確認する」を字義通り実行したことで、roadmapを無批判に実装してビルドシステムを壊す(RE2/Abseilの取得を全ビルド必須化する)という手戻りを未然に防げた。(2) Plan agentによる設計検証は「自分の設計が正しいか」を確認するだけでなく、自分では気づいていなかった既存コードとの整合性問題(Fix#4との衝突)・パフォーマンスリスク(`BufferSnapshot::extract()`のO(pieces)コスト)を独立した視点から発見する価値がある。(3) 既存の類似クラス(`MultiCursorEditCommand`)から新規クラス(`ReplaceAllCommand`)を作る際、「アルゴリズムは同じだがカーソル移動の意味論が異なる」という場合は、アルゴリズム部分だけを共有ヘルパーへ抽出し、意味論が異なる部分(cursorsAfterExecute/Undo)は別クラスとして残すのが適切な粒度— 全部を1クラスにまとめる(条件分岐で意味論を切り替える)より責務が明確になる。
+
+**次回 (Phase 5b3):** Find bar UI + コマンドパレット配線の詳細設計から着手。master_roadmap.md §5に既に詳細規定済み(WC_EDIT子コントロール、FindBarState、コマンドパレットのファジー検索設計まで含む)。ここで初めて`search::`が実アプリ本体へリンクされ、`search::Match` + `expandReplacementTemplate()` → `core::PerCursorEdit` → `core::ReplaceAllCommand`を繋ぐ実際のグルーコードをUIコードとして書くことになる。**保留中のPhase 4b8**に戻る選択肢も次セッション開始時にユーザーへ提示すること。push は本セッション終了時点で未実施 — 次回開始時にユーザーへ確認すること。
+
 <!-- 次セッションはここに追記 -->

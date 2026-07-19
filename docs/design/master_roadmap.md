@@ -412,6 +412,17 @@ private:
 - **新規:** `src/core/replace_all_command.{h,cpp}`、`tests/unit/core_replace_all_command_test.cpp`、`tests/bench/replace_all_bench.cpp`
 - **変更:** `src/search/include/neomifes/search/search_service.h` (`Match` に captures 追加、`findAll` に captures 返却モード)、`src/search/src/search_service.cpp` (RE2 の N-arg match 呼出し)
 
+### 4.7 実装後の確定事項/変更点 (2026-07-19、Phase 5b2 完了)
+
+実装は §4.3 のスケッチと以下の点で意図的に乖離した。実装確定前の高レベルスケッチと実コードとの差分は、実装セッションで判明した情報を優先し、以下の通り確定させる (`detailed_design.md` §7.1'''に実装リファレンスを記載済み)。
+
+- **core::とsearch::の依存関係: 疎結合を維持 (スケッチから変更)。** §4.3 は `ReplaceAllCommand` が `search::MatchWithCaptures` を直接受け取る設計だったが、これは Phase 5a レビューの Fix#4 (「search は実アプリ本体に未リンクのため RE2/Abseil 取得を `NEOMIFES_BUILD_TESTS` 限定にする」) と衝突すると Plan agent によるレビューで判明。ユーザー確認の結果、`core::ReplaceAllCommand` は `search::` を一切知らない設計に変更し、両者を繋ぐグルーコードは Phase 5b3 (Find bar UI 配線、実際に search が本体へリンクされるタイミング) まで書かないことが確定した
+- **`ICommand` の実シグネチャはスケッチと異なっていた。** §4.3 が想定した `document::EditResult execute(document::Document&)` / `SelectionModel::Snapshot` という型はコードベースに存在せず、実際は `ExecutionContext&` / `std::vector<Cursor>` (`command.h`)。§4.3 は実装確定前の高レベルスケッチに過ぎなかったことが確認された
+- **ファイル配置は §4.6 の想定通り確定:** `src/core/include/neomifes/core/replace_all_command.{h,cpp}` (roadmap の想定ファイル名と一致)。加えて `MultiCursorEditCommand` と共有する累積オフセットアルゴリズムを新規 `src/core/include/neomifes/core/cumulative_shift_edit.{h,cpp}` に抽出 (§4.3 未記載の追加設計判断)
+- **キャプチャグループは `search::Match.groups`(TextRange のみ)として実装、$1-$9 展開は別関数 `search::expandReplacementTemplate()` が担当。** §4.3 が示唆した「`MatchWithCaptures` に展開済みテキストを持たせる」設計ではなく、レンジのみ保持し呼び出し側 (`expandReplacementTemplate`) が `Document` から都度テキストを抽出する設計にした。理由: マッチ時点 (置換適用前) の元ドキュメントに対して安全に抽出できるため、累積オフセット計算との結合を避けられる
+- **Preview API・ベンチマーク・チャンク圧縮 Undo は Phase 5b3 以降へ延期。** UI の消費者がまだ無い状態でこれらを作るのは CLAUDE.md ルール3の推測実装にあたるため、本 PR のスコープから明示的に除外した
+- **既知の未解決コスト:** `BufferSnapshot::extract()` の O(pieces) 再走査が `ReplaceAllCommand` の大量マッチ処理でボトルネックになりうることが実装時に判明 (`docs/issues/replace_all_buffer_snapshot_extract_scaling.md` に記録、Phase 5b3 で実際の大量マッチ経路ができてから再評価)
+
 ---
 
 ## 5. Phase 5b3 — Find bar UI + コマンドパレット + マッチハイライト

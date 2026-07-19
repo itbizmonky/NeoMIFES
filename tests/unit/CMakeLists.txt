@@ -19,12 +19,14 @@ add_executable(neomifes_unit_tests
     render_text_layout_cache_test.cpp
     core_selection_model_test.cpp
     core_edit_commands_test.cpp
+    core_replace_all_command_test.cpp
     core_undo_stack_test.cpp
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp
     app_editor_input_test.cpp
     ui_click_tracking_test.cpp
     search_search_service_test.cpp
+    search_replacement_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

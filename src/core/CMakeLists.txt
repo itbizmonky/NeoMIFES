@@ -1,6 +1,8 @@
 add_library(neomifes_core STATIC
     src/command_dispatcher.cpp
+    src/cumulative_shift_edit.cpp
     src/edit_commands.cpp
+    src/replace_all_command.cpp
     src/selection_model.cpp
     src/undo_stack.cpp
     src/viewport.cpp

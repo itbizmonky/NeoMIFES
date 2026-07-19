@@ -272,4 +272,74 @@ TEST(SearchServiceTest, EmptyLineDoesNotMatchNonEmptyPattern) {
     EXPECT_EQ(result[1], (TextRange{.start = 2, .end = 3}));
 }
 
+TEST(SearchServiceTest, CapturingGroupsPopulateMatchGroupsInPatternOrder) {
+    const Document doc = makeDoc(u"foobar");
+    const Query query{.pattern = u"(foo)(bar)", .regex = true};
+
+    const std::vector<Match> result = SearchService::findAll(doc, query);
+    ASSERT_EQ(result.size(), 1U);
+    ASSERT_EQ(result[0].groups.size(), 2U);
+    EXPECT_EQ(result[0].groups[0], (TextRange{.start = 0, .end = 3}));  // "foo"
+    EXPECT_EQ(result[0].groups[1], (TextRange{.start = 3, .end = 6}));  // "bar"
+}
+
+TEST(SearchServiceTest, NonParticipatingOptionalGroupIsEmptyRangeAtMatchStart) {
+    const Document doc = makeDoc(u"b");
+    const Query query{.pattern = u"(a)|(b)", .regex = true};
+
+    const std::vector<Match> result = SearchService::findAll(doc, query);
+    ASSERT_EQ(result.size(), 1U);
+    ASSERT_EQ(result[0].groups.size(), 2U);
+    EXPECT_TRUE(result[0].groups[0].empty());
+    EXPECT_EQ(result[0].groups[0].start, result[0].range.start);
+    EXPECT_EQ(result[0].groups[1], (TextRange{.start = 0, .end = 1}));  // "b"
+}
+
+TEST(SearchServiceTest, LiteralQueryHasEmptyGroupsVector) {
+    const Document doc = makeDoc(u"foo(bar)");
+    const Query query{.pattern = u"foo(bar)", .regex = false};
+
+    const std::vector<Match> result = SearchService::findAll(doc, query);
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_TRUE(result[0].groups.empty());
+}
+
+TEST(SearchServiceTest, WholeWordNonCapturingWrapperDoesNotAppearInGroups) {
+    const Document doc = makeDoc(u"cat");
+    const Query query{.pattern = u"(c)(a)(t)", .caseSensitive = true, .wholeWord = true, .regex = true};
+
+    const std::vector<Match> result = SearchService::findAll(doc, query);
+    ASSERT_EQ(result.size(), 1U);
+    // Only the 3 user-authored groups, not a 4th for buildPattern()'s \b(?:...)\b wrapper.
+    ASSERT_EQ(result[0].groups.size(), 3U);
+    EXPECT_EQ(result[0].groups[0], (TextRange{.start = 0, .end = 1}));
+    EXPECT_EQ(result[0].groups[1], (TextRange{.start = 1, .end = 2}));
+    EXPECT_EQ(result[0].groups[2], (TextRange{.start = 2, .end = 3}));
+}
+
+TEST(SearchServiceTest, CapturingGroupsOnEmptyDocumentDoNotCrash) {
+    const Document doc = makeDoc(u"");
+    const Query query{.pattern = u"(a)*", .regex = true};
+
+    EXPECT_NO_THROW({
+        const std::vector<Match> result = SearchService::findAll(doc, query);
+        ASSERT_EQ(result.size(), 1U);
+        ASSERT_EQ(result[0].groups.size(), 1U);
+        EXPECT_TRUE(result[0].groups[0].empty());
+    });
+}
+
+TEST(SearchServiceTest, MoreThanNineCapturingGroupsAreCappedWithoutOverflow) {
+    const Document doc = makeDoc(u"abcdefghijk");
+    const Query query{.pattern = u"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)", .regex = true};
+
+    const std::vector<Match> result = SearchService::findAll(doc, query);
+    ASSERT_EQ(result.size(), 1U);
+    // Capped at 9 (Match.groups' documented limit) even though the pattern
+    // has 11 capturing groups.
+    ASSERT_EQ(result[0].groups.size(), 9U);
+    EXPECT_EQ(result[0].groups[0], (TextRange{.start = 0, .end = 1}));   // "a"
+    EXPECT_EQ(result[0].groups[8], (TextRange{.start = 8, .end = 9}));   // "i"
+}
+
 }  // namespace
