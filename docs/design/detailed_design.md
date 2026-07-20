@@ -1308,6 +1308,52 @@ public:
 
 **意図的にスコープ外とした項目(5c3/5c4側でmain.cppに追加):** `RenderPipeline::setBookmarkedLines({})`/`setMatchVisuals({})`・`FindBar::setMatchCount(0,0)`・`FindReplaceState::currentMatches.clear()`等のキャッシュ済みビジュアル状態のリセット。これらは`openDocumentAt()`から到達できない`main.cpp`側の状態であり、5c3/5c4が実際のUIトリガー(キーバインド)を配線する同一コミットでまとめて後始末する。
 
+### 7.1''''''''' GrepBar / Grep結果ペインUI (Phase 5c3 実装)
+
+`neomifes::ui::GrepBar`(`src/ui/include/neomifes/ui/grep_bar.h`)は`Ctrl+Shift+F`で開くGrep結果ペイン。既存`ui::CommandPalette`(WC_LISTBOX管理・フォーカス奪取対策)と`ui::FindBar`(2つのWC_EDITが1つのサブクラスを共有)の設計をそのまま組み合わせた構造で、新規のWin32サブクラス機構は不要だった。
+
+```cpp
+// src/ui/include/neomifes/ui/grep_bar.h
+struct GrepBarConfig {
+    std::function<void(std::u16string_view queryText, std::u16string_view folderText)> onRunQuery;
+    std::function<void(std::size_t resultIndex)> onResultActivated;
+    std::function<void()> onClosed;
+};
+
+class GrepBar {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const GrepBarConfig& config);
+    void show() noexcept;
+    void hide() noexcept;
+    [[nodiscard]] bool isVisible() const noexcept;
+    void setResults(const std::vector<std::u16string>& rows) noexcept;
+    void onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept;
+    void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
+    // ...
+};
+```
+
+**橋渡し用のヘッドレス純粋関数2つ**(`goto_line_parser.h`と同じパターン、`src/app/include/neomifes/app/`配下 — `ui::`層は`search::`/`document::`/`core::`を一切知らない既存原則を維持するため、`GrepBar`自身は`search::GrepMatch`を直接扱わない):
+
+```cpp
+// grep_query_builder.h
+[[nodiscard]] std::optional<search::GrepQuery> buildGrepQueryFromInput(
+    std::u16string_view queryText, std::u16string_view folderText);
+
+// grep_result_formatting.h
+[[nodiscard]] std::u16string formatGrepResultRow(const search::GrepMatch& match);
+```
+
+**設計上の要点:**
+- **検索実行はEnterキーによる明示トリガーのみ。** キー入力ごとの自動再実行(Find bar式デバウンス)は不採用 — `GrepService::findAll()`はディレクトリ全体を舐める同期処理であり、単一ドキュメント内のインクリメンタル検索と異なりキー入力のたびに実行するとUIが固まるリスクがある(ユーザー確認済み)。`GrepBar`に`WM_TIMER`/`EN_CHANGE`処理は一切無い
+- **クリック=選択のみ、ダブルクリック=ジャンプ+`hide()`。** `CommandPalette::runSelectedCommand()`と同型。単一クリックで即座に閉じる設計ではない(結果を眺めながら選ぶ操作性を優先)
+- **`buildGrepQueryFromInput()`はファイルI/Oを一切行わない。** 存在しないフォルダは`GrepService::findAll()`側が既に静かにスキップする設計(Phase 5c1)のため、この関数は純粋計算のまま保てる。単一rootのみ構築(複数フォルダ入力は非対応)、include/exclude glob・Case/Whole word/Regexトグルは`GrepQuery`/`Query`のデフォルト値のまま(入力UIが無いため)
+- **`formatGrepResultRow()`は`"{path}({line+1}): {lineText}"`形式、1始まり行番号。** `GrepMatch::line`自体は0始まりだが、`ui::parseGotoLineInput()`のCtrl+G表示慣習と揃えた
+- **ジャンプ時、`main.cpp`の`jumpToGrepResult()`が`openDocumentAt()`(Phase 5c2)を呼んだ後、その関数自身が行わない後始末を実施する:** `RenderPipeline::setMatchVisuals({})`/`setBookmarkedLines({})`(`BookmarkManager::clear()`は`openDocumentAt()`内部で既に呼ばれるが、`RenderPipeline`側のキャッシュされたコピーは別物のため明示リセットが必要)、`FindBar::setMatchCount(0,0)`、`FindReplaceState::currentMatches.clear()`。5c2で意図的に据え置いていた後始末(§7.1''''''''参照)がこれで実装された
+- **`Mode::GrepResult`のような集中モード管理enumは新設しなかった。** 本コードベースに`Mode`enumは元々存在せず、`FindBar`/`CommandPalette`/`GotoLineBar`と同じ「個々のオーバーレイが独立して`isVisible()`を持つ」規約(相互排他制御なし)をそのまま踏襲
+
+**意図的にスコープ外とした項目:** フォルダピッカーダイアログ、include/exclude globの入力UI、Case/Whole word/Regexトグル、複数フォルダ入力、Grepヒットの`MatchVisual`エディタ本体ハイライト、`GrepMatch`へのキャプチャグループ・「結果内で置換」、ジャンプ失敗時のエラートーストUI、検索履歴永続化、タグジャンプパーサ(5c4)。詳細は`master_roadmap.md` §5.5参照。
+
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |
 |---|---|
