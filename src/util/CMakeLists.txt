@@ -2,6 +2,7 @@ add_library(neomifes_util STATIC
     src/utf8_convert.cpp
     src/fuzzy_matcher.cpp
     src/version.cpp
+    src/glob_match.cpp
 )
 add_library(neomifes::util ALIAS neomifes_util)
 

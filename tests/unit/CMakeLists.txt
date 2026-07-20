@@ -33,6 +33,8 @@ add_executable(neomifes_unit_tests
     util_fuzzy_matcher_test.cpp
     search_search_service_test.cpp
     search_replacement_test.cpp
+    util_glob_match_test.cpp
+    search_grep_service_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

@@ -1,4 +1,5 @@
 add_library(neomifes_search STATIC
+    src/grep_service.cpp
     src/replacement.cpp
     src/search_service.cpp
 )
