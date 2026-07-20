@@ -17,6 +17,10 @@ target_link_libraries(neomifes_app_input
     PUBLIC
         neomifes::core
         neomifes::document
+        # grep_query_builder.h/grep_result_formatting.h (Phase 5c3) expose
+        # search::GrepQuery/GrepMatch in their public signatures - same
+        # reasoning as core/document above (document_open.h).
+        neomifes::search
     PRIVATE
         neomifes::compile_options
         neomifes::util

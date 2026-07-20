@@ -49,7 +49,10 @@
 #include <variant>
 #include <vector>
 
+#include "neomifes/app/document_open.h"
 #include "neomifes/app/editor_input.h"
+#include "neomifes/app/grep_query_builder.h"
+#include "neomifes/app/grep_result_formatting.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -64,6 +67,7 @@
 #include "neomifes/platform/perf_clock.h"
 #include "neomifes/platform/process_metrics.h"
 #include "neomifes/render/render_pipeline.h"
+#include "neomifes/search/grep_service.h"
 #include "neomifes/search/replacement.h"
 #include "neomifes/search/search_service.h"
 #include "neomifes/ui/command_descriptor.h"
@@ -72,6 +76,7 @@
 #include "neomifes/ui/find_navigation.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/goto_line_parser.h"
+#include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/main_window.h"
 
 #include "frame_profile.h"
@@ -103,6 +108,8 @@ using neomifes::platform::PerfClock;
 using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
 using neomifes::search::expandReplacementTemplate;
+using neomifes::search::GrepMatch;
+using neomifes::search::GrepService;
 using neomifes::search::Match;
 using neomifes::search::Query;
 using neomifes::search::SearchService;
@@ -113,6 +120,8 @@ using neomifes::ui::FindBar;
 using neomifes::ui::FindBarConfig;
 using neomifes::ui::GotoLineBar;
 using neomifes::ui::GotoLineBarConfig;
+using neomifes::ui::GrepBar;
+using neomifes::ui::GrepBarConfig;
 using neomifes::ui::kWindowClassName;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
@@ -407,6 +416,17 @@ struct FindReplaceState {
     std::size_t          currentMatchIndex = 0;
 };
 
+// Grep results pane state (Phase 5c3) - kept separate from FindReplaceState
+// since Grep and Find are independent, simultaneously-visible overlays (no
+// mutual exclusion exists anywhere in this codebase - see grep_bar.h's class
+// comment) with unrelated result shapes (search::GrepMatch vs. search::Match).
+// GrepBar itself never sees search::GrepMatch (stays decoupled from
+// neomifes::search, same rationale as FindBar - see FindReplaceState's own
+// comment above), so this state has to live here.
+struct GrepState {
+    std::vector<GrepMatch> currentResults;
+};
+
 // Rebuilds RenderPipeline's match highlight set from `state.currentMatches`,
 // marking `state.currentMatchIndex` as the "active" one (Phase 5b3a).
 // Pulled out of runFindQuery()/navigateToMatch() since both need to do this
@@ -507,7 +527,11 @@ void closeFindBar(HWND hwnd, FindBar& findBar, FindReplaceState& state, RenderPi
 bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
                       FindReplaceState& state, SelectionModel& selectionModel, Viewport& viewport,
                       const Document& document, RenderPipeline& renderPipeline) {
-    if (ctrlDown && vkCode == 'F') {
+    // !shiftDown is redundant today (handleGrepKey() is checked earlier in
+    // handleKeyDownEvent()'s dispatch chain and already claims Ctrl+Shift+F
+    // via an early return), but makes this condition self-documenting and
+    // safe against a future reordering of that chain (Phase 5c3).
+    if (ctrlDown && !shiftDown && vkCode == 'F') {
         findBar.show();
         return true;
     }
@@ -526,6 +550,20 @@ bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Fin
 bool handleCommandPaletteKey(UINT vkCode, bool shiftDown, bool ctrlDown, CommandPalette& commandPalette) {
     if (ctrlDown && shiftDown && vkCode == 'P') {
         commandPalette.show();
+        return true;
+    }
+    return false;
+}
+
+// Ctrl+Shift+F while the document editing area has focus (Phase 5c3) -
+// mirrors handleCommandPaletteKey()'s single-purpose shape. Must be checked
+// in handleKeyDownEvent()'s dispatch chain BEFORE handleFindBarKey():
+// handleFindBarKey()'s own `ctrlDown && vkCode == 'F'` check does not look
+// at shiftDown, so without this ordering Ctrl+Shift+F would already be
+// swallowed by the plain Find bar before ever reaching this function.
+bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar) {
+    if (ctrlDown && shiftDown && vkCode == 'F') {
+        grepBar.show();
         return true;
     }
     return false;
@@ -846,7 +884,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
                         Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
                         FindBar& findBar, FindReplaceState& findReplaceState,
-                        CommandPalette& commandPalette, GotoLineBar& gotoLineBar,
+                        CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                         BookmarkManager& bookmarks, bool freeCursorModeEnabled,
                         std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled,
@@ -865,6 +903,9 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     }
     if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
+        return;
+    }
+    if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar)) {
         return;
     }
     if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
@@ -1134,6 +1175,97 @@ GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Document& document, Selectio
     return config;
 }
 
+// GrepBarConfig::onRunQuery (Phase 5c3) - builds a search::GrepQuery from
+// GrepBar's raw text fields and runs it synchronously. See grep_bar.h's
+// class comment for why this is Enter-triggered rather than live/debounced:
+// a directory-wide Grep is far more expensive than Find bar's single-document
+// incremental search, and this codebase has no async infrastructure to keep
+// the UI responsive while one runs.
+void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText, GrepState& grepState,
+                  GrepBar& grepBar) {
+    const auto query = neomifes::app::buildGrepQueryFromInput(queryText, folderText);
+    grepState.currentResults = query ? GrepService::findAll(*query) : std::vector<GrepMatch>{};
+
+    std::vector<std::u16string> rows;
+    rows.reserve(grepState.currentResults.size());
+    for (const auto& match : grepState.currentResults) {
+        rows.push_back(neomifes::app::formatGrepResultRow(match));
+    }
+    grepBar.setResults(rows);
+}
+
+// GrepBarConfig::onResultActivated (Phase 5c3) - opens the file a Grep
+// result points to via neomifes::app::openDocumentAt() (Phase 5c2), then
+// performs the reset sequence that function's header comment explicitly
+// leaves to the caller: RenderPipeline's cached match/bookmark visuals and
+// FindBar's match count are separate from what openDocumentAt() itself
+// already resets internally (undo history, BookmarkManager, both selection
+// anchors, free-cursor virtual columns - see document_open.h). Mirrors
+// replaceAllMatches()'s reset sequence above.
+void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, Document& document,
+                      CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
+                      BookmarkManager& bookmarks, RenderPipeline& renderPipeline, FindBar& findBar,
+                      FindReplaceState& findReplaceState,
+                      std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                      std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                      std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+    if (resultIndex >= grepState.currentResults.size()) {
+        return;
+    }
+    const GrepMatch& match = grepState.currentResults[resultIndex];
+    const auto        error = neomifes::app::openDocumentAt(
+        match.path, match.line, match.columnRange.start, document, dispatcher, selectionModel, viewport,
+        bookmarks, altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns);
+    if (error) {
+        // Stale result (file moved/deleted since the Grep ran) - leave the
+        // current document untouched, same "silently no-op on failure"
+        // contract openDocumentAt() itself guarantees. No error-toast UI
+        // exists yet to surface this.
+        return;
+    }
+
+    findReplaceState.currentMatches.clear();
+    findReplaceState.currentMatchIndex = 0;
+    findBar.setMatchCount(0, 0);
+    renderPipeline.setMatchVisuals({});
+    // Separate from BookmarkManager::clear(), which openDocumentAt() already
+    // called internally - this is RenderPipeline's own cached copy, pushed
+    // earlier by handleBookmarkKey()'s setBookmarkedLines() call.
+    renderPipeline.setBookmarkedLines({});
+    ::SetFocus(hwnd);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+}
+
+// Builds the GrepBarConfig callbacks (Phase 5c3) - same extraction rationale
+// as buildFindBarConfig()/buildGotoLineBarConfig() above.
+GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatcher& dispatcher,
+                                 SelectionModel& selectionModel, Viewport& viewport,
+                                 BookmarkManager& bookmarks, RenderPipeline& renderPipeline,
+                                 FindBar& findBar, FindReplaceState& findReplaceState, GrepBar& grepBar,
+                                 GrepState& grepState,
+                                 std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                                 std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                                 std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+    GrepBarConfig config{};
+    config.onRunQuery = [&grepState, &grepBar](std::u16string_view queryText,
+                                               std::u16string_view folderText) {
+        runGrepQuery(queryText, folderText, grepState, grepBar);
+    };
+    config.onResultActivated = [hwnd, &grepState, &document, &dispatcher, &selectionModel, &viewport,
+                                &bookmarks, &renderPipeline, &findBar, &findReplaceState,
+                                &altCursorAnchor, &rectangularAnchor,
+                                &freeCursorVirtualColumns](std::size_t resultIndex) {
+        jumpToGrepResult(resultIndex, hwnd, grepState, document, dispatcher, selectionModel, viewport,
+                        bookmarks, renderPipeline, findBar, findReplaceState, altCursorAnchor,
+                        rectangularAnchor, freeCursorVirtualColumns);
+    };
+    config.onClosed = [hwnd, &grepBar]() {
+        grepBar.hide();
+        ::SetFocus(hwnd);
+    };
+    return config;
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
@@ -1144,10 +1276,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
                     std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
                     FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
-                    GotoLineBar& gotoLineBar, BookmarkManager& bookmarks, bool& freeCursorModeEnabled,
+                    GotoLineBar& gotoLineBar, GrepBar& grepBar, GrepState& grepState,
+                    BookmarkManager& bookmarks, bool& freeCursorModeEnabled,
                     std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
+                          &grepBar, &grepState, &bookmarks, &altCursorAnchor, &rectangularAnchor,
                           &freeCursorModeEnabled, &freeCursorVirtualColumns](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
@@ -1181,9 +1315,16 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             buildGotoLineBarConfig(hwnd, document, selectionModel, viewport, renderPipeline, gotoLineBar);
         [[maybe_unused]] const bool gotoLineBarCreated =
             gotoLineBar.create(hwnd, hInstance, gotoLineBarConfig);
+
+        // Same non-fatal treatment as findBar.create() above.
+        const GrepBarConfig grepBarConfig =
+            buildGrepBarConfig(hwnd, document, dispatcher, selectionModel, viewport, bookmarks,
+                              renderPipeline, findBar, findReplaceState, grepBar, grepState,
+                              altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns);
+        [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
-    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar](
+    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar](
                        HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
@@ -1194,18 +1335,21 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         findBar.onParentResized(w, dpiScale);
         commandPalette.onParentResized(w, dpiScale);
         gotoLineBar.onParentResized(w, dpiScale);
+        grepBar.onParentResized(w, dpiScale);
     };
-    cfg.onCommand = [&findBar, &commandPalette](HWND, WPARAM wParam, LPARAM lParam) {
+    cfg.onCommand = [&findBar, &commandPalette, &grepBar](HWND, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
+        grepBar.handleCommand(wParam, lParam);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState, &commandPalette, &gotoLineBar, &bookmarks,
+                     &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &bookmarks,
                      &freeCursorModeEnabled, &freeCursorVirtualColumns](
                         HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
-                          gotoLineBar, bookmarks, freeCursorModeEnabled, freeCursorVirtualColumns);
+                          gotoLineBar, grepBar, bookmarks, freeCursorModeEnabled,
+                          freeCursorVirtualColumns);
     };
     cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
                            HWND hwnd, UINT vkCode, bool shiftDown) {
@@ -1366,6 +1510,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Ctrl+G goto-line/column overlay (Phase 4b8b) - simplest of the three
     // overlays (single WC_EDIT, no debounce/listbox).
     GotoLineBar gotoLineBar;
+    // Ctrl+Shift+F Grep results pane (Phase 5c3) - two WC_EDIT + one
+    // WC_LISTBOX, see grep_bar.h's class comment. grepState holds the actual
+    // search::GrepMatch data GrepBar itself never sees (same rationale as
+    // findReplaceState above).
+    GrepBar   grepBar;
+    GrepState grepState;
     // Line bookmarks (Phase 4b8c, Ctrl+F2/F2/Shift+F2) - headless, no Win32
     // overlay of its own; RenderPipeline::setBookmarkedLines() is pushed
     // from handleBookmarkKey() whenever the set changes.
@@ -1394,8 +1544,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette, gotoLineBar, bookmarks, freeCursorModeEnabled,
-                       freeCursorVirtualColumns);
+                       commandPalette, gotoLineBar, grepBar, grepState, bookmarks,
+                       freeCursorModeEnabled, freeCursorVirtualColumns);
     }
 
     if (!window.create(hInstance, cfg)) {
