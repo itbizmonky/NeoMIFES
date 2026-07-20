@@ -1354,6 +1354,38 @@ public:
 
 **意図的にスコープ外とした項目:** フォルダピッカーダイアログ、include/exclude globの入力UI、Case/Whole word/Regexトグル、複数フォルダ入力、Grepヒットの`MatchVisual`エディタ本体ハイライト、`GrepMatch`へのキャプチャグループ・「結果内で置換」、ジャンプ失敗時のエラートーストUI、検索履歴永続化、タグジャンプパーサ(5c4)。詳細は`master_roadmap.md` §5.5参照。
 
+### 7.1'''''''''' タグジャンプ (Phase 5c4 実装)
+
+`neomifes::util::parseTagJumpReference()`(`src/util/include/neomifes/util/tag_jump_parser.h`)は、`F12`キー押下時にカーソル行のテキストから MSVC コンパイラ診断出力の位置表記(`path(line)` / `path(line,column)`)を探索するヘッドレス純粋関数。`ui::goto_line_parser.h`とは異なり任意の大きな文字列に埋め込まれたパターンを探索する処理のため、`util::globMatch()`/`util::fuzzyMatchScore()`と同じ`neomifes::util`名前空間に配置した。
+
+```cpp
+// src/util/include/neomifes/util/tag_jump_parser.h
+struct TagJumpReference {
+    std::u16string                path;    // 生のパス文字列(未解決)
+    std::uint64_t                 line = 0;  // 1始まり
+    std::optional<std::uint64_t>  column;    // 1始まり、nullopt=行頭のみ
+};
+
+[[nodiscard]] std::optional<TagJumpReference> parseTagJumpReference(
+    std::u16string_view lineText) noexcept;
+```
+
+```cpp
+// src/app/include/neomifes/app/tag_jump.h
+[[nodiscard]] std::filesystem::path resolveTagJumpPath(
+    std::u16string_view rawPath, const std::filesystem::path& baseDir);
+```
+
+**設計上の要点:**
+- **括弧形式(MSVC流)のみサポート、コロン形式(GCC/Clang流 `path:line:column`)は非対応。** Windows絶対パス自体がドライブレター直後にコロンを含む(`C:\...`)ため曖昧性解消の複雑さに見合う需要が無いという判断
+- **パーサはファイルI/Oを一切行わない。** 見つけたパス文字列の存在確認はせず、後続の`openDocumentAt()`の静かな失敗に委ねる(誤検出しても実害が無い設計)
+- **「ファイルパスらしさ」ヒューリスティック(既知拡張子のホワイトリストではない):** 最後の`\`/`/`より後ろを「ファイル名部分」とし、そこに`.`があり後ろが1〜8文字のASCII英数字であることを要求。`if (x)`・`Foo(bar)`のような無関係な括弧式を安価に除外しつつ、既知拡張子の維持コストを避ける
+- **`resolveTagJumpPath()`は`std::filesystem::current_path()`を内部で呼ばず、呼び出し元(`main.cpp`)が渡す`baseDir`を使う純粋関数。** ヘッドレステスト可能にするための設計。相対パスの解決基準を「現在開いているファイルのディレクトリ」ではなく`current_path()`にしたのは、本コードベースがそれを追跡していないという制約ゆえではなく、MSVC/MSBuildのビルドエラー出力が常にビルド起動ディレクトリからの相対パスであり、エディタで偶然開いているファイルのディレクトリとは無関係という意味論的な正しさに基づく判断
+- **`main.cpp`の`handleTagJumpKey()`(F12)は`jumpToGrepResult()`(5c3)と同じ後始末シーケンスを実施。** カーソル行を`document.offsetToLine()`→`lineToOffset()`→`snapshot()->extract()`の既存3段イディオムで取得し、パーサ→`resolveTagJumpPath()`→`openDocumentAt()`(5c2)→成功時は`RenderPipeline::setMatchVisuals({})`/`setBookmarkedLines({})`・`FindBar::setMatchCount(0,0)`・`FindReplaceState::currentMatches.clear()`・`syncRenderStateAndInvalidate()`
+- **`handleKeyDownEvent()`の`document`引数を`const Document&`から`Document&`へ拡張し、`altCursorAnchor`/`rectangularAnchor`を新規引数として追加。** `openDocumentAt()`が必要とするため。`wireNormalMode()`自体の引数は変化していない(両方とも既存の引数、`cfg.onKeyDown`ラムダのキャプチャに追加するのみ)
+
+**意図的にスコープ外とした項目:** コロン形式の位置表記、コマンドパレットへの登録(F12キーのみ)、マッチ無し時のユーザーフィードバック、複数ルート/ワークスペース対応のパス解決、ジャンプ先の`MatchVisual`ハイライト、パスに空白を含むケースの正確な解析、既知拡張子のホワイトリスト維持。詳細は`master_roadmap.md` §5.5参照。
+
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |
 |---|---|
