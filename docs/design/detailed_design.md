@@ -1474,7 +1474,9 @@ private:
 
 ## 9. Encoding Engine 詳細
 
-### 9.1 判定アルゴリズム
+> **凍結された歴史的記録:** 本節はPhase 6着手前(basic_design.md起草時)に書かれた速記スケッチであり、§9.3で確定した実装とは判定アルゴリズム(§9.1、Phase 6aでは未着手)・不正シーケンス処理方針(§9.2、「U+FFFD置換」ではなく「拒否」を採用)の両方で内容が食い違う。最新情報は§9.3を参照すること。
+
+### 9.1 判定アルゴリズム (未実装、Phase 6c予定)
 ```
 1. BOM チェック (UTF-8 EF BB BF / UTF-16 FF FE / FE FF / UTF-32)
 2. 全 ASCII (< 0x80) → UTF-8 として扱う
@@ -1485,11 +1487,42 @@ private:
    - 日本語 N-gram 辞書とのマッチ
 6. 最終フォールバック: Shift-JIS
 ```
+BOM判定部分(1.)は`encoding::detectBom()`としてPhase 6aで既に実装済み — §9.3参照。2.以降(ASCII/UTF-8妥当性/ISO-2022-JP/Shift-JIS/EUC-JP判定)はPhase 6c(自動判定)で実装予定、未着手。
 
-### 9.2 変換
-- 内部表現は **UTF-16LE (`char16_t`)**
-- 変換テーブルはコンパイル時定数配列 (constexpr)
-- 不正シーケンスは `U+FFFD` に置換し、警告を Result で返す
+### 9.2 変換 (Phase 6a実装で確定した内容は§9.3参照)
+- 内部表現は **UTF-16LE (`char16_t`)** — 確定、変更なし
+- 変換テーブルはコンパイル時定数配列 (constexpr) — BOMバイト列は`constexpr std::array`で確定、コードポイント変換テーブルはUnicodeファミリーには不要(ビット演算のみ)だったため未使用。Shift-JIS/EUC-JP(Phase 6b)では変換テーブルが必要になる見込み
+- **不正シーケンスの処理方針は「`U+FFFD`に置換」から「拒否(エラーを返す)」に変更した。** §9.3参照
+
+### 9.3 実装後の確定事項/変更点 (2026-07-20、Phase 6a完了)
+
+`neomifes::encoding`(`src/encoding/include/neomifes/encoding/encoding.h`)にUnicodeファミリー(UTF-8/UTF-8 BOM/UTF-16 LE/BE/UTF-32 LE/BE、BOM有無で計10種)の`decode()`/`encode()`/`detectBom()`を実装。
+
+```cpp
+enum class Encoding {
+    Utf8, Utf8Bom, Utf16Le, Utf16LeBom, Utf16Be, Utf16BeBom,
+    Utf32Le, Utf32LeBom, Utf32Be, Utf32BeBom,
+    // ShiftJis / EucJp / Iso2022Jp は Phase 6b で追加。
+};
+
+enum class DecodeError { InvalidSequence, TruncatedSequence };
+
+[[nodiscard]] std::variant<std::u16string, DecodeError> decode(
+    std::span<const std::byte> bytes, Encoding encoding);
+[[nodiscard]] std::vector<std::byte> encode(std::u16string_view text, Encoding encoding);
+
+struct BomDetection { Encoding encoding; std::size_t bomLength; };
+[[nodiscard]] std::optional<BomDetection> detectBom(std::span<const std::byte> bytes) noexcept;
+```
+
+**設計上の要点(roadmap/§9.1-9.2のスケッチからの乖離とその理由):**
+- **不正シーケンスは`U+FFFD`置換ではなく拒否する。** §9.2のスケッチは寛容な「replace and continue」方針だったが、`ui::parseGotoLineInput()`/`util::parseTagJumpReference()`が既に確立していた「曖昧な入力は拒否する」規約に揃えた。寛容モードは将来必要になった時点で追加できる(既存の`decode()`契約を壊さない追加的な変更のため)
+- **クラスベースの`Encoder`/`EncodingDetector`は採用せず、`neomifes::encoding`名前空間直下の自由関数にした。** 状態を持たない純粋関数群にクラスの皮を被せる理由が無い(`util::globMatch()`/`util::parseTagJumpReference()`と同じ判断)
+- **`decode()`は`hint`引数を取らない。** `detectBom()`(BOM検出のみ)と`decode()`(指定Encodingでのデコードのみ)を分離し、`detectBom()`の戻り値をそのまま`decode()`に渡せる設計にした — Phase 6c(自動判定)が追加する非BOM判定手段も同じ`decode()`の入口を共有できる
+- **`util::toUtf8WithOffsets()`(Phase 5a)を再利用せず独立実装。** ENCODE方向のみ・RE2用オフセット表構築必須という設計はコーデック用途に合わない。`document::OriginalBuffer`の内部UTF-8検証ロジックと合わせ、本コードベースには用途ごとに独立したUTF-8実装が複数存在する(意図的)
+- **`document::loadUtf8File()`/`OriginalBuffer`(mmap+遅延デコード、Phase 2b3)への統合は行っていない。** UTF-8専用に深く結合した既存機構の一般化は独立した大きなサブフェーズ(6d以降)になる見込み
+
+**意図的にスコープ外とした項目(Phase 6の後続サブフェーズへ):** Shift-JIS/EUC-JP/ISO-2022-JP(6b)、3段階自動判定の2.以降(6c、BOM判定のみ6aで完成済み)、行末コード判定・`DecodeResult`統合戻り値、Document/OriginalBufferへの統合、10GB mmap遅延デコードの一般化、メニューバー・ステータスバーUI、Direct Storage API検討。詳細は`master_roadmap.md` §6参照。
 
 ---
 
