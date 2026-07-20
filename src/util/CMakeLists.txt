@@ -3,6 +3,7 @@ add_library(neomifes_util STATIC
     src/fuzzy_matcher.cpp
     src/version.cpp
     src/glob_match.cpp
+    src/tag_jump_parser.cpp
 )
 add_library(neomifes::util ALIAS neomifes_util)
 

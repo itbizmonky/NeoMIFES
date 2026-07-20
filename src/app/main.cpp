@@ -53,6 +53,7 @@
 #include "neomifes/app/editor_input.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/tag_jump.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -60,6 +61,7 @@
 #include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
 #include "neomifes/platform/clipboard.h"
@@ -78,6 +80,7 @@
 #include "neomifes/ui/goto_line_parser.h"
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/main_window.h"
+#include "neomifes/util/tag_jump_parser.h"
 
 #include "frame_profile.h"
 #include "startup_profile.h"
@@ -610,6 +613,62 @@ bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Bo
     return true;
 }
 
+// F12 (Phase 5c4) - same "act on the cursor's current line" shape as
+// handleBookmarkKey()'s F2 above, but here the line's TEXT (not just its
+// number) is inspected: if it contains an MSVC-diagnostic-style location
+// reference ("path(line)"/"path(line,column)", util::parseTagJumpReference()),
+// opens that file via neomifes::app::openDocumentAt() (Phase 5c2) and jumps
+// to the referenced position. Mirrors jumpToGrepResult()'s reset-sequence
+// shape (RenderPipeline's cached match/bookmark visuals and FindBar's match
+// count, both left to the caller by openDocumentAt()'s own contract -
+// document_open.h). Always returns true once vkCode==VK_F12 is confirmed -
+// F12 is unclaimed everywhere else in this dispatch chain, so there is
+// nothing to fall through to whether or not a reference was found/opened
+// (same silent-no-op contract openDocumentAt() itself guarantees on a
+// stale/missing path).
+bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatcher& dispatcher,
+                      SelectionModel& selectionModel, Viewport& viewport, BookmarkManager& bookmarks,
+                      RenderPipeline& renderPipeline, FindBar& findBar,
+                      FindReplaceState& findReplaceState,
+                      std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                      std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                      std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+    if (vkCode != VK_F12) {
+        return false;
+    }
+    const auto cursorPos = selectionModel.primaryCursor().position;
+    const auto line      = document.offsetToLine(cursorPos);
+    const auto lineStart = document.lineToOffset(line);
+    const auto lineEnd   = (line + 1 < document.lineCount()) ? document.lineToOffset(line + 1) - 1
+                                                             : document.length();
+    const std::u16string lineText = document.snapshot()->extract(
+        neomifes::document::TextRange{.start = lineStart, .end = lineEnd});
+
+    const auto reference = neomifes::util::parseTagJumpReference(lineText);
+    if (!reference) {
+        return true;
+    }
+    const auto resolvedPath =
+        neomifes::app::resolveTagJumpPath(reference->path, std::filesystem::current_path());
+    const std::optional<std::uint64_t> targetColumn =
+        reference->column ? std::optional<std::uint64_t>(*reference->column - 1) : std::nullopt;
+    const auto error = neomifes::app::openDocumentAt(
+        resolvedPath, reference->line - 1, targetColumn, document, dispatcher, selectionModel, viewport,
+        bookmarks, altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns);
+    if (error) {
+        return true;  // stale/missing path - same silent no-op as jumpToGrepResult()
+    }
+
+    findReplaceState.currentMatches.clear();
+    findReplaceState.currentMatchIndex = 0;
+    findBar.setMatchCount(0, 0);
+    renderPipeline.setMatchVisuals({});
+    renderPipeline.setBookmarkedLines({});
+    ::SetFocus(hwnd);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    return true;
+}
+
 // Enter while the replace edit has focus (FindBarConfig::onReplaceCurrent,
 // Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
 // `replacementTemplate` expanded against the match's capture groups, then
@@ -882,11 +941,13 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
 // dispatchMouseDown()/handleClipboardKey() were extracted to avoid.
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                        Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
+                        Viewport& viewport, Document& document, RenderPipeline& renderPipeline,
                         FindBar& findBar, FindReplaceState& findReplaceState,
                         CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                         BookmarkManager& bookmarks, bool freeCursorModeEnabled,
-                        std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+                        std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                        std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                        std::optional<neomifes::document::TextPos>& rectangularAnchor) {
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled,
                                    freeCursorVirtualColumns, selectionModel, document, renderPipeline,
                                    viewport)) {
@@ -913,6 +974,11 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     }
     if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, bookmarks, selectionModel, viewport,
                           document, renderPipeline)) {
+        return;
+    }
+    if (handleTagJumpKey(hwnd, vkCode, document, dispatcher, selectionModel, viewport, bookmarks,
+                         renderPipeline, findBar, findReplaceState, altCursorAnchor, rectangularAnchor,
+                         freeCursorVirtualColumns)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
@@ -1344,12 +1410,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
                      &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &bookmarks,
-                     &freeCursorModeEnabled, &freeCursorVirtualColumns](
-                        HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &freeCursorModeEnabled, &freeCursorVirtualColumns, &altCursorAnchor,
+                     &rectangularAnchor](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
                           gotoLineBar, grepBar, bookmarks, freeCursorModeEnabled,
-                          freeCursorVirtualColumns);
+                          freeCursorVirtualColumns, altCursorAnchor, rectangularAnchor);
     };
     cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
                            HWND hwnd, UINT vkCode, bool shiftDown) {

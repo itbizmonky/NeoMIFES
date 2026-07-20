@@ -38,6 +38,8 @@ add_executable(neomifes_unit_tests
     search_grep_service_test.cpp
     app_grep_query_builder_test.cpp
     app_grep_result_formatting_test.cpp
+    util_tag_jump_parser_test.cpp
+    app_tag_jump_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
