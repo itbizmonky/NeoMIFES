@@ -53,6 +53,7 @@
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
+#include "neomifes/core/indentation_conversion.h"
 #include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
@@ -82,7 +83,9 @@ using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::core::BookmarkManager;
 using neomifes::core::CommandDispatcher;
+using neomifes::core::computeIndentationConversionEdits;
 using neomifes::core::Cursor;
+using neomifes::core::IndentationConversionTarget;
 using neomifes::core::PerCursorEdit;
 using neomifes::core::ReplaceAllCommand;
 using neomifes::core::ReplaceRangeCommand;
@@ -626,6 +629,28 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Docum
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Convert Tabs to Spaces / Convert Spaces to Tabs command-palette actions
+// (Phase 4b8d). Applies to the whole document; tabWidth is fixed at 4 -
+// there is no settings system to source a configurable value from (same
+// rationale as elsewhere in this file), so a future settings UI would wire
+// its value in here rather than this being a design gap. Reuses
+// core::ReplaceAllCommand (Phase 5b2) rather than a bespoke command class -
+// see indentation_conversion.h's header comment. No-ops (no lines need
+// conversion) skip dispatch entirely, same convention as replaceAllMatches()
+// above returning early on an empty match set.
+void applyIndentationConversion(IndentationConversionTarget target, HWND hwnd, Document& document,
+                                CommandDispatcher& dispatcher, const SelectionModel& selectionModel) {
+    constexpr int kTabWidth = 4;
+    auto edits = computeIndentationConversionEdits(target, kTabWidth, document);
+    if (edits.empty()) {
+        return;
+    }
+    const std::vector<Cursor> cursorsBefore(selectionModel.cursors().begin(),
+                                            selectionModel.cursors().end());
+    dispatcher.dispatch(std::make_unique<ReplaceAllCommand>(std::move(edits), cursorsBefore));
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 // Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
 // applies it. Pulled out of wireNormalMode's onMouseDown lambda to keep that
 // function's cognitive complexity down (same rationale as
@@ -819,14 +844,18 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
     return config;
 }
 
-// Builds the command palette's static registry (Phase 5b3c) - 6 entries,
-// each re-exposing an already-implemented keybinding through the palette
-// (Find/Find+Replace/Find Next/Find Previous/Undo/Redo). Deliberately does
-// not invent commands for features this project hasn't built yet (File
-// Open/Save has no runtime UI - see this file's header comment), matching
-// CLAUDE.md rule 3 (no speculative implementation). Pulled out of
-// wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
-// reason documented above handleKeyDownEvent().
+// Builds the command palette's static registry (Phase 5b3c, extended in
+// Phase 4b8d) - 8 entries, each re-exposing an already-implemented
+// keybinding or document-wide action through the palette (Find/Find+Replace/
+// Find Next/Find Previous/Undo/Redo/Convert Tabs to Spaces/Convert Spaces to
+// Tabs). The indentation-conversion pair has no dedicated keybinding - the
+// palette is their only entry point, same as any editor's "no default
+// shortcut, command palette only" commands. Deliberately does not invent
+// commands for features this project hasn't built yet (File Open/Save has no
+// runtime UI - see this file's header comment), matching CLAUDE.md rule 3
+// (no speculative implementation). Pulled out of wireNormalMode's
+// onDeferredInit lambda for the same cognitive-complexity reason documented
+// above handleKeyDownEvent().
 std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
                                                      CommandDispatcher& dispatcher,
                                                      FindReplaceState& findReplaceState,
@@ -869,6 +898,18 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
             if (dispatcher.redo()) {
                 syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
             }
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
+        .action = [hwnd, &document, &dispatcher, &selectionModel]() {
+            applyIndentationConversion(IndentationConversionTarget::TabsToSpaces, hwnd, document,
+                                       dispatcher, selectionModel);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.convertSpacesToTabs", .title = u"Convert Spaces to Tabs", .keybindingLabel = u"",
+        .action = [hwnd, &document, &dispatcher, &selectionModel]() {
+            applyIndentationConversion(IndentationConversionTarget::SpacesToTabs, hwnd, document,
+                                       dispatcher, selectionModel);
         }});
     return commands;
 }

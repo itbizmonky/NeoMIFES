@@ -20,6 +20,7 @@ add_executable(neomifes_unit_tests
     core_selection_model_test.cpp
     core_bookmark_manager_test.cpp
     core_edit_commands_test.cpp
+    core_indentation_conversion_test.cpp
     core_replace_all_command_test.cpp
     core_undo_stack_test.cpp
     core_command_dispatcher_test.cpp
