@@ -59,6 +59,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onDeferredInit = config.onDeferredInit;
     m_onResize       = config.onResize;
     m_onKeyDown      = config.onKeyDown;
+    m_onSysKeyDown   = config.onSysKeyDown;
     m_onChar         = config.onChar;
     m_onMouseWheel   = config.onMouseWheel;
     m_onMouseDown    = config.onMouseDown;
@@ -139,6 +140,14 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
         case WM_KEYDOWN:
             handleKeyDown(wParam);
             return 0;
+        case WM_SYSKEYDOWN:
+            // Unconsumed (including "no handler configured") MUST fall
+            // through to DefWindowProcW - this is what keeps Alt+F4/Alt+Tab/
+            // the system menu/F10 working (Phase 4b8g).
+            if (handleSysKeyDown(wParam)) {
+                return 0;
+            }
+            return ::DefWindowProcW(m_hwnd, msg, wParam, lParam);
         case WM_CHAR:
             handleChar(wParam);
             return 0;
@@ -242,6 +251,14 @@ void MainWindow::handleKeyDown(WPARAM wParam) noexcept {
     const bool shiftDown = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
     const bool ctrlDown  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
     m_onKeyDown(m_hwnd, static_cast<UINT>(wParam), shiftDown, ctrlDown);
+}
+
+bool MainWindow::handleSysKeyDown(WPARAM wParam) noexcept {
+    if (!m_onSysKeyDown) {
+        return false;
+    }
+    const bool shiftDown = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    return m_onSysKeyDown(m_hwnd, static_cast<UINT>(wParam), shiftDown);
 }
 
 void MainWindow::handleChar(WPARAM wParam) noexcept {

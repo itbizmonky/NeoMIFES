@@ -47,6 +47,16 @@ struct MainWindowConfig {
     // the live Shift/Ctrl modifier state (Phase 4b1). Not fired for
     // character input - see onChar.
     std::function<void(HWND, UINT vkCode, bool shiftDown, bool ctrlDown)> onKeyDown;
+    // Optional: invoked from WM_SYSKEYDOWN (Phase 4b8g - Shift+Alt+arrows/
+    // Shift+Alt+I for keyboard rectangular-selection extension). Win32 posts
+    // WM_SYSKEYDOWN instead of WM_KEYDOWN whenever Alt is held down (or F10),
+    // so Alt itself is implied and not passed separately; only the live
+    // Shift state is. Returns whether the key was consumed - the caller MUST
+    // return false for anything it doesn't specifically recognize, so
+    // wndProc falls through to DefWindowProcW and system behavior (Alt+F4,
+    // Alt+Tab, the system menu, etc.) keeps working. No handler configured
+    // is equivalent to always returning false.
+    std::function<bool(HWND, UINT vkCode, bool shiftDown)> onSysKeyDown;
     // Optional: invoked from WM_CHAR with the translated UTF-16 code unit
     // (surrogate halves arrive as two separate calls). Phase 4b1.
     std::function<void(HWND, wchar_t ch)> onChar;
@@ -118,6 +128,7 @@ private:
     LRESULT handleDpiChanged(WPARAM wParam, LPARAM lParam) noexcept;
     void handleDeferredInit() noexcept;
     void handleKeyDown(WPARAM wParam) noexcept;
+    [[nodiscard]] bool handleSysKeyDown(WPARAM wParam) noexcept;
     void handleChar(WPARAM wParam) noexcept;
     void handleMouseWheel(WPARAM wParam) noexcept;
     void handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept;
@@ -131,6 +142,7 @@ private:
     std::function<void(HWND, std::uint32_t, std::uint32_t, float)> m_onResize;
     std::function<void(HWND)>  m_onPaint;          // set via setPaintHandler(); empty == GDI fallback
     std::function<void(HWND, UINT, bool, bool)> m_onKeyDown;
+    std::function<bool(HWND, UINT, bool)>       m_onSysKeyDown;
     std::function<void(HWND, wchar_t)>          m_onChar;
     std::function<void(HWND, short)>            m_onMouseWheel;
     std::function<void(HWND, std::int32_t, std::int32_t, bool, bool, int)> m_onMouseDown;

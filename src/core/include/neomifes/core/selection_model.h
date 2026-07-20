@@ -41,6 +41,16 @@ enum class MovementKind : std::uint8_t {
     WordRight,
 };
 
+// Computes the new position `kind` would move a single cursor to, without
+// touching any SelectionModel state - exposed (Phase 4b8g, promoted from a
+// file-local helper in selection_model.cpp) so main.cpp's Shift+Alt+arrow
+// handler can drive setRectangularSelection() below with the exact same
+// movement math moveAll() itself uses, rather than reimplementing it.
+// `pageSize` is only consulted for PageUp/PageDown, same as moveAll()'s.
+[[nodiscard]] document::TextPos moveTextPos(MovementKind kind, const document::Document& doc,
+                                            document::TextPos position,
+                                            document::LineNumber pageSize = 0);
+
 class SelectionModel {
 public:
     explicit SelectionModel(document::TextPos initialPosition = 0);
@@ -90,6 +100,19 @@ public:
     // resulting cursors like any other multi-cursor set.
     void setRectangularSelection(document::TextPos anchor, document::TextPos active,
                                  const document::Document& doc);
+
+    // Replaces the entire cursor set with one selection-less cursor per line
+    // spanned by the CURRENT cursor set's positions/anchors (Phase 4b8g,
+    // Shift+Alt+I) - "convert selection to one cursor at the end of each
+    // selected line". Considers both `position` and `anchor` of every
+    // existing cursor (not just `position`) so an upward selection's anchor
+    // line is included even when it lies past `position`. Each new cursor
+    // sits at that line's real end (a plain document::TextPos - the
+    // free-cursor virtual-column mechanism, Phase 4b8e, is UI-layer-only
+    // main.cpp state and has no representation here). The last
+    // (highest-numbered) line's cursor becomes primary, mirroring
+    // setRectangularSelection()'s activeLine convention above.
+    void convertToLineEndCursors(const document::Document& doc);
 
     // Selects the "word" (or single punctuation character, or run of
     // whitespace) at `pos`, using simple character-class boundaries rather

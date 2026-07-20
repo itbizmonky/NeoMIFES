@@ -10,6 +10,7 @@ namespace {
 
 using neomifes::core::Cursor;
 using neomifes::core::MovementKind;
+using neomifes::core::moveTextPos;
 using neomifes::core::SelectionModel;
 using neomifes::document::Document;
 
@@ -587,6 +588,70 @@ TEST(SelectionModelTest, SetRectangularSelectionHandlesEmptyLinesWithoutCrash) {
     ASSERT_EQ(model.cursors().size(), 3U);
     const Cursor& emptyRow = model.cursors()[1];
     EXPECT_EQ(emptyRow.anchor, emptyRow.position);  // clamped to 0-length line, no selection on this row
+}
+
+// Phase 4b8g: moveTextPos() is moveAll()'s per-cursor movement math,
+// promoted to a public free function so main.cpp's Shift+Alt+arrow handler
+// can reuse it directly. These mirror a couple of moveAll()'s own existing
+// cases above, just calling the free function without a SelectionModel.
+TEST(SelectionModelTest, MoveTextPosComputesRightWithoutAnySelectionModelState) {
+    const Document doc = threeLineDoc();
+    EXPECT_EQ(moveTextPos(MovementKind::Right, doc, 0), 1U);
+}
+
+TEST(SelectionModelTest, MoveTextPosComputesLineEndAndVerticalMovement) {
+    const Document doc = threeLineDoc();
+    EXPECT_EQ(moveTextPos(MovementKind::LineEnd, doc, 0), 5U);  // end of "abcde"
+    EXPECT_EQ(moveTextPos(MovementKind::Down, doc, 0), 6U);     // line1 col0 = 'f'
+}
+
+// Phase 4b8g (Shift+Alt+I): convertToLineEndCursors().
+TEST(SelectionModelTest, ConvertToLineEndCursorsWithSingleCursorNoSelection) {
+    const Document doc = threeLineDoc();
+    SelectionModel model(1);  // line0, col1, no selection
+
+    model.convertToLineEndCursors(doc);
+
+    ASSERT_EQ(model.cursors().size(), 1U);
+    EXPECT_EQ(model.cursors()[0].position, 5U);  // end of "abcde"
+    EXPECT_EQ(model.cursors()[0].anchor, 5U);
+    EXPECT_TRUE(model.cursors()[0].isPrimary);
+}
+
+TEST(SelectionModelTest, ConvertToLineEndCursorsSpansSelectionAcrossMultipleLines) {
+    const Document doc = threeLineDoc();
+    SelectionModel model(0);
+    model.moveAllTo(1);                              // line0 col1
+    model.moveAllTo(12, /*extendSelection=*/true);    // extends to line2 col3 (anchor stays at 1)
+
+    model.convertToLineEndCursors(doc);
+
+    ASSERT_EQ(model.cursors().size(), 3U);
+    EXPECT_EQ(model.cursors()[0].position, 5U);   // line0 end
+    EXPECT_EQ(model.cursors()[1].position, 8U);   // line1 end ("fg")
+    EXPECT_EQ(model.cursors()[2].position, 14U);  // line2 end (last line == doc.length())
+    // No selection remains on any row.
+    EXPECT_EQ(model.cursors()[0].position, model.cursors()[0].anchor);
+    EXPECT_EQ(model.cursors()[1].position, model.cursors()[1].anchor);
+    EXPECT_EQ(model.cursors()[2].position, model.cursors()[2].anchor);
+    EXPECT_TRUE(model.cursors()[2].isPrimary);  // last spanned line becomes primary
+}
+
+TEST(SelectionModelTest, ConvertToLineEndCursorsUsesBothAnchorAndPositionToFindSpannedLines) {
+    // An upward selection: position ends up on line0, anchor stays on
+    // line2 - the spanned range must still be [line0, line2], not just
+    // whichever line `position` alone happens to be on.
+    const Document doc = threeLineDoc();
+    SelectionModel model(0);
+    model.moveAllTo(12);                          // anchor+position both at line2 col3
+    model.moveAllTo(1, /*extendSelection=*/true);  // position moves to line0 col1, anchor stays at 12
+
+    model.convertToLineEndCursors(doc);
+
+    ASSERT_EQ(model.cursors().size(), 3U);
+    EXPECT_EQ(model.cursors()[0].position, 5U);
+    EXPECT_EQ(model.cursors()[1].position, 8U);
+    EXPECT_EQ(model.cursors()[2].position, 14U);
 }
 
 }  // namespace

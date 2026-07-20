@@ -86,6 +86,8 @@ using neomifes::core::CommandDispatcher;
 using neomifes::core::computeIndentationConversionEdits;
 using neomifes::core::Cursor;
 using neomifes::core::IndentationConversionTarget;
+using neomifes::core::MovementKind;
+using neomifes::core::moveTextPos;
 using neomifes::core::PerCursorEdit;
 using neomifes::core::ReplaceAllCommand;
 using neomifes::core::ReplaceRangeCommand;
@@ -912,6 +914,53 @@ void handleCharEvent(HWND hwnd, wchar_t ch, CommandDispatcher& dispatcher,
     }
 }
 
+// Handles WM_SYSKEYDOWN (Phase 4b8g): Shift+Alt+arrows extends/starts a
+// keyboard-driven rectangular selection, reusing `rectangularAnchor` - the
+// same session state Shift+Alt+drag already established in Phase 4b8a (see
+// dispatchMouseDown()'s comment above) - so a keyboard extension started
+// this way can be continued by mouse or vice versa. Shift+Alt+I converts the
+// current cursor/selection set into one cursor at the end of each spanned
+// line (SelectionModel::convertToLineEndCursors()). Returns false for
+// anything else (including plain Alt combos with no Shift) so MainWindow
+// falls through to DefWindowProcW - see main_window.h's onSysKeyDown comment
+// for why that fallthrough is mandatory (Alt+F4 etc.).
+//
+// Known limitation: unlike ordinary vertical movement (Viewport-independent
+// column memory isn't tracked here), stepping through a shorter line with
+// Shift+Alt+Up/Down does not remember the column to return to once a longer
+// line follows - each step re-derives purely from the immediately preceding
+// step's own (possibly already-clamped) column, same simplification the
+// approved plan documents.
+bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, SelectionModel& selectionModel,
+                           Viewport& viewport, const Document& document,
+                           RenderPipeline& renderPipeline,
+                           std::optional<neomifes::document::TextPos>& rectangularAnchor) {
+    if (!shiftDown) {
+        return false;
+    }
+    if (vkCode == 'I') {
+        selectionModel.convertToLineEndCursors(document);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        return true;
+    }
+    MovementKind kind{};
+    switch (vkCode) {
+        case VK_LEFT:  kind = MovementKind::Left;  break;
+        case VK_RIGHT: kind = MovementKind::Right; break;
+        case VK_UP:    kind = MovementKind::Up;    break;
+        case VK_DOWN:  kind = MovementKind::Down;  break;
+        default:       return false;
+    }
+    if (!rectangularAnchor) {
+        rectangularAnchor = selectionModel.primaryCursor().position;
+    }
+    const auto newActive = moveTextPos(kind, document, selectionModel.primaryCursor().position);
+    selectionModel.setRectangularSelection(*rectangularAnchor, newActive, document);
+    viewport.ensureVisible(newActive, document);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    return true;
+}
+
 // Builds the FindBarConfig callbacks (Phase 5b3a) - pulled out of
 // wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
 // reason documented above handleKeyDownEvent(). All captured references
@@ -1157,6 +1206,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
                           gotoLineBar, bookmarks, freeCursorModeEnabled, freeCursorVirtualColumns);
+    };
+    cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
+                           HWND hwnd, UINT vkCode, bool shiftDown) {
+        return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, selectionModel, viewport, document,
+                                     renderPipeline, rectangularAnchor);
     };
     cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline,
                  &freeCursorVirtualColumns](HWND hwnd, wchar_t ch) {

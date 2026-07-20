@@ -186,8 +186,10 @@ enum class CharKind : std::uint8_t { Word, Whitespace, Other };
     return lineStart + col;
 }
 
-[[nodiscard]] document::TextPos moveOne(MovementKind kind, const document::Document& doc,
-                                         document::TextPos position, document::LineNumber pageSize) {
+}  // namespace
+
+document::TextPos moveTextPos(MovementKind kind, const document::Document& doc,
+                              document::TextPos position, document::LineNumber pageSize) {
     switch (kind) {
         case MovementKind::Left:
             return position > 0 ? position - 1 : 0;
@@ -218,8 +220,6 @@ enum class CharKind : std::uint8_t { Word, Whitespace, Other };
     return position;
 }
 
-}  // namespace
-
 SelectionModel::SelectionModel(document::TextPos initialPosition) {
     m_cursors.push_back(Cursor{.position = initialPosition, .anchor = initialPosition, .isPrimary = true});
 }
@@ -232,7 +232,7 @@ void SelectionModel::addCursor(document::TextPos position) {
 void SelectionModel::moveAll(MovementKind kind, const document::Document& doc,
                               bool extendSelection, document::LineNumber pageSize) {
     for (Cursor& cursor : m_cursors) {
-        const document::TextPos newPosition = moveOne(kind, doc, cursor.position, pageSize);
+        const document::TextPos newPosition = moveTextPos(kind, doc, cursor.position, pageSize);
         cursor.position                     = newPosition;
         if (!extendSelection) {
             cursor.anchor = newPosition;
@@ -285,6 +285,25 @@ void SelectionModel::setRectangularSelection(document::TextPos anchor, document:
         cursors.push_back(Cursor{.position  = lineStart + rowActiveCol,
                                  .anchor    = lineStart + rowAnchorCol,
                                  .isPrimary = (line == activeLine)});
+    }
+    setCursors(std::move(cursors));
+}
+
+void SelectionModel::convertToLineEndCursors(const document::Document& doc) {
+    document::LineNumber minLine = doc.offsetToLine(std::min(m_cursors.front().position, m_cursors.front().anchor));
+    document::LineNumber maxLine = minLine;
+    for (const Cursor& cursor : m_cursors) {
+        const document::LineNumber lo = doc.offsetToLine(std::min(cursor.position, cursor.anchor));
+        const document::LineNumber hi = doc.offsetToLine(std::max(cursor.position, cursor.anchor));
+        minLine = std::min(minLine, lo);
+        maxLine = std::max(maxLine, hi);
+    }
+
+    std::vector<Cursor> cursors;
+    cursors.reserve(maxLine - minLine + 1);
+    for (document::LineNumber line = minLine; line <= maxLine; ++line) {
+        const document::TextPos lineEnd = lineContentEnd(doc, line);
+        cursors.push_back(Cursor{.position = lineEnd, .anchor = lineEnd, .isPrimary = (line == maxLine)});
     }
     setCursors(std::move(cursors));
 }
