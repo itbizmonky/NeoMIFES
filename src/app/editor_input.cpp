@@ -35,27 +35,58 @@ using document::TextRange;
                      .end   = std::max(cursor.position, cursor.anchor)};
 }
 
-// Applies `text` identically to every cursor - a plain insert at cursors
-// with no selection, or a replace at cursors that have one - as a single
-// MultiCursorEditCommand. Shared by handleChar() (Phase 4b5b) and
-// handlePaste() (Phase 4b7c, generalized from the earlier primary-cursor-
-// only paste), since both reduce to exactly this once the text to insert is
-// known.
-bool insertTextAtEveryCursor(std::u16string_view text, CommandDispatcher& dispatcher,
-                             SelectionModel& selection, Viewport& viewport, const Document& document) {
-    const std::u16string textCopy(text);
+// Applies one independently-supplied text per cursor - a plain insert at
+// cursors with no selection, or a replace at cursors that have one - as a
+// single MultiCursorEditCommand (Phase 4b8f, factored out of
+// insertTextAtEveryCursor() below so handlePaste()'s N:N distribution can
+// reuse the same edit-building/dispatch logic). `texts[i]` pairs with
+// `selection.cursors()[i]` - callers must supply exactly one text per
+// cursor, in the same ascending order PerCursorEdit's contract requires
+// (edit_commands.h).
+bool insertPerCursorTexts(std::vector<std::u16string> texts, CommandDispatcher& dispatcher,
+                          SelectionModel& selection, Viewport& viewport, const Document& document) {
     std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
     std::vector<PerCursorEdit> edits;
     edits.reserve(before.size());
-    for (const Cursor& cursor : before) {
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        const Cursor& cursor = before[i];
         const TextRange range = cursor.hasSelection()
                                     ? selectionRange(cursor)
                                     : TextRange{.start = cursor.position, .end = cursor.position};
-        edits.push_back(PerCursorEdit{.range = range, .insertedText = textCopy});
+        edits.push_back(PerCursorEdit{.range = range, .insertedText = std::move(texts[i])});
     }
     dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
     viewport.ensureVisible(selection.primaryCursor().position, document);
     return true;
+}
+
+// Applies `text` identically to every cursor. Shared by handleChar() (Phase
+// 4b5b) and handlePaste()'s fallback path (Phase 4b7c, generalized from the
+// earlier primary-cursor-only paste; Phase 4b8f split off the N:N case into
+// handlePaste() itself).
+bool insertTextAtEveryCursor(std::u16string_view text, CommandDispatcher& dispatcher,
+                             SelectionModel& selection, Viewport& viewport, const Document& document) {
+    std::vector<std::u16string> texts(selection.cursors().size(), std::u16string(text));
+    return insertPerCursorTexts(std::move(texts), dispatcher, selection, viewport, document);
+}
+
+// Splits `text` on '\n' the same way drawVisibleLines() (render_pipeline.cpp)
+// walks line boundaries - every '\n' ends a chunk, and the final chunk
+// (possibly empty) runs to the end of `text` regardless of whether it was
+// itself terminated by '\n'. A single-line `text` (no '\n' at all) yields
+// exactly one chunk equal to `text` (Phase 4b8f, handlePaste()'s N:N split).
+std::vector<std::u16string_view> splitLines(std::u16string_view text) {
+    std::vector<std::u16string_view> lines;
+    std::u16string_view remaining = text;
+    for (;;) {
+        const auto newlinePos = remaining.find(u'\n');
+        if (newlinePos == std::u16string_view::npos) {
+            lines.push_back(remaining);
+            return lines;
+        }
+        lines.push_back(remaining.substr(0, newlinePos));
+        remaining = remaining.substr(newlinePos + 1);
+    }
 }
 
 // Arrow/Home/End/PageUp/PageDown navigation. Returns false for any vkCode
@@ -227,7 +258,20 @@ std::optional<std::u16string> textToCopy(const SelectionModel& selection, const 
 
 bool handlePaste(std::u16string_view text, CommandDispatcher& dispatcher, SelectionModel& selection,
                  Viewport& viewport, const Document& document) {
-    return insertTextAtEveryCursor(text, dispatcher, selection, viewport, document);
+    // N:N distribution (Phase 4b8f): when the pasted text's line count
+    // exactly matches the cursor count, each cursor gets its corresponding
+    // chunk instead of the whole text - the same baseline behavior most
+    // editors default to for "copied N selections, pasting into N cursors".
+    // There is no clipboard metadata recording how the text was originally
+    // copied, so any other chunk/cursor count mismatch (including the
+    // ordinary single-cursor case) falls back to inserting the whole text
+    // identically at every cursor, unchanged from before this phase.
+    const auto chunks = splitLines(text);
+    if (chunks.size() != selection.cursors().size()) {
+        return insertTextAtEveryCursor(text, dispatcher, selection, viewport, document);
+    }
+    std::vector<std::u16string> texts(chunks.begin(), chunks.end());
+    return insertPerCursorTexts(std::move(texts), dispatcher, selection, viewport, document);
 }
 
 bool deleteAllSelections(CommandDispatcher& dispatcher, SelectionModel& selection, Viewport& viewport,

@@ -495,6 +495,54 @@ TEST(EditorInputTest, HandlePasteInsertsAtEveryCursor) {
     EXPECT_EQ(env.selection.cursors()[1].position, 5U);
 }
 
+// Phase 4b8f: N:N distribution - chunk count equals cursor count, so each
+// cursor gets its own corresponding line rather than the whole pasted text.
+TEST(EditorInputTest, HandlePasteDistributesOneChunkPerCursorWhenCountsMatch) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.addCursor(3);  // primary at 0, second right before 'c'
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = handlePaste(u"X\nY", env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"Xab Ycd");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 1U);
+    EXPECT_EQ(env.selection.cursors()[1].position, 5U);
+}
+
+// Phase 4b8f: chunk count (3) does not match cursor count (2) - falls back
+// to inserting the whole pasted text identically at every cursor, same as
+// HandlePasteInsertsAtEveryCursor above but proving the >1-cursor mismatch
+// path specifically (not just the single-cursor case below).
+TEST(EditorInputTest, HandlePasteFallsBackToWholeTextWhenChunkAndCursorCountsMismatch) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.addCursor(2);  // primary at 0, second at end (after "ab")
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = handlePaste(u"P\nQ\nR", env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"P\nQ\nRabP\nQ\nR");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 5U);
+    EXPECT_EQ(env.selection.cursors()[1].position, 12U);
+}
+
+// Phase 4b8f non-regression: a single cursor pasting multi-line text is
+// inherently a chunk/cursor count mismatch (N chunks vs. 1 cursor), so it
+// must keep inserting the whole text verbatim exactly as before this phase.
+TEST(EditorInputTest, HandlePasteInsertsWholeMultilineTextAtSingleCursorUnchanged) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(1);
+
+    const bool changed = handlePaste(u"X\nY\nZ", env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"aX\nY\nZb");
+    EXPECT_EQ(env.selection.primaryCursor().position, 6U);  // right after "X\nY\nZ"
+}
+
 TEST(EditorInputTest, DeleteAllSelectionsDeletesEachCursorsSelection) {
     Env env;
     env.doc.insertText(0, u"ab cd");
