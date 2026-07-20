@@ -1,7 +1,7 @@
 # NeoMIFES 詳細設計書 v1.0
 
 > 上位: [`basic_design.md`](basic_design.md) / 要件: [`../../NeoMIFES_要件定義書.md`](../../NeoMIFES_要件定義書.md)
-> 未着手フェーズの実装詳細: [`master_roadmap.md`](master_roadmap.md) (Plan-of-Record、Phase 4b8以降はこちらが正)
+> 未着手フェーズの実装詳細: [`master_roadmap.md`](master_roadmap.md) (Plan-of-Record、Phase 5c以降はこちらが正。Phase 4b8は2026-07-20に全サブフェーズ完了、確定内容は本書§5.1.1/§5.3へ吸収済み)
 
 本書は各モジュールの内部データ構造・クラス設計・アルゴリズム・API 仕様を規定する「How」レベルのドキュメント。**本書は実装済み機能のリファレンス。未着手フェーズの計画は `master_roadmap.md` を参照。フェーズ完了時に該当章がここへ吸収される。**
 
@@ -461,6 +461,8 @@ public:
 
 `SelectionMode`列挙体は採用しなかった(roadmapのスケッチから乖離) — 既存の`moveAll()`がカーソル集合へ一様適用される設計のおかげで、矩形選択後に矢印キーを押すとVSCode同様「N個の独立カーソルへ降格」する挙動が新規コード無しで自然に得られるため、今回のスコープでは「モード」概念自体が不要だった。
 
+**Phase 4b8g (2026-07-20) でキーボードによる矩形選択拡張を追加。** `moveOne()`は`moveTextPos()`という公開自由関数へ格上げされ(シグネチャ・ロジックは不変)、`main.cpp`の`Shift+Alt+矢印`ハンドラ(`MainWindow::onSysKeyDown`経由)が`rectangularAnchor`を再利用して`setRectangularSelection()`を呼ぶ。新規`SelectionModel::convertToLineEndCursors()`が`Shift+Alt+I`(選択範囲→各行末尾の1カーソルへ変換)を実装。詳細は§5.3のPhase 4b8b〜4b8g追記を参照。
+
 **依然未実装の専用コマンド構想 (将来の縦編集フェーズ向け):**
 
 ```cpp
@@ -781,7 +783,16 @@ std::optional<document::TextPos> rectangularAnchor;
 
 `dispatchMouseDown()`のAlt+Shift+クリック分岐は`rectangularAnchor = hit`を(既存の拡張/追加ロジックを変更せず)副次的に記録するだけに留め、実際の矩形選択構築は`onMouseDrag`の最優先分岐(`rectangularAnchor`が真なら`setRectangularSelection()`を呼び、直後に`altCursorAnchor.reset()`)が担う。`setRectangularSelection()`は常に`setCursors()`でカーソル集合を丸ごと置き換えるため、クリック単体(ドラッグに発展しない場合)の既存副作用は無害 — 詳細な検証トレースは`docs/history/TIMELINE.md`のPhase 4b8aセッション参照。
 
-**意図的にスコープ外(次の4b8サブフェーズへ):** キーボードでの矩形選択拡張(`Alt+Shift+矢印`、`MainWindow`が`WM_SYSKEYDOWN`を未処理のため新規フック要)、フリーカーソル、`Shift+Alt+I`変換、マーカー・桁位置ジャンプ・タブ⇔スペース変換・N対N分配クリップボード。
+**Phase 4b8b〜4b8g (2026-07-20実装) で Phase 4b8 の残り全機能を完了:**
+
+- **4b8b (桁位置ジャンプ):** 新規`ui::GotoLineBar`(`goto_line_bar.{h,cpp}`) — FindBar/CommandPaletteより単純な単一`WC_EDITW`のみのオーバーレイ(デバウンス・リストボックス不要)。新規`ui::parseGotoLineInput()`(`goto_line_parser.h`、ヘッダオンリー純粋関数)が`"123"`/`"123:45"`(共に1始まり)をパース。`Ctrl+G`で表示、`jumpToGotoTarget()`が0始まりへ変換しクランプして`selectionModel.moveAllTo()`+`viewport.ensureVisible()`。
+- **4b8c (マーカー):** 新規`core::BookmarkManager`(`bookmark_manager.{h,cpp}`) — ソート済み`vector<LineNumber>`、`toggle()`/`next()`/`previous()`(ラップアラウンド)。**ドキュメント編集への追従は実装しない既知の制約**(本コードベースにEditEvent購読機構が存在しないため、`Document`は`version()`ポーリングのみ、ADR-010)。`RenderPipeline`に最小限のブックマーク専用ガター(●印のみ、`kGutterWidthDips=24dip`、行番号・折りたたみは含まない)を新設。設計検証で`HitTestTextPosition()`がレイアウトローカル座標を返す(`DrawTextLayout()`の描画原点と独立)ことをPlan agentレビューで検出し、`drawCaretOnLine`/`drawSelectionOnLine`/`drawMatchOnLine`の3メソッド全てに`kGutterWidthDips`の明示的加算を実装前に追加。`Ctrl+F2`でトグル、`F2`/`Shift+F2`で次/前ジャンプ。
+- **4b8d (タブ⇔スペース変換):** 新規`core::computeIndentationConversionEdits()`(`indentation_conversion.{h,cpp}`) — 各行先頭の連続空白のみを対象にしたヘッドレス純粋関数。専用コマンドクラスは新設せず、結果を既存`core::ReplaceAllCommand`(§7.1'''置換)へそのまま渡す。コマンドパレットに"Convert Tabs to Spaces"/"Convert Spaces to Tabs"を追加(`tabWidth=4`固定、設定システムが無いためハードコード)。
+- **4b8e (フリーカーソル、簡略版):** `document::TextPos`は拡張せず(176箇所・28ファイルでの使用実績からユーザーにAskUserQuestionで確認済み)、`main.cpp`のセッション状態(`std::optional<std::uint32_t> freeCursorVirtualColumns`)のみで実装。コマンドパレットの"Toggle Free Cursor Mode"で有効化。単一プライマリカーソル・無選択時のRight矢印が行の実行末に達すると仮想列をインクリメント、文字入力時に仮想列数分のスペース+入力文字を`core::ReplaceRangeCommand`で一括実体化。`render::CursorVisual::virtualColumnOffset`が等幅フォント(Consolas)の1文字幅(`m_charWidthDips`、既存の"Ag"プローブレイアウトを流用して計測)分だけキャレット描画を右にずらす。マウスでの行末より右クリック・複数カーソル同時のフリーカーソル・仮想空間の視覚的パディングは対象外。
+- **4b8f (N対N分配クリップボード):** `handlePaste()`(`editor_input.cpp`)を変更 — ペーストするテキストの行数がカーソル数と一致する場合のみ各カーソルへ対応する1行ずつを分配(VSCode等の既定動作と同じ基準)、不一致時(単一カーソルへの複数行貼り付けを含む)は従来通り全カーソルへ同一テキストを挿入。`insertTextAtEveryCursor()`の内部ロジックを`insertPerCursorTexts()`(カーソルごとに独立したテキストを1つの`MultiCursorEditCommand`として適用)へ抽出し両方から共有。カスタムクリップボードフォーマットや「サイクル貼り付け」等の高度な分配ルール設定は実装しない(設定システムが存在しないため)。
+- **4b8g (キーボード矩形選択拡張 + Shift+Alt+I):** `MainWindow`に`onSysKeyDown`フック(`WM_SYSKEYDOWN`)を新設 — 未消費時は必ず`DefWindowProcW`へフォールスルーし、Alt+F4等のシステムキー既定動作を保持する設計を徹底。`SelectionModel`のprivate`moveOne()`を公開自由関数`document::TextPos moveTextPos(MovementKind, const Document&, TextPos, LineNumber pageSize=0)`へ格上げし、`moveAll()`もこれを呼ぶよう変更。`Shift+Alt+矢印`ハンドラは`moveTextPos()`で新active位置を計算し、Phase 4b8aの`rectangularAnchor`状態を再利用して`setRectangularSelection()`を呼ぶ — マウスとキーボードの矩形選択拡張が同じ状態変数を共有。新規`SelectionModel::convertToLineEndCursors()`が`Shift+Alt+I`で現在のカーソル/選択範囲(`position`と`anchor`の両方を考慮)が跨る各行の実行末に1カーソルずつ配置。**既知の制約:** キーボードでの矩形拡大は「短い行を経由した後の元の意図列」を記憶しない(通常の垂直移動が持つ列保持とは異なる簡略実装)。
+
+これでPhase 4b8はroadmap上の保留項目を残さず完全に完了した(6サブフェーズ、`docs/history/TIMELINE.md`のセッション記録参照)。
 
 ---
 

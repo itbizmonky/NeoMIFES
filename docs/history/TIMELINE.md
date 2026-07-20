@@ -1049,4 +1049,54 @@
 
 **教訓:** (1) roadmapのキーバインドスケッチは、それを書いた時点でまだ存在しなかった後続フェーズの実装(本件ではPhase 4b6dのAlt+ドラッグ)と衝突しうる — 「roadmapは実装確定前の高レベル指針」という既存の教訓([[project-neomifes-state]]のPhase 5b2エントリ参照)に、「後から実装されたフェーズがroadmapの未来のスケッチと衝突することもある」という新しいバリエーションが加わった。着手前に必ず実際のキーバインド一覧を`grep`等で洗い出し、roadmapの記述と突き合わせる価値が改めて裏付けられた。(2) 1回のPlan agentレビューで全ての設計不備が出尽くすとは限らない — 修正版の設計に対してもう一度、より具体的なシナリオ(今回は5つの操作シーケンス)をトレースさせる2回目のレビューを行ったことで、1回目のレビューでは見えていなかった追加の不具合(altCursorAnchorの残留)を発見できた。「修正した」で終わらせず、修正後の設計そのものを再度検証する価値がある。(3) 既存の複数カーソル基盤(Phase 4a〜4b7c)が十分に一般的な設計だったおかげで、矩形選択という一見大きな新機能が、実質的に「カーソル集合を構築する1つの新規メソッド」だけで完成した — 早い段階で「Nカーソルへの一様適用」という抽象化を徹底していたことの複利的な効果を示す実例。
 
+## Session 33 (2026-07-20): Phase 4b8b〜4b8g (Phase 4b8 残り全機能) 完了、Phase 4b8 全体完了
+
+**着手経緯:** ユーザーから「Phase 4b8の残りを実施せよ。フェーズの残項目は残したくはない」と明示的に指示された。Session 32で完了した4b8a(矩形選択の基本機能)以外の5機能(桁位置ジャンプ・マーカー・タブ⇔スペース変換・フリーカーソル・N対N分配クリップボード)+調査中に判明した6件目(キーボードでの矩形選択拡張、`Alt+Shift+矢印`+`Shift+Alt+I`)を、全て1セッション内で完了させる方針で着手。着手前の調査(`grep`)で3つの事実を確認: (1) 行ガター描画コードが`src/render`に一切存在しない、(2) 設定システムが存在しない、(3) `document::TextPos`が28ファイル176箇所で使用済み。この3事実を根拠に、AskUserQuestionで2件をユーザーに確認:
+1. **マーカーの視覚表示** — 行番号・折りたたみを含む本格的なLine Gutterではなく、**最小限のブックマーク専用ガター(●印のみ)を新設**する方針(推奨案)が選ばれた。本格的なLine Gutterは引き続き独立した将来フェーズへ先送り
+2. **フリーカーソルの実装方式** — `document::TextPos`を拡張する大規模変更ではなく、**main.cpp(UI層)のみで仮想列オフセットを追跡する簡略実装**(推奨案)が選ばれた
+
+CLAUDE.mdルール8「1PR=1責務」に従い**4b8b→4b8c→4b8d→4b8e→4b8f→4b8g**の6サブフェーズに分割。各サブフェーズごとに実装→ローカル検証(Debug/Release/ubsan/clang-tidy)→実アプリ起動スモークテスト→コミットのサイクルを独立して繰り返した(4b8a〜4b8gで計6コミット、いずれもpush未実施)。ドキュメント同期は6回繰り返さず、全サブフェーズ完了後にこの1回にまとめた(CLAUDE.md §11「関連する要約節も同期」原則)。
+
+**設計検証で2件のPlan agentレビューを実施し、いずれも実装着手前に不具合を検出・修正:**
+1. **[ガター描画レビュー]** `IDWriteTextLayout::HitTestTextPosition()`が返すX座標は`DrawTextLayout()`の描画原点(呼び出し側が指定)とは独立したレイアウトローカル座標である。ガター新設に伴い`DrawTextLayout`の原点だけを`kGutterWidthDips`右へずらしても、`drawCaretOnLine`/`drawSelectionOnLine`/`drawMatchOnLine`の3メソッドはHitTestの戻り値をそのまま絶対座標として使っていたため自動追従せず、キャレット/選択/マッチのハイライトがガター幅ぶん左にズレて文字とズレるバグになるところだった。3メソッド全てに`kGutterWidthDips`の明示的加算を実装前に追加して対処(自分自身の直接ソース読解と、独立したPlan agentレビューの両方で同一の結論に到達し、相互検証できた)
+2. **[フリーカーソル状態機械レビュー]** 複数の指摘のうち、「単一カーソルのみ許可するガード」を導入することで2件の問題(複数カーソル時にRight矢印が正しく動かなくなる回帰、および文字入力での実体化が`ReplaceRangeCommand`経由で単一カーソルへ収束するため元の複数カーソル集合が意図せず消える問題)が同時に解決することを、レビュー結果を統合する形で自ら見出し設計に反映した
+
+**成果物 (サブフェーズ別):**
+- **4b8b (桁位置ジャンプ):** 新規`ui::GotoLineBar`(`goto_line_bar.{h,cpp}`、単一`WC_EDITW`のみ、デバウンス・リストボックス不要、FindBar/CommandPaletteより単純)。新規`ui::parseGotoLineInput()`(`goto_line_parser.h`、ヘッダオンリー純粋関数)が`"123"`/`"123:45"`(共に1始まり)をパース。`Ctrl+G`で表示、`jumpToGotoTarget()`が0始まりへ変換しクランプ
+- **4b8c (マーカー):** 新規`core::BookmarkManager`(ソート済み`vector<LineNumber>`、`toggle`/`next`/`previous`ラップアラウンド)。ドキュメント編集への追従は本コードベースにEditEvent購読機構が無いため実装しない既知の制約として明記(ADR-010、`Document`は`version()`ポーリングのみ)。`RenderPipeline`に最小ブックマーク専用ガター(`kGutterWidthDips=24dip`)新設。`Ctrl+F2`/`F2`/`Shift+F2`
+- **4b8d (タブ⇔スペース変換):** 新規`core::computeIndentationConversionEdits()`(ヘッドレス純粋関数、各行先頭の連続空白のみ対象)。専用コマンドクラスは新設せず既存`core::ReplaceAllCommand`(Phase 5b2)へそのまま渡す。コマンドパレットに"Convert Tabs to Spaces"/"Convert Spaces to Tabs"(`tabWidth=4`固定)
+- **4b8e (フリーカーソル、簡略版):** `main.cpp`のセッション状態(`freeCursorVirtualColumns`)のみで実装、`document::TextPos`は無変更。コマンドパレットの"Toggle Free Cursor Mode"で有効化。単一プライマリカーソル・無選択時のRight矢印が行の実行末に達すると仮想列をインクリメント、文字入力時に仮想列数分のスペース+入力文字を`ReplaceRangeCommand`で一括実体化。`render::CursorVisual::virtualColumnOffset`+等幅フォント(Consolas)1文字幅の近似(既存の"Ag"プローブレイアウトを流用して計測)でキャレット描画をずらす
+- **4b8f (N対N分配クリップボード):** `handlePaste()`を変更 — 行数とカーソル数が一致する場合のみ1対1分配、不一致時(単一カーソルへの複数行貼り付けを含む)は従来通り全カーソルへ同一テキスト。`insertTextAtEveryCursor()`を`insertPerCursorTexts()`へ内部リファクタし両方から共有(挙動を変えない機械的リファクタ)
+- **4b8g (キーボード矩形選択拡張 + Shift+Alt+I):** `MainWindow::onSysKeyDown`(`WM_SYSKEYDOWN`)新設 — 未消費時は必ず`DefWindowProcW`へフォールスルーし、Alt+F4等のシステムキー既定動作を保持する設計を徹底。`SelectionModel`のprivate`moveOne()`を公開自由関数`moveTextPos()`へ格上げ(`moveAll()`もこれ経由に変更)。`Shift+Alt+矢印`ハンドラは`moveTextPos()`で新active位置を計算し、4b8aの`rectangularAnchor`状態を再利用して`setRectangularSelection()`を呼ぶ(マウスとキーボードの矩形選択拡張が同じ状態変数を共有)。新規`SelectionModel::convertToLineEndCursors()`が`Shift+Alt+I`で選択範囲を各行末尾の1カーソルへ変換(`position`と`anchor`の両方を考慮して行範囲を決定)
+
+**実装中に検出・修正したclang-tidy指摘 (全てpush前に解消):**
+- `render_pipeline.cpp`の`readability-math-missing-parentheses`(ガターのhitTest座標計算)
+- `indentation_conversion.cpp`の`modernize-use-integer-sign-comparison`(`std::cmp_equal`を使うよう修正、`static_cast`による手動キャストではclang-tidyのこのチェックは満足しない)
+- `wireNormalMode`が新規`onChar`分岐追加でcognitive complexity閾値25を26に超過 → `handleCharEvent()`という独立関数へ抽出して解消(Phase 5b3aと同じ「ラムダ本体を外に出す」パターン)
+- テストコード2件: `misc-unused-using-decls`(未使用の`PerCursorEdit` using宣言)、`readability-function-cognitive-complexity`(テスト内のfor-loopをフラットな3行のEXPECT_EQへ展開して解消)
+
+**テスト数:** 328(4b8a完了時点)→366(+38件: `core_bookmark_manager_test.cpp`11件、`ui_goto_line_parser_test.cpp`11件、`core_indentation_conversion_test.cpp`8件、`app_editor_input_test.cpp`+3件、`core_selection_model_test.cpp`+5件。4b8eはUI層に閉じた状態機械のため新規テストなし、既存FindBar/CommandPalette同様の方針を踏襲)
+
+**検証:**
+- 6サブフェーズ全てでローカル **Debug/Release/ubsan(clang-cl) 全green**、変更/新規ファイルのclang-tidy新規警告0(上記の指摘を都度検出・修正)
+- 各サブフェーズ完了時に実アプリ起動スモークテスト(3秒、クラッシュなし)を実施
+- **実アプリでのCtrl+G/Ctrl+F2・F2・Shift+F2(ガター含む)/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode有効時のRight矢印+文字入力/N対N貼り付け/Shift+Alt+矢印(矩形拡張)/Shift+Alt+Iの視覚的動作確認は、この環境にWin32 GUI自動化手段が無いため未実施 — 次セッション冒頭でユーザーに依頼すること(Phase 5b3a〜5b3c・4b8aから持ち越しのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ・日本語IME視覚確認と合わせて)**
+
+**意図的にスコープ外とした項目 (roadmapスケッチからの意図的乖離、詳細は`master_roadmap.md` §3.7参照):**
+- カスタムクリップボードフォーマット`CF_NEOMIFES_MULTICURSOR`、「サイクル貼り付け」等の高度なN対N分配設定(設定システムが存在しないため)
+- `Auto`モード(統計的多数派自動判定)でのタブ⇔スペース変換(同上)
+- フリーカーソルのマウス対応(行末より右クリック)・複数カーソル同時のフリーカーソル・仮想空間の視覚的パディング表示
+- キーボードでの矩形拡大時の列保持(短い行を経由した後の元の意図列を記憶しない、通常の垂直移動とは異なる簡略実装として既知の制約に明記)
+- 本格的なLine Gutter(行番号・折りたたみ)— 引き続き独立した将来フェーズ
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §3.7を「4b8a完了」から「4b8全体(4b8a〜4b8g)完了」へ全面書き換え、サブフェーズ別に確定事項・roadmapスケッチからの乖離点を追記。§2フェーズ早見表の4b8行を1行に統合し完了マーク
+- `docs/design/detailed_design.md` §5.1.1に4b8g追記(`moveTextPos`/`convertToLineEndCursors`)、§5.3に4b8b〜4b8g全サブフェーズの実装リファレンスを追記、冒頭の「Phase 4b8以降はmaster_roadmapが正」という記述を「Phase 5c以降」に更新(4b8の確定内容は本書へ吸収済みのため)
+- `docs/handoff/RESUME_HERE.md`に新規§3.23(完了記録)追加、§1状態表(4b8b〜4b8g各行+統合行)・§6推奨プロンプトを更新、「Phase 4b8は未着手のまま保留」という古い記述を完了報告へ差し替え、Phase 5b3b着手時向けだった古い「次回確認すること」チェックリストの陳腐化した2項目(5b3b自体・保留中のPhase 4b8)を削除し残り5項目を「次回(Phase 5cまたはPhase 6)着手時」向けに更新
+- メモリ: `project_neomifes_state.md`をPhase 4b8完了状態へ更新
+
+**教訓:** (1) 「設定システムが存在しない」という1つの制約事実が、roadmapスケッチが想定していた複数の高度な機能(タブ変換のAutoモード、N対N分配のサイクル貼り付け設定、カスタムクリップボードフォーマット)を横断的にスコープ外とする根拠として繰り返し機能した — 個別に判断するのではなく、着手前にこの制約を確認しておくことで、6サブフェーズ全体を通じて一貫した「実在しない設定を前提にしない」判断を効率的に下せた。(2) 複数の独立した設計課題(ガター描画・フリーカーソル状態機械)がある場合、Plan agentのレビューを並列で(順番に待たず)呼び出し、その待ち時間で計画書のドラフト作業を進めることで、検証の厚みを保ちながら時間効率を落とさずに済んだ。(3) `insertTextAtEveryCursor()`を`insertPerCursorTexts()`へ内部リファクタしてN対N分配と全カーソル同一挿入の両方から共有した判断は、既存のコードレビュー原則(重複コードの検出)を待たずに実装者自身が「N:N分配ロジックを書く前に、既存の全カーソル同一挿入ロジックと本質的に同じ構造(カーソルごとに1つのテキストを対応させてMultiCursorEditCommandを組み立てる)であることに気づく」形で先回りできた一例。
+
+**次回 (Phase 5cまたはPhase 6):** Phase 4b8はこれでroadmap上の保留項目を残さず完全に完了した。次はPhase 5c(Grep/複数フォルダ検索/検索履歴/タグジャンプ、`master_roadmap.md` §5.5)かPhase 6(エンコーディング+自動判定+10GB mmap、`master_roadmap.md` §6)のいずれかをユーザーに選択させてから着手すること。**実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認が全て未実施のため、セッション冒頭でユーザーに依頼すること。** push は本セッション終了時点で未実施(4b8a〜5b3c・4b8b〜4b8g、計11コミットが蓄積中)。
+
 <!-- 次セッションはここに追記 -->
