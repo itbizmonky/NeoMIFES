@@ -1243,6 +1243,45 @@ public:
 
 **本PRのスコープ外(意図的に延期):** サブメニュー、絵文字アイコン、最近使用ボーナス、検索履歴共有、Quick Open(Ctrl+P)・行ジャンプ(Ctrl+G) — roadmap v2.0の拡張項目でありUIの消費者/要件確定が別途必要なため。
 
+### 7.1''''''' GrepService (Phase 5c1 実装)
+
+`search::GrepService`(`src/search/include/neomifes/search/grep_service.h`)は複数ルート・複数ファイルを横断する同期検索。**既存`search::SearchService::findAll()`/`document::loadUtf8File()`を無改変のまま再利用するだけで実装でき、`search_service.{h,cpp}`への変更は一切不要だった。**
+
+```cpp
+// src/search/include/neomifes/search/grep_service.h
+struct GrepQuery {
+    std::vector<std::filesystem::path> roots;
+    std::vector<std::u16string>        includeGlobs;  // ファイル名のみに util::globMatch() でマッチ
+    std::vector<std::u16string>        excludeGlobs;  // includeGlobsと独立に常に適用、競合時はexclude優先
+    Query                               query;          // 既存 search::Query をそのまま再利用
+};
+
+struct GrepMatch {
+    std::filesystem::path path;
+    document::LineNumber   line = 0;  // 0-based
+    document::TextRange    columnRange;  // lineText先頭からの相対位置(絶対TextPosではない)
+    std::u16string          lineText;    // 末尾の \n / \r は除去済み
+};
+
+class GrepService {
+public:
+    [[nodiscard]] static std::vector<GrepMatch> findAll(const GrepQuery& query);
+};
+
+// src/util/include/neomifes/util/glob_match.h (ヘッダオンリー宣言 + 小さい .cpp、fuzzy_matcher.hと同じ分割)
+[[nodiscard]] bool globMatch(std::u16string_view pattern, std::u16string_view text) noexcept;
+```
+
+**設計上の要点:**
+- **同期実装、`std::vector`を直接返す。** roadmap §5.5のスケッチ(Search Worker Pool、`std::function<void(GrepMatch)>`ストリーミングコールバック)から意図的に乖離 — 本コードベースには`std::thread`/`std::async`等の並行処理が一切存在せず、`search_service.h`が既に「UIが必要とするまで非同期化はしない」と明記していた方針をそのまま踏襲した。Phase 5c1にはまだUIが無いため、同じ理由で同期のままとした
+- **ファイル読み込みは`document::loadUtf8File()`を1ファイルにつき1回呼ぶだけ。** BOM処理・サイズ上限・UTF-8検証は全て既存実装に委譲。読み込みに失敗したファイル(バイナリ含む、`LoadError::InvalidUtf8`)はそのファイルをスキップするだけで全体を失敗させない(grep/ripgrepが不読/バイナリファイルをスキップする一般的な挙動と同じ)
+- **`GrepMatch::columnRange`は`lineText`先頭からの相対位置。** `GrepService`が読み込む`Document`は検索後に破棄される一時オブジェクトのため、`document::TextPos`の絶対オフセットは後続の利用者にとって無意味 — `lineText`に対して自己完結する相対レンジの方が有用という判断
+- **ディレクトリ走査は`std::filesystem::recursive_directory_iterator`を非throwの`it.increment(ec)`で回す。** range-based forは内部でthrowする`operator++`を使うため使わない。`skip_permission_denied`を設定、`follow_directory_symlink`は既定OFFのままでシンボリックリンクループ対策も不要
+- **存在しないルート・走査エラーはそのルート/ファイルをスキップするのみ。** ルートは実質的にユーザー入力(Grepダイアログの入力欄)というシステム境界だが、`findAll()`の戻り値は単純な`vector`でエラーチャネルを持たないため、1つの不正なルートが他のルートの結果まで消してしまう事態を避ける設計とした(ripgrep/grep -rと同じ考え方)
+- **`globMatch()`はファイル名1コンポーネントのみを対象、`*`/`?`のみサポート。** ASCII範囲のみの大文字小文字無視(NTFS自体が大文字小文字を区別しないこと、`util::fuzzyMatchScore`の既存方針を踏襲)。アンカー付き全文マッチ(部分一致ではない)
+
+**意図的にスコープ外とした項目(Phase 5cの後続サブフェーズへ):** `contextLines`(周辺行表示)、`GrepMatch`へのキャプチャグループ、`Mode::GrepResult`・結果ペインUI・`render_pipeline`へのマッチビジュアル配線・`main.cpp`のキーバインド配線、タグジャンプパーサ、検索履歴永続化。詳細は`master_roadmap.md` §5.5参照。
+
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |
 |---|---|
