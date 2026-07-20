@@ -40,6 +40,7 @@ add_executable(neomifes_unit_tests
     app_grep_result_formatting_test.cpp
     util_tag_jump_parser_test.cpp
     app_tag_jump_test.cpp
+    encoding_encoding_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -47,6 +48,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::compile_options
         neomifes::util
         neomifes::platform
+        neomifes::encoding
         neomifes::document
         neomifes::render
         neomifes::core

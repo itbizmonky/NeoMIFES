@@ -1,4 +1,9 @@
 add_subdirectory(util)
+# neomifes_encoding has no dependency on document:: (Phase 6a) - placed
+# before document per the layer diagram (Encoding Engine sits below Document
+# Engine, CLAUDE.md sec.3); document:: gains a dependency on it once file
+# loading becomes encoding-aware (Phase 6d+).
+add_subdirectory(encoding)
 add_subdirectory(platform)
 add_subdirectory(document)
 add_subdirectory(core)
