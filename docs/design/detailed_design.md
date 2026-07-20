@@ -1524,6 +1524,41 @@ struct BomDetection { Encoding encoding; std::size_t bomLength; };
 
 **意図的にスコープ外とした項目(Phase 6の後続サブフェーズへ):** Shift-JIS/EUC-JP/ISO-2022-JP(6b)、3段階自動判定の2.以降(6c、BOM判定のみ6aで完成済み)、行末コード判定・`DecodeResult`統合戻り値、Document/OriginalBufferへの統合、10GB mmap遅延デコードの一般化、メニューバー・ステータスバーUI、Direct Storage API検討。詳細は`master_roadmap.md` §6参照。
 
+### 9.4 実装後の確定事項/変更点 (2026-07-20、Phase 6b1完了)
+
+`Encoding`enumへ`ShiftJis`(CP932)/`EucJp`(CP20932)を追加。新規`neomifes::platform::codepage_convert`(`src/platform/include/neomifes/platform/codepage_convert.h`)がWin32のネイティブコードページ変換を薄くラップし、`neomifes::encoding`はこれを呼び出すのみで自前のJIS X 0208対応表を持たない。
+
+```cpp
+// src/platform/include/neomifes/platform/codepage_convert.h
+namespace neomifes::platform {
+
+enum class CodepageConvertError { InvalidSequence, UnmappableCharacter };
+
+[[nodiscard]] std::variant<std::u16string, CodepageConvertError>
+convertToUtf16(std::span<const std::byte> bytes, unsigned codepage);
+
+[[nodiscard]] std::variant<std::vector<std::byte>, CodepageConvertError>
+convertFromUtf16(std::u16string_view text, unsigned codepage);
+
+}  // namespace neomifes::platform
+
+// src/encoding/include/neomifes/encoding/encoding.h (拡張分のみ)
+enum class Encoding { /* ...既存10種... */ ShiftJis, EucJp /* Iso2022Jp は6b2で追加 */ };
+enum class EncodeError { UnmappableCharacter };
+[[nodiscard]] std::variant<std::vector<std::byte>, EncodeError> encode(
+    std::u16string_view text, Encoding encoding);  // 6aから戻り値型変更
+```
+
+**設計上の要点:**
+- **JIS X 0208対応表の自前実装は行わなかった。** 数千文字規模のUnicode⇔JIS対応表を記憶から手打ちで生成するのはCLAUDE.mdルール3(推測実装をしない)に反すると判断し、Win32の`MultiByteToWideChar`/`WideCharToMultiByte`(Microsoft保守の権威ある変換表)をラップする設計にした。既存`src/platform/clipboard.h`(Win32機能の薄いラッパー)と同じパターン
+- **`WC_ERR_INVALID_CHARS`はCP932/20932で使用できないことを実機検証で確認した。** `GetLastError()`が`ERROR_INVALID_FLAGS`を返す(decode方向の`MB_ERR_INVALID_CHARS`は問題なく機能した、非対称な制約)。代わりに`WC_NO_BEST_FIT_CHARS`+`lpUsedDefaultChar`出力引数の組み合わせで、既定文字への曖昧な置換が発生した場合をエラー扱いにする設計にした(`codepage_convert.cpp`参照)
+- **`encode()`の戻り値を`std::vector<std::byte>`から`std::variant<std::vector<std::byte>, EncodeError>`へ変更(6a APIの破壊的変更)。** Shift-JIS/EUC-JPは非全域関数(JIS X 0208に無い文字、例えば絵文字は表現不可能)なため。6a完了時点で呼び出し元がテストのみだったため低リスクと判断
+- **ISO-2022-JPは6b2へ分離。** `WC_ERR_INVALID_CHARS`のISO-2022系コードページ(50220/50221/50222)対応状況が未検証であることと、エスケープシーケンスによるモード切替という別種の構造を持つことが理由
+
+**テスト:** `tests/unit/platform_codepage_convert_test.cpp`(新規) — 既知バイト列(「あ」「亜」)による外部真実性テストを中心に構成、自己ラウンドトリップのみでは検出できない対称的な誤りを防ぐ。`tests/unit/encoding_encoding_test.cpp`にShiftJis/EucJpを追加したラウンドトリップ・エラー系テストを拡張。
+
+**意図的にスコープ外とした項目:** ISO-2022-JP(6b2)、3段階自動判定(6c)、Document/OriginalBufferへの統合(6d以降)。詳細は`master_roadmap.md` §6参照。
+
 ---
 
 ## 10. Syntax Engine 詳細
