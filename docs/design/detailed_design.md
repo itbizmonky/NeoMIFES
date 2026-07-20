@@ -1282,6 +1282,32 @@ public:
 
 **意図的にスコープ外とした項目(Phase 5cの後続サブフェーズへ):** `contextLines`(周辺行表示)、`GrepMatch`へのキャプチャグループ、`Mode::GrepResult`・結果ペインUI・`render_pipeline`へのマッチビジュアル配線・`main.cpp`のキーバインド配線、タグジャンプパーサ、検索履歴永続化。詳細は`master_roadmap.md` §5.5参照。
 
+### 7.1'''''''' openDocumentAt (Phase 5c2 実装)
+
+`neomifes::app::openDocumentAt()`(`src/app/include/neomifes/app/document_open.h`)は、実行中に任意のファイルを開いて現在の`Document`を差し替えるヘッドレス関数。Grep結果ペイン(5c3)・タグジャンプ(5c4)の共通前提として、両者に先行して独立サブフェーズで実装した(§5.5参照 — roadmapスケッチには無かった発見)。
+
+```cpp
+// src/app/include/neomifes/app/document_open.h
+[[nodiscard]] std::optional<document::LoadError> openDocumentAt(
+    const std::filesystem::path& path, std::optional<document::LineNumber> targetLine,
+    std::optional<std::uint64_t> targetColumn, document::Document& document,
+    core::CommandDispatcher& dispatcher, core::SelectionModel& selectionModel,
+    core::Viewport& viewport, core::BookmarkManager& bookmarks,
+    std::optional<document::TextPos>& altCursorAnchor,
+    std::optional<document::TextPos>& rectangularAnchor,
+    std::optional<std::uint32_t>&      freeCursorVirtualColumns);
+```
+
+**設計上の要点:**
+- **`document::loadUtf8File()`でロードした結果を`document = std::move(*result->document)`でその場move-assignする。** `Document::operator=(Document&&) noexcept = default`は`document.h`に既存だったが、これが初めての実利用。`Document`はローカル変数として値で保持され(`wWinMain`)、`ExecutionContext`/`RenderPipeline`は`Document*`をポインタで保持するのみのため、move代入後もアドレスが不変であればダングリングにならない — この安全性は実装前にPlan agentによるレビューで3点(move代入operatorの存在・ポインタ保持であること・`RenderPipeline::refreshDocumentCacheIfStale()`が`version()`の等価比較であること)を個別にソース確認した上で確定させた
+- **`neomifes_app_input`ライブラリ(`editor_input.h`と同じWin32/RenderPipeline非依存の層)に配置。** `main.cpp`の無名namespace関数として置くと、Phase 5c2時点ではまだ呼び出し元(UIトリガー)が無いためMSVC `/WX`+C4505(未参照ローカル関数)でビルド不能になることが設計段階で判明したため
+- **ファイル切替に伴い旧ドキュメントに対してのみ意味を持つ状態を一括リセットする:** `core::CommandDispatcher::resetUndoHistory()`(新設、内部で`core::UndoStack::clear()`を呼ぶ — `UndoStack&`を直接公開せず`canUndo()`/`canRedo()`と同じ「狭い動詞を公開する」設計)、`core::BookmarkManager::clear()`(新設)、Alt-クリック/矩形選択アンカー、フリーカーソル仮想列(いずれも呼び出し元の`std::optional`参照引数を`reset()`)
+- **`targetLine`/`targetColumn`は0始まり(`document::LineNumber`の既存慣習)。** `search::GrepMatch::line`/`columnRange`と同じ規約で、`Ctrl+G`の1始まり`ui::GotoTarget`規約とは意図的に異なる — この関数の実際の呼び出し元(5c3のGrep結果、5c4のタグジャンプ)は既に0始まりの位置を渡すため
+- **範囲外の`targetLine`/`targetColumn`はクランプする(失敗にしない)。** `main.cpp`の`jumpToGotoTarget()`と同じ防御的規約
+- **失敗時(`LoadError`)は`document`を含む一切の状態を変更しない。** `document::loadUtf8File()`の既存エラー分類をそのまま返す(将来のエラートースト等の消費者のために情報を保持)
+
+**意図的にスコープ外とした項目(5c3/5c4側でmain.cppに追加):** `RenderPipeline::setBookmarkedLines({})`/`setMatchVisuals({})`・`FindBar::setMatchCount(0,0)`・`FindReplaceState::currentMatches.clear()`等のキャッシュ済みビジュアル状態のリセット。これらは`openDocumentAt()`から到達できない`main.cpp`側の状態であり、5c3/5c4が実際のUIトリガー(キーバインド)を配線する同一コミットでまとめて後始末する。
+
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |
 |---|---|
