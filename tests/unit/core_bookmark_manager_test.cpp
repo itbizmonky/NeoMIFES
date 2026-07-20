@@ -87,6 +87,27 @@ TEST(BookmarkManagerTest, PreviousWrapsAroundToTheLastBookmarkBeforeTheFirst) {
     EXPECT_EQ(*result, 7U);
 }
 
+// Phase 5c2 ("open a different file at runtime"): clear().
+TEST(BookmarkManagerTest, ClearOnEmptyManagerIsNoop) {
+    BookmarkManager manager;
+    manager.clear();
+    EXPECT_TRUE(manager.lines().empty());
+}
+
+TEST(BookmarkManagerTest, ClearRemovesAllBookmarks) {
+    BookmarkManager manager;
+    manager.toggle(2);
+    manager.toggle(7);
+    manager.toggle(10);
+    ASSERT_EQ(manager.lines().size(), 3U);
+
+    manager.clear();
+    EXPECT_TRUE(manager.lines().empty());
+    EXPECT_FALSE(manager.isBookmarked(2));
+    EXPECT_FALSE(manager.isBookmarked(7));
+    EXPECT_FALSE(manager.isBookmarked(10));
+}
+
 TEST(BookmarkManagerTest, NextAndPreviousCycleThroughASingleBookmark) {
     BookmarkManager manager;
     manager.toggle(5);

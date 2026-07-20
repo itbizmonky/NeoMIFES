@@ -28,6 +28,13 @@ public:
     // the existing one.
     void toggle(document::LineNumber line);
 
+    // Discards every bookmark. A bookmarked line number is meaningless once
+    // the underlying content changes to an unrelated file (Phase 5c2 - "open
+    // a different file at runtime") - same "line numbers are only valid
+    // against the content they were recorded against" theme as this class's
+    // documented lack of edit-tracking above.
+    void clear() noexcept;
+
     [[nodiscard]] bool isBookmarked(document::LineNumber line) const noexcept;
 
     // The nearest bookmarked line strictly after `from`, wrapping around to

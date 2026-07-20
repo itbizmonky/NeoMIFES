@@ -30,6 +30,12 @@ public:
     bool undo();
     bool redo();
 
+    // See UndoStack::clear()'s comment for the rationale. Exposed here
+    // (rather than an UndoStack& accessor) so UndoStack stays encapsulated -
+    // callers should not be able to poke at its internal vectors directly,
+    // only ask for the one well-defined operation they need (Phase 5c2).
+    void resetUndoHistory() noexcept;
+
     [[nodiscard]] bool canUndo() const noexcept { return m_undoStack.canUndo(); }
     [[nodiscard]] bool canRedo() const noexcept { return m_undoStack.canRedo(); }
 

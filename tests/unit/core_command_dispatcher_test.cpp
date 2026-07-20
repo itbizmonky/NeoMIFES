@@ -80,4 +80,45 @@ TEST(CommandDispatcherTest, MultipleCommandsUndoInReverseOrder) {
     EXPECT_FALSE(dispatcher.canUndo());
 }
 
+// Phase 5c2 ("open a different file at runtime"): resetUndoHistory().
+TEST(CommandDispatcherTest, ResetUndoHistoryDiscardsUndoStack) {
+    Document          doc;
+    SelectionModel    selection;
+    CommandDispatcher dispatcher(doc, selection);
+
+    dispatcher.dispatch(std::make_unique<InsertTextCommand>(0, u"hello"));
+    ASSERT_TRUE(dispatcher.canUndo());
+
+    dispatcher.resetUndoHistory();
+    EXPECT_FALSE(dispatcher.canUndo());
+}
+
+TEST(CommandDispatcherTest, ResetUndoHistoryDiscardsRedoStack) {
+    Document          doc;
+    SelectionModel    selection;
+    CommandDispatcher dispatcher(doc, selection);
+
+    dispatcher.dispatch(std::make_unique<InsertTextCommand>(0, u"hello"));
+    ASSERT_TRUE(dispatcher.undo());
+    ASSERT_TRUE(dispatcher.canRedo());
+
+    dispatcher.resetUndoHistory();
+    EXPECT_FALSE(dispatcher.canRedo());
+}
+
+TEST(CommandDispatcherTest, ResetUndoHistoryThenDispatchWorksNormally) {
+    Document          doc;
+    SelectionModel    selection;
+    CommandDispatcher dispatcher(doc, selection);
+
+    dispatcher.dispatch(std::make_unique<InsertTextCommand>(0, u"a"));
+    dispatcher.resetUndoHistory();
+
+    dispatcher.dispatch(std::make_unique<InsertTextCommand>(doc.length(), u"b"));
+    EXPECT_EQ(doc.toU16String(), u"ab");
+    ASSERT_TRUE(dispatcher.canUndo());
+    ASSERT_TRUE(dispatcher.undo());
+    EXPECT_EQ(doc.toU16String(), u"a");
+}
+
 }  // namespace

@@ -19,4 +19,6 @@ bool CommandDispatcher::undo() { return m_undoStack.undo(m_context); }
 
 bool CommandDispatcher::redo() { return m_undoStack.redo(m_context); }
 
+void CommandDispatcher::resetUndoHistory() noexcept { m_undoStack.clear(); }
+
 }  // namespace neomifes::core

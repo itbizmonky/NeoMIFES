@@ -128,4 +128,39 @@ TEST(UndoStackTest, MultipleUndoRedoRoundTripRestoresExactContent) {
     EXPECT_FALSE(stack.canRedo());
 }
 
+// Phase 5c2 ("open a different file at runtime"): clear().
+TEST(UndoStackTest, ClearOnEmptyStackIsNoop) {
+    UndoStack stack;
+    stack.clear();
+    EXPECT_FALSE(stack.canUndo());
+    EXPECT_FALSE(stack.canRedo());
+}
+
+TEST(UndoStackTest, ClearDiscardsUndoHistory) {
+    UndoStack stack;
+    stack.push(std::make_unique<InsertTextCommand>(0, u"a"));
+    ASSERT_TRUE(stack.canUndo());
+
+    stack.clear();
+    EXPECT_FALSE(stack.canUndo());
+    EXPECT_EQ(stack.undoCount(), 0U);
+}
+
+TEST(UndoStackTest, ClearDiscardsRedoHistory) {
+    Document          doc;
+    SelectionModel    selection;
+    ExecutionContext  ctx(doc, selection);
+    UndoStack         stack;
+
+    auto cmd = std::make_unique<InsertTextCommand>(0, u"a");
+    cmd->execute(ctx);
+    stack.push(std::move(cmd));
+    stack.undo(ctx);
+    ASSERT_TRUE(stack.canRedo());
+
+    stack.clear();
+    EXPECT_FALSE(stack.canRedo());
+    EXPECT_EQ(stack.redoCount(), 0U);
+}
+
 }  // namespace

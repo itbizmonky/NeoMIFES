@@ -13,6 +13,8 @@ void BookmarkManager::toggle(document::LineNumber line) {
     }
 }
 
+void BookmarkManager::clear() noexcept { m_lines.clear(); }
+
 bool BookmarkManager::isBookmarked(document::LineNumber line) const noexcept {
     return std::ranges::binary_search(m_lines, line);
 }

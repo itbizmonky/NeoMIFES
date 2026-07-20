@@ -37,4 +37,9 @@ bool UndoStack::redo(ExecutionContext& ctx) {
     return true;
 }
 
+void UndoStack::clear() noexcept {
+    m_undo.clear();
+    m_redo.clear();
+}
+
 }  // namespace neomifes::core

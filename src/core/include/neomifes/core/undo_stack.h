@@ -31,6 +31,15 @@ public:
     bool undo(ExecutionContext&);
     bool redo(ExecutionContext&);
 
+    // Discards all undo/redo history without touching whatever Document it
+    // was recorded against - for callers that swap the Document out from
+    // under this stack entirely (Phase 5c2's "open a different file at
+    // runtime": every ICommand::undo() captured against the old file's
+    // content would apply nonsensical byte offsets to the new one).
+    // Nothing else needs resetting - m_undo/m_redo are UndoStack's entire
+    // state.
+    void clear() noexcept;
+
     [[nodiscard]] bool canUndo() const noexcept { return !m_undo.empty(); }
     [[nodiscard]] bool canRedo() const noexcept { return !m_redo.empty(); }
     [[nodiscard]] std::size_t undoCount() const noexcept { return m_undo.size(); }

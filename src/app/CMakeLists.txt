@@ -4,6 +4,7 @@
 # testing approach (no Win32 message simulation harness exists here).
 add_library(neomifes_app_input STATIC
     editor_input.cpp
+    document_open.cpp
 )
 add_library(neomifes::app_input ALIAS neomifes_app_input)
 
