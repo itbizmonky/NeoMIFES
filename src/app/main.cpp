@@ -369,8 +369,14 @@ void wireMeasureStartupOrMemoryMode(MainWindowConfig& cfg, StartupProfile& profi
 // lives here in the app layer rather than in either core or render.
 // Phase 4b7a: builds one CursorVisual per SelectionModel cursor (not just
 // the primary) so every cursor's caret/selection actually gets drawn.
+// `primaryVirtualColumnOffset` (Phase 4b8e, default 0 - every existing call
+// site is unaffected) carries the primary cursor's free-cursor virtual
+// column count, if any, onto its CursorVisual; every other cursor always
+// gets 0 (free cursor mode is single-primary-cursor only, per the approved
+// plan).
 void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
-                                  const SelectionModel& selection, const Viewport& viewport) {
+                                  const SelectionModel& selection, const Viewport& viewport,
+                                  std::uint32_t primaryVirtualColumnOffset = 0) {
     renderPipeline.setTopLine(viewport.topLine());
     std::vector<neomifes::render::CursorVisual> visuals;
     visuals.reserve(selection.cursors().size());
@@ -379,6 +385,7 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
             .position       = cursor.position,
             .selectionRange = TextRange{.start = std::min(cursor.position, cursor.anchor),
                                         .end     = std::max(cursor.position, cursor.anchor)},
+            .virtualColumnOffset = cursor.isPrimary ? primaryVirtualColumnOffset : 0,
         });
     }
     renderPipeline.setCursorVisuals(std::move(visuals));
@@ -716,6 +723,72 @@ bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool alt
     return neomifes::app::handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
 }
 
+// Phase 4b8e (フリーカーソル簡略版): Right-arrow past the real end of the
+// current line, while Free Cursor Mode is on and there is exactly one
+// cursor with no active selection (deliberately narrow scope per the
+// approved plan - no mouse support, no multi-cursor, no Shift-extend or
+// Ctrl+Right word-jump into virtual space), increments a virtual column
+// count instead of the usual "do nothing at end of line/document" behavior.
+// No document mutation happens here - the virtual columns are main.cpp
+// session state until onChar materializes them (see applyFreeCursorChar()
+// below) - so this only ever needs a repaint, never dispatcher.dispatch().
+bool handleFreeCursorRightArrow(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
+                                bool freeCursorModeEnabled,
+                                std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                                const SelectionModel& selectionModel, const Document& document,
+                                RenderPipeline& renderPipeline, const Viewport& viewport) {
+    if (!freeCursorModeEnabled || vkCode != VK_RIGHT || shiftDown || ctrlDown ||
+        selectionModel.cursors().size() != 1) {
+        return false;
+    }
+    const Cursor& cursor = selectionModel.primaryCursor();
+    if (cursor.hasSelection()) {
+        return false;
+    }
+    const auto line = document.offsetToLine(cursor.position);
+    const auto lineEndExclusive = (line + 1 < document.lineCount())
+                                       ? document.lineToOffset(line + 1) - 1
+                                       : document.length();
+    if (cursor.position != lineEndExclusive) {
+        return false;  // not at the real end of the line yet - normal movement applies
+    }
+    freeCursorVirtualColumns = freeCursorVirtualColumns.value_or(0) + 1;
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport,
+                                 *freeCursorVirtualColumns);
+    return true;
+}
+
+// Materializes free-cursor virtual columns (Phase 4b8e) once the user types
+// a character while the caret sits past the real end of its line: inserts
+// `virtualColumns` real spaces followed by `ch` in one edit, via the same
+// single-range core::ReplaceRangeCommand dispatch replaceCurrentMatch()
+// uses (Phase 5b3b) rather than neomifes::app::handleChar()'s
+// insertTextAtEveryCursor() path - this is always exactly one pre-validated,
+// selection-less cursor (handleFreeCursorRightArrow()'s guard), not the
+// general multi-cursor case. Mirrors handleChar()'s own \r->\n translation
+// and C0-control filter (Enter/Tab accepted, everything else below 0x20
+// ignored - Backspace/Escape/etc. arrive via WM_KEYDOWN instead) since this
+// bypasses handleChar() entirely rather than wrapping it.
+void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd,
+                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
+                         Viewport& viewport, const Document& document,
+                         RenderPipeline& renderPipeline) {
+    if (ch < 0x20 && ch != u'\r' && ch != u'\t') {
+        return;
+    }
+    auto inserted = static_cast<char16_t>(ch);
+    if (ch == u'\r') {
+        inserted = u'\n';
+    }
+    std::u16string text(virtualColumns, u' ');
+    text.push_back(inserted);
+    const auto pos = selectionModel.primaryCursor().position;
+    dispatcher.dispatch(
+        std::make_unique<ReplaceRangeCommand>(TextRange{.start = pos, .end = pos}, text));
+    viewport.ensureVisible(selectionModel.primaryCursor().position, document);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+}
+
 // Whether a Ctrl+C/X/V keystroke was recognized at all, and (only when it
 // was) whether it changed the document/selection.
 struct ClipboardKeyResult {
@@ -772,7 +845,23 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
                         FindBar& findBar, FindReplaceState& findReplaceState,
                         CommandPalette& commandPalette, GotoLineBar& gotoLineBar,
-                        BookmarkManager& bookmarks) {
+                        BookmarkManager& bookmarks, bool freeCursorModeEnabled,
+                        std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+    if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled,
+                                   freeCursorVirtualColumns, selectionModel, document, renderPipeline,
+                                   viewport)) {
+        return;
+    }
+    // Any other key discards a pending virtual-column count (Phase 4b8e) -
+    // "無関係な操作で破棄" rule, same convention as altCursorAnchor/
+    // rectangularAnchor above. Forces one repaint here (rather than relying
+    // on whichever branch below happens to run) so the caret doesn't stay
+    // visually stranded past the real end of the line when the branch that
+    // does run turns out to be a no-op (e.g. Ctrl+Z with nothing to undo).
+    if (freeCursorVirtualColumns.has_value()) {
+        freeCursorVirtualColumns.reset();
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    }
     if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
         return;
     }
@@ -797,6 +886,27 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     }
     const bool changed = neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, dispatcher,
                                                       selectionModel, viewport, document);
+    if (changed) {
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    }
+}
+
+// Handles WM_CHAR: free-cursor materialization (Phase 4b8e, applyFreeCursorChar()
+// above) takes priority over the regular insert-at-every-cursor path
+// (neomifes::app::handleChar()) whenever a virtual-column count is pending.
+// Pulled out of wireNormalMode's onChar lambda for the same cognitive-
+// complexity reason as handleKeyDownEvent() above.
+void handleCharEvent(HWND hwnd, wchar_t ch, CommandDispatcher& dispatcher,
+                     SelectionModel& selectionModel, Viewport& viewport, const Document& document,
+                     RenderPipeline& renderPipeline,
+                     std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+    if (freeCursorVirtualColumns) {
+        applyFreeCursorChar(ch, *freeCursorVirtualColumns, hwnd, dispatcher, selectionModel, viewport,
+                           document, renderPipeline);
+        freeCursorVirtualColumns.reset();
+        return;
+    }
+    const bool changed = neomifes::app::handleChar(ch, dispatcher, selectionModel, viewport, document);
     if (changed) {
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     }
@@ -845,22 +955,22 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
 }
 
 // Builds the command palette's static registry (Phase 5b3c, extended in
-// Phase 4b8d) - 8 entries, each re-exposing an already-implemented
+// Phase 4b8d/4b8e) - 9 entries, each re-exposing an already-implemented
 // keybinding or document-wide action through the palette (Find/Find+Replace/
 // Find Next/Find Previous/Undo/Redo/Convert Tabs to Spaces/Convert Spaces to
-// Tabs). The indentation-conversion pair has no dedicated keybinding - the
-// palette is their only entry point, same as any editor's "no default
-// shortcut, command palette only" commands. Deliberately does not invent
-// commands for features this project hasn't built yet (File Open/Save has no
-// runtime UI - see this file's header comment), matching CLAUDE.md rule 3
-// (no speculative implementation). Pulled out of wireNormalMode's
-// onDeferredInit lambda for the same cognitive-complexity reason documented
-// above handleKeyDownEvent().
-std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
-                                                     CommandDispatcher& dispatcher,
-                                                     FindReplaceState& findReplaceState,
-                                                     SelectionModel& selectionModel, Viewport& viewport,
-                                                     Document& document, RenderPipeline& renderPipeline) {
+// Tabs/Toggle Free Cursor Mode). None of the last 3 has a dedicated
+// keybinding - the palette is their only entry point, same as any editor's
+// "no default shortcut, command palette only" commands. Deliberately does
+// not invent commands for features this project hasn't built yet (File
+// Open/Save has no runtime UI - see this file's header comment), matching
+// CLAUDE.md rule 3 (no speculative implementation). Pulled out of
+// wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
+// reason documented above handleKeyDownEvent().
+std::vector<CommandDescriptor> buildCommandRegistry(
+    HWND hwnd, FindBar& findBar, CommandDispatcher& dispatcher, FindReplaceState& findReplaceState,
+    SelectionModel& selectionModel, Viewport& viewport, Document& document,
+    RenderPipeline& renderPipeline, bool& freeCursorModeEnabled,
+    std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{.id              = u"find.show",
                                          .title           = u"Find",
@@ -910,6 +1020,22 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         .action = [hwnd, &document, &dispatcher, &selectionModel]() {
             applyIndentationConversion(IndentationConversionTarget::SpacesToTabs, hwnd, document,
                                        dispatcher, selectionModel);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.toggleFreeCursorMode", .title = u"Toggle Free Cursor Mode",
+        .keybindingLabel = u"",
+        .action = [hwnd, &renderPipeline, &selectionModel, &viewport, &freeCursorModeEnabled,
+                   &freeCursorVirtualColumns]() {
+            freeCursorModeEnabled = !freeCursorModeEnabled;
+            // Turning the mode off (or back on) mid-way through a pending
+            // virtual-column count would otherwise leave the caret rendered
+            // past the real end of the line with nothing left able to
+            // materialize or reset it - same "discard on unrelated action"
+            // rule as handleKeyDownEvent()'s reset above.
+            if (freeCursorVirtualColumns) {
+                freeCursorVirtualColumns.reset();
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            }
         }});
     return commands;
 }
@@ -969,10 +1095,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
                     std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
                     FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
-                    GotoLineBar& gotoLineBar, BookmarkManager& bookmarks) {
+                    GotoLineBar& gotoLineBar, BookmarkManager& bookmarks, bool& freeCursorModeEnabled,
+                    std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
-                          &selectionModel, &viewport, &findReplaceState, &commandPalette,
-                          &gotoLineBar](HWND hwnd) {
+                          &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
+                          &freeCursorModeEnabled, &freeCursorVirtualColumns](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -995,7 +1122,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands = buildCommandRegistry(hwnd, findBar, dispatcher, findReplaceState, selectionModel,
-                                             viewport, document, renderPipeline);
+                                             viewport, document, renderPipeline, freeCursorModeEnabled,
+                                             freeCursorVirtualColumns);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -1023,31 +1151,35 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPalette.handleCommand(wParam, lParam);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState, &commandPalette, &gotoLineBar,
-                     &bookmarks](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &findReplaceState, &commandPalette, &gotoLineBar, &bookmarks,
+                     &freeCursorModeEnabled, &freeCursorVirtualColumns](
+                        HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
-                          gotoLineBar, bookmarks);
+                          gotoLineBar, bookmarks, freeCursorModeEnabled, freeCursorVirtualColumns);
     };
-    cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline](
-                     HWND hwnd, wchar_t ch) {
-        const bool changed =
-            neomifes::app::handleChar(ch, dispatcher, selectionModel, viewport, document);
-        if (changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
-        }
+    cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline,
+                 &freeCursorVirtualColumns](HWND hwnd, wchar_t ch) {
+        handleCharEvent(hwnd, ch, dispatcher, selectionModel, viewport, document, renderPipeline,
+                       freeCursorVirtualColumns);
     };
     cfg.onMouseWheel = [&viewport, &selectionModel, &renderPipeline](HWND hwnd, short wheelDelta) {
         viewport.scrollTo(neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor](HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown,
-                                          bool altDown, int clickCount) {
+                       &rectangularAnchor, &freeCursorVirtualColumns](
+                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
+                          int clickCount) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
+        // A click is always an "unrelated operation" for free-cursor virtual
+        // columns (Phase 4b8e is keyboard-only) - discard silently; the
+        // click itself always changes the selection, so the repaint below
+        // already clears any stale virtual-offset caret.
+        freeCursorVirtualColumns.reset();
         const bool changed = dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel,
                                               viewport, document, altCursorAnchor, rectangularAnchor);
         if (changed) {
@@ -1055,11 +1187,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         }
     };
     cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor](HWND hwnd, std::int32_t x, std::int32_t y) {
+                       &rectangularAnchor, &freeCursorVirtualColumns](HWND hwnd, std::int32_t x,
+                                                                      std::int32_t y) {
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
         }
+        freeCursorVirtualColumns.reset();
         // Checked in this priority order: a rectangular-selection drag
         // (Phase 4b8a, Shift+Alt+drag) takes precedence over a plain
         // Alt+drag cursor extension (Phase 4b6d), which takes precedence
@@ -1182,6 +1316,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // overlay of its own; RenderPipeline::setBookmarkedLines() is pushed
     // from handleBookmarkKey() whenever the set changes.
     BookmarkManager bookmarks;
+    // Free cursor mode (Phase 4b8e, simplified - see approved plan). Both
+    // are session-lifetime UI state, not document state: freeCursorModeEnabled
+    // is toggled via the command palette ("Toggle Free Cursor Mode"), and
+    // freeCursorVirtualColumns tracks how many columns past the real end of
+    // the primary cursor's line it is currently drawn at, materializing into
+    // real spaces the moment a character is typed (applyFreeCursorChar()).
+    bool                          freeCursorModeEnabled = false;
+    std::optional<std::uint32_t> freeCursorVirtualColumns;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -1198,7 +1340,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette, gotoLineBar, bookmarks);
+                       commandPalette, gotoLineBar, bookmarks, freeCursorModeEnabled,
+                       freeCursorVirtualColumns);
     }
 
     if (!window.create(hInstance, cfg)) {

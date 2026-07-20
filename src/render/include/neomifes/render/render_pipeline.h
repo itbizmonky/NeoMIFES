@@ -49,6 +49,13 @@ namespace neomifes::render {
 struct CursorVisual {
     document::TextPos   position       = 0;
     document::TextRange selectionRange{};  // start==end: no selection for this cursor
+    // Phase 4b8e (フリーカーソル簡略版): number of virtual columns past the
+    // real end of `position`'s line the caret should be drawn at - 0 for
+    // every ordinary cursor. main.cpp is the only writer (it tracks the
+    // count as session-lifetime UI state, not a document position - see
+    // main.cpp's freeCursorVirtualColumns); `position` itself always stays a
+    // real, in-document offset.
+    std::uint32_t virtualColumnOffset = 0;
 
     friend constexpr bool operator==(const CursorVisual&, const CursorVisual&) = default;
 };
@@ -193,6 +200,7 @@ private:
     struct CaretDraw {
         document::LineNumber line;
         std::uint32_t         column;
+        std::uint32_t         virtualColumnOffset = 0;  // Phase 4b8e, see CursorVisual
     };
     // One offsetToLine()/lineToOffset() pair per cursor in m_cursorVisuals,
     // done once per frame rather than once per (visible line x cursor) pair
@@ -220,11 +228,15 @@ private:
     void drawMatchesOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                            document::TextPos lineStart, document::TextPos lineEnd) noexcept;
     // Draws a thin solid caret bar at `column` (UTF-16 code units into the
-    // line) within `layout`, at vertical offset `y`. Called from
-    // drawCaretsOnLine() for whichever visible line a caret is on, reusing
-    // that line's already-fetched layout and m_textBrush (Phase 4b1).
+    // line) within `layout`, at vertical offset `y`, shifted right by
+    // `virtualColumnOffset` * m_charWidthDips if nonzero (Phase 4b8e - an
+    // approximation that assumes the fixed-pitch font this pipeline already
+    // requires, see ensureTextFormat()'s Consolas comment; not correct for a
+    // proportional font). Called from drawCaretsOnLine() for whichever
+    // visible line a caret is on, reusing that line's already-fetched layout
+    // and m_textBrush (Phase 4b1).
     void drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
-                         std::uint32_t column) noexcept;
+                         std::uint32_t column, std::uint32_t virtualColumnOffset) noexcept;
     // Draws a translucent highlight rectangle spanning [startColumn,
     // endColumn) of `layout`, at vertical offset `y`. Called from
     // drawSelectionsOnLine() once per overlapping selection range.
@@ -280,6 +292,10 @@ private:
     // lifecycle as the brushes above.
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_bookmarkBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
+    // Phase 4b8e: one fixed-pitch character's advance width, probed once
+    // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()
+    // uses it to approximate free-cursor virtual-column positions.
+    float                                          m_charWidthDips  = 0.0F;  // 0 == not yet measured
 
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not
     // device-bound (unlike m_textBrush) - NOT cleared in recreateDevice().

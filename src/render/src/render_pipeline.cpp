@@ -218,8 +218,22 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
         return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
     }
 
+    // Reuses the same "Ag" probe layout (Phase 4b8e) - the X coordinate
+    // right after the first character equals that character's advance
+    // width, since HitTestTextPosition() is layout-local (origin 0,0). Only
+    // meaningful because ensureTextFormat() requires Consolas (fixed-pitch);
+    // see drawCaretOnLine()'s comment for where this is consumed.
+    DWRITE_HIT_TEST_METRICS charMetrics{};
+    float                    charX = 0.0F;
+    float                    charY = 0.0F;
+    hr = probeLayout->HitTestTextPosition(1, FALSE, &charX, &charY, &charMetrics);
+    if (FAILED(hr)) {
+        return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
+    }
+
     m_textFormat     = std::move(format);
     m_lineHeightDips = metrics.height;
+    m_charWidthDips  = charX;
     return {};
 }
 
@@ -364,6 +378,7 @@ std::vector<RenderPipeline::CaretDraw> RenderPipeline::computeCaretDraws() const
         draws.push_back(CaretDraw{
             .line   = cursorLine,
             .column = static_cast<std::uint32_t>(cv.position - m_document->lineToOffset(cursorLine)),
+            .virtualColumnOffset = cv.virtualColumnOffset,
         });
     }
     return draws;
@@ -373,7 +388,7 @@ void RenderPipeline::drawCaretsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout
                                       LineNumber line, const std::vector<CaretDraw>& caretDraws) noexcept {
     for (const CaretDraw& caret : caretDraws) {
         if (caret.line == line) {
-            drawCaretOnLine(dc, layout, y, caret.column);
+            drawCaretOnLine(dc, layout, y, caret.column, caret.virtualColumnOffset);
         }
     }
 }
@@ -411,7 +426,8 @@ void RenderPipeline::drawMatchesOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayou
 }
 
 void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
-                                     std::uint32_t column) noexcept {
+                                     std::uint32_t column,
+                                     std::uint32_t virtualColumnOffset) noexcept {
     if (!m_textBrush) {
         return;
     }
@@ -421,6 +437,9 @@ void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     const HRESULT hr = layout.HitTestTextPosition(column, FALSE, &caretX, &caretY, &metrics);
     if (FAILED(hr)) {
         return;
+    }
+    if (virtualColumnOffset > 0) {
+        caretX += static_cast<float>(virtualColumnOffset) * m_charWidthDips;
     }
     constexpr float kCaretWidthDips = 1.5F;
     // HitTestTextPosition() returns coordinates local to `layout`'s own
