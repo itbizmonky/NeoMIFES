@@ -11,6 +11,7 @@ target_include_directories(neomifes_encoding
 target_link_libraries(neomifes_encoding
     PRIVATE
         neomifes::compile_options
+        neomifes::platform
 )
 
 set_target_properties(neomifes_encoding PROPERTIES

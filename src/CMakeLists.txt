@@ -1,8 +1,13 @@
 add_subdirectory(util)
-# neomifes_encoding has no dependency on document:: (Phase 6a) - placed
-# before document per the layer diagram (Encoding Engine sits below Document
-# Engine, CLAUDE.md sec.3); document:: gains a dependency on it once file
-# loading becomes encoding-aware (Phase 6d+).
+# neomifes_encoding has no dependency on document:: - placed before document
+# per the layer diagram (Encoding Engine sits below Document Engine,
+# CLAUDE.md sec.3); document:: gains a dependency on it once file loading
+# becomes encoding-aware (Phase 6d+). It does depend on neomifes::platform
+# (Phase 6b1, codepage_convert.h) - platform:: is a foundational Win32-facade
+# layer with no upward dependencies of its own (peer of util::, not part of
+# the layered engine stack), so this doesn't violate the layer direction.
+# add_subdirectory() call order here doesn't need to match dependency order -
+# CMake resolves target_link_libraries() across subdirectories regardless.
 add_subdirectory(encoding)
 add_subdirectory(platform)
 add_subdirectory(document)

@@ -4,6 +4,8 @@
 #include <array>
 #include <cstddef>
 
+#include "neomifes/platform/codepage_convert.h"
+
 namespace neomifes::encoding {
 
 namespace {
@@ -16,13 +18,14 @@ constexpr std::array<std::byte, 4> kUtf32LeBom{std::byte{0xFF}, std::byte{0xFE},
 constexpr std::array<std::byte, 4> kUtf32BeBom{std::byte{0x00}, std::byte{0x00}, std::byte{0xFE},
                                                std::byte{0xFF}};
 
-enum class Family : std::uint8_t { Utf8, Utf16, Utf32 };
+enum class Family : std::uint8_t { Utf8, Utf16, Utf32, LegacyCodepage };
 
 struct EncodingInfo {
     Family                      family    = Family::Utf8;
-    bool                        bigEndian = false;  // ignored for Utf8
-    bool                        hasBom    = false;
+    bool                        bigEndian = false;  // ignored for Utf8/LegacyCodepage
+    bool                        hasBom    = false;  // always false for LegacyCodepage
     std::span<const std::byte> bomBytes;             // empty when !hasBom
+    unsigned                    codepage  = 0;       // only set for LegacyCodepage (e.g. 932)
 };
 
 // Maps every Encoding value to its transformation-format family, byte
@@ -55,6 +58,12 @@ struct EncodingInfo {
         case Encoding::Utf32BeBom:
             return {
                 .family = Family::Utf32, .bigEndian = true, .hasBom = true, .bomBytes = kUtf32BeBom};
+        case Encoding::ShiftJis:
+            return {.family = Family::LegacyCodepage, .bigEndian = false, .hasBom = false, .bomBytes = {},
+                     .codepage = 932};
+        case Encoding::EucJp:
+            return {.family = Family::LegacyCodepage, .bigEndian = false, .hasBom = false, .bomBytes = {},
+                     .codepage = 20932};
     }
     // Unreachable: every Encoding enumerator is handled above. Present so
     // the compiler doesn't warn about a control path with no return (a
@@ -276,6 +285,24 @@ struct EncodingInfo {
     return bytes;
 }
 
+[[nodiscard]] std::variant<std::u16string, DecodeError> decodeLegacyCodepageBody(
+    std::span<const std::byte> bytes, unsigned codepage) {
+    const auto result = platform::convertToUtf16(bytes, codepage);
+    if (const auto* text = std::get_if<std::u16string>(&result)) {
+        return *text;
+    }
+    return DecodeError::InvalidSequence;
+}
+
+[[nodiscard]] std::variant<std::vector<std::byte>, EncodeError> encodeLegacyCodepageBody(
+    std::u16string_view text, unsigned codepage) {
+    const auto result = platform::convertFromUtf16(text, codepage);
+    if (const auto* bytes = std::get_if<std::vector<std::byte>>(&result)) {
+        return *bytes;
+    }
+    return EncodeError::UnmappableCharacter;
+}
+
 }  // namespace
 
 std::variant<std::u16string, DecodeError> decode(std::span<const std::byte> bytes,
@@ -296,12 +323,17 @@ std::variant<std::u16string, DecodeError> decode(std::span<const std::byte> byte
             return decodeUtf16Body(body, info.bigEndian);
         case Family::Utf32:
             return decodeUtf32Body(body, info.bigEndian);
+        case Family::LegacyCodepage:
+            return decodeLegacyCodepageBody(body, info.codepage);
     }
     return DecodeError::InvalidSequence;  // unreachable, see describe()'s comment
 }
 
-std::vector<std::byte> encode(std::u16string_view text, Encoding encoding) {
-    const auto              info = describe(encoding);
+std::variant<std::vector<std::byte>, EncodeError> encode(std::u16string_view text, Encoding encoding) {
+    const auto info = describe(encoding);
+    if (info.family == Family::LegacyCodepage) {
+        return encodeLegacyCodepageBody(text, info.codepage);  // no BOM for legacy code pages
+    }
     std::vector<std::byte> bytes(info.bomBytes.begin(), info.bomBytes.end());
     std::vector<std::byte> body;
     switch (info.family) {
@@ -314,6 +346,8 @@ std::vector<std::byte> encode(std::u16string_view text, Encoding encoding) {
         case Family::Utf32:
             body = encodeUtf32Body(text, info.bigEndian);
             break;
+        case Family::LegacyCodepage:
+            break;  // handled above
     }
     bytes.insert(bytes.end(), body.begin(), body.end());
     return bytes;

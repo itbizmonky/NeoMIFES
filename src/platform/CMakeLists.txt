@@ -1,5 +1,6 @@
 add_library(neomifes_platform STATIC
     src/clipboard.cpp
+    src/codepage_convert.cpp
     src/file_mapping.cpp
     src/perf_clock.cpp
     src/process_metrics.cpp

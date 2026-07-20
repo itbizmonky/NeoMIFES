@@ -1,9 +1,12 @@
 #pragma once
 
-// Encoding Engine core (Phase 6a) - decode/encode/BOM-detection for the
-// Unicode transformation formats. Shift-JIS/EUC-JP/ISO-2022-JP land in
-// Phase 6b (their enumerators are added then, not reserved here - no
-// enumerator without an implementation, CLAUDE.md rule 3).
+// Encoding Engine core - decode/encode/BOM-detection. Phase 6a implemented
+// the Unicode transformation formats; Phase 6b1 added Shift-JIS/EUC-JP.
+// ISO-2022-JP is deferred to Phase 6b2 - its ESC-sequence framing and
+// WC_ERR_INVALID_CHARS's documented incompatibility with the ISO-2022 code
+// pages (50220/50221/50222) make it a different shape of problem from
+// Shift-JIS/EUC-JP, and only Shift-JIS is explicitly required by this
+// project's personas (master_roadmap.md's P1 SAP consultant persona).
 //
 // Deliberately independent of neomifes::document/core - this is a pure
 // bytes<->UTF-16 codec module, headlessly testable with no Document/UI
@@ -22,6 +25,17 @@
 // decode direction it doesn't have. This mirrors the project's existing
 // precedent of independent UTF-8 implementations for different needs
 // (document::OriginalBuffer's internal scanUtf8() is a third, separate one).
+//
+// Shift-JIS/EUC-JP (Phase 6b1) are not implemented as a hand-rolled JIS
+// X 0208 mapping table: CLAUDE.md rule 3 (no speculative implementation)
+// rules out transcribing a several-thousand-entry table from memory, since
+// a transcription error would only surface on a real-world file. Instead
+// they're thin wrappers around Win32's own NLS codepage conversion
+// (neomifes::platform::convertToUtf16/convertFromUtf16, codepage_convert.h)
+// - the authoritative, Microsoft-maintained source, and not a "new
+// dependency" in the CLAUDE.md sense given this project is Win32-native
+// throughout (basic_design.md's architecture already assumes Win32/
+// Direct2D/DirectWrite).
 
 #include <cstddef>
 #include <cstdint>
@@ -45,16 +59,27 @@ enum class Encoding {
     Utf32LeBom,
     Utf32Be,
     Utf32BeBom,
-    // ShiftJis / EucJp / Iso2022Jp added in Phase 6b.
+    ShiftJis,
+    EucJp,
+    // Iso2022Jp added in Phase 6b2.
 };
 
 enum class DecodeError {
     InvalidSequence,    // malformed/overlong/out-of-range code point, an
-                        // unpaired surrogate, or a *Bom encoding requested
-                        // against bytes that don't actually start with that BOM
+                        // unpaired surrogate, a byte sequence not valid for
+                        // the requested legacy code page, or a *Bom encoding
+                        // requested against bytes that don't actually start
+                        // with that BOM
     TruncatedSequence,  // a multi-byte/multi-unit sequence cut off at the end
                         // of the input
 };
+
+// A code point in `text` has no representation in the requested `encoding`
+// (e.g. an emoji encoded as ShiftJis/EucJp - JIS X 0208 predates Unicode's
+// astral plane) - or is only reachable via a lossy "best fit" approximation,
+// which is rejected for the same reason as DecodeError::InvalidSequence
+// (encode() does not silently substitute a different character).
+enum class EncodeError { UnmappableCharacter };
 
 // Decodes `bytes` as `encoding` into UTF-16 (this project's internal string
 // type, CLAUDE.md sec.4). If `encoding` is a *Bom variant, the matching BOM
@@ -68,8 +93,12 @@ enum class DecodeError {
                                                                 Encoding                    encoding);
 
 // Encodes `text` as `encoding`, prepending the matching BOM bytes first if
-// `encoding` is a *Bom variant.
-[[nodiscard]] std::vector<std::byte> encode(std::u16string_view text, Encoding encoding);
+// `encoding` is a *Bom variant. The Unicode transformation formats (Phase
+// 6a) can represent any UTF-16 string and so never actually produce
+// EncodeError, but the return type is uniformly fallible because
+// ShiftJis/EucJp (Phase 6b1) are not total functions - see EncodeError.
+[[nodiscard]] std::variant<std::vector<std::byte>, EncodeError> encode(std::u16string_view text,
+                                                                        Encoding             encoding);
 
 struct BomDetection {
     Encoding    encoding;    // the matching *Bom Encoding value
