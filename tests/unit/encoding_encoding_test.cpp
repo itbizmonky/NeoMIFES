@@ -15,6 +15,7 @@ using neomifes::encoding::BomDetection;
 using neomifes::encoding::decode;
 using neomifes::encoding::DecodeError;
 using neomifes::encoding::detectBom;
+using neomifes::encoding::detectEncoding;
 using neomifes::encoding::encode;
 using neomifes::encoding::EncodeError;
 using neomifes::encoding::Encoding;
@@ -304,6 +305,27 @@ TEST(DecodeErrorTest, EucJpRejectsInvalidByteSequence) {
     EXPECT_EQ(std::get<DecodeError>(result), DecodeError::InvalidSequence);
 }
 
+TEST(DecodeErrorTest, ShiftJisRejectsC1ControlPassthroughGap) {
+    // Windows' CP932 maps the otherwise-unassigned byte 0x80 to U+0080 (a
+    // C1 control code) instead of rejecting it, even with
+    // MB_ERR_INVALID_CHARS - undocumented, verified empirically (Phase
+    // 6c1). No real Shift-JIS text means this; treat it as invalid.
+    const auto bytes  = bytesOf({0x80});
+    const auto result = decode(bytes, Encoding::ShiftJis);
+    ASSERT_TRUE(std::holds_alternative<DecodeError>(result));
+    EXPECT_EQ(std::get<DecodeError>(result), DecodeError::InvalidSequence);
+}
+
+TEST(DecodeErrorTest, EucJpRejectsC1ControlPassthroughGap) {
+    // Same undocumented Windows behavior as the Shift-JIS case above, but
+    // CP20932's gap is wider - most of 0x80-0x9F (excluding the SS2 shift
+    // byte 0x8E, which legitimately starts a half-width katakana pair).
+    const auto bytes  = bytesOf({0x85});
+    const auto result = decode(bytes, Encoding::EucJp);
+    ASSERT_TRUE(std::holds_alternative<DecodeError>(result));
+    EXPECT_EQ(std::get<DecodeError>(result), DecodeError::InvalidSequence);
+}
+
 // --- encode() error handling (Shift-JIS/EUC-JP only, Phase 6b1) ------------
 // The Unicode transformation formats (Phase 6a) are total functions and
 // never produce EncodeError - only JIS X 0208-based encodings can fail here.
@@ -318,6 +340,71 @@ TEST(EncodeErrorTest, EucJpRejectsCharacterWithNoRepresentation) {
     const auto result = encode(u"\U0001F600", Encoding::EucJp);
     ASSERT_TRUE(std::holds_alternative<EncodeError>(result));
     EXPECT_EQ(std::get<EncodeError>(result), EncodeError::UnmappableCharacter);
+}
+
+// --- detectEncoding() (Phase 6c1) -------------------------------------------
+// Reuses detectBom()/decode() as its only building blocks (see encoding.h's
+// header comment) - these tests exercise the composition, not new byte-range
+// parsing logic.
+
+TEST(DetectEncodingTest, PrefersBomWhenPresent) {
+    const auto bytes = bytesOf({0xEF, 0xBB, 0xBF, 'h', 'i'});
+    EXPECT_EQ(detectEncoding(bytes), Encoding::Utf8Bom);
+}
+
+TEST(DetectEncodingTest, Utf16LeBomTakesPriorityOverShiftJisLikeBytes) {
+    const auto bytes = bytesOf({0xFF, 0xFE, 'h', 0x00});
+    EXPECT_EQ(detectEncoding(bytes), Encoding::Utf16LeBom);
+}
+
+TEST(DetectEncodingTest, EmptyInputIsUtf8) {
+    EXPECT_EQ(detectEncoding({}), Encoding::Utf8);
+}
+
+TEST(DetectEncodingTest, PureAsciiWithoutBomIsUtf8) {
+    const auto bytes = bytesOf({'h', 'e', 'l', 'l', 'o'});
+    EXPECT_EQ(detectEncoding(bytes), Encoding::Utf8);
+}
+
+TEST(DetectEncodingTest, ValidMultibyteUtf8WithoutBomIsUtf8) {
+    const auto bytes = std::get<std::vector<std::byte>>(encode(u"こんにちは世界", Encoding::Utf8));
+    EXPECT_EQ(detectEncoding(bytes), Encoding::Utf8);
+}
+
+TEST(DetectEncodingTest, ShiftJisByteInDecisiveRangeIsDetectedAsShiftJis) {
+    // 0x88 falls in Shift-JIS's 0x81-0x9F lead-byte range. Without the
+    // Phase 6c1 C1-control-passthrough fix (see decodeLegacyCodepageBody()),
+    // Windows' CP20932 would accept these same bytes too (mapping them as
+    // two unrelated C1 control code points instead of rejecting them) -
+    // that fix is what makes this decisive rather than ambiguous.
+    const auto bytes = bytesOf({0x88, 0x9F});  // known Shift-JIS bytes for "亜" (Phase 6b1)
+    EXPECT_EQ(detectEncoding(bytes), Encoding::ShiftJis);
+}
+
+TEST(DetectEncodingTest, EucJpTrailByteOutsideShiftJisRangeIsDetectedAsEucJp) {
+    // Trail byte 0xFD/0xFE is valid for EUC-JP (whose range is 0xA1-0xFE for
+    // both bytes) but exceeds Shift-JIS's DBCS trailing-byte range
+    // (0x40-0x7E / 0x80-0xFC, capped at 0xFC) - decisive for EUC-JP,
+    // verified empirically (see the Phase 6c1 plan's probe results).
+    const auto bytes = bytesOf({0xA1, 0xFD});
+    EXPECT_EQ(detectEncoding(bytes), Encoding::EucJp);
+}
+
+TEST(DetectEncodingTest, AmbiguousInputReturnsNullopt) {
+    // 0xA4 0xA2 is EUC-JP's encoding of "あ" (Phase 6b1's known bytes), but
+    // both bytes also fall in Shift-JIS's 0xA1-0xDF single-byte half-width
+    // katakana range, so Shift-JIS decode succeeds too (as two separate
+    // half-width katakana characters) - a genuine, reachable ambiguity with
+    // no statistical model (roadmap's N-gram stage) to break the tie. Most
+    // EUC-JP byte pairs where both bytes stay within 0xA1-0xDF share this
+    // ambiguity - it is not a corner case.
+    const auto bytes = bytesOf({0xA4, 0xA2});
+    EXPECT_EQ(detectEncoding(bytes), std::nullopt);
+}
+
+TEST(DetectEncodingTest, ByteInvalidUnderBothCodecsReturnsNullopt) {
+    const auto bytes = bytesOf({0xFF, 0xFF});  // never valid Shift-JIS or EUC-JP
+    EXPECT_EQ(detectEncoding(bytes), std::nullopt);
 }
 
 }  // namespace

@@ -115,4 +115,19 @@ struct BomDetection {
 // skip, so callers never need to compute a byte offset themselves.
 [[nodiscard]] std::optional<BomDetection> detectBom(std::span<const std::byte> bytes) noexcept;
 
+// Best-effort encoding detection for BOM-less input (Phase 6c1): tries
+// detectBom() first, then UTF-8 validity, then disambiguates Shift-JIS vs
+// EUC-JP by re-using decode()'s existing strict validation as the oracle
+// (no separate byte-range parser - see encoding.cpp's detectEncoding() for
+// why this is exact, not approximate, for the Shift-JIS/EUC-JP case).
+// Returns nullopt when genuinely ambiguous (`head` decodes successfully as
+// both Shift-JIS and EUC-JP - a real, reachable case, e.g. two bytes that
+// are simultaneously valid half-width-katakana-pair Shift-JIS and a valid
+// EUC-JP double-byte character) or when it matches neither - the caller
+// falls back to a default encoding rather than being given a guess.
+// ISO-2022-JP detection is deliberately not implemented (Phase 6b2 is
+// deferred - see master_roadmap.md §6 for why), and the roadmap's N-gram
+// confidence stage for genuinely ambiguous input is out of scope.
+[[nodiscard]] std::optional<Encoding> detectEncoding(std::span<const std::byte> head) noexcept;
+
 }  // namespace neomifes::encoding

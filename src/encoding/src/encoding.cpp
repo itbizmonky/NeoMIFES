@@ -287,11 +287,24 @@ struct EncodingInfo {
 
 [[nodiscard]] std::variant<std::u16string, DecodeError> decodeLegacyCodepageBody(
     std::span<const std::byte> bytes, unsigned codepage) {
-    const auto result = platform::convertToUtf16(bytes, codepage);
-    if (const auto* text = std::get_if<std::u16string>(&result)) {
-        return *text;
+    const auto  result = platform::convertToUtf16(bytes, codepage);
+    const auto* text    = std::get_if<std::u16string>(&result);
+    if (text == nullptr) {
+        return DecodeError::InvalidSequence;
     }
-    return DecodeError::InvalidSequence;
+    // Windows' CP932/CP20932 map a handful of otherwise-unassigned bytes
+    // (a lone 0x80 in Shift-JIS; most of 0x80-0x9F in EUC-JP) as an
+    // identity passthrough to the C1 control block (U+0080-U+009F) instead
+    // of rejecting them - even with MB_ERR_INVALID_CHARS set. This is
+    // undocumented, verified empirically while building this function (see
+    // the Phase 6c1 plan). No legitimate Shift-JIS/EUC-JP text encodes a
+    // real C1 control character this way, so any such code point in the
+    // output means the input byte wasn't actually valid JIS text - reject
+    // it, closing this passthrough gap rather than silently accepting it.
+    if (std::ranges::any_of(*text, [](char16_t c) { return c >= 0x0080 && c <= 0x009F; })) {
+        return DecodeError::InvalidSequence;
+    }
+    return *text;
 }
 
 [[nodiscard]] std::variant<std::vector<std::byte>, EncodeError> encodeLegacyCodepageBody(
@@ -374,6 +387,34 @@ std::optional<BomDetection> detectBom(std::span<const std::byte> bytes) noexcept
         std::ranges::equal(kUtf16BeBom, bytes.first(kUtf16BeBom.size()))) {
         return BomDetection{.encoding = Encoding::Utf16BeBom, .bomLength = kUtf16BeBom.size()};
     }
+    return std::nullopt;
+}
+
+std::optional<Encoding> detectEncoding(std::span<const std::byte> head) noexcept {
+    if (const auto bom = detectBom(head)) {
+        return bom->encoding;
+    }
+    if (head.empty() || std::holds_alternative<std::u16string>(decode(head, Encoding::Utf8))) {
+        return Encoding::Utf8;
+    }
+    // Shift-JIS's 0x81-0x9F lead-byte range is entirely outside EUC-JP's
+    // valid byte range (0xA1-0xFE for both bytes of a pair), so any head
+    // containing such a byte necessarily fails EUC-JP decode - the
+    // "priority marker" roadmap describes falls out of decode()'s existing
+    // strict validation rather than needing a separate byte-range check.
+    const bool shiftJisOk = std::holds_alternative<std::u16string>(decode(head, Encoding::ShiftJis));
+    const bool eucJpOk    = std::holds_alternative<std::u16string>(decode(head, Encoding::EucJp));
+    if (shiftJisOk && !eucJpOk) {
+        return Encoding::ShiftJis;
+    }
+    if (eucJpOk && !shiftJisOk) {
+        return Encoding::EucJp;
+    }
+    // Both succeed (genuinely ambiguous - e.g. a byte pair that is
+    // simultaneously two valid Shift-JIS half-width-katakana bytes and one
+    // valid EUC-JP double-byte character) or neither succeeds (not
+    // recognized). Disambiguating the former without a statistical model
+    // (roadmap's N-gram stage, out of scope here) would be a guess.
     return std::nullopt;
 }
 
