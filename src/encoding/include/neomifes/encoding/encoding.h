@@ -130,4 +130,19 @@ struct BomDetection {
 // confidence stage for genuinely ambiguous input is out of scope.
 [[nodiscard]] std::optional<Encoding> detectEncoding(std::span<const std::byte> head) noexcept;
 
+enum class LineEnding { Crlf, Lf, Cr, Mixed };
+
+// Scans already-decoded UTF-16 `text` (e.g. decode()'s output) for line
+// terminator conventions (Phase 6c2). Operates on UTF-16, not raw bytes -
+// unlike ASCII/UTF-8's single-byte '\n', UTF-16 represents it as a 2-byte
+// unit, so a raw-byte scan would misdetect on non-UTF-8 input; decoding
+// first makes this uniform across every Encoding this module supports.
+// Returns nullopt if `text` contains no line terminator at all. Returns the
+// single convention used if `text` is internally consistent, or
+// LineEnding::Mixed if more than one convention appears anywhere in `text`
+// - even a single stray minority terminator is reported as Mixed rather
+// than silently rounded to the majority, since roadmap's stated purpose
+// (master_roadmap.md §6.3) is surfacing this to the user as a warning.
+[[nodiscard]] std::optional<LineEnding> detectLineEnding(std::u16string_view text) noexcept;
+
 }  // namespace neomifes::encoding

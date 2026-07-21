@@ -418,4 +418,38 @@ std::optional<Encoding> detectEncoding(std::span<const std::byte> head) noexcept
     return std::nullopt;
 }
 
+std::optional<LineEnding> detectLineEnding(std::u16string_view text) noexcept {
+    std::size_t crlfCount = 0;
+    std::size_t lfCount   = 0;
+    std::size_t crCount   = 0;
+    std::size_t i         = 0;
+    while (i < text.size()) {
+        if (text[i] == u'\r') {
+            if (i + 1 < text.size() && text[i + 1] == u'\n') {
+                ++crlfCount;
+                i += 2;
+            } else {
+                ++crCount;
+                ++i;
+            }
+        } else if (text[i] == u'\n') {
+            ++lfCount;
+            ++i;
+        } else {
+            ++i;
+        }
+    }
+    const int conventionsSeen = (crlfCount > 0 ? 1 : 0) + (lfCount > 0 ? 1 : 0) + (crCount > 0 ? 1 : 0);
+    if (conventionsSeen == 0) {
+        return std::nullopt;
+    }
+    if (conventionsSeen > 1) {
+        return LineEnding::Mixed;
+    }
+    if (crlfCount > 0) {
+        return LineEnding::Crlf;
+    }
+    return lfCount > 0 ? LineEnding::Lf : LineEnding::Cr;
+}
+
 }  // namespace neomifes::encoding

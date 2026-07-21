@@ -16,9 +16,11 @@ using neomifes::encoding::decode;
 using neomifes::encoding::DecodeError;
 using neomifes::encoding::detectBom;
 using neomifes::encoding::detectEncoding;
+using neomifes::encoding::detectLineEnding;
 using neomifes::encoding::encode;
 using neomifes::encoding::EncodeError;
 using neomifes::encoding::Encoding;
+using neomifes::encoding::LineEnding;
 
 std::vector<std::byte> bytesOf(std::initializer_list<unsigned char> values) {
     std::vector<std::byte> result;
@@ -405,6 +407,51 @@ TEST(DetectEncodingTest, AmbiguousInputReturnsNullopt) {
 TEST(DetectEncodingTest, ByteInvalidUnderBothCodecsReturnsNullopt) {
     const auto bytes = bytesOf({0xFF, 0xFF});  // never valid Shift-JIS or EUC-JP
     EXPECT_EQ(detectEncoding(bytes), std::nullopt);
+}
+
+// --- detectLineEnding() (Phase 6c2) -----------------------------------------
+
+TEST(DetectLineEndingTest, AllCrlfIsDetected) {
+    EXPECT_EQ(detectLineEnding(u"line1\r\nline2\r\nline3"), LineEnding::Crlf);
+}
+
+TEST(DetectLineEndingTest, AllLfIsDetected) {
+    EXPECT_EQ(detectLineEnding(u"line1\nline2\nline3"), LineEnding::Lf);
+}
+
+TEST(DetectLineEndingTest, AllCrIsDetected) {
+    EXPECT_EQ(detectLineEnding(u"line1\rline2\rline3"), LineEnding::Cr);
+}
+
+TEST(DetectLineEndingTest, SingleCrlfWithNoFurtherLinesIsStillCrlf) {
+    // Confirms a single terminator (one-line-and-a-bit of content) is
+    // sufficient to report a convention - not just multi-line files.
+    EXPECT_EQ(detectLineEnding(u"line1\r\nline2"), LineEnding::Crlf);
+}
+
+TEST(DetectLineEndingTest, MixedCrlfAndLfIsMixed) {
+    EXPECT_EQ(detectLineEnding(u"line1\r\nline2\nline3"), LineEnding::Mixed);
+}
+
+TEST(DetectLineEndingTest, SingleMinorityTerminatorIsStillMixed) {
+    // A lone \n among many \r\n still reports Mixed rather than being
+    // rounded to the majority - matching roadmap's "surface this as a
+    // warning" intent (master_roadmap.md §6.3), not silent majority voting.
+    EXPECT_EQ(detectLineEnding(u"a\r\nb\r\nc\r\nd\r\ne\nf"), LineEnding::Mixed);
+}
+
+TEST(DetectLineEndingTest, CrlfImmediatelyFollowedByLoneCrIsMixed) {
+    // "\r\n\r" must count as one CRLF + one lone CR, not two CRLFs or some
+    // other double-count - exercises the boundary between the two branches.
+    EXPECT_EQ(detectLineEnding(u"a\r\n\rb"), LineEnding::Mixed);
+}
+
+TEST(DetectLineEndingTest, NoLineTerminatorReturnsNullopt) {
+    EXPECT_EQ(detectLineEnding(u"single line, no newline"), std::nullopt);
+}
+
+TEST(DetectLineEndingTest, EmptyTextReturnsNullopt) {
+    EXPECT_EQ(detectLineEnding(u""), std::nullopt);
 }
 
 }  // namespace
