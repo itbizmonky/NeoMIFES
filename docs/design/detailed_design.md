@@ -1597,6 +1597,45 @@ enum class LineEnding { Crlf, Lf, Cr, Mixed };
 
 **意図的にスコープ外とした項目:** Document/OriginalBufferへの統合(6d以降)、実ファイル読込時の呼び出し配線。詳細は`master_roadmap.md` §6参照。
 
+### 9.7 実装後の確定事項/変更点 (2026-07-21、Phase 6b2完了)
+
+`Encoding`enumへ`Iso2022Jp`(CP50220のみ)を追加。CP50220は`dwFlags=0`以外を一切受け付けないため、他コードページで確立した厳格変換パターンが使えず、専用の寛容変換レイヤーと2段構えの検証ロジックが必要になった。
+
+```cpp
+// src/platform/include/neomifes/platform/codepage_convert.h (拡張分)
+namespace neomifes::platform {
+
+// CP50220はdwFlags=0のみ有効(MB_ERR_INVALID_CHARS等の厳格フラグ、
+// lpDefaultChar/lpUsedDefaultCharの個別指定すら ERROR_INVALID_FLAGS /
+// ERROR_INVALID_PARAMETER になる)。decode方向は不正シーケンスを
+// Private Use Areaへ、encode方向は不可能文字を'?'へ黙って置換する
+// 寛容モードしか存在しない - neomifes::encoding側が両方向とも
+// 自前で妥当性を検証する。
+[[nodiscard]] std::variant<std::u16string, CodepageConvertError>
+convertToUtf16Lenient(std::span<const std::byte> bytes, unsigned codepage);
+
+[[nodiscard]] std::variant<std::vector<std::byte>, CodepageConvertError>
+convertFromUtf16Lenient(std::u16string_view text, unsigned codepage);
+
+}  // namespace neomifes::platform
+
+// src/encoding/src/encoding.cpp (無名namespace、拡張分のみ)
+[[nodiscard]] std::variant<std::u16string, DecodeError> decodeIso2022JpBody(
+    std::span<const std::byte> bytes, unsigned codepage);  // PUA範囲(U+E000-U+F8FF)を拒否
+[[nodiscard]] std::variant<std::vector<std::byte>, EncodeError> encodeIso2022JpBody(
+    std::u16string_view text, unsigned codepage);  // EUC-JP厳格encodeを可否オラクルとして先に確認
+```
+
+**設計上の要点:**
+- **decode方向の不正入力検知は、デコード結果にUnicode私用領域(U+E000-U+F8FF)が含まれるかどうかで行う。** `dwFlags=0`の寛容モードは不正なエスケープシーケンス/不正なku-tenペアをエラーにせずPUAへ黙って置換する(実機観測: `U+F8F0`/`U+F8F3`)。正当なISO-2022-JPコンテンツがPUAへデコードされることは無いため安全な判定条件になる。6c1で確立したC1制御コード拒否と同じ「後処理での範囲チェック」パターンを踏襲
+- **encode方向は「置換の検知不能」問題をEUC-JP(CP20932)の厳格encodeを代理可否オラクルとして使うことで回避した。** WindowsがCP50220とCP20932を共に同一の文字集合(JIS X 0208-1990 & 0212-1990)として文書化していることを根拠に、`platform::convertFromUtf16(text, 20932)`が失敗すれば`EncodeError::UnmappableCharacter`を即座に返し、実際のCP50220寛容encodeは呼ばない。**既知の制約:** CP20932とCP50220の文字集合が理論上完全一致しない可能性(JIS X 0212のどちらかにのみ実装されている稀な文字)は未対処 — 発生しても安全側(誤って`UnmappableCharacter`)に倒れるため許容
+- **`lpDefaultChar`/`lpUsedDefaultChar`を個別に(片方だけ)指定しても`ERROR_INVALID_PARAMETER`になることを実機検証で確認した。** 6b1/6c1で判明していた「厳格フラグ全滅」に加えて、独自センチネル値注入による置換検知という代替戦略も塞がれていることが確定した
+- ISO-2022-JP検出(`detectEncoding()`がエスケープシーケンスを認識すること)は本フェーズでも未実装のまま
+
+**テスト:** `tests/unit/platform_codepage_convert_test.cpp`に既知バイト列(「あ」`1B 24 42 24 22 1B 28 42`・「亜」`1B 24 42 30 21 1B 28 42`)による外部真実性テスト・ASCII単体/混在ラウンドトリップ・不正ku-tenペアのPUA変換確認・絵文字の'?'置換確認を追加(8件)。`tests/unit/encoding_encoding_test.cpp`の`kAllEncodingsWithLegacy`にIso2022Jpを追加、`DecodeErrorTest`/`EncodeErrorTest`にIso2022Jp向けケースを追加。
+
+**意図的にスコープ外とした項目:** CP50221/50222(半角カタカナ拡張)、ISO-2022-JP検出(`detectEncoding()`)、Document/OriginalBufferへの統合(6d以降)。詳細は`master_roadmap.md` §6参照。
+
 ---
 
 ## 10. Syntax Engine 詳細

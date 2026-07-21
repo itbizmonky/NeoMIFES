@@ -1375,4 +1375,36 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回 (Phase 6b2 or Phase 6d):** Phase 6c2(行末コード判定)が完了した。**まず実アプリでのCtrl+Shift+F(5c3)とF12(5c4)の動作確認をユーザーに依頼すること(§3.26/§3.27参照、依然として未実施)。** その後、次はPhase 6b2(ISO-2022-JP、正確性トレードオフへの対応方針をユーザーに確認してから着手)またはPhase 6d(Document/OriginalBuffer統合、10GB mmap一般化 — 過去に「独立した大きなサブフェーズになる見込み」と繰り返し記録されている本格着手)のいずれに進めるかユーザーに確認すること。**Phase 5c5はPhase 6完了までは候補として提示しないこと。** push はPhase 6b1・6c1・6c2分(実装3コミット`c611062`/`0d75960`/`eea5cda`+ドキュメント同期コミット群)が本セッション終了時点で未実施 — セッション冒頭でユーザーに push 指示を仰ぐこと。
 
+## Session 42 (2026-07-21): Phase 6b2 (ISO-2022-JPコーデック CP50220、EUC-JP代理オラクル) 完了
+
+**経緯:** Session 41でPhase 6c2完了後、ユーザーから「Phase 6b2」と指示された。Phase 6b1完了時に懸案として記録していた「Win32のISO-2022系コードページが厳格な入力検証を一切サポートしない」問題への対応方針を、着手前の追加実機検証で確定させてから実装した。
+
+**着手前調査:**
+- 追加検証で、**`lpDefaultChar`/`lpUsedDefaultChar`を個別に(片方だけ、`lpUsedDefaultChar`はNULLのまま)指定してもCP50220は`ERROR_INVALID_PARAMETER`を返す**ことを確認した(スクラッチプローブ`probe_iso2022jp_defaultchar.cpp`)。6b1/6c1で判明していた「厳格フラグ全滅」に加え、独自センチネル値注入による置換検知という代替戦略も塞がれていることが確定した
+- decode方向: `dwFlags=0`の寛容モードが不正なエスケープシーケンス/不正なku-tenペアをUnicode私用領域(実機観測: `U+F8F0`/`U+F8F3`)へ黙って置換することを確認。正当なISO-2022-JPコンテンツがPUAへデコードされることは無いため、デコード結果にU+E000-U+F8FFが含まれるかで不正シーケンスを検知する設計にした(6c1のC1制御コード拒否と同じパターン)
+- encode方向: WindowsがCP50220とCP20932(EUC-JP)を共に「Japanese, JIS X 0208-1990 & 0212-1990」という同一文字集合として文書化していることを利用し、6b1で確立済みのEUC-JP厳格encodeを可否判定オラクルとして使う設計にした。実際にCP50220へ渡す前にEUC-JP encodeが成功するか確認し、失敗すれば即座に`UnmappableCharacter`を返す
+- 既知バイト列(「あ」`1B 24 42 24 22 1B 28 42`、「亜」`1B 24 42 30 21 1B 28 42`)をスクラッチプローブで実機検証し、外部真実性テストの土台とした
+
+**実装:**
+- `platform::convertToUtf16Lenient()`/`convertFromUtf16Lenient()`(新規、CP50220専用の寛容変換、`dwFlags=0`固定)
+- `encoding::decodeIso2022JpBody()`/`encodeIso2022JpBody()`(新規、PUA範囲検証・EUC-JPオラクル)
+- `Encoding`enumへ`Iso2022Jp`追加(CP50220のみ、CP50221/50222の半角カタカナ拡張は対象外)
+- テスト数: 551→564(+13件)
+
+**発生したバグと修正:**
+- テストファイルに`u''`/`u''`という文字リテラルを書いたところ、ディスク書き込み時にリテラル私用領域文字が`u''`の中に不可視のまま埋め込まれる破損が発生し、Editツールの`old_string not found`が繰り返し起きた。`cat -A`でUTF-8バイト列(`M-nM-^@M-^@`等)が引用符内に混入していることを確認し根本原因を特定。PowerShellの`Get-Content`/`Set-Content`による行配列操作で直接該当行を書き換え、`constexpr char16_t kPuaStart = 0xE000; constexpr char16_t kPuaEnd = 0xF8FF;`という数値定数比較へ置き換えて解消した
+- ローカル検証の最終clang-tidyパス(4ファイル一括)で2件検出: `codepage_convert.cpp`の`convertFromUtf16Lenient()`2件目の`WideCharToMultiByte`呼び出しで`bugprone-suspicious-stringview-data-usage`(`NOLINTNEXTLINE`コメントが`wide.data()`の直前行に来ておらず、文が2行に折り返されていたため検出対象からずれていた) — 既存`convertFromUtf16()`と同じ「`wide.data()`を含む行の直前にコメントを配置する」パターンに揃えて解消。`platform_codepage_convert_test.cpp`の`hicpp-use-auto`/`modernize-use-auto`(`const std::u16string& text = std::get<std::u16string>(result);`を`const auto&`へ)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全564テストpass
+- clang-tidy: 変更/新規4ファイル対象、上記2件検出・修正、再検証で新規警告0
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に6b2行を追加(Phase 6の残りをPhase 6dのみに整理)、§6に「実装後の確定事項/変更点 (Phase 6b2完了)」小節を新設
+- `docs/design/detailed_design.md` §9に新規§9.7(実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.32(完了記録)追加、§1状態表・§6推奨プロンプト・冒頭メタデータを更新(Phase 6は6dのみ残存と明記)
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 6全体はPhase 6dを残すのみ(Document/OriginalBuffer統合、10GB mmap一般化 — 過去に「独立した大きなサブフェーズになる見込み」と繰り返し記録されている本格着手)。Phase 5c5は引き続きPhase 6完了までは候補として提示しないこと。push はPhase 6b1・6c1・6c2・6b2分(実装4コミット+ドキュメント同期コミット群)が本セッション終了時点で未実施 — セッション冒頭でユーザーに push 指示を仰ぐこと。5c3のCtrl+Shift+F・5c4のF12の実アプリ視覚確認も依然未実施(§3.26/§3.27参照)。
+
 <!-- 次セッションはここに追記 -->
