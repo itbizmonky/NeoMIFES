@@ -1,6 +1,7 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-21 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a はpush済み、6b1・6c1・6c2・6b2・6d 完了・未push。**Phase 6全体(6a〜6d)完了**)
+> **最終更新:** 2026-07-21 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a・6b1・6c1・6c2・6b2 はpush済み(origin/main実機確認済み)、6d・5c5 完了・未push。**Phase 6全体(6a〜6d)・Phase 5全体(5a〜5c5)完了**)
+> ⚠️ **2026-07-21 訂正:** 前回セッションの記録で「Phase 6b1〜6d全て未push」としていたのは誤りだった。実際にはgit fetch/git log origin/main..HEADで確認した結果、6a〜6b2(commit `be82721`まで)は既にorigin/mainへpush済み。**未pushなのはPhase 6d(`de13560`/`12179f4`)のみ**だった。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 > 🗺️ **Phase 4b8・5b2・5b3・5c・6〜12 の実装詳細は [`docs/design/master_roadmap.md`](../design/master_roadmap.md) **v2.0** (2026 行、23 章) に一気通貫で規定済み。ペルソナ 7 種・競合ポジショニング・60 機能継承マトリクス・世界最速の裏付け技術要素・国際化/アクセシビリティ・セキュリティ・リリース・KPI・エコシステム・開発品質基盤 まで網羅。各フェーズ着手時はまず該当章を読んでから Plan Mode で詳細プランを起こす運用に確定。**
@@ -57,13 +58,15 @@
 | Phase 5c3 (Grep結果ペインUI: `GrepBar`、Ctrl+Shift+F) | ✅ 完了 (push済み、§3.26参照) |
 | Phase 5c4 (タグジャンプ: `parseTagJumpReference`、F12) | ✅ 完了 (push済み、§3.27参照) |
 | Phase 6a (Encoding Engine コア: Unicodeファミリー、ヘッドレス) | ✅ 完了 (push済み、§3.28参照) |
-| Phase 6b1 (Shift-JIS/EUC-JPコーデック: Win32ネイティブ変換ラッパー) | ✅ 完了 (未push、§3.29参照) |
-| Phase 6c1 (自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別、ISO-2022-JP検出は保留) | ✅ 完了 (未push、§3.30参照) |
-| Phase 6c2 (行末コード判定: LineEnding Crlf/Lf/Cr/Mixed) | ✅ 完了 (未push、§3.31参照) |
-| Phase 6b2 (ISO-2022-JPコーデック: CP50220、EUC-JP代理オラクル) | ✅ 完了 (未push、§3.32参照) |
-| Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化: `loadFile()`自動判定+mmap汎化) | ✅ 完了 (未push、§3.33参照) |
-| **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了** |
-| **次フェーズ選定 — Phase 5c5(検索履歴永続化、Phase 6完了により候補復帰)またはPhase 7(シンタックス+アウトライン+折り畳み等)をユーザーに確認** | ⏭️ **次回** |
+| Phase 6b1 (Shift-JIS/EUC-JPコーデック: Win32ネイティブ変換ラッパー) | ✅ 完了 (push済み、§3.29参照) |
+| Phase 6c1 (自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別、ISO-2022-JP検出は保留) | ✅ 完了 (push済み、§3.30参照) |
+| Phase 6c2 (行末コード判定: LineEnding Crlf/Lf/Cr/Mixed) | ✅ 完了 (push済み、§3.31参照) |
+| Phase 6b2 (ISO-2022-JPコーデック: CP50220、EUC-JP代理オラクル) | ✅ 完了 (push済み、§3.32参照) |
+| Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化: `loadFile()`自動判定+mmap汎化) | ✅ 完了 (**未push**、§3.33参照) |
+| **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了 (6dのみ未push)** |
+| Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (**未push**、§3.34参照) |
+| **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (5c5未push)** |
+| **次フェーズ選定 — Phase 6d・5c5をpush(ユーザー指示待ち)後、Phase 7(シンタックス+アウトライン+折り畳み等)をユーザーに確認** | ⏭️ **次回** |
 
 ---
 
@@ -916,7 +919,47 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(継続):** ISO-2022-JP自動判定(`detectEncoding()`のESCシーケンス認識、6c1/6b2から継続)、N-gramモデルによる曖昧ケース確信度算出、「エンコーディング指定して開く」メニュー/ステータスバーUI(本コードベースに基盤が無い)、`GrepService`の多エンコーディング対応。詳細は`master_roadmap.md` §6参照。
 
-**Phase 6全体(6a〜6d)完了。** roadmap §6が要求していた対応エンコーディング・自動判定・10GB mmap遅延デコードが揃った。次フェーズはPhase 5c5(検索履歴永続化、Phase 6完了により候補復帰)またはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)のいずれかをユーザーに確認すること。
+**Phase 6全体(6a〜6d)完了。** roadmap §6が要求していた対応エンコーディング・自動判定・10GB mmap遅延デコードが揃った。**本コミット(`de13560`/`12179f4`)はpush未実施のまま次のPhase 5c5へ進んだ**(2026-07-21訂正済み、§1冒頭の注記参照)。
+
+---
+
+### 3.34 Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) 完了記録
+
+ユーザーから「Phase 5c5を実施せよ」と指示された。roadmap §5.5が最後まで未着手のまま残していたサブフェーズで、5c1完了記録から一貫して「JSON依存追加はADR起票が必要になる見込み」と記録されてきた懸案そのもの。着手前調査で、roadmapスケッチの「Find bar / コマンドパレット / Grepダイアログ全てで共有」という前提が実態と合わないことが判明した — コマンドパレットのクエリは「find」「undo」等のコマンド名(fuzzy検索対象)であり、Find bar/Grepダイアログの検索パターン(正規表現/リテラル文字列)とは意味的に別種のデータ。AskUserQuestionでユーザーに確認し、**コマンドパレットを対象外とし、Find bar + Grepダイアログの2箇所だけで共有する(推奨案)** が選ばれた。
+
+また、`ui::GrepBar`(いずれの入力欄でも)と`ui::CommandPalette`が既にUp/Downを`moveSelection(±1)`(リスト選択)に割り当て済みであることが着手前調査で判明し、履歴を辿るキーには衝突しない**Ctrl+Up/Ctrl+Down**を採用した。
+
+**設計判断:**
+- `search_history.json5`ではなく`search_history.json`(プレーンJSON)を採用。JSON5の追加機能はこの用途では不要
+- 新規外部依存`nlohmann/json`(v3.11.3、ADR-013)をFetchContent導入(RE2/Abseilと同じパターン)
+- UTF-16⇔UTF-8境界変換は新規実装せず既存`neomifes::encoding::encode()`/`decode()`(Phase 6a〜6d)を再利用 — Phase 6の成果が別フェーズの再利用可能な基盤として機能した最初の実例
+- `core::SearchHistory::older()`/`newer()`はステートレス設計(現在edit欄のテキストから隣接エントリを都度導出) — FindBar/GrepBar側に再入guard等の状態管理を一切追加せずに済んだ
+- 新規`platform::resolveAppDataDir()`(`SHGetKnownFolderPath(FOLDERID_RoamingAppData, ...)`の薄いラッパー)
+
+**成果物:**
+- 新規`platform::resolveAppDataDir()`(`app_data_dir.h`/`.cpp`)、`core::SearchHistory`(`search_history.h`/`.cpp`)
+- `FindBar`/`GrepBar`に`onHistoryOlder`/`onHistoryNewer`コールバック + `setQueryText()`追加、Ctrl+Up/DownをFindBarの検索欄・GrepBarのクエリ欄でのみ処理
+- `main.cpp`: `searchHistory`をロード(`wWinMain`起動時)・記録(`onFindNext`/`onFindPrevious`/`onRunQuery`)・保存(`runMessageLoop()`復帰後1回)
+- ADR-013(nlohmann/json採用)起票
+- テスト数: 583→605(+22件、`core_search_history_test.cpp`19件・`platform_app_data_dir_test.cpp`3件)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全605テストpass
+- clang-tidy: `src/`側で`performance-no-automatic-move`を1件検出・修正(`app_data_dir.cpp`のconstローカルがNRVOを妨げていた)。テストファイルで`misc-const-correctness`2件・`bugprone-unchecked-optional-access`1件を検出・修正(いずれも既存パターンを踏襲)
+- 実アプリでの正常終了(WM_CLOSE)経路で`searchHistory.saveTo()`が実行され`%APPDATA%\NeoMIFES\search_history.json`が生成されることを確認(`Stop-Process -Force`によるプロセス強制終了ではsaveTo()が実行されないことも合わせて確認 — 正常終了経路のみが対象という設計通りの挙動)
+
+**完了条件:**
+- [x] `SearchHistory::record()`がMRU順・重複排除・50件上限で動作する
+- [x] `older()`/`newer()`がステートレスに正しい隣接エントリを返す(一致/不一致/空履歴/最古最新でのクランプ)
+- [x] `saveTo()`→`loadFrom()`が日本語テキストを含め正しくラウンドトリップする
+- [x] ローカルDebug/Release/ubsan全605テストgreen、clang-tidy新規警告0
+- [x] 実アプリでの正常終了時に履歴ファイルが生成されることを確認
+
+**スコープ外(意図的):** コマンドパレットでの履歴共有、履歴のクリア/削除UI。詳細は`master_roadmap.md` §5.5・`detailed_design.md` §7.1'''''''''''参照。
+
+**実アプリでのCtrl+F/Ctrl+Shift+F操作によるCtrl+Up/Down視覚的確認は、この環境のWin32 GUI自動化制約により未実施 — 既存のCtrl+Shift+F/F12視覚確認バックログと合わせてユーザーに依頼する。**
+
+**Phase 5全体(5a〜5c5)完了。** roadmap §5が要求していたFind bar・置換・コマンドパレット・Grep・実行時ファイルを開く機能・タグジャンプ・検索履歴永続化が全て揃った。次フェーズはPhase 6d・5c5のpush(ユーザー指示待ち)を経て、Phase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)への着手をユーザーに確認すること。
 
 ---
 
@@ -964,31 +1007,35 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 ## 6. 次回の推奨最初のプロンプト例
 
 ```
-RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(Find bar + 置換行 + コマンドパレット)は
-Phase 5b3a/5b3b/5b3cで完了済み、Phase 4b8は6サブフェーズ(4b8a〜4b8g)全て完了済み、
-Phase 5c1〜5c4(GrepServiceコア・openDocumentAt・Grep結果ペインUI GrepBar・タグジャンプ)・
-Phase 6a(Encoding Engineコア、Unicodeファミリー)も完了・push済み・CI success確認済み。
-**Phase 6b1(Shift-JIS/EUC-JPコーデック)・Phase 6c1(自動判定)・Phase 6c2(行末コード判定)・
-Phase 6b2(ISO-2022-JPコーデック)・Phase 6d(Document/OriginalBuffer統合、`loadFile()`自動判定+
-mmap汎化、§3.33参照)はローカルでコミット済みだが未push — セッション冒頭でユーザーに push
-指示を仰ぐこと。これによりPhase 6全体(6a〜6d)が完了する。**
-**最優先: 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・
-クリック選択・ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME)と5c4のF12
-(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応)の実アプリでの視覚的・
-対話的動作確認をユーザーに依頼すること(この環境にWin32 GUI自動化手段が無いため未実施、
-§3.26/§3.27参照)。Phase 6a/6b1/6c1/6c2/6b2/6dはヘッドレス実装(UI/Document結合なし、6dも
-main.cpp/document_open.cppの呼び出し切替のみでUI新設なし)のため視覚確認対象は無い。**
-**Phase 6完了により、Phase 5c5(検索履歴永続化)が次フェーズ候補として復帰する。** roadmap上の
-次の柱はPhase 5c5とPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ+Breadcrumb+
-Sticky scroll+Indent guides+Semantic highlighting)の2つが並立する状態のため、**どちらを
-優先するかユーザーに確認してから Plan Mode で詳細設計を起こすこと**(過去に「選択肢が複数ある
-のに提示し続けた」指摘があったため、確認は1回で済ませ、以後は選ばれた方だけを追うこと)。
-着手前に本ファイル §3.19/§3.20/§3.21/§3.22/§3.23/§3.24/§3.25/§3.26/§3.27/§3.28/§3.29/§3.30/§3.31/§3.32/§3.33
-末尾のスコープ外一覧・完了条件チェックボックスを読むこと。まだ実施していない実アプリでの
-Ctrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/Ctrl+G/Ctrl+F2・F2/コマンドパレットの
-タブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認
-があれば、Ctrl+Shift+F・F12の確認と合わせてこのセッションの冒頭でユーザーに依頼すること
-(§3.19/§3.20/§3.21/§3.22/§3.23参照。5c1・5c2・6a・6b1・6c1・6c2・6b2・6dはヘッドレスのため視覚確認対象なし)。
+RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5、Find bar + 置換行 +
+コマンドパレット + Grep + 実行時ファイルを開く機能 + タグジャンプ + 検索履歴永続化)・
+roadmap §6全体(6a〜6d、エンコーディング対応+自動判定+10GB mmap遅延デコード)が
+いずれも完了している。
+
+**未push分がある: Phase 6d(`de13560`/`12179f4`)とPhase 5c5(検索履歴永続化、§3.34参照)は
+ローカルでコミット済みだが未push — セッション冒頭でユーザーに push 指示を仰ぐこと。**
+(2026-07-21訂正: 過去の記録で「6b1〜6b2も未push」としていたのは誤りだった。
+`git log origin/main..HEAD` で実際の差分を確認してから記録すること。)
+
+**最優先の実アプリ視覚確認依頼(この環境にWin32 GUI自動化手段が無いため全て未実施):**
+- 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
+  ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
+- 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
+- 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
+  履歴永続化確認、§3.34参照)
+
+Phase 6a/6b1/6c1/6c2/6b2/6dはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
+
+**次フェーズはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ+Breadcrumb+
+Sticky scroll+Indent guides+Semantic highlighting)一択。** roadmap §5・§6は完全に完了した
+ため、選択肢の並立は無い。Phase 7着手前調査 → Plan Mode で詳細設計を起こすこと。
+
+着手前に本ファイル §3.19〜§3.34 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
+Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
+Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認があれば、上記3件と合わせてこのセッションの
+冒頭でユーザーに依頼すること(5c1・5c2・6a・6b1・6c1・6c2・6b2・6dはヘッドレスのため
+視覚確認対象なし)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

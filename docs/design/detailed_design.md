@@ -1386,6 +1386,42 @@ struct TagJumpReference {
 
 **意図的にスコープ外とした項目:** コロン形式の位置表記、コマンドパレットへの登録(F12キーのみ)、マッチ無し時のユーザーフィードバック、複数ルート/ワークスペース対応のパス解決、ジャンプ先の`MatchVisual`ハイライト、パスに空白を含むケースの正確な解析、既知拡張子のホワイトリスト維持。詳細は`master_roadmap.md` §5.5参照。
 
+### 7.1''''''''''' 検索履歴永続化 (Phase 5c5 実装)
+
+`neomifes::core::SearchHistory`(`src/core/include/neomifes/core/search_history.h`)は、Find bar(Ctrl+F)とGrepダイアログ(Ctrl+Shift+F)で共有する検索パターン履歴(直近50件、MRU順)を`%APPDATA%\NeoMIFES\search_history.json`へ永続化するヘッドレスクラス。コマンドパレットは対象外(§5.5参照 — コマンド名とテキスト検索パターンは意味的に別種のデータ)。
+
+```cpp
+// src/core/include/neomifes/core/search_history.h
+class SearchHistory {
+public:
+    [[nodiscard]] static SearchHistory loadFrom(const std::filesystem::path& path);
+    void record(std::u16string_view query);
+    [[nodiscard]] const std::vector<std::u16string>& entries() const noexcept;
+    [[nodiscard]] std::optional<std::u16string_view> older(std::u16string_view currentText) const noexcept;
+    [[nodiscard]] std::optional<std::u16string_view> newer(std::u16string_view currentText) const noexcept;
+    void saveTo(const std::filesystem::path& path) const;
+private:
+    static constexpr std::size_t kMaxEntries = 50;
+    std::vector<std::u16string> m_entries;
+};
+```
+
+```cpp
+// src/platform/include/neomifes/platform/app_data_dir.h
+[[nodiscard]] std::optional<std::filesystem::path> resolveAppDataDir();
+```
+
+**設計上の要点:**
+- **`older()`/`newer()`はステートレス。** 呼び出し側(FindBar/GrepBar)が「今どのインデックスを辿っているか」を保持する必要が無い — 現在edit欄に表示されているテキストを引数に渡すだけで、`m_entries`内でそのテキストを値検索し隣接エントリを返す自己修正的な設計。`currentText`が既存エントリと一致すればその1つ古い/新しいエントリを、一致しなければ(未入力・ユーザーが新規入力中)`older()`は最新エントリ(`entries()[0]`)から開始する。最古/最新エントリでの呼び出しはクランプ(ラップアラウンドしない、`GrepBar::moveSelection()`と同じ規約)
+- **履歴を辿るキーはCtrl+Up/Ctrl+Down。** `GrepBar`(いずれの入力欄でも)と`CommandPalette`が素のUp/Downを既に`moveSelection(±1)`(リスト選択)に割り当て済みのため、衝突しないCtrl修飾版を採用(本コードベースでどこにも未使用であることをgrep確認済み)
+- **記録タイミングは`FindBar`の`onFindNext`/`onFindPrevious`、`GrepBar`の`onRunQuery`のみ。** `navigateToMatch()`の他の呼び出し経路(document-focused F3、コマンドパレット経由の「Find Next」)では記録しない — `record()`自身が既存エントリをMRU先頭へ移動する(重複させない)ため、後から同じクエリが再記録されても無害なno-opになることを利用し、`navigateToMatch()`の3箇所の呼び出し元全てへ`SearchHistory&`を通すシグネチャ変更を避けた
+- **保存はプロセス終了時(`runMessageLoop()`復帰後)の1回のみ。** 検索のたびに毎回ディスクへ書かない設計。クラッシュ時は当該セッションの新規追加のみが失われる許容可能なデータロス
+- **新規外部依存`nlohmann/json`(v3.11.3、ADR-013)をJSON入出力に採用。** UTF-16⇔UTF-8境界変換は新規実装せず既存`neomifes::encoding::encode()`/`decode()`(Phase 6a〜6d)を再利用した。JSON形状は`{"version": 1, "entries": ["query1", ...]}`(MRU順、index 0が最新)。`loadFrom()`は存在しないパス・壊れたJSON・バージョン不一致のいずれでも空の`SearchHistory`を返す非throw設計(`nlohmann::json::parse(str, nullptr, false)`の`is_discarded()`を利用)、`saveTo()`は書き込み失敗をベストエフォートで無視する(いずれも通知UIが本コードベースに存在しないため)
+- **新規`platform::resolveAppDataDir()`は`SHGetKnownFolderPath(FOLDERID_RoamingAppData, ...)`の薄いラッパー(`clipboard.h`と同じパターン)。** ディレクトリが無ければ`create_directories()`で作成し、`%APPDATA%\NeoMIFES`を返す。解決失敗時はnullopt(呼び出し側はメモリのみで動作する既定へフォールバック — `wWinMain`は`searchHistoryPath`がnulloptなら`saveTo()`自体を呼ばない)
+- **`FindBar::setQueryText()`/`GrepBar::setQueryText()`はプログラムからのテキスト設定用に新設。** `FindBar`側は`SetWindowTextW`→`EN_CHANGE`→既存デバウンス機構が自然に発火し、150ms後に実際に検索が再実行される(「履歴から呼び出したら検索も走る」という意図した挙動に追加配線不要)。`GrepBar`側は検索を自動実行しない(5c3の「Enter明示実行」方針を維持、クエリeditのみが対象でフォルダeditは対象外)
+
+**意図的にスコープ外とした項目:** コマンドパレットでの履歴共有、履歴のクリア/削除UI、複数エントリの同時削除、`search_history.json5`(JSON5固有機能はこの用途では不要と判断しプレーンJSONを採用)。詳細は`master_roadmap.md` §5.5参照。
+
 ### 7.2 アルゴリズム
 | 種別 | アルゴリズム |
 |---|---|

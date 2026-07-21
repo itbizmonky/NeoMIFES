@@ -1449,4 +1449,44 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 6全体(6a〜6d)が完了した。push はPhase 6d分(実装1コミット`de13560`+ドキュメント同期コミット群)が本セッション終了時点で未実施 — セッション冒頭でユーザーに push 指示を仰ぐこと。Phase 6完了によりPhase 5c5(検索履歴永続化)が次フェーズ候補として復帰する。roadmap上の次の柱はPhase 5c5とPhase 7(シンタックス+アウトライン+折り畳み等)の2つが並立するため、どちらを優先するかユーザーに確認してからPlan Modeで詳細設計を起こすこと。5c3のCtrl+Shift+F・5c4のF12の実アプリ視覚確認も依然未実施(§3.26/§3.27参照)。
 
+## Session 44 (2026-07-21): push状態の訂正 + Phase 5c5 (検索履歴永続化) 完了 — roadmap §5全体完了
+
+**経緯:** 前セッションの要約で「Phase 6b1〜6dをpush、CI success確認」と記録されていたが、本セッション冒頭の`git status`/`git fetch`/`git log origin/main..HEAD`で実際のorigin/main状態を確認したところ、**実際にpush済みなのは6a〜6b2(`be82721`まで)のみで、Phase 6d(`de13560`/`12179f4`)はローカルにコミットされているだけで未pushだった**ことが判明した。過去の記録を鵜呑みにせず実際のgit状態で検証したことで発見できた食い違いであり、`RESUME_HERE.md`の該当箇所(§1状態表・冒頭メタデータ)を訂正した。教訓として「pushした」という記録は`git log origin/main..HEAD`で実差分を確認してから残すことを明記した。
+
+続けてユーザーから「Phase 5c5を実施せよ」と指示された。roadmap §5.5が最後まで未着手のまま残していたサブフェーズ。
+
+**着手前調査で判明した、roadmapスケッチ通りには進められない点:**
+- コマンドパレットのクエリ(「find」「undo」等のコマンド名、fuzzy検索対象)とFind bar/Grepダイアログの検索パターン(正規表現/リテラル文字列)は意味的に別種のデータであることが判明。AskUserQuestionでユーザーに確認し、**コマンドパレットを対象外とし、Find bar + Grepダイアログの2箇所だけで共有する**設計(推奨案)に確定した
+- `ui::GrepBar`(いずれの入力欄でも)・`ui::CommandPalette`が既にUp/Downを`moveSelection(±1)`(リスト選択)に割り当て済みであることが判明。履歴を辿るキーには衝突しない**Ctrl+Up/Ctrl+Down**を採用(本コードベースのどこにも未割り当てであることをgrep確認済み)
+
+**設計判断(Plan Mode):**
+- `search_history.json5`ではなく`search_history.json`(プレーンJSON)を採用。JSON5の追加機能(コメント・末尾カンマ)は機械生成専用ファイルには不要と判断
+- 新規外部依存`nlohmann/json`(ヘッダオンリー、MIT、v3.11.3)をADR-013として起票、RE2/Abseil(ADR-002)と同じFetchContentパターンで導入
+- UTF-16⇔UTF-8境界変換は新規実装せず、既存`neomifes::encoding::encode()`/`decode()`(Phase 6a〜6d)を再利用した — **Phase 6の成果が別フェーズ(5c5)の再利用可能な基盤として実際に機能した最初の実例**となった
+- `core::SearchHistory::older()`/`newer()`はステートレス設計(現在edit欄のテキストを引数に渡すだけで隣接エントリを都度導出)にし、`FindBar`/`GrepBar`側に再入guard等の状態管理を一切追加せずに済む設計にした
+- `record()`の記録タイミングは`FindBar`の`onFindNext`/`onFindPrevious`、`GrepBar`の`onRunQuery`のみとし、`navigateToMatch()`の他の呼び出し経路(document-focused F3等)への`SearchHistory&`引数追加は避けた — `record()`自身のMRU先頭移動+重複排除により、後から同じクエリが再記録されても無害なno-opになることを利用した設計判断
+
+**実装:**
+- 新規`platform::resolveAppDataDir()`(`SHGetKnownFolderPath(FOLDERID_RoamingAppData, ...)`の薄いラッパー、`clipboard.h`と同じパターン)
+- 新規`core::SearchHistory`(`loadFrom`/`record`/`older`/`newer`/`saveTo`、JSON形状`{"version":1,"entries":[...]}`)
+- `FindBar`/`GrepBar`に`onHistoryOlder`/`onHistoryNewer`コールバック+`setQueryText()`追加。Ctrl+Up/DownをFindBarの検索欄・GrepBarのクエリ欄でのみ処理(置換欄・フォルダ欄は素通し)
+- `main.cpp`: `searchHistory`を`wWinMain`起動時にロード、`onFindNext`/`onFindPrevious`/`onRunQuery`で記録、`runMessageLoop()`復帰後(プロセス終了直前)に1回だけ保存
+- テスト数: 583→605(+22件、`core_search_history_test.cpp`19件・`platform_app_data_dir_test.cpp`3件)
+
+**発生したバグと修正:**
+- clang-tidy `performance-no-automatic-move`(`app_data_dir.cpp`): `const std::filesystem::path dir = ...; return dir;`の`const`がNRVO/自動ムーブを妨げていた。`const`を外して修正
+- clang-tidy `misc-const-correctness`(テスト2件)・`bugprone-unchecked-optional-access`(テスト1件): 既存パターン(個別に`.record()`呼び出しの有無を確認した上での`const`化、`ASSERT_TRUE`直後の名前付きローカル束縛)を踏襲して修正
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全605テストpass
+- 実アプリでの正常終了(WM_CLOSE)経路で`searchHistory.saveTo()`が実行され`%APPDATA%\NeoMIFES\search_history.json`が生成されることを確認。**`Stop-Process -Force`によるプロセス強制終了ではsaveTo()が実行されないことも合わせて確認**(`wWinMain`のメッセージループ復帰後のコードは正常終了経路でしか到達しないため、これは設計通りの挙動 — 強制終了で履歴ファイルが生成されないことを一瞬「バグ」と誤認しかけたが、実際は正常終了とプロセス強制終了の違いに起因する期待通りの結果だった)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表の5c5行を完了に更新、§5.5に「Phase 5c5 (検索履歴永続化)」小節を新設 — **roadmap §5全体(5a〜5c5)完了**を明記
+- `docs/design/detailed_design.md` §7に新規§7.1'''''''''''(実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.34(完了記録)追加、§1状態表・§6推奨プロンプト・冒頭メタデータを更新。push状態の訂正(6a〜6b2はpush済み、6d・5c5が未push)を反映
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)が完了した。push はPhase 6d分(`de13560`/`12179f4`)とPhase 5c5分が本セッション終了時点で未実施 — セッション冒頭でユーザーに push 指示を仰ぐこと。次フェーズはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)一択(roadmap §5・§6が完全に完了したため選択肢の並立は無い)。5c3のCtrl+Shift+F・5c4のF12・5c5のCtrl+Up/Downの実アプリ視覚確認がいずれも依然未実施(§3.26/§3.27/§3.34参照)。
+
 <!-- 次セッションはここに追記 -->
