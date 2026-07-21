@@ -72,6 +72,8 @@ std::string nameEncoding(const ::testing::TestParamInfo<Encoding>& info) {
             return "ShiftJis";
         case Encoding::EucJp:
             return "EucJp";
+        case Encoding::Iso2022Jp:
+            return "Iso2022Jp";
     }
     return "Unknown";  // unreachable, every Encoding enumerator is handled above
 }
@@ -102,14 +104,15 @@ TEST_P(EncodingRoundTripTest, NonBmpCharacterRequiringSurrogatePair) {
 INSTANTIATE_TEST_SUITE_P(AllEncodings, EncodingRoundTripTest, ::testing::ValuesIn(kAllEncodings),
                          nameEncoding);
 
-// --- Round-trip: all encodings including Shift-JIS/EUC-JP (Phase 6b1) ------
-// EmptyString/AsciiText/JapaneseText are all representable in every
-// encoding here, including the two legacy JIS X 0208-based ones.
+// --- Round-trip: all encodings including Shift-JIS/EUC-JP/ISO-2022-JP ------
+// (Phase 6b1/6b2). EmptyString/AsciiText/JapaneseText are all representable
+// in every encoding here, including the three legacy JIS X 0208-based ones.
 
-constexpr std::array<Encoding, 12> kAllEncodingsWithLegacy{
-    Encoding::Utf8,     Encoding::Utf8Bom,    Encoding::Utf16Le, Encoding::Utf16LeBom,
-    Encoding::Utf16Be,  Encoding::Utf16BeBom, Encoding::Utf32Le, Encoding::Utf32LeBom,
-    Encoding::Utf32Be,  Encoding::Utf32BeBom, Encoding::ShiftJis, Encoding::EucJp,
+constexpr std::array<Encoding, 13> kAllEncodingsWithLegacy{
+    Encoding::Utf8,      Encoding::Utf8Bom,  Encoding::Utf16Le,   Encoding::Utf16LeBom,
+    Encoding::Utf16Be,   Encoding::Utf16BeBom, Encoding::Utf32Le, Encoding::Utf32LeBom,
+    Encoding::Utf32Be,   Encoding::Utf32BeBom, Encoding::ShiftJis, Encoding::EucJp,
+    Encoding::Iso2022Jp,
 };
 
 class EncodingRoundTripWithLegacyTest : public ::testing::TestWithParam<Encoding> {};
@@ -328,9 +331,21 @@ TEST(DecodeErrorTest, EucJpRejectsC1ControlPassthroughGap) {
     EXPECT_EQ(std::get<DecodeError>(result), DecodeError::InvalidSequence);
 }
 
-// --- encode() error handling (Shift-JIS/EUC-JP only, Phase 6b1) ------------
-// The Unicode transformation formats (Phase 6a) are total functions and
-// never produce EncodeError - only JIS X 0208-based encodings can fail here.
+TEST(DecodeErrorTest, Iso2022JpRejectsMalformedKuTenPair) {
+    // ESC $ B, then 0x20 0x20 (below the valid 0x21-0x7E ku-ten range),
+    // then ESC ( B. CP50220's only working mode (dwFlags=0) silently maps
+    // this into the Private Use Area rather than erroring -
+    // decodeIso2022JpBody() rejects it by checking for that range.
+    const auto bytes  = bytesOf({0x1B, 0x24, 0x42, 0x20, 0x20, 0x1B, 0x28, 0x42});
+    const auto result = decode(bytes, Encoding::Iso2022Jp);
+    ASSERT_TRUE(std::holds_alternative<DecodeError>(result));
+    EXPECT_EQ(std::get<DecodeError>(result), DecodeError::InvalidSequence);
+}
+
+// --- encode() error handling (Shift-JIS/EUC-JP/ISO-2022-JP, Phase --------
+// 6b1/6b2). The Unicode transformation formats (Phase 6a) are total
+// functions and never produce EncodeError - only JIS X 0208-based
+// encodings can fail here.
 
 TEST(EncodeErrorTest, ShiftJisRejectsCharacterWithNoRepresentation) {
     const auto result = encode(u"\U0001F600", Encoding::ShiftJis);  // emoji, not in JIS X 0208
@@ -340,6 +355,15 @@ TEST(EncodeErrorTest, ShiftJisRejectsCharacterWithNoRepresentation) {
 
 TEST(EncodeErrorTest, EucJpRejectsCharacterWithNoRepresentation) {
     const auto result = encode(u"\U0001F600", Encoding::EucJp);
+    ASSERT_TRUE(std::holds_alternative<EncodeError>(result));
+    EXPECT_EQ(std::get<EncodeError>(result), EncodeError::UnmappableCharacter);
+}
+
+TEST(EncodeErrorTest, Iso2022JpRejectsCharacterWithNoRepresentation) {
+    // Caught via the EUC-JP availability-oracle pre-check
+    // (encodeIso2022JpBody()) before ever reaching CP50220's lenient
+    // (undetectable '?'-substituting) encode call.
+    const auto result = encode(u"\U0001F600", Encoding::Iso2022Jp);
     ASSERT_TRUE(std::holds_alternative<EncodeError>(result));
     EXPECT_EQ(std::get<EncodeError>(result), EncodeError::UnmappableCharacter);
 }

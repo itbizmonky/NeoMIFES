@@ -18,14 +18,14 @@ constexpr std::array<std::byte, 4> kUtf32LeBom{std::byte{0xFF}, std::byte{0xFE},
 constexpr std::array<std::byte, 4> kUtf32BeBom{std::byte{0x00}, std::byte{0x00}, std::byte{0xFE},
                                                std::byte{0xFF}};
 
-enum class Family : std::uint8_t { Utf8, Utf16, Utf32, LegacyCodepage };
+enum class Family : std::uint8_t { Utf8, Utf16, Utf32, LegacyCodepage, Iso2022Jp };
 
 struct EncodingInfo {
     Family                      family    = Family::Utf8;
-    bool                        bigEndian = false;  // ignored for Utf8/LegacyCodepage
-    bool                        hasBom    = false;  // always false for LegacyCodepage
+    bool                        bigEndian = false;  // ignored for Utf8/LegacyCodepage/Iso2022Jp
+    bool                        hasBom    = false;  // always false for LegacyCodepage/Iso2022Jp
     std::span<const std::byte> bomBytes;             // empty when !hasBom
-    unsigned                    codepage  = 0;       // only set for LegacyCodepage (e.g. 932)
+    unsigned                    codepage  = 0;       // set for LegacyCodepage (e.g. 932) and Iso2022Jp (50220)
 };
 
 // Maps every Encoding value to its transformation-format family, byte
@@ -64,6 +64,9 @@ struct EncodingInfo {
         case Encoding::EucJp:
             return {.family = Family::LegacyCodepage, .bigEndian = false, .hasBom = false, .bomBytes = {},
                      .codepage = 20932};
+        case Encoding::Iso2022Jp:
+            return {.family = Family::Iso2022Jp, .bigEndian = false, .hasBom = false, .bomBytes = {},
+                     .codepage = 50220};
     }
     // Unreachable: every Encoding enumerator is handled above. Present so
     // the compiler doesn't warn about a control path with no return (a
@@ -316,6 +319,49 @@ struct EncodingInfo {
     return EncodeError::UnmappableCharacter;
 }
 
+[[nodiscard]] std::variant<std::u16string, DecodeError> decodeIso2022JpBody(
+    std::span<const std::byte> bytes, unsigned codepage) {
+    const auto  result = platform::convertToUtf16Lenient(bytes, codepage);
+    const auto* text    = std::get_if<std::u16string>(&result);
+    if (text == nullptr) {
+        return DecodeError::InvalidSequence;
+    }
+    // CP50220 accepts no strict-validation flag at all (dwFlags=0 is the
+    // only mode it doesn't reject with ERROR_INVALID_FLAGS - verified
+    // empirically, Phase 6b2 plan), so it silently maps malformed escape
+    // sequences/invalid ku-ten pairs into the Private Use Area instead of
+    // erroring. No legitimate ISO-2022-JP content (ASCII/JIS-Roman/JIS
+    // X 0208) decodes to the PUA, so treat any such code point as evidence
+    // the input wasn't actually valid ISO-2022-JP.
+    if (std::ranges::any_of(*text, [](char16_t c) { return c >= 0xE000 && c <= 0xF8FF; })) {
+        return DecodeError::InvalidSequence;
+    }
+    return *text;
+}
+
+[[nodiscard]] std::variant<std::vector<std::byte>, EncodeError> encodeIso2022JpBody(
+    std::u16string_view text, unsigned codepage) {
+    // CP50220 provides no way to detect "unmappable character silently
+    // replaced with '?'" - lpDefaultChar/lpUsedDefaultChar both fail with
+    // ERROR_INVALID_PARAMETER for this code page even supplied individually
+    // (verified empirically, Phase 6b2 plan). Windows documents CP50220 and
+    // CP20932 (EUC-JP) as covering the identical character repertoire
+    // ("Japanese, JIS X 0208-1990 & 0212-1990"), and CP20932 already
+    // supports strict validation (Phase 6b1) - so it's used here purely as
+    // an availability oracle: if `text` can't be strictly encoded as
+    // EUC-JP, it's rejected before ever reaching the lenient ISO-2022-JP
+    // call, rather than silently returning a '?'-substituted result.
+    if (!std::holds_alternative<std::vector<std::byte>>(platform::convertFromUtf16(text, 20932))) {
+        return EncodeError::UnmappableCharacter;
+    }
+    const auto  result = platform::convertFromUtf16Lenient(text, codepage);
+    const auto* bytes   = std::get_if<std::vector<std::byte>>(&result);
+    if (bytes == nullptr) {
+        return EncodeError::UnmappableCharacter;
+    }
+    return *bytes;
+}
+
 }  // namespace
 
 std::variant<std::u16string, DecodeError> decode(std::span<const std::byte> bytes,
@@ -338,6 +384,8 @@ std::variant<std::u16string, DecodeError> decode(std::span<const std::byte> byte
             return decodeUtf32Body(body, info.bigEndian);
         case Family::LegacyCodepage:
             return decodeLegacyCodepageBody(body, info.codepage);
+        case Family::Iso2022Jp:
+            return decodeIso2022JpBody(body, info.codepage);
     }
     return DecodeError::InvalidSequence;  // unreachable, see describe()'s comment
 }
@@ -346,6 +394,9 @@ std::variant<std::vector<std::byte>, EncodeError> encode(std::u16string_view tex
     const auto info = describe(encoding);
     if (info.family == Family::LegacyCodepage) {
         return encodeLegacyCodepageBody(text, info.codepage);  // no BOM for legacy code pages
+    }
+    if (info.family == Family::Iso2022Jp) {
+        return encodeIso2022JpBody(text, info.codepage);  // no BOM for ISO-2022-JP either
     }
     std::vector<std::byte> bytes(info.bomBytes.begin(), info.bomBytes.end());
     std::vector<std::byte> body;
@@ -360,6 +411,7 @@ std::variant<std::vector<std::byte>, EncodeError> encode(std::u16string_view tex
             body = encodeUtf32Body(text, info.bigEndian);
             break;
         case Family::LegacyCodepage:
+        case Family::Iso2022Jp:
             break;  // handled above
     }
     bytes.insert(bytes.end(), body.begin(), body.end());

@@ -74,4 +74,51 @@ std::variant<std::vector<std::byte>, CodepageConvertError> convertFromUtf16(std:
     return bytes;
 }
 
+std::variant<std::u16string, CodepageConvertError> convertToUtf16Lenient(std::span<const std::byte> bytes,
+                                                                          unsigned                    codepage) {
+    if (bytes.empty()) {
+        return std::u16string{};
+    }
+    const auto* src    = reinterpret_cast<const char*>(bytes.data());
+    const auto  srcLen = static_cast<int>(bytes.size());
+
+    // dwFlags=0: ISO-2022 code pages reject every strict-validation flag
+    // (see this function's header comment) - this is the only mode that
+    // works at all for them.
+    const int required = ::MultiByteToWideChar(codepage, 0, src, srcLen, nullptr, 0);
+    if (required <= 0) {
+        return CodepageConvertError::InvalidSequence;
+    }
+    std::wstring wide(static_cast<std::size_t>(required), L'\0');
+    const int    written = ::MultiByteToWideChar(codepage, 0, src, srcLen, wide.data(), required);
+    if (written <= 0) {
+        return CodepageConvertError::InvalidSequence;
+    }
+    return std::u16string(util::fromWstringView(wide));
+}
+
+std::variant<std::vector<std::byte>, CodepageConvertError> convertFromUtf16Lenient(std::u16string_view text,
+                                                                                    unsigned codepage) {
+    if (text.empty()) {
+        return std::vector<std::byte>{};
+    }
+    const std::wstring_view wide    = util::toWstringView(text);
+    const auto               wideLen = static_cast<int>(wide.size());
+
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - see convertFromUtf16() above.
+    const int required = ::WideCharToMultiByte(codepage, 0, wide.data(), wideLen, nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        return CodepageConvertError::UnmappableCharacter;
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(required));
+    auto*                   dest = reinterpret_cast<char*>(bytes.data());
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - see convertFromUtf16() above.
+    const int written = ::WideCharToMultiByte(codepage, 0, wide.data(), wideLen, dest, required, nullptr,
+                                               nullptr);
+    if (written <= 0) {
+        return CodepageConvertError::UnmappableCharacter;
+    }
+    return bytes;
+}
+
 }  // namespace neomifes::platform

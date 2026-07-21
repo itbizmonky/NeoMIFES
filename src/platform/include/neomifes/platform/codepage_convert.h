@@ -49,4 +49,20 @@ enum class CodepageConvertError {
 [[nodiscard]] std::variant<std::vector<std::byte>, CodepageConvertError> convertFromUtf16(
     std::u16string_view text, unsigned codepage);
 
+// ISO-2022-JP (CP50220) only accepts dwFlags=0 - MB_ERR_INVALID_CHARS /
+// WC_ERR_INVALID_CHARS / WC_NO_BEST_FIT_CHARS all fail with
+// ERROR_INVALID_FLAGS, and lpDefaultChar/lpUsedDefaultChar (even supplied
+// individually) fail with ERROR_INVALID_PARAMETER (verified empirically,
+// Phase 6b2 plan). This lenient mode silently maps malformed byte
+// sequences to Private Use Area code points instead of erroring on
+// decode, and silently substitutes '?' for unmappable characters on
+// encode with no detectable signal from this layer - neomifes::encoding
+// is responsible for detecting both cases itself (see encoding.cpp's
+// decodeIso2022JpBody()/encodeIso2022JpBody()).
+[[nodiscard]] std::variant<std::u16string, CodepageConvertError> convertToUtf16Lenient(
+    std::span<const std::byte> bytes, unsigned codepage);
+
+[[nodiscard]] std::variant<std::vector<std::byte>, CodepageConvertError> convertFromUtf16Lenient(
+    std::u16string_view text, unsigned codepage);
+
 }  // namespace neomifes::platform

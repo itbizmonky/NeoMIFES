@@ -1,12 +1,11 @@
 #pragma once
 
 // Encoding Engine core - decode/encode/BOM-detection. Phase 6a implemented
-// the Unicode transformation formats; Phase 6b1 added Shift-JIS/EUC-JP.
-// ISO-2022-JP is deferred to Phase 6b2 - its ESC-sequence framing and
-// WC_ERR_INVALID_CHARS's documented incompatibility with the ISO-2022 code
-// pages (50220/50221/50222) make it a different shape of problem from
-// Shift-JIS/EUC-JP, and only Shift-JIS is explicitly required by this
-// project's personas (master_roadmap.md's P1 SAP consultant persona).
+// the Unicode transformation formats; Phase 6b1 added Shift-JIS/EUC-JP;
+// Phase 6b2 added ISO-2022-JP (CP50220 only - the RFC 1468 baseline with no
+// half-width-katakana extension; CP50221/50222 are out of scope, see
+// encoding.cpp's decodeIso2022JpBody()/encodeIso2022JpBody() for why
+// ISO-2022-JP needed a different validation strategy than Shift-JIS/EUC-JP).
 //
 // Deliberately independent of neomifes::document/core - this is a pure
 // bytes<->UTF-16 codec module, headlessly testable with no Document/UI
@@ -61,7 +60,7 @@ enum class Encoding {
     Utf32BeBom,
     ShiftJis,
     EucJp,
-    // Iso2022Jp added in Phase 6b2.
+    Iso2022Jp,
 };
 
 enum class DecodeError {
@@ -125,9 +124,11 @@ struct BomDetection {
 // are simultaneously valid half-width-katakana-pair Shift-JIS and a valid
 // EUC-JP double-byte character) or when it matches neither - the caller
 // falls back to a default encoding rather than being given a guess.
-// ISO-2022-JP detection is deliberately not implemented (Phase 6b2 is
-// deferred - see master_roadmap.md §6 for why), and the roadmap's N-gram
-// confidence stage for genuinely ambiguous input is out of scope.
+// ISO-2022-JP detection is deliberately not implemented here even though
+// decode()/encode() support Encoding::Iso2022Jp (Phase 6b2) - recognizing
+// its ESC-sequence signature within detectEncoding() is a separate,
+// not-yet-scoped addition (see master_roadmap.md §6), and the roadmap's
+// N-gram confidence stage for genuinely ambiguous input is out of scope.
 [[nodiscard]] std::optional<Encoding> detectEncoding(std::span<const std::byte> head) noexcept;
 
 enum class LineEnding { Crlf, Lf, Cr, Mixed };
