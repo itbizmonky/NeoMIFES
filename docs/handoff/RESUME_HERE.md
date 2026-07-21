@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-21 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a はpush済み、6b1・6c1・6c2・6b2 完了・未push)
+> **最終更新:** 2026-07-21 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a はpush済み、6b1・6c1・6c2・6b2・6d 完了・未push。**Phase 6全体(6a〜6d)完了**)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 > 🗺️ **Phase 4b8・5b2・5b3・5c・6〜12 の実装詳細は [`docs/design/master_roadmap.md`](../design/master_roadmap.md) **v2.0** (2026 行、23 章) に一気通貫で規定済み。ペルソナ 7 種・競合ポジショニング・60 機能継承マトリクス・世界最速の裏付け技術要素・国際化/アクセシビリティ・セキュリティ・リリース・KPI・エコシステム・開発品質基盤 まで網羅。各フェーズ着手時はまず該当章を読んでから Plan Mode で詳細プランを起こす運用に確定。**
@@ -61,7 +61,9 @@
 | Phase 6c1 (自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別、ISO-2022-JP検出は保留) | ✅ 完了 (未push、§3.30参照) |
 | Phase 6c2 (行末コード判定: LineEnding Crlf/Lf/Cr/Mixed) | ✅ 完了 (未push、§3.31参照) |
 | Phase 6b2 (ISO-2022-JPコーデック: CP50220、EUC-JP代理オラクル) | ✅ 完了 (未push、§3.32参照) |
-| **Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化) 着手 — Phase 6全体で残る唯一のサブフェーズ。Phase 5c5等は Phase 6完了までは候補から除外** | ⏭️ **次回** |
+| Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化: `loadFile()`自動判定+mmap汎化) | ✅ 完了 (未push、§3.33参照) |
+| **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了** |
+| **次フェーズ選定 — Phase 5c5(検索履歴永続化、Phase 6完了により候補復帰)またはPhase 7(シンタックス+アウトライン+折り畳み等)をユーザーに確認** | ⏭️ **次回** |
 
 ---
 
@@ -885,6 +887,39 @@ Phase 6c2完了後、ユーザーから「Phase 6b2」と指示された。Phase
 
 ---
 
+### 3.33 Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化) 完了記録
+
+Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Phase 6dを実装せよ」と指示された。Phase 6aの実装後コメントから一貫して「独立した大きなサブフェーズになる見込み」と記録され続けていた最後の1件で、着手前調査(Agent委任無し、直接Read/Grep)で`document::Document`/`PieceTable`/`AddBuffer`/`LineIndex`がエンコーディングを一切意識しない設計であること(`OriginalBuffer`/`FileLoader`層だけがエンコーディング対応の対象)を確認した上でPlan Modeへ進んだ。
+
+**設計判断:** mmap+遅延デコードは「バイト単位で文字境界が構造的に分かるエンコーディング」(UTF-8・UTF-16 LE/BE・UTF-32 LE/BE)にのみ一般化し、Shift-JIS/EUC-JP/ISO-2022-JPは既存`OriginalBuffer::fromU16String()`による一括デコード経路を使う設計にした。理由は(1) ISO-2022-JPのエスケープシーケンスによるモード切替という状態を持つ性質上、チェックポイントからの再開時に「そのバイト位置がどのモードか」を別途保持する必要がありmmap+遅延デコードへの一般化が独立した設計課題になること、(2) 対象ペルソナがShift-JIS/EUC-JP/ISO-2022-JPで開く想定のファイルは実務上MB級でありレガシー日本語エンコーディングでの10GB級ファイルという想定が無いこと。UTF-16はチェックポイント機構自体が不要(バイトオフセット/2が常に正確なCUオフセット)、UTF-32はUTF-8と同型のチェックポイント方式(ただし固定4バイトユニットでUTF-8より単純)を採用した。
+
+**成果物:**
+- `OriginalBuffer::openMemoryMapped()`をEncoding引数対応に汎化(`scanUtf16`/`scanUtf32`/`viewMemoryMappedUtf16`/`viewMemoryMappedUtf32`等を新設、既存UTF-8経路は無変更のまま流用)
+- 新規`document::loadFile()`(`detectBom()`→`detectEncoding()`→UTF-8フォールバックで自動判定、Group A(mmap遅延デコード)/Group B(一括デコード)へ振り分け)。`maxBytes`デフォルトを16GiB(10GB目標+ヘッドルーム)に設定 — 従来`loadUtf8File()`の512MiBデフォルトのまま`main.cpp`/`app::openDocumentAt()`が上限指定なしで呼んでいたため、アプリの実際の入口からは10GB目標にそもそも到達できていなかった
+- `loadUtf8File()`は無変更(`search::GrepService`の既存契約維持)、`main.cpp`の`--open`と`app::openDocumentAt()`を`loadFile()`へ切替
+- `OriginalBufferError::InvalidUtf8`→`InvalidEncoding`へリネーム、`LoadError::InvalidEncoding`新設(`loadUtf8File()`固有の`InvalidUtf8`とは別に維持)
+- テスト数: 564→583(+19件、`LoadFileTest`スイート — UTF-16/UTF-32 BOM往復・非BMPサロゲートペア・不正バイト数拒否・Shift-JIS/EUC-JP自動判定・UTF-8フォールバック・10万CU規模でのO(1)算出とPieceTable分割検証)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全583テストpass
+- clang-tidy: `src/`側4ファイル新規警告0(実装直後に`file_loader.cpp`の`bugprone-implicit-widening-of-multiplication-result`を1件検出・修正 — `64 * 1024`を`64ULL * 1024ULL`へ)。テストファイルで`readability-math-missing-parentheses`2件・`readability-function-cognitive-complexity`超過1件(テスト関数を2分割して解消)を検出・修正
+- `BM_LoadFile_100MB`(Release)実測: 207ms — Phase 2b3時点の記録(199ms)と同水準、UTF-8既存経路への性能回帰なし
+- 実アプリ起動スモークテスト: `--open`でUTF-8ファイル(mmap遅延デコード経路)・Shift-JISファイル(一括デコード経路)双方をクラッシュなく開けることを確認
+
+**完了条件:**
+- [x] UTF-16 LE/BE・UTF-32 LE/BEがBOM自動判定込みで正しくデコードされる(既知文字列往復・非BMPサロゲートペア含む)
+- [x] Shift-JIS/EUC-JPがBOM無しでも`detectEncoding()`により自動判定され正しくデコードされる
+- [x] BOM無し・判定不能なバイト列はUTF-8フォールバックを試み、フォールバックも失敗すれば`LoadError::InvalidEncoding`を返す(silent success no garbage)
+- [x] `loadUtf8File()`の既存全テスト・呼び出し元(`GrepService`)が無変更のまま動作する(リグレッション無し)
+- [x] ローカルDebug/Release/ubsan全583テストgreen、clang-tidy新規警告0
+- [x] 実アプリでの`--open`スモークテスト(UTF-8/Shift-JIS双方)クラッシュ無し
+
+**スコープ外(継続):** ISO-2022-JP自動判定(`detectEncoding()`のESCシーケンス認識、6c1/6b2から継続)、N-gramモデルによる曖昧ケース確信度算出、「エンコーディング指定して開く」メニュー/ステータスバーUI(本コードベースに基盤が無い)、`GrepService`の多エンコーディング対応。詳細は`master_roadmap.md` §6参照。
+
+**Phase 6全体(6a〜6d)完了。** roadmap §6が要求していた対応エンコーディング・自動判定・10GB mmap遅延デコードが揃った。次フェーズはPhase 5c5(検索履歴永続化、Phase 6完了により候補復帰)またはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)のいずれかをユーザーに確認すること。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -933,27 +968,27 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(Fi
 Phase 5b3a/5b3b/5b3cで完了済み、Phase 4b8は6サブフェーズ(4b8a〜4b8g)全て完了済み、
 Phase 5c1〜5c4(GrepServiceコア・openDocumentAt・Grep結果ペインUI GrepBar・タグジャンプ)・
 Phase 6a(Encoding Engineコア、Unicodeファミリー)も完了・push済み・CI success確認済み。
-Phase 6b1(Shift-JIS/EUC-JPコーデック)・Phase 6c1(自動判定)・Phase 6c2(行末コード判定)・
-Phase 6b2(ISO-2022-JPコーデック)はローカルでコミット済みだが未push — セッション冒頭で
-ユーザーに push 指示を仰ぐこと。
+**Phase 6b1(Shift-JIS/EUC-JPコーデック)・Phase 6c1(自動判定)・Phase 6c2(行末コード判定)・
+Phase 6b2(ISO-2022-JPコーデック)・Phase 6d(Document/OriginalBuffer統合、`loadFile()`自動判定+
+mmap汎化、§3.33参照)はローカルでコミット済みだが未push — セッション冒頭でユーザーに push
+指示を仰ぐこと。これによりPhase 6全体(6a〜6d)が完了する。**
 **最優先: 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・
 クリック選択・ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME)と5c4のF12
 (ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応)の実アプリでの視覚的・
 対話的動作確認をユーザーに依頼すること(この環境にWin32 GUI自動化手段が無いため未実施、
-§3.26/§3.27参照)。Phase 6a/6b1/6c1/6c2/6b2はヘッドレス実装(UI/Document結合なし)のため
-視覚確認対象は無い。**
-**Phase 6は6dを残すのみで実質完了(§3.32参照)。Phase 5c5(検索履歴永続化)は Phase 6優先という
-本セッション内の承認済み方針により、Phase 6完了までは次フェーズ候補として提示しないこと
-(§3.31参照 — 過去に不要な選択肢提示として指摘された)。** 次はPhase 6d(Document/OriginalBuffer
-統合、10GB mmap一般化 — 過去に「独立した大きなサブフェーズになる見込み」と繰り返し記録されている
-本格着手)に一意に進めること(6bはこれで6b1・6b2とも完了、6cも6c1・6c2とも完了しており、
-Phase 6内の他候補は存在しない)。着手前にPlan Modeで詳細設計を起こすこと。
-着手前に本ファイル §3.19/§3.20/§3.21/§3.22/§3.23/§3.24/§3.25/§3.26/§3.27/§3.28/§3.29/§3.30/§3.31/§3.32
+§3.26/§3.27参照)。Phase 6a/6b1/6c1/6c2/6b2/6dはヘッドレス実装(UI/Document結合なし、6dも
+main.cpp/document_open.cppの呼び出し切替のみでUI新設なし)のため視覚確認対象は無い。**
+**Phase 6完了により、Phase 5c5(検索履歴永続化)が次フェーズ候補として復帰する。** roadmap上の
+次の柱はPhase 5c5とPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ+Breadcrumb+
+Sticky scroll+Indent guides+Semantic highlighting)の2つが並立する状態のため、**どちらを
+優先するかユーザーに確認してから Plan Mode で詳細設計を起こすこと**(過去に「選択肢が複数ある
+のに提示し続けた」指摘があったため、確認は1回で済ませ、以後は選ばれた方だけを追うこと)。
+着手前に本ファイル §3.19/§3.20/§3.21/§3.22/§3.23/§3.24/§3.25/§3.26/§3.27/§3.28/§3.29/§3.30/§3.31/§3.32/§3.33
 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。まだ実施していない実アプリでの
 Ctrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/Ctrl+G/Ctrl+F2・F2/コマンドパレットの
 タブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認
 があれば、Ctrl+Shift+F・F12の確認と合わせてこのセッションの冒頭でユーザーに依頼すること
-(§3.19/§3.20/§3.21/§3.22/§3.23参照。5c1・5c2・6a・6b1・6c1・6c2・6b2はヘッドレスのため視覚確認対象なし)。
+(§3.19/§3.20/§3.21/§3.22/§3.23参照。5c1・5c2・6a・6b1・6c1・6c2・6b2・6dはヘッドレスのため視覚確認対象なし)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

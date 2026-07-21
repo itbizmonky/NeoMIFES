@@ -1407,4 +1407,46 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 6全体はPhase 6dを残すのみ(Document/OriginalBuffer統合、10GB mmap一般化 — 過去に「独立した大きなサブフェーズになる見込み」と繰り返し記録されている本格着手)。Phase 5c5は引き続きPhase 6完了までは候補として提示しないこと。push はPhase 6b1・6c1・6c2・6b2分(実装4コミット+ドキュメント同期コミット群)が本セッション終了時点で未実施 — セッション冒頭でユーザーに push 指示を仰ぐこと。5c3のCtrl+Shift+F・5c4のF12の実アプリ視覚確認も依然未実施(§3.26/§3.27参照)。
 
+## Session 43 (2026-07-21): push (6b1・6c1・6c2・6b2) + Phase 6d (OriginalBuffer/FileLoaderの多エンコーディング統合) 完了
+
+**経緯:** Session 42の最後に未pushだったPhase 6b1・6c1・6c2・6b2(実装4コミット+ドキュメント同期4コミット、計8コミット)をユーザーの「git push」指示でpush。CI(run 29793743914)が1時間10分27秒でsuccess確認。続けてユーザーから「Phase 6dを実装せよ」と指示された。
+
+**着手前調査(Agent委任無し、直接Read/Grep):**
+- `document::Document`/`PieceTable`/`AddBuffer`/`LineIndex`はエンコーディングを一切意識しない設計であることを確認。`Document`は`std::shared_ptr<const OriginalBuffer>`を受け取るだけで、エンコーディング対応は`OriginalBuffer`/`FileLoader`層だけに閉じていた
+- `OriginalBuffer::openMemoryMapped()`内部の`scanUtf8`/`decodeUtf8Run`(手書きUTF-8ビットレベルデコーダ、SEH保護、64KBチェックポイントインデックス)がUTF-8専用に直接書かれている部分が汎化の核心と判明
+- `neomifes::encoding::decode()`(6a〜6b2)は「バイト列全体を1回でUTF-16文字列へ変換する」設計で、ストリーミングスキャンのインクリメンタルAPIを持たないことを確認 — この差を埋める設計判断が本フェーズの中心になった
+- `loadUtf8File()`の呼び出し元3箇所(main.cpp/`app::openDocumentAt()`/`search::GrepService`)のうち`GrepService`は「バイナリ/非UTF-8ファイルは静かにスキップ」という既存の意図的スコープを持つため本フェーズでは触れない方針とした
+
+**設計判断(Plan Mode、ユーザー承認済み):**
+- mmap+遅延デコードは「バイト単位で構造的に文字境界が分かるエンコーディング」(UTF-8・UTF-16 LE/BE・UTF-32 LE/BE)にのみ一般化し、Shift-JIS/EUC-JP/ISO-2022-JPは既存`OriginalBuffer::fromU16String()`による一括デコード経路を使う設計にした。理由は(1) ISO-2022-JPのエスケープシーケンスによるモード切替という状態を持つ性質上チェックポイント再開時に「そのバイト位置がどのモードか」を別途保持する必要がありmmap+遅延デコード一般化が独立した設計課題になること、(2) 対象ペルソナがレガシー日本語エンコーディングで開く想定のファイルは実務上MB級で10GB級の想定が無いこと
+- UTF-16はチェックポイント機構自体が不要(バイトオフセット/2が常に正確なCUオフセット、サロゲートペアも2個の独立CUとして扱われるため)。UTF-32はUTF-8と同型のチェックポイント方式(固定4バイトユニットでUTF-8より単純)を採用
+- 新規`document::loadFile()`は`detectBom()`→`detectEncoding()`→UTF-8フォールバックで自動判定。`maxBytes`デフォルトを16GiB(10GB目標+ヘッドルーム)に設定 — 従来`loadUtf8File()`の512MiBデフォルトのまま`main.cpp`/`app::openDocumentAt()`が上限指定なしで呼んでおり、アプリの実際の入口からは10GB目標にそもそも到達できていなかったことが判明したため
+- `loadUtf8File()`自体は無変更(`GrepService`の既存契約維持)。内部だけ汎化した`openMemoryMapped(path, byteOffset, Encoding::Utf8)`を呼ぶようリファクタしたが外部挙動は完全同一
+
+**実装:**
+- `OriginalBuffer::openMemoryMapped()`をEncoding引数対応に汎化(`ScanFamily`列挙体+`classifyEncoding()`でディスパッチ、`scanUtf16`/`scanUtf32`/`decodeUtf16Run`/`decodeUtf32Run`とそれぞれのSEHラッパーを新設)。`OriginalBufferError::InvalidUtf8`→`InvalidEncoding`へリネーム
+- `document::loadFile()`新設(`preflightFile`/`detectFileEncoding`/`stripBom`/`isLazyDecodable`のヘルパー分割、Group A(mmap遅延デコード)/Group B(`encoding::decode()`一括+`fromU16String()`)へ振り分け)。`LoadError::InvalidEncoding`新設、`LoadResult::detectedEncoding`フィールド追加
+- `main.cpp`の`--open`と`app::openDocumentAt()`を`loadFile()`へ切替。`search::GrepService`は無変更
+- `src/document/CMakeLists.txt`へ`neomifes::encoding`をPUBLIC追加(`src/encoding`は既に`src/document`より前にadd_subdirectoryされており、追加のCMake変更は最小限で済んだ)
+- テスト数: 564→583(+19件、`LoadFileTest`スイート)
+
+**発生したバグと修正:**
+- `preflightFile()`の早期return `return *early;`(`std::optional<std::variant<LoadResult,LoadError>>`の`*early`)がコンパイルエラーC2280(削除されたコピーコンストラクタ)になった。`LoadResult`が`std::unique_ptr<Document>`を持つため`std::variant<LoadResult,LoadError>`はコピー不可であり、`*early`はデリファレンス式でありC++の暗黙ムーブ規則(「関数内のローカル変数の名前」に限定)の対象外でコピー構築が試みられていたことが原因。`return std::move(*early);`へ修正(2箇所)
+- テストファイルで埋め込み`\x00`バイトを含むバイト列リテラルを`tempFileWith(const std::string&)`へ直接渡すと、`const char*`→`std::string`の暗黙変換(strlenベース)が最初の`\x00`で切り詰めることに気づかず4箇所でバグを作り込んだ(UTF-16 LE/BE BOM+"hi"、UTF-16サロゲートペア、UTF-32チェックポイントテスト)。`std::string(literal, explicit_length)`の明示長コンストラクタへ修正
+- clang-tidy再検証で`file_loader.cpp`の`bugprone-implicit-widening-of-multiplication-result`(`64 * 1024`のint乗算からuint64_tへの暗黙拡幅)を検出・`64ULL * 1024ULL`へ修正。テストファイルで`readability-math-missing-parentheses`2件・新規テスト関数の`readability-function-cognitive-complexity`超過(26>25)1件を検出 — 後者は1関数を2関数(読取専用の大規模範囲検証/PieceTable分割検証)に分割して解消
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全583テストpass
+- clang-tidy: `src/`側4ファイル(original_buffer.cpp/file_loader.cpp/document_open.cpp/main.cpp)新規警告0
+- `BM_LoadFile_100MB`(Release)実測207ms — Phase 2b3時点の記録(199ms)と同水準、UTF-8既存経路への性能回帰なし確認
+- 実アプリ`--open`スモークテスト: UTF-8ファイル(mmap遅延デコード経路)・Shift-JISファイル(一括デコード経路)双方でクラッシュ無しを確認(`--measure-frame`はこの対話環境でブロックする挙動を示したため、Start-Process+数秒待機+プロセス生存確認という既存の簡易スモークテスト方式に切り替えた)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表の6d行を完了に更新、§6に「実装後の確定事項/変更点 (Phase 6d完了)」小節を新設 — Phase 6全体(6a〜6d)完了を明記
+- `docs/design/detailed_design.md` §9に新規§9.8(実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.33(完了記録)追加、§1状態表・§6推奨プロンプト・冒頭メタデータを更新(Phase 6完了、Phase 5c5がPhase 7と並ぶ次点候補として復帰した旨を明記)
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 6全体(6a〜6d)が完了した。push はPhase 6d分(実装1コミット`de13560`+ドキュメント同期コミット群)が本セッション終了時点で未実施 — セッション冒頭でユーザーに push 指示を仰ぐこと。Phase 6完了によりPhase 5c5(検索履歴永続化)が次フェーズ候補として復帰する。roadmap上の次の柱はPhase 5c5とPhase 7(シンタックス+アウトライン+折り畳み等)の2つが並立するため、どちらを優先するかユーザーに確認してからPlan Modeで詳細設計を起こすこと。5c3のCtrl+Shift+F・5c4のF12の実アプリ視覚確認も依然未実施(§3.26/§3.27参照)。
+
 <!-- 次セッションはここに追記 -->

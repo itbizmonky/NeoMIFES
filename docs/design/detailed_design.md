@@ -1636,6 +1636,47 @@ convertFromUtf16Lenient(std::u16string_view text, unsigned codepage);
 
 **意図的にスコープ外とした項目:** CP50221/50222(半角カタカナ拡張)、ISO-2022-JP検出(`detectEncoding()`)、Document/OriginalBufferへの統合(6d以降)。詳細は`master_roadmap.md` §6参照。
 
+### 9.8 実装後の確定事項/変更点 (2026-07-21、Phase 6d完了)
+
+`OriginalBuffer::openMemoryMapped()`をEncoding引数対応に汎化し、新規`document::loadFile()`で自動判定込みの多エンコーディング読込を実現。roadmap §6全体が完了。
+
+```cpp
+// src/document/include/neomifes/document/original_buffer.h (拡張分)
+namespace neomifes::document {
+
+// Utf8/Utf16Le/Utf16Be/Utf32Le/Utf32Beのみ有効(バイト単位で文字境界が
+// 構造的に分かるエンコーディング)。ShiftJis/EucJp/Iso2022Jpを渡すのは
+// 呼び出し側の契約違反 - loadFile()がfromU16String()側へルーティングする。
+[[nodiscard]] static std::variant<std::shared_ptr<const OriginalBuffer>, OriginalBufferError>
+    openMemoryMapped(const std::filesystem::path& path, std::uint64_t byteOffset,
+                      encoding::Encoding encoding);
+
+}  // namespace neomifes::document
+
+// src/document/include/neomifes/document/file_loader.h (新設)
+namespace neomifes::document {
+
+// detectBom()→detectEncoding()→Utf8フォールバックの順で自動判定し、
+// mmap遅延デコード(Group A)または一括デコード(Group B)へ振り分ける。
+// loadUtf8File()自体は無変更(GrepServiceの既存契約を壊さないため)。
+[[nodiscard]] std::variant<LoadResult, LoadError>
+loadFile(const std::filesystem::path& path,
+         std::uint64_t                maxBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL);
+
+}  // namespace neomifes::document
+```
+
+**設計上の要点:**
+- **mmap+遅延デコードの一般化対象(Group A)はUTF-8・UTF-16 LE/BE・UTF-32 LE/BEのみ。Shift-JIS/EUC-JP/ISO-2022-JP(Group B)は既存の`OriginalBuffer::fromU16String()`による一括デコード経路を使う。** ISO-2022-JPのエスケープシーケンスによるモード切替という状態を持つ性質上、チェックポイントからの再開時に「そのバイト位置がどのモードか」を別途保持する必要があり、mmap+遅延デコードへの一般化は独立した設計課題になる。加えて対象ペルソナがShift-JIS/EUC-JP/ISO-2022-JPで開く想定のファイルは実務上MB級であり10GB級の想定が無い
+- **UTF-16はチェックポイント機構を使わない。** バイトオフセット/2が常に正確なCUオフセットになる(サロゲートペアも2個の独立したCUとして扱われるため)ため、`viewMemoryMappedUtf16()`は要求範囲のバイト位置を直接計算するのみ。UTF-32は非BMP文字が1ユニットから2 CUを生成しCUオフセットが乖離しうるため、UTF-8と同型のチェックポイント方式を維持(ただし固定4バイトユニットで可変長先頭バイト判定が無い分UTF-8より単純)
+- **`loadFile()`の`maxBytes`デフォルトを16GiB(10GB目標+ヘッドルーム)に設定した。** `loadUtf8File()`の512MiBデフォルトのまま`main.cpp`/`app::openDocumentAt()`が上限指定なしで呼んでいたため、実際のアプリの入口からは「10GB」目標にそもそも到達できていなかった。この変更で初めて到達可能になった
+- **`loadUtf8File()`自体は一切変更しない。** `search::GrepService`の「バイナリ/非UTF-8ファイルは静かにスキップ」という既存の意図的スコープ(Phase 5c1)を壊さないため、内部実装だけ汎化した`openMemoryMapped(path, byteOffset, Encoding::Utf8)`を呼ぶようリファクタしたが外部挙動は完全に同一
+- ISO-2022-JP自動判定は引き続き未実装(平文ISO-2022-JPは全バイトが0x80未満のためUTF-8判定に成功してしまい、`loadFile()`は文字化けした状態でUTF-8として"成功"扱いする既知の制約)
+
+**テスト:** `tests/unit/document_file_loader_test.cpp`に`LoadFileTest`スイート(19件)を追加 — UTF-16/UTF-32 BOM往復、非BMPサロゲートペア(UTF-16源/UTF-32源)、不正な奇数バイト数/4の倍数でないバイト数の拒否、Shift-JIS/EUC-JP自動判定、UTF-8フォールバック、大規模範囲(10万CU)でのO(1)バイト↔CU算出とPieceTable分割検証。
+
+**意図的にスコープ外とした項目:** ISO-2022-JP自動判定、N-gramモデルによる曖昧ケース確信度算出、「エンコーディング指定して開く」UI(メニュー/ステータスバー基盤が本コードベースに無い)、`GrepService`の多エンコーディング対応。詳細は`master_roadmap.md` §6参照。
+
 ---
 
 ## 10. Syntax Engine 詳細
