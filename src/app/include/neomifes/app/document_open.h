@@ -38,7 +38,8 @@ class Viewport;
 
 namespace neomifes::app {
 
-// Loads `path` via document::loadUtf8File() and, on success, move-assigns
+// Loads `path` via document::loadFile() (Phase 6d: auto-detects encoding,
+// not UTF-8-only) and, on success, move-assigns
 // the result into `document` (Document::operator=(Document&&) is already
 // = default/noexcept, document.h - this is its first real call site, not
 // new capability) and resets: undo/redo history
@@ -64,9 +65,9 @@ namespace neomifes::app {
 //
 // Returns the LoadError on failure, leaving `document` and every piece of
 // session state above completely untouched (nullopt on success) -
-// preserves loadUtf8File()'s existing error taxonomy for a future caller
-// that wants to react to it (e.g. an error toast) rather than collapsing
-// it to a bare bool now that the information is already there for free.
+// preserves loadFile()'s existing error taxonomy for a future caller that
+// wants to react to it (e.g. an error toast) rather than collapsing it to
+// a bare bool now that the information is already there for free.
 [[nodiscard]] std::optional<document::LoadError> openDocumentAt(
     const std::filesystem::path& path, std::optional<document::LineNumber> targetLine,
     std::optional<std::uint64_t> targetColumn, document::Document& document,

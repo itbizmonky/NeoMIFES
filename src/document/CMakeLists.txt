@@ -20,6 +20,10 @@ target_link_libraries(neomifes_document
         # original_buffer.h includes neomifes/platform/file_mapping.h (mmap RAII),
         # so platform is a public (transitive) dependency of this target.
         neomifes::platform
+        # original_buffer.h/file_loader.h include neomifes/encoding/encoding.h
+        # (Phase 6d: Encoding-tagged mmap decode, LoadResult::detectedEncoding),
+        # so encoding is likewise a public (transitive) dependency.
+        neomifes::encoding
     PRIVATE
         neomifes::compile_options
         neomifes::util

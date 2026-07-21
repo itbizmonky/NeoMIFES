@@ -44,7 +44,7 @@ std::optional<LoadError> openDocumentAt(
     core::Viewport& viewport, core::BookmarkManager& bookmarks,
     std::optional<TextPos>& altCursorAnchor, std::optional<TextPos>& rectangularAnchor,
     std::optional<std::uint32_t>& freeCursorVirtualColumns) {
-    auto        loaded = document::loadUtf8File(path);
+    auto        loaded = document::loadFile(path);
     auto* const result  = std::get_if<LoadResult>(&loaded);
     if (result == nullptr) {
         return std::get<LoadError>(loaded);

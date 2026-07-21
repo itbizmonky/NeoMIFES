@@ -260,7 +260,7 @@ void debugLogRenderError(const char* what, const neomifes::render::RenderError& 
 // --open falls back to an empty Document rather than blocking startup.
 void debugLogLoadError(const std::filesystem::path& path, LoadError err) noexcept {
 #ifndef NDEBUG
-    const std::wstring msg = L"loadUtf8File failed for " + path.wstring() +
+    const std::wstring msg = L"loadFile failed for " + path.wstring() +
                              L" (LoadError=" + std::to_wstring(static_cast<int>(err)) + L")\n";
     ::OutputDebugStringW(msg.c_str());
 #else
@@ -286,7 +286,7 @@ Document loadStartupDocument(const LaunchArgs& args) {
     if (!args.openPath) {
         return document;
     }
-    auto loadResult = neomifes::document::loadUtf8File(*args.openPath);
+    auto loadResult = neomifes::document::loadFile(*args.openPath);
     if (auto* result = std::get_if<LoadResult>(&loadResult)) {
         document = std::move(*result->document);
     } else {

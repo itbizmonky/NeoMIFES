@@ -13,7 +13,9 @@ namespace {
 
 using neomifes::document::LoadError;
 using neomifes::document::LoadResult;
+using neomifes::document::loadFile;
 using neomifes::document::loadUtf8File;
+using neomifes::encoding::Encoding;
 
 fs::path tempFileWith(const std::string& bytes) {
     fs::path p = fs::temp_directory_path()
@@ -214,6 +216,281 @@ TEST(FileLoaderTest, NewlineCountPrecomputedWithoutFullDecode) {
     auto& r = std::get<LoadResult>(result);
 
     EXPECT_EQ(r.document->lineCount(), 3u);
+}
+
+// -----------------------------------------------------------------------------
+// Phase 6d: loadFile() - auto-detected multi-encoding loading, on top of the
+// generalized OriginalBuffer::openMemoryMapped()/fromU16String() paths.
+// -----------------------------------------------------------------------------
+
+TEST(LoadFileTest, DetectsUtf16LeBomAndDecodesCorrectly) {
+    // BOM (FF FE) + "hi" as UTF-16LE (68 00 69 00). Explicit-length
+    // std::string constructor: the literal contains embedded \x00 bytes,
+    // which the implicit const char*->std::string (strlen-based) conversion
+    // would truncate at.
+    auto path = tempFileWith(std::string("\xFF\xFE\x68\x00\x69\x00", 6));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_TRUE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::Utf16LeBom);
+    EXPECT_EQ(r.document->toU16String(), u"hi");
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DetectsUtf16BeBomAndDecodesCorrectly) {
+    // BOM (FE FF) + "hi" as UTF-16BE (00 68 00 69). Explicit length - see
+    // DetectsUtf16LeBomAndDecodesCorrectly's comment on embedded \x00 bytes.
+    auto path = tempFileWith(std::string("\xFE\xFF\x00\x68\x00\x69", 6));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_TRUE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::Utf16BeBom);
+    EXPECT_EQ(r.document->toU16String(), u"hi");
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DetectsUtf32LeBomAndDecodesCorrectly) {
+    // BOM (FF FE 00 00) + "hi" as UTF-32LE (68 00 00 00 / 69 00 00 00).
+    auto path = tempFileWith(std::string(
+        "\xFF\xFE\x00\x00" "\x68\x00\x00\x00" "\x69\x00\x00\x00", 12));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_TRUE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::Utf32LeBom);
+    EXPECT_EQ(r.document->toU16String(), u"hi");
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DetectsUtf32BeBomAndDecodesCorrectly) {
+    // BOM (00 00 FE FF) + "hi" as UTF-32BE (00 00 00 68 / 00 00 00 69).
+    auto path = tempFileWith(std::string(
+        "\x00\x00\xFE\xFF" "\x00\x00\x00\x68" "\x00\x00\x00\x69", 12));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_TRUE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::Utf32BeBom);
+    EXPECT_EQ(r.document->toU16String(), u"hi");
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DecodesSurrogatePairFromUtf16LeSource) {
+    // BOM + U+1F600 as UTF-16LE surrogate pair (high D83D -> 3D D8, low
+    // DE00 -> 00 DE), matching FileLoaderTest.DecodesSurrogatePair's
+    // expected UTF-8 result for the same code point.
+    auto path = tempFileWith(std::string("\xFF\xFE\x3D\xD8\x00\xDE", 6));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_EQ(r.document->toU16String(), (std::u16string(u"\xD83D\xDE00")));
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DecodesNonBmpFromUtf32LeSource) {
+    // BOM + U+1F600 as a single UTF-32LE unit (00 F6 01 00) - decode()
+    // expands this to the same UTF-16 surrogate pair as the UTF-16 source
+    // case above, since this project's internal representation is always
+    // UTF-16 CU regardless of source encoding.
+    auto path = tempFileWith(std::string(
+        "\xFF\xFE\x00\x00" "\x00\xF6\x01\x00", 8));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_EQ(r.document->toU16String(), (std::u16string(u"\xD83D\xDE00")));
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, RejectsUnpairedHighSurrogateInUtf16Source) {
+    // BOM + a lone high surrogate (3D D8) with no following low surrogate.
+    auto path = tempFileWith("\xFF\xFE\x3D\xD8");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::InvalidEncoding);
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, RejectsOddByteCountUtf16Source) {
+    // BOM (2 bytes, valid) + 1 stray content byte - odd total content length.
+    auto path = tempFileWith("\xFF\xFE\x68");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::InvalidEncoding);
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, RejectsByteCountNotMultipleOf4Utf32Source) {
+    // BOM (4 bytes, valid) + 3 stray content bytes.
+    auto path = tempFileWith(std::string("\xFF\xFE\x00\x00\x68\x00\x00", 7));
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::InvalidEncoding);
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DetectsShiftJisWithoutBom) {
+    // Known Shift-JIS bytes for "亜" (Phase 6b1), decisively in Shift-JIS's
+    // 0x81-0x9F lead-byte range (see encoding_encoding_test.cpp's
+    // ShiftJisByteInDecisiveRangeIsDetectedAsShiftJis).
+    auto path = tempFileWith("\x88\x9F");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_FALSE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::ShiftJis);
+    EXPECT_EQ(r.document->toU16String(), u"亜");
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, DetectsEucJpWithoutBom) {
+    // Decisive EUC-JP bytes (trail byte 0xFD exceeds Shift-JIS's max 0xFC
+    // trail byte) - see encoding_encoding_test.cpp's
+    // EucJpTrailByteOutsideShiftJisRangeIsDetectedAsEucJp.
+    auto path = tempFileWith("\xA1\xFD");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_FALSE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::EucJp);
+    EXPECT_EQ(r.document->length(), 1u);  // one double-byte EUC-JP character -> 1 CU
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, PlainAsciiIsDetectedAsUtf8) {
+    auto path = tempFileWith("hello");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_FALSE(r.hadBom);
+    EXPECT_EQ(r.detectedEncoding, Encoding::Utf8);
+    EXPECT_EQ(r.document->toU16String(), u"hello");
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, UnrecognizedBytesFallBackToUtf8ThenFailValidation) {
+    // 0xFF alone matches no BOM, is outside Shift-JIS's and EUC-JP's valid
+    // lead-byte ranges, and is not a valid UTF-8 lead byte either -
+    // detectEncoding() returns nullopt, loadFile() falls back to its Utf8
+    // default (matching loadUtf8File()'s existing implicit assumption), and
+    // that fallback decode correctly fails too rather than silently
+    // accepting garbage.
+    auto path = tempFileWith("\xFF");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::InvalidEncoding);
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, ReturnsNotFound) {
+    auto result = loadFile("Z:\\this\\path\\does\\not\\exist.txt");
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::NotFound);
+}
+
+TEST(LoadFileTest, EmptyFileProducesEmptyDocument) {
+    auto path = tempFileWith("");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_EQ(r.byteLength, 0u);
+    EXPECT_FALSE(r.hadBom);
+    EXPECT_EQ(r.document->length(), 0u);
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, EnforcesMaxBytes) {
+    auto path = tempFileWith("abcdef");
+    auto result = loadFile(path, /*maxBytes=*/3);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::TooLarge);
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, Utf16SourceMultibyteContentSpansLargeRange) {
+    // ~100,000 UTF-16 code units (200,000 bytes), well past kDetectionHeadBytes
+    // (64KiB) - exercises the O(1) byte<->CU math viewMemoryMappedUtf16()
+    // relies on (no checkpoint index) across a range no single detection-head
+    // read would cover.
+    std::string content = "\xFF\xFE";  // UTF-16LE BOM
+    content.reserve(2 + (100000 * 2));
+    for (int i = 0; i < 100000; ++i) {
+        content.push_back(static_cast<char>('0' + (i % 10)));
+        content.push_back('\0');
+    }
+
+    auto path = tempFileWith(content);
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    ASSERT_EQ(r.document->length(), 100000u);
+
+    const std::u16string full = r.document->toU16String();
+    for (std::size_t i = 0; i < 100000; i += 4093) {  // prime stride, spot-check
+        ASSERT_EQ(static_cast<char>(full[i]), static_cast<char>('0' + (i % 10)))
+            << "mismatch at offset " << i;
+    }
+
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, Utf16SourceSplitAtArbitraryOffsetPreservesContent) {
+    // Same large-range UTF-16LE content as
+    // Utf16SourceMultibyteContentSpansLargeRange, but forces a PieceTable
+    // split partway through - exercises OriginalBuffer::view() being asked
+    // for a UTF-16-sourced range that doesn't start at offset 0.
+    std::string content = "\xFF\xFE";  // UTF-16LE BOM
+    content.reserve(2 + (100000 * 2));
+    for (int i = 0; i < 100000; ++i) {
+        content.push_back(static_cast<char>('0' + (i % 10)));
+        content.push_back('\0');
+    }
+
+    auto path = tempFileWith(content);
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+
+    r.document->insertText(50000, u"|");
+    const std::u16string full = r.document->toU16String();
+    ASSERT_EQ(full.size(), 100001u);
+    EXPECT_EQ(full[49999], u'9');  // unchanged, just before the insertion
+    EXPECT_EQ(full[50000], u'|');
+    EXPECT_EQ(full[50001], u'0');  // shifted by 1, was at 50000 before insertion
+
+    fs::remove(path);
+}
+
+TEST(LoadFileTest, Utf32SourceContentSpanningMultipleCheckpointsDecodesCorrectly) {
+    // ~40,000 UTF-32 units (160,000 bytes) spans 2+ of OriginalBuffer's
+    // 64KiB checkpoints, exercising scanUtf32()/viewMemoryMappedUtf32()'s
+    // checkpoint index the same way the UTF-8
+    // ContentSpanningMultipleCheckpointsDecodesCorrectly test does.
+    // Explicit length: the literal's embedded \x00 bytes would truncate an
+    // implicit const char*->std::string (strlen-based) conversion.
+    std::string content(std::string("\xFF\xFE\x00\x00", 4));  // UTF-32LE BOM
+    content.reserve(4 + (40000 * 4));
+    for (int i = 0; i < 40000; ++i) {
+        content.push_back(static_cast<char>('0' + (i % 10)));
+        content.push_back('\0');
+        content.push_back('\0');
+        content.push_back('\0');
+    }
+
+    auto path = tempFileWith(content);
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+
+    ASSERT_EQ(r.document->length(), 40000u);
+    const std::u16string full = r.document->toU16String();
+    for (std::size_t i = 0; i < 40000; i += 4093) {  // prime stride, spot-check
+        ASSERT_EQ(static_cast<char>(full[i]), static_cast<char>('0' + (i % 10)))
+            << "mismatch at offset " << i;
+    }
+
+    fs::remove(path);
 }
 
 }  // namespace
