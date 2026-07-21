@@ -1559,6 +1559,26 @@ enum class EncodeError { UnmappableCharacter };
 
 **意図的にスコープ外とした項目:** ISO-2022-JP(6b2)、3段階自動判定(6c)、Document/OriginalBufferへの統合(6d以降)。詳細は`master_roadmap.md` §6参照。
 
+### 9.5 実装後の確定事項/変更点 (2026-07-21、Phase 6c1完了)
+
+新規`detectEncoding()`を`neomifes::encoding`に追加。`detectBom()`/`decode()`の合成のみで構成する。
+
+```cpp
+[[nodiscard]] std::optional<Encoding> detectEncoding(std::span<const std::byte> head) noexcept;
+```
+
+**アルゴリズム:** ①`detectBom()`が検出できればそのEncoding、②空またはUTF-8として`decode()`が成功すればUtf8、③`decode(head, ShiftJis)`/`decode(head, EucJp)`のうち片方だけが成功すればそのEncoding、④両方成功する場合は0x81-0x9F範囲のバイト有無で判定(Shift-JIS優先マーカ、両方失敗する場合と合わせて`nullopt`)。
+
+**設計上の要点:**
+- **新規の低レベルバイト走査コードはほぼ書いていない。** 既存`decode()`の成功/失敗をそのまま判定オラクルとして再利用し、roadmapが記述する「Shift-JIS第1バイト範囲0x81-0x9F...を優先マーカとして使用」は「両方成功する場合のタイブレーカー」としてのみ最小限残った
+- **Phase 6b1で見落としていたバグを本フェーズのテスト作成中に発見・修正した: Windows CP932/CP20932は一部の未割当バイトをC1制御コード(U+0080-U+009F)へ黙って直接マッピングし、`MB_ERR_INVALID_CHARS`指定下でも拒否しない(未文書化)。** 具体的にはShift-JISの単独`0x80`、EUC-JPの`0x80-0x9F`のほぼ全域(SS2シフトバイト`0x8E`単体を除く)。`decodeLegacyCodepageBody()`にデコード結果のC1範囲出力を拒否する後処理を追加して修正した。`platform::convertToUtf16()`自体(汎用Win32ラッパー)は変更せず、JIS固有のこの業務ルールは`encoding.cpp`側に置いた
+- **Shift-JIS/EUC-JPの2バイト表現域(0xA1-0xFE×0xA1-0xFE)はほぼ全域が両コーデックで同時に有効になりうることを実機検証で確認した。** EUC-JP第2バイトが0xFD/0xFEの場合のみ確定的にEUC-JP判別可能(Shift-JISのDBCS第2バイト有効範囲は最大0xFC)。それ以外の大半のケース(「あ」`A4 A2`等)は真に曖昧で、roadmapのN-gramモデル(Stage 3、本フェーズはスコープ外)が本来解決すべき領域のため`nullopt`を返す
+- **ISO-2022-JP検出は実装しなかった。** 着手前の実機検証で、ISO-2022系コードページ(50220/50221/50222)がWin32レベルで厳格な入力検証を一切サポートしないことが判明(`MB_ERR_INVALID_CHARS`/`WC_ERR_INVALID_CHARS`/`WC_NO_BEST_FIT_CHARS`いずれも`ERROR_INVALID_FLAGS`、有効な`dwFlags=0`はエスケープシーケンス異常をPUA文字へ静かに置換)。Phase 6b2として独立させたまま保留
+
+**テスト:** `tests/unit/encoding_encoding_test.cpp`に`DetectEncodingTest`スイート(9件)・C1制御コード拒否の回帰テスト(`DecodeErrorTest`2件)を追加。
+
+**意図的にスコープ外とした項目:** ISO-2022-JP検出(6b2)、N-gramモデルによる曖昧ケースの確信度算出、行末コード判定(6c2以降)、Document/OriginalBufferへの統合(6d以降)。詳細は`master_roadmap.md` §6参照。
+
 ---
 
 ## 10. Syntax Engine 詳細

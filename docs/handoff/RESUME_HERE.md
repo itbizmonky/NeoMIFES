@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-20 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a はpush済み、6b1 完了・未push)
+> **最終更新:** 2026-07-21 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a はpush済み、6b1・6c1 完了・未push)
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 > 🗺️ **Phase 4b8・5b2・5b3・5c・6〜12 の実装詳細は [`docs/design/master_roadmap.md`](../design/master_roadmap.md) **v2.0** (2026 行、23 章) に一気通貫で規定済み。ペルソナ 7 種・競合ポジショニング・60 機能継承マトリクス・世界最速の裏付け技術要素・国際化/アクセシビリティ・セキュリティ・リリース・KPI・エコシステム・開発品質基盤 まで網羅。各フェーズ着手時はまず該当章を読んでから Plan Mode で詳細プランを起こす運用に確定。**
@@ -58,7 +58,8 @@
 | Phase 5c4 (タグジャンプ: `parseTagJumpReference`、F12) | ✅ 完了 (push済み、§3.27参照) |
 | Phase 6a (Encoding Engine コア: Unicodeファミリー、ヘッドレス) | ✅ 完了 (push済み、§3.28参照) |
 | Phase 6b1 (Shift-JIS/EUC-JPコーデック: Win32ネイティブ変換ラッパー) | ✅ 完了 (未push、§3.29参照) |
-| **Phase 6b2 (ISO-2022-JP) または Phase 6c (自動判定) または Phase 5c5 (検索履歴永続化) 着手** | ⏭️ **次回** |
+| Phase 6c1 (自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別、ISO-2022-JP検出は保留) | ✅ 完了 (未push、§3.30参照) |
+| **Phase 6b2 (ISO-2022-JP) または Phase 6c2 (行末コード判定) または Phase 5c5 (検索履歴永続化) 着手** | ⏭️ **次回** |
 
 ---
 
@@ -789,9 +790,41 @@ Phase 6a完了後、ユーザーから「次のステップの選択肢が複数
 - [x] JIS X 0208に無い文字(絵文字)のencode()が正しく`EncodeError::UnmappableCharacter`を返す
 - [x] 不正バイト列のdecode()が正しく`DecodeError::InvalidSequence`を返す
 - [x] ローカルDebug/Release/ubsan全531テストgreen、clang-tidy(src/)新規警告0
-- [ ] ISO-2022-JP・自動判定・Document統合は未着手(Phase 6b2以降)
+- [x] 自動判定はPhase 6c1で完了(§3.30参照)。ISO-2022-JP・Document統合は引き続き未着手(6b2以降)
+
+**訂正 (2026-07-21、Phase 6c1着手時に発覚):** 「decode方向の`MB_ERR_INVALID_CHARS`はCP932/20932で問題なく機能した」という上記の検証結果には見落としがあった。実際にはWindows CP932/CP20932が一部の未割当バイト(Shift-JISの単独`0x80`、EUC-JPの`0x80-0x9F`大半)をC1制御コードへ黙って直接マッピングし、`MB_ERR_INVALID_CHARS`指定下でも拒否しない(未文書化)。Phase 6c1で`decodeLegacyCodepageBody()`にC1範囲出力の拒否を追加して修正済み。詳細は§3.30参照。
 
 **スコープ外(6b2またはそれ以降):** ISO-2022-JP(`WC_ERR_INVALID_CHARS`のISO-2022系コードページ対応状況が未検証のため独立サブフェーズへ)、3段階自動判定(6c、6b1完了によりようやく判定対象コーデックが揃った)、`document::loadUtf8File()`/`OriginalBuffer`への統合、メニューバー・ステータスバーUI。詳細は`master_roadmap.md` §6参照。
+
+---
+
+### 3.30 Phase 6c1 (自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別) 完了記録
+
+Phase 6b1完了後、ユーザーから「継続せよ」と指示され、roadmapの「自動判定3段階」定義がPhase 6b(レガシー日本語コーデック)無しには実装できない構造的依存を踏まえ、次はPhase 6b2(ISO-2022-JP)へ進もうとした。着手前調査(実機検証)で、ISO-2022-JP系コードページ(50220/50221/50222)がWin32レベルで厳格な入力検証を一切サポートしないことが判明した — `MB_ERR_INVALID_CHARS`/`WC_ERR_INVALID_CHARS`/`WC_NO_BEST_FIT_CHARS`いずれも`ERROR_INVALID_FLAGS`、`lpUsedDefaultChar`非NULLは`ERROR_INVALID_PARAMETER`、有効な`dwFlags=0`はエスケープシーケンス異常をPUA文字へ静かに置換し絵文字等を検知不能な"??"へ静かに変換する。ISO-2022-JPはどのペルソナからも明示要求されておらず、この正確性トレードオフを払う理由が無いと判断し、**Phase 6b2は保留とし、Phase 6cを「BOM/UTF-8/Shift-JIS/EUC-JPの判別」に絞った6c1として先に進めた。**
+
+**着手前の調査で確定した設計方針:** `detectEncoding()`は新規の低レベルバイト走査コードを書かず、既存の`detectBom()`/`decode()`を再利用して構成した。roadmapの「Shift-JIS第1バイト範囲0x81-0x9F...を優先マーカとして使用」というロジックは、`decode(head, ShiftJis)`/`decode(head, EucJp)`の成功/失敗としてそのまま得られると考えた。
+
+**実装中に発見した重大な事実(実機検証、Phase 6b1の記録に見落としがあった):** テスト作成中、想定していた「決定的なShift-JIS/EUC-JPケース」の判定が食い違うことに気づき調査した結果、**Windows CP932/CP20932が一部の未割当バイトをC1制御コード(U+0080-U+009F)へ黙って直接マッピングし、`MB_ERR_INVALID_CHARS`指定下でも拒否しないこと**を実機検証で発見した(Shift-JISの単独`0x80`、EUC-JPの`0x80-0x9F`のほぼ全域、SS2シフトバイト`0x8E`単体を除く)。これはPhase 6b1で「MB_ERR_INVALID_CHARSは両コードページで問題なく機能する」と記録していた内容の部分的な誤りだった。また、Shift-JIS/EUC-JPの2バイト表現域(0xA1-0xFE×0xA1-0xFE)はほぼ全域が両コーデックで同時に有効になりうることも確認した(EUC-JP第2バイトが0xFD/0xFEの場合のみ確定的にEUC-JP判別可能)。
+
+**成果物:**
+- 新規`neomifes::encoding::detectEncoding()` — `detectBom()`→UTF-8検証→Shift-JIS/EUC-JP判別(両方成功時は0x81-0x9F優先マーカでタイブレーク)の4行相当の実装
+- `decodeLegacyCodepageBody()`にC1範囲(U+0080-U+009F)出力を拒否する後処理を追加(Phase 6b1のバグ修正、`platform::convertToUtf16()`自体は汎用ラッパーのまま変更せず)
+- テスト数: 531→542(+11件、`DetectEncodingTest`9件・C1回帰`DecodeErrorTest`2件)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全542テストpass
+- clang-tidy: `src/`側新規警告0
+
+**完了条件:**
+- [x] BOM付き入力が`detectBom()`経由で正しく検出される
+- [x] BOM無しUTF-8/純ASCIIが正しくUtf8と判定される
+- [x] Shift-JIS決定的マーカー(0x81-0x9F)を含む入力が正しくShiftJisと判定される
+- [x] EUC-JP決定的トレイルバイト(0xFD/0xFE)を含む入力が正しくEucJpと判定される
+- [x] 真に曖昧な入力(両方decode成功)が推測せず`nullopt`を返す
+- [x] ローカルDebug/Release/ubsan全542テストgreen、clang-tidy(src/)新規警告0
+- [ ] ISO-2022-JP検出・行末コード判定・Document統合は未着手(Phase 6b2/6c2以降)
+
+**スコープ外(6b2/6c2またはそれ以降):** ISO-2022-JP検出(Win32の正確性トレードオフへの対応方針が未決定)、N-gramモデルによる曖昧ケースの確信度算出、行末コード判定(`LineEnding`、6c2)、`document::loadUtf8File()`/`OriginalBuffer`への統合。詳細は`master_roadmap.md` §6参照。
 
 ---
 
@@ -843,24 +876,25 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(Fi
 Phase 5b3a/5b3b/5b3cで完了済み、Phase 4b8は6サブフェーズ(4b8a〜4b8g)全て完了済み、
 Phase 5c1〜5c4(GrepServiceコア・openDocumentAt・Grep結果ペインUI GrepBar・タグジャンプ)・
 Phase 6a(Encoding Engineコア、Unicodeファミリー)も完了・push済み・CI success確認済み。
-Phase 6b1(Shift-JIS/EUC-JPコーデック、Win32ネイティブ変換ラッパー)はローカルでコミット済みだが
-未push — セッション冒頭でユーザーに push 指示を仰ぐこと。
+Phase 6b1(Shift-JIS/EUC-JPコーデック)・Phase 6c1(自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別)は
+ローカルでコミット済みだが未push — セッション冒頭でユーザーに push 指示を仰ぐこと。
 **最優先: 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・
 クリック選択・ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME)と5c4のF12
 (ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応)の実アプリでの視覚的・
 対話的動作確認をユーザーに依頼すること(この環境にWin32 GUI自動化手段が無いため未実施、
-§3.26/§3.27参照)。Phase 6a/6b1はヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。**
-その後、次はPhase 6b2(ISO-2022-JP、`WC_ERR_INVALID_CHARS`のISO-2022系コードページ対応状況が
-未検証のため要調査)またはPhase 6c(3段階自動判定、6b1完了によりようやく判定対象コーデックが
-揃った)に進めるか、Phase 5c5相当の検索履歴永続化(新規JSON依存のためADR起票が必要)を
-優先するか、ユーザーに確認してから Plan Mode で詳細設計を起こすこと(§3.29の「次回」参照 —
-6b2とPhase 6cの優先順位はまだユーザー確認していない)。
-着手前に本ファイル §3.19/§3.20/§3.21/§3.22/§3.23/§3.24/§3.25/§3.26/§3.27/§3.28/§3.29 末尾のスコープ外
-一覧・完了条件チェックボックスを読むこと。まだ実施していない実アプリでのCtrl+F/Ctrl+H/
-Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/
-Toggle Free Cursor Mode/N対N貼り付け/Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認があれば、
-Ctrl+Shift+F・F12の確認と合わせてこのセッションの冒頭でユーザーに依頼すること(§3.19/§3.20/
-§3.21/§3.22/§3.23参照。5c1・5c2・6a・6b1はヘッドレスのため視覚確認対象なし)。
+§3.26/§3.27参照)。Phase 6a/6b1/6c1はヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。**
+その後、次はPhase 6b2(ISO-2022-JP — Win32のISO-2022系コードページが厳格な入力検証を
+一切サポートしないことが実機検証済み、§3.30参照。正確性トレードオフへの対応方針を
+ユーザーに確認してから着手すること)またはPhase 6c2(行末コード判定`LineEnding`)または
+Phase 5c5相当の検索履歴永続化(新規JSON依存のためADR起票が必要)を優先するか、
+ユーザーに確認してから Plan Mode で詳細設計を起こすこと(§3.30の「次回」参照 — 優先順位は
+まだユーザー確認していない)。
+着手前に本ファイル §3.19/§3.20/§3.21/§3.22/§3.23/§3.24/§3.25/§3.26/§3.27/§3.28/§3.29/§3.30
+末尾のスコープ外一覧・完了条件チェックボックスを読むこと。まだ実施していない実アプリでの
+Ctrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/Ctrl+G/Ctrl+F2・F2/コマンドパレットの
+タブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認
+があれば、Ctrl+Shift+F・F12の確認と合わせてこのセッションの冒頭でユーザーに依頼すること
+(§3.19/§3.20/§3.21/§3.22/§3.23参照。5c1・5c2・6a・6b1・6c1はヘッドレスのため視覚確認対象なし)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
