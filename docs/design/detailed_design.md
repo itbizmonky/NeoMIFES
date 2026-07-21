@@ -1579,6 +1579,24 @@ enum class EncodeError { UnmappableCharacter };
 
 **意図的にスコープ外とした項目:** ISO-2022-JP検出(6b2)、N-gramモデルによる曖昧ケースの確信度算出、行末コード判定(6c2以降)、Document/OriginalBufferへの統合(6d以降)。詳細は`master_roadmap.md` §6参照。
 
+### 9.6 実装後の確定事項/変更点 (2026-07-21、Phase 6c2完了)
+
+新規`detectLineEnding()`を`neomifes::encoding`に追加。
+
+```cpp
+enum class LineEnding { Crlf, Lf, Cr, Mixed };
+[[nodiscard]] std::optional<LineEnding> detectLineEnding(std::u16string_view text) noexcept;
+```
+
+**設計上の要点:**
+- **生バイト列ではなく`decode()`済みのUTF-16文字列を走査する。** roadmapスケッチは生バイト列走査であるかのように読めるが、UTF-16では`\n`(U+000A)が2バイト表現になるため、生バイト単位の走査ではUTF-16入力に対して誤検出/検出漏れが起こる。呼び出し順序は`detectEncoding()`→`decode()`→`detectLineEnding(decodedText)`という合成
+- **「混在」は1件でも異なる規約が混じればMixed。** 少数派を多数派へ黙って丸めると、roadmap §6.3が意図する「UIで警告」目的を果たせないため
+- 64KBサンプリング上限は内部で強制しない(`detectEncoding(head)`と同じ「呼び出し側が渡す範囲を全て走査する」設計)
+
+**テスト:** `tests/unit/encoding_encoding_test.cpp`に`DetectLineEndingTest`スイート(9件)を追加。
+
+**意図的にスコープ外とした項目:** Document/OriginalBufferへの統合(6d以降)、実ファイル読込時の呼び出し配線。詳細は`master_roadmap.md` §6参照。
+
 ---
 
 ## 10. Syntax Engine 詳細
