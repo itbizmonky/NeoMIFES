@@ -1,7 +1,7 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-21 (Phase 5b3a・5b3b・5b3c・4b8全体(4b8a〜4b8g)・5c1〜5c4・6a・6b1・6c1・6c2・6b2 はpush済み(origin/main実機確認済み)、6d・5c5 完了・未push。**Phase 6全体(6a〜6d)・Phase 5全体(5a〜5c5)完了**)
-> ⚠️ **2026-07-21 訂正:** 前回セッションの記録で「Phase 6b1〜6d全て未push」としていたのは誤りだった。実際にはgit fetch/git log origin/main..HEADで確認した結果、6a〜6b2(commit `be82721`まで)は既にorigin/mainへpush済み。**未pushなのはPhase 6d(`de13560`/`12179f4`)のみ**だった。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
+> **最終更新:** 2026-07-21 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d 全てpush済み・CI green確認済み(run 29817789405、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。**roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)が完了しorigin/mainへ反映済み**)
+> ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`(`be82721..d318046`)、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 > 🗺️ **Phase 4b8・5b2・5b3・5c・6〜12 の実装詳細は [`docs/design/master_roadmap.md`](../design/master_roadmap.md) **v2.0** (2026 行、23 章) に一気通貫で規定済み。ペルソナ 7 種・競合ポジショニング・60 機能継承マトリクス・世界最速の裏付け技術要素・国際化/アクセシビリティ・セキュリティ・リリース・KPI・エコシステム・開発品質基盤 まで網羅。各フェーズ着手時はまず該当章を読んでから Plan Mode で詳細プランを起こす運用に確定。**
@@ -62,11 +62,11 @@
 | Phase 6c1 (自動判定: BOM/UTF-8/Shift-JIS/EUC-JP判別、ISO-2022-JP検出は保留) | ✅ 完了 (push済み、§3.30参照) |
 | Phase 6c2 (行末コード判定: LineEnding Crlf/Lf/Cr/Mixed) | ✅ 完了 (push済み、§3.31参照) |
 | Phase 6b2 (ISO-2022-JPコーデック: CP50220、EUC-JP代理オラクル) | ✅ 完了 (push済み、§3.32参照) |
-| Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化: `loadFile()`自動判定+mmap汎化) | ✅ 完了 (**未push**、§3.33参照) |
-| **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了 (6dのみ未push)** |
-| Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (**未push**、§3.34参照) |
-| **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (5c5未push)** |
-| **次フェーズ選定 — Phase 6d・5c5をpush(ユーザー指示待ち)後、Phase 7(シンタックス+アウトライン+折り畳み等)をユーザーに確認** | ⏭️ **次回** |
+| Phase 6d (Document/OriginalBuffer統合、10GB mmap一般化: `loadFile()`自動判定+mmap汎化) | ✅ 完了 (push済み、§3.33参照) |
+| **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了 (push済み)** |
+| Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (push済み、§3.34参照) |
+| **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (push済み)** |
+| **次フェーズ選定 — Phase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -959,7 +959,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **実アプリでのCtrl+F/Ctrl+Shift+F操作によるCtrl+Up/Down視覚的確認は、この環境のWin32 GUI自動化制約により未実施 — 既存のCtrl+Shift+F/F12視覚確認バックログと合わせてユーザーに依頼する。**
 
-**Phase 5全体(5a〜5c5)完了。** roadmap §5が要求していたFind bar・置換・コマンドパレット・Grep・実行時ファイルを開く機能・タグジャンプ・検索履歴永続化が全て揃った。次フェーズはPhase 6d・5c5のpush(ユーザー指示待ち)を経て、Phase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)への着手をユーザーに確認すること。
+**Phase 5全体(5a〜5c5)完了。** roadmap §5が要求していたFind bar・置換・コマンドパレット・Grep・実行時ファイルを開く機能・タグジャンプ・検索履歴永続化が全て揃った。**push実施 (2026-07-21):** ユーザーの「pushせよ」指示でPhase 6d・5c5分(`be82721..d318046`、4コミット)を`git push origin main`で送信。CI(run 29817789405)が全4ジョブ(release/debug/UBSan clang-cl/clang-tidy)success確認済み。次フェーズはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)への着手をユーザーに確認すること。
 
 ---
 
@@ -1010,12 +1010,10 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5、Find bar + 置換行 +
 コマンドパレット + Grep + 実行時ファイルを開く機能 + タグジャンプ + 検索履歴永続化)・
 roadmap §6全体(6a〜6d、エンコーディング対応+自動判定+10GB mmap遅延デコード)が
-いずれも完了している。
+いずれも完了しており、**全コミットpush済み・CI green確認済み**(2026-07-21、run 29817789405)。
 
-**未push分がある: Phase 6d(`de13560`/`12179f4`)とPhase 5c5(検索履歴永続化、§3.34参照)は
-ローカルでコミット済みだが未push — セッション冒頭でユーザーに push 指示を仰ぐこと。**
-(2026-07-21訂正: 過去の記録で「6b1〜6b2も未push」としていたのは誤りだった。
-`git log origin/main..HEAD` で実際の差分を確認してから記録すること。)
+セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
+から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
 **最優先の実アプリ視覚確認依頼(この環境にWin32 GUI自動化手段が無いため全て未実施):**
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
@@ -1072,7 +1070,7 @@ Phase 3 は [`docs/phase_reports/phase_3_report.md`](../phase_reports/phase_3_re
 
 **Phase 5b2 (置換 core::ReplaceAllCommand + search::expandReplacementTemplate) は完了済み (§3.18 参照)。** master_roadmap.md §4.3のスケッチから意図的に乖離し(core::とsearch::を疎結合に維持)、新規`core::ReplaceAllCommand`/`core::cumulative_shift_edit.h`/`search::expandReplacementTemplate`/`search::Match.groups`を実装。テスト300件(279→300)全green。
 
-**Phase 5b3a (Find bar UI基盤: WC_EDIT子コントロール + マッチハイライト) は完了済み (§3.19 参照、未push)。** 本プロジェクト初の子HWND。新規`ui::FindBar`(IME安全性・WM_SYSKEYDOWN・デバウンスタイマー対応済み)+`render::MatchVisual`+`ui::MainWindow::onCommand`フックを実装、ここで初めて`search::`が実アプリ本体(`NeoMIFES.exe`)へリンクされた。CMakeガードを`cmake/Dependencies.cmake`(RE2/Abseil、無条件)と新規`cmake/TestDependencies.cmake`(GoogleTest/benchmark、`NEOMIFES_BUILD_TESTS`限定)に分割。テスト310件(300→310)全green。**実アプリでのCtrl+F/日本語IME/マッチハイライトの視覚確認は未実施 — 次セッション冒頭でユーザーに依頼すること。**
+**Phase 5b3a (Find bar UI基盤: WC_EDIT子コントロール + マッチハイライト) は完了済み (§3.19 参照、push済み)。** 本プロジェクト初の子HWND。新規`ui::FindBar`(IME安全性・WM_SYSKEYDOWN・デバウンスタイマー対応済み)+`render::MatchVisual`+`ui::MainWindow::onCommand`フックを実装、ここで初めて`search::`が実アプリ本体(`NeoMIFES.exe`)へリンクされた。CMakeガードを`cmake/Dependencies.cmake`(RE2/Abseil、無条件)と新規`cmake/TestDependencies.cmake`(GoogleTest/benchmark、`NEOMIFES_BUILD_TESTS`限定)に分割。テスト310件(300→310)全green。**実アプリでのCtrl+F/日本語IME/マッチハイライトの視覚確認は未実施 — 次セッション冒頭でユーザーに依頼すること。**
 
 **次回 (Phase 5c または Phase 6) 着手時に確認すること:**
 1. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1〜4b8g では未判断のまま)
