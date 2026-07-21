@@ -6,6 +6,7 @@ add_executable(neomifes_unit_tests
     platform_process_metrics_test.cpp
     platform_file_mapping_test.cpp
     platform_codepage_convert_test.cpp
+    platform_app_data_dir_test.cpp
     document_add_buffer_test.cpp
     document_buffer_snapshot_test.cpp
     document_piece_table_test.cpp
@@ -26,6 +27,7 @@ add_executable(neomifes_unit_tests
     core_undo_stack_test.cpp
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp
+    core_search_history_test.cpp
     app_editor_input_test.cpp
     app_document_open_test.cpp
     ui_click_tracking_test.cpp

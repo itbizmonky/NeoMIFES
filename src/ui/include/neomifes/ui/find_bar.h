@@ -45,6 +45,15 @@ struct FindBarConfig {
     std::function<void(std::u16string_view replacementText)> onReplaceCurrent;
     // Ctrl+Enter while the replace edit has focus - replaces every match.
     std::function<void(std::u16string_view replacementText)> onReplaceAll;
+    // Ctrl+Up while the find edit has focus (Phase 5c5). `currentText` is
+    // the find edit's text at the moment of the keypress; the caller looks
+    // up core::SearchHistory::older(currentText) and, if it returns a
+    // value, calls FindBar::setQueryText() with it. Never fired while an
+    // IME composition is in progress, nor from the replace edit (history is
+    // a search-pattern concept, not a replacement-template one).
+    std::function<void(std::u16string_view currentText)> onHistoryOlder;
+    // Ctrl+Down - symmetric to onHistoryOlder (core::SearchHistory::newer()).
+    std::function<void(std::u16string_view currentText)> onHistoryNewer;
 };
 
 class FindBar {
@@ -82,6 +91,15 @@ public:
     // Updates the "N/M" (1-based) label. count==0 shows a distinct
     // no-matches state instead of "1/0".
     void setMatchCount(std::size_t currentIndex, std::size_t count) noexcept;
+
+    // Programmatically replaces the find edit's text (Phase 5c5, Ctrl+Up/
+    // Down history recall) and moves the caret to the end - not the replace
+    // edit, which has no history concept (see FindBarConfig::onHistoryOlder).
+    // Setting the text triggers EN_CHANGE -> the existing debounce timer ->
+    // onQueryChanged as usual (no special-casing needed): recalling a
+    // history entry is expected to actually re-run the search, matching
+    // what typing the same text would do.
+    void setQueryText(std::u16string_view text) noexcept;
 
     // Repositions the child HWNDs against the parent's current client width
     // and re-selects a DPI-scaled font. Call from MainWindow's onResize hook

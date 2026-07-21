@@ -59,11 +59,13 @@
 #include "neomifes/core/edit_commands.h"
 #include "neomifes/core/indentation_conversion.h"
 #include "neomifes/core/replace_all_command.h"
+#include "neomifes/core/search_history.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
+#include "neomifes/platform/app_data_dir.h"
 #include "neomifes/platform/clipboard.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
@@ -99,6 +101,7 @@ using neomifes::core::moveTextPos;
 using neomifes::core::PerCursorEdit;
 using neomifes::core::ReplaceAllCommand;
 using neomifes::core::ReplaceRangeCommand;
+using neomifes::core::SearchHistory;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
@@ -108,6 +111,7 @@ using neomifes::document::TextRange;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
+using neomifes::platform::resolveAppDataDir;
 using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
 using neomifes::search::expandReplacementTemplate;
@@ -1076,7 +1080,7 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, SelectionMode
 FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatcher& dispatcher,
                                  SelectionModel& selectionModel, Viewport& viewport,
                                  RenderPipeline& renderPipeline, FindBar& findBar,
-                                 FindReplaceState& findReplaceState) {
+                                 FindReplaceState& findReplaceState, SearchHistory& searchHistory) {
     FindBarConfig config{};
     config.onQueryChanged = [hwnd, &document, &findReplaceState, &selectionModel, &viewport,
                              &renderPipeline, &findBar](std::u16string_view query, bool caseSensitive,
@@ -1084,13 +1088,34 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
         runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, document, findReplaceState,
                     selectionModel, viewport, renderPipeline, findBar);
     };
+    // Recording happens here (Enter/F3 while the find edit itself has
+    // focus), not inside navigateToMatch() - this is the one call site that
+    // covers "the user typed a query and asked to act on it" for every
+    // realistic flow (Ctrl+F -> type -> Enter). Subsequent F3 presses after
+    // focus has moved to the document (handleFindBarKey()) or via the
+    // command palette's Find Next/Previous re-record the SAME
+    // already-recorded query - record()'s dedupe makes that a harmless
+    // no-op move-to-front rather than a second entry, so those other call
+    // sites don't also need searchHistory threaded through them (Phase 5c5).
+    config.onHistoryOlder = [&findBar, &searchHistory](std::u16string_view currentText) {
+        if (const auto older = searchHistory.older(currentText)) {
+            findBar.setQueryText(*older);
+        }
+    };
+    config.onHistoryNewer = [&findBar, &searchHistory](std::u16string_view currentText) {
+        if (const auto newer = searchHistory.newer(currentText)) {
+            findBar.setQueryText(*newer);
+        }
+    };
     config.onFindNext = [hwnd, &findReplaceState, &selectionModel, &viewport, &document,
-                         &renderPipeline, &findBar]() {
+                         &renderPipeline, &findBar, &searchHistory]() {
+        searchHistory.record(findReplaceState.currentQuery.pattern);
         navigateToMatch(true, hwnd, findReplaceState, selectionModel, viewport, document,
                         renderPipeline, findBar);
     };
     config.onFindPrevious = [hwnd, &findReplaceState, &selectionModel, &viewport, &document,
-                             &renderPipeline, &findBar]() {
+                             &renderPipeline, &findBar, &searchHistory]() {
+        searchHistory.record(findReplaceState.currentQuery.pattern);
         navigateToMatch(false, hwnd, findReplaceState, selectionModel, viewport, document,
                         renderPipeline, findBar);
     };
@@ -1248,7 +1273,11 @@ GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Document& document, Selectio
 // incremental search, and this codebase has no async infrastructure to keep
 // the UI responsive while one runs.
 void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText, GrepState& grepState,
-                  GrepBar& grepBar) {
+                  GrepBar& grepBar, SearchHistory& searchHistory) {
+    // Enter is GrepBar's only trigger (no debounce/live-refresh - see
+    // grep_bar.h's class comment), so this single call site covers every
+    // way a Grep query actually runs (Phase 5c5).
+    searchHistory.record(queryText);
     const auto query = neomifes::app::buildGrepQueryFromInput(queryText, folderText);
     grepState.currentResults = query ? GrepService::findAll(*query) : std::vector<GrepMatch>{};
 
@@ -1308,14 +1337,24 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
                                  SelectionModel& selectionModel, Viewport& viewport,
                                  BookmarkManager& bookmarks, RenderPipeline& renderPipeline,
                                  FindBar& findBar, FindReplaceState& findReplaceState, GrepBar& grepBar,
-                                 GrepState& grepState,
+                                 GrepState& grepState, SearchHistory& searchHistory,
                                  std::optional<neomifes::document::TextPos>& altCursorAnchor,
                                  std::optional<neomifes::document::TextPos>& rectangularAnchor,
                                  std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     GrepBarConfig config{};
-    config.onRunQuery = [&grepState, &grepBar](std::u16string_view queryText,
-                                               std::u16string_view folderText) {
-        runGrepQuery(queryText, folderText, grepState, grepBar);
+    config.onRunQuery = [&grepState, &grepBar, &searchHistory](std::u16string_view queryText,
+                                                                std::u16string_view folderText) {
+        runGrepQuery(queryText, folderText, grepState, grepBar, searchHistory);
+    };
+    config.onHistoryOlder = [&grepBar, &searchHistory](std::u16string_view currentText) {
+        if (const auto older = searchHistory.older(currentText)) {
+            grepBar.setQueryText(*older);
+        }
+    };
+    config.onHistoryNewer = [&grepBar, &searchHistory](std::u16string_view currentText) {
+        if (const auto newer = searchHistory.newer(currentText)) {
+            grepBar.setQueryText(*newer);
+        }
     };
     config.onResultActivated = [hwnd, &grepState, &document, &dispatcher, &selectionModel, &viewport,
                                 &bookmarks, &renderPipeline, &findBar, &findReplaceState,
@@ -1343,12 +1382,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
                     FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
                     GotoLineBar& gotoLineBar, GrepBar& grepBar, GrepState& grepState,
-                    BookmarkManager& bookmarks, bool& freeCursorModeEnabled,
+                    SearchHistory& searchHistory, BookmarkManager& bookmarks,
+                    bool& freeCursorModeEnabled,
                     std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
-                          &grepBar, &grepState, &bookmarks, &altCursorAnchor, &rectangularAnchor,
-                          &freeCursorModeEnabled, &freeCursorVirtualColumns](HWND hwnd) {
+                          &grepBar, &grepState, &searchHistory, &bookmarks, &altCursorAnchor,
+                          &rectangularAnchor, &freeCursorModeEnabled,
+                          &freeCursorVirtualColumns](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -1363,7 +1404,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         });
         const FindBarConfig findBarConfig =
             buildFindBarConfig(hwnd, document, dispatcher, selectionModel, viewport, renderPipeline,
-                               findBar, findReplaceState);
+                               findBar, findReplaceState, searchHistory);
         [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
 
         // Same non-fatal treatment as findBar.create() above - a palette
@@ -1386,7 +1427,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         const GrepBarConfig grepBarConfig =
             buildGrepBarConfig(hwnd, document, dispatcher, selectionModel, viewport, bookmarks,
                               renderPipeline, findBar, findReplaceState, grepBar, grepState,
-                              altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns);
+                              searchHistory, altCursorAnchor, rectangularAnchor,
+                              freeCursorVirtualColumns);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
@@ -1582,6 +1624,25 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // findReplaceState above).
     GrepBar   grepBar;
     GrepState grepState;
+    // Search-pattern history (Phase 5c5) - shared by Find bar's find edit
+    // and the Grep dialog's query edit (deliberately NOT the command
+    // palette - core::search_history.h's file comment explains why). Only
+    // meaningful in Normal mode (the other launch modes never create
+    // FindBar/GrepBar), so the %APPDATA% resolution + load only happens
+    // there - no point paying filesystem I/O on every --measure-* CI
+    // harness invocation. searchHistoryPath stays nullopt (and saving at
+    // exit becomes a no-op) if resolveAppDataDir() fails - see
+    // platform::resolveAppDataDir()'s doc comment for why that's treated as
+    // a graceful degradation, not a startup failure.
+    SearchHistory                         searchHistory;
+    std::optional<std::filesystem::path> searchHistoryPath;
+    if (args.mode == LaunchMode::Normal) {
+        searchHistoryPath = resolveAppDataDir();
+        if (searchHistoryPath) {
+            *searchHistoryPath /= L"search_history.json";
+            searchHistory = SearchHistory::loadFrom(*searchHistoryPath);
+        }
+    }
     // Line bookmarks (Phase 4b8c, Ctrl+F2/F2/Shift+F2) - headless, no Win32
     // overlay of its own; RenderPipeline::setBookmarkedLines() is pushed
     // from handleBookmarkKey() whenever the set changes.
@@ -1610,7 +1671,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette, gotoLineBar, grepBar, grepState, bookmarks,
+                       commandPalette, gotoLineBar, grepBar, grepState, searchHistory, bookmarks,
                        freeCursorModeEnabled, freeCursorVirtualColumns);
     }
 
@@ -1619,6 +1680,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     }
 
     const int rc = runMessageLoop();
+
+    // Persist search history once, at clean exit (not after every search) -
+    // a crash loses only the current session's newly-recorded entries, an
+    // acceptable trade-off against writing to disk on every keystroke-driven
+    // search (Phase 5c5).
+    if (searchHistoryPath) {
+        searchHistory.saveTo(*searchHistoryPath);
+    }
 
     if (args.mode == LaunchMode::MeasureStartup || args.mode == LaunchMode::MeasureMemory) {
         profile.measuredExitNs = PerfClock::nanosSinceProcessStart();

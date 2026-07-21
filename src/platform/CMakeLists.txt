@@ -1,4 +1,5 @@
 add_library(neomifes_platform STATIC
+    src/app_data_dir.cpp
     src/clipboard.cpp
     src/codepage_convert.cpp
     src/file_mapping.cpp
@@ -19,6 +20,9 @@ target_link_libraries(neomifes_platform
         neomifes::compile_options
         neomifes::util
         Psapi
+        # app_data_dir.cpp: SHGetKnownFolderPath (Shell32) + CoTaskMemFree (Ole32).
+        Shell32
+        Ole32
 )
 
 set_target_properties(neomifes_platform PROPERTIES

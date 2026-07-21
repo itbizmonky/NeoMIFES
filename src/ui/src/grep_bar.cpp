@@ -121,6 +121,19 @@ void GrepBar::setResults(const std::vector<std::u16string>& rows) noexcept {
     }
 }
 
+void GrepBar::setQueryText(std::u16string_view text) noexcept {
+    if (!m_hwndQueryEdit) {
+        return;
+    }
+    // Owning std::wstring (not just toWstringView()'s view): SetWindowTextW
+    // needs a null terminator, which an arbitrary substring view is not
+    // guaranteed to have.
+    const std::wstring wide(neomifes::util::toWstringView(text));
+    ::SetWindowTextW(m_hwndQueryEdit.get(), wide.c_str());
+    const auto caretPos = static_cast<LPARAM>(wide.size());
+    ::SendMessageW(m_hwndQueryEdit.get(), EM_SETSEL, caretPos, caretPos);
+}
+
 void GrepBar::onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept {
     if (!m_hwndQueryEdit || !m_hwndFolderEdit || !m_hwndList) {
         return;
@@ -243,11 +256,25 @@ bool GrepBar::handleEditKeyDown(HWND hwnd, UINT vkCode) noexcept {
     if (m_composing) {
         return false;
     }
+    const bool ctrlDown  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool onQueryEdit = m_hwndQueryEdit && (hwnd == m_hwndQueryEdit.get());
     switch (vkCode) {
         case VK_UP:
+            if (ctrlDown && onQueryEdit) {
+                if (m_config.onHistoryOlder) {
+                    m_config.onHistoryOlder(readEditText(hwnd));
+                }
+                return true;
+            }
             moveSelection(-1);
             return true;
         case VK_DOWN:
+            if (ctrlDown && onQueryEdit) {
+                if (m_config.onHistoryNewer) {
+                    m_config.onHistoryNewer(readEditText(hwnd));
+                }
+                return true;
+            }
             moveSelection(1);
             return true;
         case VK_RETURN:

@@ -71,6 +71,22 @@ set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(re2)
 
+# ---- nlohmann/json (ADR-013) ----------------------------------------------
+# core::SearchHistory (Phase 5c5) is this project's first consumer -
+# header-only, no absl/RE2-style transitive dependency chain, so this is a
+# much smaller addition than the block above.
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE
+    EXCLUDE_FROM_ALL
+)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install    OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -87,9 +103,12 @@ FetchContent_MakeAvailable(re2)
 # adding this dependency (Phase 5a). Re-applying our own value after the
 # fact on every fetched target, rather than fighting Abseil's option, keeps
 # the ubsan preset's already-documented release-CRT requirement
-# (Sanitizers.cmake) intact.
+# (Sanitizers.cmake) intact. nlohmann_json is INTERFACE-only (header-only,
+# no compiled sources of its own), so it has no MSVC_RUNTIME_LIBRARY/
+# COMPILE_WARNING_AS_ERROR properties to fight in the first place, but is
+# included in the FOLDER tidy-up below for consistency.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
-foreach(_tp ${_neomifes_absl_targets} re2)
+foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

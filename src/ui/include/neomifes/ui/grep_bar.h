@@ -53,6 +53,15 @@ struct GrepBarConfig {
     // restoring focus to the document editing area - GrepBar does not know
     // where that is (same contract as FindBarConfig::onClosed).
     std::function<void()> onClosed;
+    // Ctrl+Up while the QUERY edit has focus (Phase 5c5) - never fires for
+    // the folder edit (a directory path isn't a "search pattern" history
+    // concept). `currentText` is the query edit's text at the moment of the
+    // keypress; the caller looks up core::SearchHistory::older(currentText)
+    // and, if it returns a value, calls GrepBar::setQueryText() with it.
+    // Never fired while an IME composition is in progress.
+    std::function<void(std::u16string_view currentText)> onHistoryOlder;
+    // Ctrl+Down - symmetric to onHistoryOlder (core::SearchHistory::newer()).
+    std::function<void(std::u16string_view currentText)> onHistoryNewer;
 };
 
 class GrepBar {
@@ -91,6 +100,14 @@ public:
     // `commands`) since GrepBar only reads rows to populate the listbox and
     // never stores the vector itself.
     void setResults(const std::vector<std::u16string>& rows) noexcept;
+
+    // Programmatically replaces the QUERY edit's text (Phase 5c5, Ctrl+Up/
+    // Down history recall) and moves the caret to the end - not the folder
+    // edit, which has no history concept (see GrepBarConfig::onHistoryOlder).
+    // Unlike FindBar::setQueryText(), this does NOT trigger a re-run (Grep
+    // stays Enter-only, the existing Phase 5c3 design - see this header's
+    // file comment on why there is no debounce/live-refresh here).
+    void setQueryText(std::u16string_view text) noexcept;
 
     // Repositions the child HWNDs against the parent's current client width
     // and re-selects a DPI-scaled font. Call from MainWindow's onResize hook

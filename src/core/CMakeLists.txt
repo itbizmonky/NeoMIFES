@@ -5,6 +5,7 @@ add_library(neomifes_core STATIC
     src/edit_commands.cpp
     src/indentation_conversion.cpp
     src/replace_all_command.cpp
+    src/search_history.cpp
     src/selection_model.cpp
     src/undo_stack.cpp
     src/viewport.cpp
@@ -25,6 +26,12 @@ target_link_libraries(neomifes_core
     PRIVATE
         neomifes::compile_options
         neomifes::util
+        # search_history.cpp (Phase 5c5): UTF-16<->UTF-8 boundary conversion
+        # (neomifes::encoding) and JSON I/O (nlohmann_json) - both are
+        # implementation details, not exposed in search_history.h's public
+        # interface, so PRIVATE is sufficient (ADR-013).
+        neomifes::encoding
+        nlohmann_json::nlohmann_json
 )
 
 set_target_properties(neomifes_core PROPERTIES

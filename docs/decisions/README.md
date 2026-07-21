@@ -18,6 +18,7 @@
 | [ADR-010](ADR-010-render-depends-on-document.md) | Rendering Engine は Document Engine に直接依存する | Accepted |
 | [ADR-011](ADR-011-phase3c-render-cache-scope.md) | Phase 3c は TextLayoutCache のみを実装し、GlyphCache と細粒度 DamageTracker を延期する | Accepted |
 | [ADR-012](ADR-012-phase4a-editor-core-scope.md) | Phase 4a は Command/Undo/Selection のヘッドレス基盤のみを実装し、UI配線・圧縮/ディスクスワップ・矩形選択を延期する | Accepted |
+| [ADR-013](ADR-013-json-library.md) | JSON 入出力ライブラリに nlohmann/json を採用する | Accepted |
 
 ## 運用ルール
 

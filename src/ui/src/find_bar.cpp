@@ -120,6 +120,19 @@ void FindBar::setMatchCount(std::size_t currentIndex, std::size_t count) noexcep
     ::SetWindowTextW(m_hwndInfoLabel.get(), label.c_str());
 }
 
+void FindBar::setQueryText(std::u16string_view text) noexcept {
+    if (!m_hwndFindEdit) {
+        return;
+    }
+    // Owning std::wstring (not just toWstringView()'s view): SetWindowTextW
+    // needs a null terminator, which an arbitrary substring view is not
+    // guaranteed to have.
+    const std::wstring wide(neomifes::util::toWstringView(text));
+    ::SetWindowTextW(m_hwndFindEdit.get(), wide.c_str());
+    const auto caretPos = static_cast<LPARAM>(wide.size());
+    ::SendMessageW(m_hwndFindEdit.get(), EM_SETSEL, caretPos, caretPos);
+}
+
 void FindBar::onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept {
     if (!m_hwndFindEdit || !m_hwndInfoLabel) {
         return;
@@ -274,6 +287,18 @@ bool FindBar::handleSubclassKeyDown(HWND hwnd, UINT vkCode) noexcept {
         case 'H':
             if (ctrlDown) {
                 showWithReplace();
+                return true;
+            }
+            return false;
+        case VK_UP:
+            if (ctrlDown && !onReplaceEdit && m_config.onHistoryOlder) {
+                m_config.onHistoryOlder(readEditText(hwnd));
+                return true;
+            }
+            return false;
+        case VK_DOWN:
+            if (ctrlDown && !onReplaceEdit && m_config.onHistoryNewer) {
+                m_config.onHistoryNewer(readEditText(hwnd));
                 return true;
             }
             return false;
