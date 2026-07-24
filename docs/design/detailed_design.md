@@ -1758,6 +1758,31 @@ struct Token {
 
 **ベンチマーク実測(Release、`BM_ParseCpp_Synthetic`):** 5万イテレーション(実質30万行、UTF-16で約10.8MB)を1977msで解析。1行あたり約6.6μs、100万行換算で約6.6秒 — roadmap §7.11目標(≤5秒)には未達。同期単発パースのベースライン値として記録、非同期化(後続サブフェーズ)で設計自体が変わる見込みのため現時点での追加最適化は見送り。
 
+### 10.4 RenderPipelineへのシンタックスハイライト統合 (Phase 7b実装)
+
+`neomifes::syntax::parseCpp()`(§10.3)を`neomifes::render::RenderPipeline`へ統合し、C++ファイルを開いた際に実際にトークン別配色で描画するようにした。C++単一言語のみ、非同期増分解析・多言語対応は後続サブフェーズへ据え置き。
+
+**`RenderPipeline`側の追加API:**
+```cpp
+// render_pipeline.h
+void setSyntaxHighlightingEnabled(bool enabled) noexcept;
+```
+呼ぶと`m_syntaxHighlightingEnabled`を更新し、`m_hasCachedSnapshot = false`を立てて次回`render()`で無条件に`refreshDocumentCacheIfStale()`の再取得パスへ入るよう強制する(切り替え直後の新規Documentの`version()`が偶然一致するケースを気にせず済む)。
+
+**設計上の要点:**
+- **トークン色はハードコード定数(VSCode Dark+準拠)。** Theme(色定義)システムは本コードベースに存在しない(roadmap §7.8が想定していた`detailed_design.md` §5のThemeは未実装、実際の§5はEditor Core)。既存の選択色/マッチ色/ブックマーク色と同じ`ensureXBrush()`パターンをKeyword/Type/String/Number/Comment/Preprocessorの6ブラシに拡張しただけ。Text/Variable/Punctuationは専用ブラシを持たず、`DrawTextLayout()`の既定ブラシ(`m_textBrush`)にそのままフォールスルーする
+- **`refreshDocumentCacheIfStale()`が`m_cachedSnapshot`更新と同じタイミングで`m_tokens`(`std::vector<syntax::Token>`)を再計算する。** `Document::version()`が動いた時だけ`syntax::parseCpp()`を全文書に対して同期実行 — 大ファイルでは編集のたびに視認できるカクつきが出ることは既知の制約(§7.11の非同期増分解析待ち)
+- **`IDWriteTextLayout::SetDrawingEffect(brush, range)` + `ID2D1DeviceContext::DrawTextLayout()`が範囲ごとに異なるブラシを自動的に使う標準機構であることを確認し、カスタム`IDWriteTextRenderer`は書いていない。** ただし`TextLayoutCache`(ADR-011)はデバイスロスト時に明示的クリアされない設計のため、色ブラシをキャッシュ済みレイアウトへ"焼き込む"(cache miss時にだけ`SetDrawingEffect`する)実装にすると、デバイス再生成後に古いブラシへのダングリング参照が残ってしまう。**この問題を避けるため、`drawTokensOnLine()`は`TextLayoutCache`のヒット/ミスに関わらず`drawVisibleLines()`の可視行ループから毎フレーム呼ばれる**(`SetDrawingEffect()`自体は再シェイピングを伴わない軽量なメタデータ書き込みのため、既存の`drawSelectionsOnLine()`/`drawMatchesOnLine()`と同じコスト特性)。`TextLayoutCache`自体・デバイスライフタイム関連コードは無変更
+- **`drawTokensOnLine()`は`m_tokens`(`parseCpp()`が左→右ソート済みで返すことをテストで保証済み)に対する二分走査を、`drawVisibleLines()`の可視行ループ全体を跨いで前進する`std::size_t tokenCursor`で実装。** `O(可視行数 × 全トークン数)`ではなく一回の前進走査で`O(可視範囲と重なるトークン数)`のコストに収まる。複数行にまたがるトークン(ブロックコメント等)はそのトークンのrange.endが現在行のlineStartを超えるまで`tokenCursor`が進まないため、正しく複数行にわたって再訪される
+
+**C++判定 (`neomifes::app::isCppSourceFile()`、`src/app/include/neomifes/app/syntax_language.h`):**
+```cpp
+[[nodiscard]] inline bool isCppSourceFile(const std::filesystem::path& path) noexcept;
+```
+拡張子ベース(`.cpp/.cc/.cxx/.h/.hpp/.hxx/.hh`、大文字小文字無視)のヘッダオンリー純粋関数。`document::Document`は自分のロード元パスを保持しないため、`main.cpp`に新規状態`currentDocumentPath`(`std::optional<std::filesystem::path>`)を追加し、起動時(`--open`)・F12タグジャンプ成功時・Grep結果ジャンプ成功時の3箇所で更新して`setSyntaxHighlightingEnabled()`へ渡す。汎用言語レジストリ(roadmap §7.3の`SyntaxEngine::registerLanguage()`)は2言語目が実際に増えるまで作らない判断。`--measure-frame`モードはこの配線の対象外のまま(既存ベンチマークベースラインへの影響を避けるため)。
+
+**意図的にスコープ外とした項目:** C++以外の22言語、非同期増分解析(Syntax Worker Thread)、Theme(ユーザー設定可能な配色)システム、`TokenKind::Function`/`Operator`/`Attribute`/`Error`、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7参照。
+
 ---
 
 ## 11. ログ解析モード 詳細

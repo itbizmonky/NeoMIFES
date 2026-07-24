@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・**Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)全てpush済み・CI green確認済み**(run 30069479419、release/debug/UBSan/clang-tidy 全4ジョブsuccess))
+> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)push済み・CI green確認済み(run 30069479419)。**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)ローカル検証・コミット(`a7432ef`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -67,7 +67,8 @@
 | Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (push済み、§3.34参照) |
 | **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (push済み)** |
 | Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (push済み、§3.35参照) |
-| **次フェーズ選定 — Phase 7b以降(多言語対応/Document・Rendering統合等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (**未push**、§3.36参照) |
+| **次フェーズ選定 — Phase 7c以降(多言語対応/非同期増分解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -997,6 +998,36 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 ---
 
+### 3.36 Phase 7b (C++シンタックスハイライトのRenderPipeline統合) 完了記録
+
+ユーザーから「次のPhaseへ進め。PlanModeで詳細設計から始めよ」と指示された。着手前調査で、Theme(色定義)システムが本コードベースに存在しないこと(roadmap §7.8が想定していた`detailed_design.md` §5のThemeは未実装)、`document::Document`が自分のロード元パスを保持しないこと、`TextLayoutCache`(ADR-011)がデバイスロストを跨いで生存する設計であることの3点を発見し、これらを踏まえてPlan Modeで設計を確定した。
+
+**実装:**
+- `RenderPipeline::setSyntaxHighlightingEnabled(bool)`新設。有効化すると`m_hasCachedSnapshot = false`を立て、次回`render()`で`refreshDocumentCacheIfStale()`が無条件に`m_tokens`を再計算するようにした
+- `refreshDocumentCacheIfStale()`が`Document::version()`変更検知時に同期`syntax::parseCpp()`を実行(有効時のみ)
+- トークン色6種(Keyword/Type/String/Number/Comment/Preprocessor、VSCode Dark+準拠)を`ensureXBrush()`パターンでハードコード追加。Theme機構は新設していない
+- **`SetDrawingEffect`は`TextLayoutCache`のヒット/ミスに関わらず`drawVisibleLines()`から毎フレーム再適用する設計にした。** cache miss時だけ適用する設計だと、デバイス再生成後に古い(解放済みの)ブラシへのダングリング参照がキャッシュ済みレイアウトに残ってしまうため — `TextLayoutCache`自体・デバイスライフタイム関連コードは無変更のまま回避できた
+- `drawTokensOnLine()`は可視行ループ全体を跨いで前進する`tokenCursor`(二分走査)で実装、`O(可視行数×全トークン数)`を回避
+- 新規`neomifes::app::isCppSourceFile()`(拡張子ベース、大文字小文字無視)。`main.cpp`に新規状態`currentDocumentPath`を追加し、起動時/F12タグジャンプ成功時/Grep結果ジャンプ成功時の3箇所で更新
+- `--measure-frame`モードは対象外のまま(既存フレーム計測ベースラインへの影響回避)
+- テスト数: 619→626(新規7件`app_syntax_language_test.cpp` + 統合テスト2件`render_text_smoke_test.cpp`拡張)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0(`render_text_smoke_test.cpp`の既存warning群は元々ファイル全体に存在するパターンで新規ではない)
+- 実アプリ起動スモークテスト実施(`Start-Process`+3秒待機、実在するC++ファイルを`--open`、クラッシュなし確認)
+
+**完了条件:**
+- [x] `setSyntaxHighlightingEnabled(true)`でC++ファイルの`render()`がエラーなく完了する
+- [x] トグルのオン→オフ往復で`render()`が壊れない
+- [x] `isCppSourceFile()`が全対象拡張子・大文字小文字混在・非対象拡張子を正しく判定
+- [x] ローカルDebug/Release/ubsan全626テストgreen、clang-tidy新規警告0
+- [x] 実アプリ起動スモークテスト(クラッシュなし)
+
+**スコープ外(意図的、後続サブフェーズへ):** C++以外の22言語、非同期増分解析(Syntax Worker Thread)、Theme(ユーザー設定可能な配色)システム、`TokenKind::Function`/`Operator`/`Attribute`/`Error`、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.4参照。
+
+**実アプリでの実際の色分け表示(キーワード/型/文字列/数値/コメント/プリプロセッサディレクティブが正しく色分けされているか)の視覚的確認は、この環境のWin32 GUI自動化制約により実施不可 — ユーザーに依頼する。** F12タグジャンプ・Grep結果ジャンプでC++↔非C++ファイル間を移動した際に色分けが正しく追従/解除されることも合わせて依頼。
+
+**Phase 7bはコミット済み(`a7432ef`)・未push。** 次フェーズはPhase 7c以降(多言語対応・非同期増分解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1042,13 +1073,18 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-**Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC、§3.35参照)
-は全て完了・push済み・CI green確認済み**(2026-07-24、run 30069479419)。
+Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC、§3.35参照)
+は完了・push済み・CI green確認済み(2026-07-24、run 30069479419)。
+**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)はローカル検証・コミット
+(`a7432ef`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
 **最優先の実アプリ視覚確認依頼(この環境にWin32 GUI自動化手段が無いため全て未実施):**
+- Phase 7bのシンタックスハイライト(C++ファイルを開いてキーワード/型/文字列/数値/コメント/
+  プリプロセッサディレクティブが正しく色分けされるか、F12・Grep結果ジャンプでC++↔非C++間を
+  移動した際の追従/解除、§3.36参照)
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
   ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
 - 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
@@ -1057,16 +1093,17 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7b以降(シンタックス多言語対応・Document/Rendering統合・アウトライン・
-折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7aで確立したパターン(tree-sitterグラマー追加は
-SOURCE_SUBDIR+自前add_libraryターゲット、ADR-014参照)を踏襲しつつ、次のサブフェーズの
-スコープをPlan Modeで具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。
+**次フェーズはPhase 7c以降(シンタックス多言語対応・非同期増分解析・アウトライン・折り畳み・
+ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7a/7bで確立したパターン(tree-sitterグラマー追加は
+SOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの毎フレーム
+再適用・detailed_design.md §10.4参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
+具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。
 
-着手前に本ファイル §3.19〜§3.35 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.36 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
 Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
-Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認があれば、上記3件と合わせてこのセッションの
+Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認があれば、上記4件と合わせてこのセッションの
 冒頭でユーザーに依頼すること(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7aはヘッドレスのため
 視覚確認対象なし)。
 ```

@@ -1529,4 +1529,37 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **追記 (2026-07-24): push実施 + CI確認。** ユーザーの「pushせよ」指示で、Phase 7a分の2コミット(`9efa271..b6d35fd`)を`git push origin main`で送信。CI(run 30069479419)がrelease/debug/UBSan(clang-cl)/clang-tidyの全4ジョブsuccessで確認完了。これでroadmap §5(5a〜5c5)・§6(6a〜6d)・Phase 7a(構文解析エンジン選定)が全てorigin/mainへ反映された。次フェーズはPhase 7b以降、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 46 (2026-07-24): Phase 7b — C++シンタックスハイライトのRenderPipeline統合
+
+**経緯:** ユーザーから「次のPhaseへ進め。PlanModeで詳細設計から始めよ」と指示された。Phase 7aは「エンジン選定+C++単一言語ヘッドレスPoC」のみでユーザーに見える効果が無かったため、次のサブフェーズとして「C++単一言語をDocument/RenderPipelineへ統合し、実際にエディタ上で色付け表示する」ことに決めた — Phase 5a→5b・6a→6dで一貫してきた「まずヘッドレスな核を作り、次に実アプリへ繋ぐ」順序の踏襲。
+
+**着手前調査で判明した3つの制約:**
+1. **Theme(色定義)システムが本コードベースに存在しない。** roadmap §7.8は「色定義はTheme(`detailed_design.md` §5)に統合」としていたが、実際の§5はEditor Core章でありTheme節は無い(roadmap記述がv2.0執筆時点の見込みで、実装が追いついていなかった)。既存`RenderPipeline`の選択色/マッチ色/ブックマーク色と同じ`ensureXBrush()`ハードコードパターンをそのまま踏襲することにした
+2. **`document::Document`が自分のロード元パスを保持しない。** `main.cpp`に新規状態`currentDocumentPath`を追加する必要があった
+3. **`IDWriteTextLayout::SetDrawingEffect()` + `ID2D1DeviceContext::DrawTextLayout()`が範囲ごとに異なる`ID2D1Brush`を自動的に使う標準機構であることを確認したが、`TextLayoutCache`(ADR-011)はデバイスロスト時も明示的にクリアされない設計のため、色ブラシをキャッシュ済みレイアウトへ"焼き込む"(cache miss時のみ適用する)設計にすると、デバイス再生成後に古いブラシへのダングリング参照が残ってしまう。** この問題を回避するため、`SetDrawingEffect`を`TextLayoutCache`のヒット/ミスに関わらず`drawVisibleLines()`から毎フレーム再適用する方式に確定した(`TextLayoutCache`自体・デバイスライフタイム関連コードは無変更のまま回避)
+
+**実装:**
+- `RenderPipeline::setSyntaxHighlightingEnabled(bool)`新設。有効化すると`m_hasCachedSnapshot = false`を立て、次回`render()`で無条件に`refreshDocumentCacheIfStale()`の再取得パスへ入るよう強制する(切り替え直後の新規Documentの`version()`が偶然一致するケースを気にせず済む設計)
+- `refreshDocumentCacheIfStale()`が`Document::version()`変更検知時に同期`syntax::parseCpp()`を実行(有効時のみ)、`m_tokens`を更新
+- トークン色6種(Keyword/Type/String/Number/Comment/Preprocessor、VSCode Dark+準拠)を`ensureTokenBrushes()`で追加。Text/Variable/Punctuationは専用ブラシを持たず既定の`m_textBrush`へフォールスルー
+- `drawTokensOnLine()`は`drawVisibleLines()`の可視行ループ全体を跨いで前進する`tokenCursor`(二分走査)で実装。`m_tokens`が`parseCpp()`によって左→右ソート済みで返される保証(既存テストで確認済み)を利用し、`O(可視行数×全トークン数)`ではなく一回の前進走査で`O(可視範囲と重なるトークン数)`に収めた。複数行にまたがるトークン(ブロックコメント等)は正しく複数回再訪される
+- 新規`neomifes::app::isCppSourceFile()`(`src/app/include/neomifes/app/syntax_language.h`、拡張子ベース・大文字小文字無視のヘッドレス純粋関数)。`main.cpp`に新規状態`currentDocumentPath`を追加し、起動時(`--open`)・F12タグジャンプ成功時・Grep結果ジャンプ成功時の3箇所で更新して`setSyntaxHighlightingEnabled()`へ渡す
+- `--measure-frame`モードは対象外のまま維持(既存フレーム計測ベースラインへの影響回避)
+
+**発生したバグと修正:**
+- `render_pipeline.h`の新規private関数宣言で`document::TextPos`を`TextPos`と誤記(ヘッダにはusing宣言が無くcpp側のみ`using document::TextPos;`があった)。ビルドエラーで即座に検出、修正
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全626テストpass(新規7件`app_syntax_language_test.cpp` + 統合テスト2件`render_text_smoke_test.cpp`拡張)
+- clang-tidy: `src/`側新規警告0。`render_text_smoke_test.cpp`で表示された警告群(`misc-const-correctness`等)は既にファイル全体の全既存テストに共通するパターンで新規ではない
+- 実アプリ起動スモークテスト実施(`Start-Process`+3秒待機、実在するC++ファイル`render_pipeline.cpp`自身を`--open`、クラッシュなし確認)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表を7a/7b/7c〜に整理、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.4(RenderPipeline統合の実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.36(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7bが完了した(コミット`a7432ef`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。**実際の色分け表示(キーワード/型/文字列/数値/コメント/プリプロセッサ)の視覚的確認はこの環境のWin32 GUI自動化制約により実施不可 — ユーザーに依頼すること。** 次フェーズはPhase 7c以降(多言語対応・非同期増分解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->
