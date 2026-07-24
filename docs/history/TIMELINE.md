@@ -1527,4 +1527,6 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 7aが完了した(コミット`781b167`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7b以降(多言語対応・Document/Rendering統合等)、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+**追記 (2026-07-24): push実施 + CI確認。** ユーザーの「pushせよ」指示で、Phase 7a分の2コミット(`9efa271..b6d35fd`)を`git push origin main`で送信。CI(run 30069479419)がrelease/debug/UBSan(clang-cl)/clang-tidyの全4ジョブsuccessで確認完了。これでroadmap §5(5a〜5c5)・§6(6a〜6d)・Phase 7a(構文解析エンジン選定)が全てorigin/mainへ反映された。次フェーズはPhase 7b以降、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

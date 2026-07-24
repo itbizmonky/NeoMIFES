@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-22 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d はpush済み・CI green確認済み。**Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC)完了・コミット済み(`781b167`)・未push**、§3.35参照)
+> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・**Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)全てpush済み・CI green確認済み**(run 30069479419、release/debug/UBSan/clang-tidy 全4ジョブsuccess))
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -66,8 +66,8 @@
 | **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了 (push済み)** |
 | Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (push済み、§3.34参照) |
 | **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (push済み)** |
-| Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (**未push**、§3.35参照) |
-| **次フェーズ選定 — Phase 7aをpush(ユーザー指示待ち)後、Phase 7b以降(多言語対応/Document・Rendering統合等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (push済み、§3.35参照) |
+| **次フェーズ選定 — Phase 7b以降(多言語対応/Document・Rendering統合等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -993,7 +993,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **ヘッドレス追加(main.cpp無変更)のため実アプリ視覚確認は対象外。**
 
-**Phase 7aはコミット済み(`781b167`)・未push。** セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7b以降(多言語対応、Document/Rendering統合等)の詳細をPlan Modeで設計してから着手。
+**Phase 7aはpush済み(`781b167`/`b6d35fd`)・CI green確認済み(run 30069479419)。** 次フェーズはPhase 7b以降(多言語対応、Document/Rendering統合等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1041,15 +1041,12 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 ## 6. 次回の推奨最初のプロンプト例
 
 ```
-RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)は
-完了・push済み・CI green確認済み。**Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・
-C++単一言語ヘッドレスPoC、§3.35参照)も完了・コミット済み(`781b167`)だが未push。**
+RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
+**Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC、§3.35参照)
+は全て完了・push済み・CI green確認済み**(2026-07-24、run 30069479419)。
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
-
-**未push分がある: Phase 7a(`781b167`)はローカルでコミット済みだが未push — セッション冒頭で
-ユーザーに push 指示を仰ぐこと。**
 
 **最優先の実アプリ視覚確認依頼(この環境にWin32 GUI自動化手段が無いため全て未実施):**
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
