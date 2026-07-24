@@ -1843,6 +1843,31 @@ void setLanguage(std::optional<syntax::Language> language) noexcept;  // nullopt
 
 **意図的にスコープ外とした項目:** C++/Python以外の21言語(3言語目以降は同じパターンを複製する)、真の増分再解析、Theme(ユーザー設定可能な配色)システム、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7参照。
 
+### 10.7 Indent guides (Phase 7e実装)
+
+インデント階層を薄い縦線で表示する`RenderPipeline::drawIndentGuidesOnLine()`を実装した。カーソルが乗っている行のガイドは明るい色で強調する(VSCodeの「アクティブなインデントガイド」相当の簡略版)。
+
+```cpp
+// src/render/include/neomifes/render/indent_guide_math.h
+[[nodiscard]] constexpr std::uint32_t computeIndentColumns(
+    std::u16string_view lineText, std::uint32_t tabWidth) noexcept;
+[[nodiscard]] constexpr std::uint32_t computeIndentGuideCount(
+    std::uint32_t indentColumns, std::uint32_t tabWidth) noexcept;
+
+// render_pipeline.h
+void drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y, std::u16string_view lineSpan,
+                            bool isActiveLine) noexcept;
+```
+
+**設計上の要点:**
+- **`indent_guide_math.h`は`resize_math.h`/`viewport_math.h`と同じ「Windows SDK非依存・ヘッドレステスト可能」パターンのヘッダオンリー純粋関数。** `computeIndentColumns()`は`core::computeIndentationConversionEdits()`(`indentation_conversion.cpp`、Phase 4b8d)と同じタブ幅規約(スペース+1、タブは次のタブ幅倍数まで前進)に意味論だけ揃え、実装は独立させた。DirectWriteのタブ描画(`SetIncrementalTabStop`)には一切依存しない
+- **`drawIndentGuidesOnLine()`は既存の`drawGutterOnLine`/`drawTokensOnLine`等と同列の呼び出しとして`drawVisibleLines()`の可視行ループに追加した。** roadmapスケッチが想定していた専用`LineLayout`クラス(`src/render/line_layout.cpp`)は実在しない(Phase 7a〜7dで繰り返し確認済みの通り) — `RenderPipeline`が全ての描画対象状態を直接保持する既存パターンをそのまま踏襲
+- **「アクティブなインデントガイド」は簡略版。** VSCode本家はカーソルの現在スコープ(ブロック/関数の範囲)全体でガイドをハイライトするが、それには`FoldingModel`(ブロック範囲検出、未実装)が要る。本フェーズでは`computeCaretDraws()`が既に1フレームに1回計算する`caretDraws`を再利用し、**カーソルが乗っている行1行分のガイドだけ**を明るいブラシ(`m_activeIndentGuideBrush`)で描画する — スコープ全体のハイライトは`FoldingModel`実装後の後続改善として明記するに留めた
+- **タブ幅は`kTabWidth=4`を`render_pipeline.cpp`側に複製した。** `main.cpp`の同名定数(Phase 4b8dのタブ⇔スペース変換コマンドで確立済み)と値は一致させるが、設定システムが本コードベースに無いため2箇所の手動同期が必要になる既知のトレードオフとして受容
+- **常時描画・トグル不可。** 既存のキャレット/ガター/選択ハイライトと同じく、ON/OFFスイッチを設ける根拠が無いと判断。`--measure-frame`の合成ベンチマーク文書(先頭空白を含まない行のみ)への実測影響は「桁数0→ガイド0本」の早期リターンのみで実質ゼロだったことを確認済み
+
+**意図的にスコープ外とした項目:** アクティブガイドのスコープ全体ハイライト(`FoldingModel`実装後に再検討)、空行のガイド継承、タブ幅のユーザー設定UI、Bracket Pair Colorization(roadmap記述の誤記と判明、無関係な別機能)。詳細は`master_roadmap.md` §7参照。
+
 ---
 
 ## 11. ログ解析モード 詳細

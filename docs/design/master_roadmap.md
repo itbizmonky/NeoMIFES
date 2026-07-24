@@ -215,7 +215,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7b | C++シンタックスハイライトのDocument/RenderPipeline統合 (実際に色付け表示) | ✅ 完了 | §7 |
 | 7c | 非同期シンタックス再解析 (Syntax Worker Thread、全文書再解析のまま非同期化) | ✅ 完了 | §7 |
 | 7d | シンタックス多言語対応 (Python追加) + 言語ディスパッチ機構の一般化 | ✅ 完了 | §7 |
-| 7e〜 | 残り21言語 + 真の増分再解析 + アウトライン + 折り畳み + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
+| 7e | Indent guides (インデントガイド) | ✅ 完了 | §7 |
+| 7f〜 | 残り21言語 + 真の増分再解析 + アウトライン + 折り畳み + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1040,6 +1041,17 @@ public:
 - **既知の限界として記録: `string_content`が`escape_sequence`を含む場合、`string_content`ノード自体はleafでなくなり(子ノードを持つcompound node)、`escape_sequence`前後のプレーンテキスト部分にはトークンが一切生成されない(無色表示になる)。** 例えば`"hi\n"`の`"hi"`部分。標準プローブの完全ツリーダンプで確認した構造的事実 — walkTreeがleafノード(`child_count()==0`)のみを訪問する設計のため、compound化した`string_content`の「子ノードでカバーされない自身のテキスト範囲」は捕捉されない。修正にはcompoundノードの「子の隙間」を埋める追加ロジックが必要だが、C++側の`Operator`非分離等と同種の受容済み制約として扱い、本フェーズのスコープには含めなかった
 - **`neomifes::app::isCppSourceFile()`を`detectLanguage()`(`std::optional<syntax::Language>`を返す)へ完全に置き換えた。** `.py`/`.pyw`/`.pyi`をPython、既存の`.cpp`等をC++として認識。シバン行によるPython判定は、C++判定も拡張子のみである対称性を優先し見送った
 - **`SyntaxWorker::m_pending`は当初`std::optional<PendingRequest>`(snapshot+languageの組)として実装したが、clang-tidyの`bugprone-unchecked-optional-access`が`m_cv.wait()`の述語(`m_pending.has_value()`)と後続の`request->`アクセスの相関を追跡できず誤検知した。** `std::shared_ptr<const BufferSnapshot> m_pending`(nullptrで「保留なし」を表す元の設計)+ 独立した`syntax::Language m_pendingLanguage`(`m_pending != nullptr`の間だけ意味を持つ)という2フィールド構成に変更し、`std::optional`自体を使わないことで誤検知を構造的に回避した
+
+### 実装後の確定事項/変更点 (2026-07-25、Phase 7e完了)
+
+**roadmap §7.7の「Indent guides」(インデント階層を薄い縦線で表示)を実装した。新規Document API・新規スレッド不要、`RenderPipeline`の既存描画パターンへの追記のみで完結した。**
+
+- **roadmapの「現在のカーソル位置のインデントレベルはハイライト (VSCode の Bracket Pair Colorization相当)」という記述は、2つの別機能を混同した誤記だと判明した。** Bracket Pair Colorizationは対応する括弧同士を色分けする全く別機能で、Indent guidesとは無関係。実際に実装したのはVSCodeの「アクティブなインデントガイド」(カーソルが乗っている行のガイドを明るく表示)機能で、かつ`FoldingModel`(ブロック/スコープ範囲検出)が未実装のため、VSCode本家のようなスコープ全体のハイライトではなく**カーソルが乗っている行1行分のガイドだけを明るく表示する簡略版**にした
+- **`src/render/line_layout.cpp`(roadmapスケッチが想定していたToken専用保持クラス)は実在しないと改めて確認した。** Phase 7a〜7d同様、`RenderPipeline`が全ての描画対象状態を直接保持し`drawXxxOnLine()`群を呼ぶ既存パターンにIndent guidesもそのまま従わせた(`drawGutterOnLine`/`drawTokensOnLine`と同列の新規`drawIndentGuidesOnLine`)。新規クラスは作らなかった
+- **インデント桁数の計算はDirectWriteのタブ描画(`SetIncrementalTabStop`)に一切依存させず、エディタ自身の独立したタブ幅モデルで行う設計にした。** 新規`neomifes::render::computeIndentColumns()`(スペース+1、タブは次のタブ幅倍数まで前進)は`core::computeIndentationConversionEdits()`(Phase 4b8d)と同じ意味論に揃えたが、実装は独立させた(共有ヘルパーへの統合はスコープ外)
+- **タブ幅はユーザー設定不可の固定値4を`render_pipeline.cpp`に複製した。** `main.cpp`の`kTabWidth`(Phase 4b8dのタブ⇔スペース変換コマンドで確立済み)と同じ値だが、設定システム自体が本コードベースに存在しないため2箇所の手動同期が必要になる既知のトレードオフとして受容した
+- **ガイド本数は「先頭空白桁数 ÷ タブ幅」(floor)、VSCodeと同じ規約。** 空行/空白のみの行は前後の非空行から推測せず、自分自身の先頭空白桁数のみで判定する(VSCodeの「空行はコンテキストからガイドを継承する」機能は非対応)
+- **常時描画・トグル不可の設計にした。** 既存のキャレット/ガター/選択ハイライトも同様に常時描画のため、シンタックスハイライトの`setLanguage(nullopt)`のようなON/OFFスイッチを設ける根拠が無いと判断。`--measure-frame`の合成ベンチマーク文書は先頭空白を一切含まない行のみで構成されているため、実測ベンチマーク値への影響は「桁数0→ガイド0本」の早期リターンのみで実質ゼロだった(実測確認済み)
 
 ---
 

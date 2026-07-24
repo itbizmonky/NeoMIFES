@@ -1628,6 +1628,38 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 7b・7c・7dが全て完了した(コミット`a7432ef`/`aea429d`/`e672ca1`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7e以降(残り21言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。3言語目を追加する際は本セッションと同じくスタンドアロンprobeでの実機検証を必ず先に行うこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
-**追記 (2026-07-24): push実施 + CI確認。** ユーザーの「pushせよ」指示で、Phase 7b/7c/7d分の7コミット(`b306cc3..93a0bf6`)を`git push origin main`で送信。CI(run 30095471821)が1h23m17sでrelease/debug/UBSan(clang-cl)/clang-tidyの全4ジョブsuccessで確認完了。これでroadmap §5(5a〜5c5)・§6(6a〜6d)・Phase 7a〜7d(構文解析エンジン選定・C++シンタックスハイライト統合・非同期再解析・Python多言語対応)が全てorigin/mainへ反映された。次フェーズはPhase 7e以降、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+**追記 (2026-07-24): push実施 + CI確認。** ユーザーの「pushせよ」指示で、Phase 7b/7c/7d分の7コミット(`b306cc3..93a0bf6`)を`git push origin main`で送信。CI(run 30095471821)が1h23m17sでrelease/debug/UBSan(clang-cl)/clang-tidyの全4ジョブsuccessで確認完了。これでroadmap §5(5a〜5c5)・§6(6a〜6d)・Phase 7a〜7d(構文解析エンジン選定・C++シンタックスハイライト統合・非同期再解析・Python多言語対応)が全てorigin/mainへ反映された。~~次フェーズはPhase 7e以降、着手前にPlan Modeで詳細設計を起こすこと。~~ **(訂正: 同日中の後続セッションでPhase 7eに着手・完了、下記Session 49参照)** 5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
+## Session 49 (2026-07-25): Phase 7e — Indent guides (インデントガイド)
+
+ユーザーから「次のPhaseへ進め」と指示された。Phase 7の残りサブフェーズ(残り21言語対応・真の増分再解析・アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting)は互いに独立性が高く、7a→7dのような一本道ではなかったため、4つの候補(Indent guides/真の増分再解析基盤/アウトライン+折り畳み/3言語目追加)をAskUserQuestionで提示。**Indent guides(推奨案)**が選ばれた — 新規Document API不要・新規スレッド不要・既存の`RenderPipeline`描画パターンへの追記のみで完結し、視覚的な成果もすぐ確認できるため。
+
+**着手前調査で確定した設計方針:**
+- roadmapスケッチの`src/render/line_layout.cpp`(Token専用保持クラス)は実在しないと改めて確認 — Phase 7a〜7dで繰り返し確認済みのパターンと同じく、`RenderPipeline`が全ての描画対象状態を直接保持する既存設計にそのまま従わせた
+- **roadmapの「現在のカーソル位置のインデントレベルはハイライト (VSCode の Bracket Pair Colorization相当)」という記述が、2つの別機能を混同した誤記だと判明した。** Bracket Pair Colorizationは対応する括弧同士を色分けする全く別機能で、Indent guidesとは無関係。実際に実装したのはVSCodeの「アクティブなインデントガイド」機能で、`FoldingModel`(ブロック範囲検出、未実装)前提のスコープ全体ハイライトではなく、カーソルが乗っている行1行分のみを明るく表示する簡略版にした
+- タブ幅は`main.cpp`の`kTabWidth=4`(Phase 4b8dのタブ⇔スペース変換コマンドで確立済み)と同じ値を`render_pipeline.cpp`側に複製(設定システムが存在しないための既知のトレードオフ)
+- インデント桁数の計算はDirectWriteのタブ描画(`SetIncrementalTabStop`)に一切依存させず、`core::computeIndentationConversionEdits()`(Phase 4b8d)と同じタブ幅規約(スペース+1、タブは次のタブ幅倍数まで前進)に意味論だけ揃えた独立実装にした
+
+**実装:**
+- 新規`src/render/include/neomifes/render/indent_guide_math.h`(ヘッダオンリー純粋関数、`resize_math.h`/`viewport_math.h`と同型): `computeIndentColumns()`/`computeIndentGuideCount()`
+- `RenderPipeline`に`ensureIndentGuideBrushes()`(通常/アクティブの2ブラシ、VSCode Dark+の`editorIndentGuide.background`/`activeBackground`近似)+`drawIndentGuidesOnLine()`を追加。`drawVisibleLines()`の可視行ループから`drawMatchesOnLine`/`drawSelectionsOnLine`と同列で呼び出し、`isActiveLine`は既存`computeCaretDraws()`の結果を線形探索して判定(新規状態を増やさない)
+
+**発生した問題と修正:**
+- clang-tidyの`readability-math-missing-parentheses`が`x = kGutterWidthDips + static_cast<float>(level * kTabWidth) * m_charWidthDips`の演算子優先順位を指摘 — 括弧を明示して解消
+- **実アプリでの視覚確認中、以前のテスト実行で`Stop-Process -Force`を実行したはずの`NeoMIFES.exe`プロセスが単一インスタンスミューテックスを保持したまま残留し、以降の起動がウィンドウを一切出さず黙って正常終了(ExitCode 0)する事象が発生した。** `Get-Process -Name "NeoMIFES"`で残留プロセス(PID)を発見・`Stop-Process`で確実に終了させてから再実行し解決。この手法を使う今後のセッションのために、起動失敗時にまず確認すべき事項として記録した
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全655テストpass(新規追加: `IndentGuideMathTest`スイート14件・`RenderTextSmokeTest.IndentGuidesRenderWithoutError`)
+- clang-tidy新規警告0(演算子優先順位指摘を解消後)
+- `--measure-frame`実測値(release)を実行し、合成ベンチマーク文書(先頭空白を含まない行のみ)に対して既存ベースラインと同水準(avgFrameNs≈16.5ms)であることを確認 — インデント桁数0行では`computeIndentGuideCount()`が即座に0を返すため描画ループが実質ノーコストであることをコード上でも実測上でも確認
+- **実アプリでPowerShell+GDI+スクリーンショット手法により視覚確認。** ネストしたPythonファイル(class→def→if→for→if/else、5階層)を開き、各インデントレベルに正しい桁位置でガイド線が表示され、シンタックスハイライトと共存して正常に描画されることを確認した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7e行を追加(7f〜が次候補)、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.7(Indent guides実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.39(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7eが完了した(コミット`29e4473`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7f以降(残り21言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。アウトライン/折り畳みに着手する場合、Bracket Pair Colorizationとの混同のような機能の取り違えが無いか実際の挙動で再確認してから設計すること。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
 <!-- 次セッションはここに追記 -->

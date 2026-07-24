@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・**Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)全てpush済み・CI green確認済み**(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s))
+> **最終更新:** 2026-07-25 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)はローカル検証・コミット(`29e4473`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -70,7 +70,8 @@
 | Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (push済み、§3.36参照) |
 | Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (push済み、§3.37参照) |
 | Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (push済み、§3.38参照) |
-| **次フェーズ選定 — Phase 7e以降(残り21言語/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7e (Indent guides、インデントガイド) | ✅ 完了 (**未push**、§3.39参照) |
+| **次フェーズ選定 — Phase 7f以降(残り21言語/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1094,7 +1095,39 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** C++/Python以外の21言語(3言語目以降は同じパターンを複製)、真の増分再解析、Theme(ユーザー設定可能な配色)システム、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.6参照。
 
-**Phase 7dはpush済み(`e672ca1`)・CI green確認済み(2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。** 次フェーズはPhase 7e以降(残り21言語・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+**Phase 7dはpush済み(`e672ca1`)・CI green確認済み(2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**
+
+### 3.39 Phase 7e (Indent guides、インデントガイド) 完了記録
+
+ユーザーから「次のPhaseへ進め」と指示された。Phase 7の残りサブフェーズ(残り21言語対応・真の増分再解析・アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting)は互いに独立性が高く7a→7dのような一本道ではなかったため、4候補(Indent guides/真の増分再解析基盤/アウトライン+折り畳み/3言語目追加)をAskUserQuestionで提示し、**Indent guides(推奨案)**が選ばれた — 新規Document API不要・新規スレッド不要・既存の`RenderPipeline`描画パターンへの追記のみで完結し、視覚的な成果もすぐ確認できるため。
+
+**着手前調査で確定した設計方針:**
+- roadmapスケッチの`src/render/line_layout.cpp`(Token専用保持クラス)は実在しないと改めて確認(Phase 7a〜7dで繰り返し確認済みのパターン) — `RenderPipeline`が全ての描画対象状態を直接保持する既存設計にそのまま従わせた
+- roadmapの「現在のカーソル位置のインデントレベルはハイライト (Bracket Pair Colorization相当)」はBracket Pair Colorization(対応括弧の色分け、無関係な別機能)との誤混同と判明。実際に実装したのはVSCodeの「アクティブなインデントガイド」で、`FoldingModel`(未実装)前提のスコープ全体ハイライトではなく**カーソルが乗っている行1行分のみ**を明るく表示する簡略版にした
+- タブ幅は`main.cpp`の`kTabWidth=4`(Phase 4b8d)と同じ値を`render_pipeline.cpp`側に複製(設定システムが存在しないための既知のトレードオフ)
+- インデント桁数計算はDirectWriteのタブ描画に依存せず、`core::computeIndentationConversionEdits()`(Phase 4b8d)と同じタブ幅規約(スペース+1、タブは次のタブ幅倍数まで前進)に意味論だけ揃えた独立実装
+
+**実装:**
+- 新規`src/render/include/neomifes/render/indent_guide_math.h`(ヘッダオンリー純粋関数、`resize_math.h`/`viewport_math.h`と同型): `computeIndentColumns()`/`computeIndentGuideCount()`
+- `RenderPipeline`に`ensureIndentGuideBrushes()`(通常/アクティブの2ブラシ、VSCode Dark+の`editorIndentGuide.background`/`activeBackground`近似)+`drawIndentGuidesOnLine()`を追加。`drawVisibleLines()`の可視行ループから`drawMatchesOnLine`/`drawSelectionsOnLine`と同列で呼び出し、`isActiveLine`は既存`computeCaretDraws()`の結果を線形探索して判定(新規状態を増やさない)
+
+**発生した問題と修正:**
+- clang-tidyの`readability-math-missing-parentheses`が`x = kGutterWidthDips + static_cast<float>(level * kTabWidth) * m_charWidthDips`の演算子優先順位を指摘 — 括弧を明示して解消
+- **視覚確認中、`Stop-Process -Force`で終了させたはずの前回テスト実行の`NeoMIFES.exe`プロセスがミューテックスを保持したまま残留し、以降の起動が即座に正常終了(ExitCode 0、単一インスタンス機構による黙った終了)してウィンドウが一切出ない事象が発生。** `Get-Process -Name "NeoMIFES"`で残留プロセスを発見・`Stop-Process`で終了させてから再実行し解決。今後同様の「起動したはずのウィンドウが見えない」事象が起きたら、まず`Get-Process -Name "NeoMIFES"`で残留プロセスの有無を確認すること
+
+**テスト数:** 655件(新規追加: `IndentGuideMathTest`スイート14件・`RenderTextSmokeTest.IndentGuidesRenderWithoutError`)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0(上記の演算子優先順位指摘を解消後)。
+
+**完了条件:**
+- [x] `computeIndentColumns()`/`computeIndentGuideCount()`がスペース/タブ混在・タブ境界前進・floor切り捨て等を正しく計算する(単体テストで確認)
+- [x] インデントされたC++/Pythonスニペットで`render()`が成功する(統合テストで確認)
+- [x] ローカルDebug/Release/ubsan全655テストgreen、clang-tidy新規警告0
+- [x] `--measure-frame`実測値が合成ベンチマーク文書(先頭空白なし)に対して実質不変であることを確認(avgFrameNs≈16.5ms、既存ベースラインと同水準)
+
+**実アプリでPowerShell+GDI+スクリーンショット手法で視覚確認済み。** ネストしたPythonファイル(class→def→if→for→if/else、5階層)を開き、各インデントレベルに正しい桁位置でガイド線が表示され、シンタックスハイライトと共存して正常に描画されることを確認した。
+
+**スコープ外(意図的、後続サブフェーズへ):** アクティブガイドのスコープ全体ハイライト(`FoldingModel`実装後に再検討)、空行のガイド継承、タブ幅のユーザー設定UI、真の増分再解析・残り21言語・アウトライン/折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.7参照。
+
+**Phase 7eはコミット済み(`29e4473`)・未push。** 次フェーズはPhase 7f以降(残り21言語・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1147,36 +1180,41 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応:Python追加+
 言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
+**Phase 7e(Indent guides、§3.39参照)はローカル検証・コミット(`29e4473`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
-**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7c/7dのシンタックスハイライトはこの手法で既に視覚確認済み(§3.36/§3.37/§3.38参照、C++/Python双方の色分け全て正常、編集後も非同期でUIをブロックせず反映されることを確認)。以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
+**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7c/7d/7eのシンタックスハイライト・Indent guidesはこの手法で既に視覚確認済み(§3.36/§3.37/§3.38/§3.39参照)。**注意: この手法を使う際、単一インスタンス機構(Named Mutex)により、前回テスト実行の`NeoMIFES.exe`が`Stop-Process -Force`後も残留していると新規起動が黙って即終了しウィンドウが出ない事象がある(Phase 7eで実際に発生・解決済み) — 起動直後に`Get-Process -Name "NeoMIFES"`で残留プロセスの有無を確認する習慣をつけること。** 以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
   ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
 - 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
 - 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
   履歴永続化確認、§3.34参照)
 - F12タグジャンプ・Grep結果ジャンプでC++↔Python↔非対応ファイル間を移動した際の色分けの追従/解除
+- Indent guidesのアクティブガイド(カーソル行の明るい表示)をSendKeysでカーソル移動しながら確認
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7e以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
-アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・
-Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7dで確立したパターン(tree-sitterグラマー
+**次フェーズはPhase 7f以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7eで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
 合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
-detailed_design.md §10.6参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
+detailed_design.md §10.6、Indent guidesはRenderPipelineへのdrawXxxOnLine追記・
+detailed_design.md §10.7参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
 具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
 実出力を確認してからnamedLeafKindsForXテーブルを構築すること — 記憶からの推測は厳禁。
+アウトライン/折り畳みに着手する場合、Bracket Pair Colorizationとの混同(Phase 7eで発覚した
+roadmap記述の誤り)のような取り違えが無いか、実装対象の機能をVSCode等の実際の挙動で
+再確認してから設計すること。
 
-着手前に本ファイル §3.19〜§3.38 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.39 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
 Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
-Shift+Alt+矢印・Shift+Alt+I/日本語IME確認は、上記4件と合わせてPowerShell+GDI+スクリーンショット
+Shift+Alt+矢印・Shift+Alt+I/日本語IME確認は、上記5件と合わせてPowerShell+GDI+スクリーンショット
 手法(`reference_no_win32_gui_automation.md`)でこのセッション自身が視覚確認できないか先に
 試すこと。日本語IME合成のようにSendKeysだけでは再現しづらい入力は引き続きユーザーに依頼する
 (5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7aはヘッドレスのため視覚確認対象なし)。
