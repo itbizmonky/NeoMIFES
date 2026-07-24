@@ -88,6 +88,19 @@ struct MainWindowConfig {
     // through unexamined; the caller decodes LOWORD(wParam)/HIWORD(wParam)
     // per the control that sent the notification.
     std::function<void(HWND, WPARAM, LPARAM)> onCommand;
+    // Optional: invoked from wndProc's default case for any message >=
+    // WM_APP that this class doesn't itself interpret (Phase 7c -
+    // SyntaxWorker's PostMessageW-based parse-completion signal is the
+    // first user of this). wParam/lParam are passed through unexamined,
+    // same "caller decodes" contract as onCommand above. MainWindow
+    // deliberately never learns what any specific WM_APP+N value means -
+    // this keeps neomifes::ui independent of neomifes::render/syntax::,
+    // matching CLAUDE.md's layer rule (Rendering Engine sits BELOW UI
+    // Shell, so ui:: must not depend on it). DefWindowProcW is still called
+    // afterward regardless - a custom WM_APP+ message has no default
+    // window behavior to preserve, unlike WM_SYSKEYDOWN's conditional
+    // fall-through above.
+    std::function<void(HWND, UINT msg, WPARAM, LPARAM)> onAppMessage;
 };
 
 class MainWindow {
@@ -148,6 +161,7 @@ private:
     std::function<void(HWND, std::int32_t, std::int32_t, bool, bool, int)> m_onMouseDown;
     std::function<void(HWND, std::int32_t, std::int32_t)>            m_onMouseDrag;
     std::function<void(HWND, WPARAM, LPARAM)>                         m_onCommand;
+    std::function<void(HWND, UINT, WPARAM, LPARAM)>                   m_onAppMessage;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;

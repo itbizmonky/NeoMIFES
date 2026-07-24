@@ -65,6 +65,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onMouseDown    = config.onMouseDown;
     m_onMouseDrag    = config.onMouseDrag;
     m_onCommand      = config.onCommand;
+    m_onAppMessage   = config.onAppMessage;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -178,6 +179,14 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             ::PostQuitMessage(0);
             return 0;
         default:
+            // App-defined messages (Phase 7c) - kMsgDeferredInit above is
+            // MainWindow's own, everything else >= WM_APP is opaque to this
+            // class (see MainWindowConfig::onAppMessage's doc comment).
+            // DefWindowProcW is still called either way; a custom WM_APP+
+            // message has no default behavior worth skipping.
+            if (msg >= WM_APP && m_onAppMessage) {
+                m_onAppMessage(m_hwnd, msg, wParam, lParam);
+            }
             return ::DefWindowProcW(m_hwnd, msg, wParam, lParam);
     }
 }

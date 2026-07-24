@@ -32,6 +32,7 @@
 #include "neomifes/document/text_pos.h"
 #include "neomifes/render/render_device.h"
 #include "neomifes/render/render_error.h"
+#include "neomifes/render/syntax_worker.h"
 #include "neomifes/render/text_layout_cache.h"
 // Phase 7b: m_tokens below needs syntax::Token's complete type (it's a
 // std::vector member, not a pointer), even though no syntax:: type appears
@@ -148,13 +149,27 @@ public:
     // - no general per-language dispatch exists yet, see syntax.h's TokenKind
     // comment. Forces m_hasCachedSnapshot false so the very next render()
     // unconditionally re-enters refreshDocumentCacheIfStale()'s refresh path
-    // and (re)computes m_tokens, rather than relying on Document::version()
+    // and (re)requests a re-parse, rather than relying on Document::version()
     // having moved - a freshly-loaded Document (e.g. after openDocumentAt())
     // starts its own independent version counter, so trusting version() alone
     // here risks a same-value coincidence across two different documents.
+    //
     void setSyntaxHighlightingEnabled(bool enabled) noexcept {
         m_syntaxHighlightingEnabled = enabled;
         m_hasCachedSnapshot         = false;
+    }
+
+    // Called once per completed background parse (Phase 7c) - main.cpp's
+    // MainWindowConfig::onAppMessage hook reconstructs `tokens` from the
+    // kMsgSyntaxTokensReady payload and passes it here. Resets
+    // m_lastRenderedFrameState (not m_hasCachedSnapshot - this must NOT
+    // trigger another re-parse) so the next render() isn't coarse-frame-
+    // skipped (ADR-011): m_tokens isn't part of FrameState's comparison, so
+    // without this, a token-only change could otherwise go undrawn until
+    // some unrelated state also changes.
+    void applyAsyncSyntaxTokens(std::vector<syntax::Token> tokens) noexcept {
+        m_tokens = std::move(tokens);
+        m_lastRenderedFrameState.reset();
     }
 
     // Converts a client-area point (device pixels, e.g. from
@@ -322,12 +337,19 @@ private:
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
-    // Phase 7b: gate + cache for C++ syntax-token coloring. m_tokens is
-    // recomputed (synchronously, via syntax::parseCpp()) inside
-    // refreshDocumentCacheIfStale() alongside m_cachedSnapshot - see that
-    // function and setSyntaxHighlightingEnabled() above.
+    // Phase 7b/7c: gate + cache for C++ syntax-token coloring.
+    // refreshDocumentCacheIfStale() clears m_tokens and fires an async
+    // SyntaxWorker::requestParse() when this is true and the document
+    // version moved; applyAsyncSyntaxTokens() repopulates m_tokens once
+    // that request completes (see both functions' comments).
     bool                                               m_syntaxHighlightingEnabled = false;
     std::vector<syntax::Token>                         m_tokens;
+    // Phase 7c: lazily constructed inside refreshDocumentCacheIfStale() on
+    // the first actual parse request (needs a valid m_hwnd - see that
+    // function's comment for why it isn't constructed in
+    // setSyntaxHighlightingEnabled() instead). Never constructed at all for
+    // the --measure-* launch modes, which never enable syntax highlighting.
+    std::optional<SyntaxWorker>                        m_syntaxWorker;
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush/m_selectionBrush are bound to the device

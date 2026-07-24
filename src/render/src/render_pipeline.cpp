@@ -176,15 +176,30 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     // the document has mutated at all, since Document::version() carries no
     // range information.
     m_layoutCache.clear();
-    // Phase 7b: re-tokenize synchronously, same "only on a real version
-    // change" gating as m_cachedSnapshot above (not every frame). No
-    // incremental reparse yet (see syntax.h) - large files may visibly stall
-    // on every edit, a known baseline limitation deferred to a future async
-    // Syntax Worker Thread (roadmap sec.7.9).
+    // Phase 7c: clear immediately, re-tokenize off the UI thread. m_tokens
+    // is cleared (not left showing the previous parse) because this is
+    // still a full-document re-parse, not true tree-sitter incremental
+    // diffing (see syntax_worker.h) - after ANY edit, every existing
+    // token's offset can be wrong, so drawing them would risk coloring the
+    // wrong characters. applyAsyncSyntaxTokens() repopulates m_tokens once
+    // SyntaxWorker's background parse completes; until then the text falls
+    // back to the default (uncolored) brush, a deliberate, documented
+    // deviation from roadmap sec.7.9's "keep showing old tokens" sketch
+    // (which assumes true incremental parsing, not implemented yet).
     m_tokens.clear();
     if (m_syntaxHighlightingEnabled) {
-        m_tokens = syntax::parseCpp(
-            m_cachedSnapshot->extract(TextRange{.start = 0, .end = m_cachedSnapshot->length()}));
+        // Lazily started here (not setSyntaxHighlightingEnabled()) because
+        // that can be called before RenderPipeline::attach() has set
+        // m_hwnd (main.cpp calls it right after wireNormalMode(), before
+        // window.create() runs) - refreshDocumentCacheIfStale() is only
+        // ever reached from render(), which requires a live m_device/m_hwnd
+        // already, so m_hwnd is guaranteed valid here. --measure-frame/
+        // -startup/-memory never enable syntax highlighting at all, so they
+        // never pay for an idle background thread either way.
+        if (!m_syntaxWorker.has_value()) {
+            m_syntaxWorker.emplace(m_hwnd);
+        }
+        m_syntaxWorker->requestParse(m_cachedSnapshot);
     }
     return {};
 }

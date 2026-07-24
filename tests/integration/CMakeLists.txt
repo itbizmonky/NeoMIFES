@@ -85,6 +85,36 @@ set_tests_properties(render_text_smoke PROPERTIES
     TIMEOUT 30
 )
 
+# render_syntax_worker_test - exercises SyntaxWorker's real background
+# std::thread + PostMessageW completion handoff end-to-end (Phase 7c), which
+# the plain unit-test binary avoids (this codebase's first std::thread).
+add_executable(neomifes_render_syntax_worker_test
+    render_syntax_worker_test.cpp
+)
+
+target_link_libraries(neomifes_render_syntax_worker_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::render
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_render_syntax_worker_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    render_syntax_worker
+    COMMAND neomifes_render_syntax_worker_test
+)
+
+set_tests_properties(render_syntax_worker PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # platform_clipboard_test - exercises the real OS clipboard (Phase 4b6c),
 # which the plain unit-test binary avoids entirely.
 add_executable(neomifes_platform_clipboard_test

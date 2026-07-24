@@ -1464,6 +1464,22 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
     };
+    // Phase 7c: SyntaxWorker's background-thread parse completion signal.
+    // MainWindow forwards every WM_APP+ message it doesn't itself interpret
+    // here unexamined (neomifes::ui never learns what kMsgSyntaxTokensReady
+    // means - see MainWindowConfig::onAppMessage's doc comment); main.cpp
+    // is the layer that already depends on both ui:: and render:: so it's
+    // the only place that can safely compare against the constant and
+    // reconstruct the payload's real type.
+    cfg.onAppMessage = [&renderPipeline](HWND hwnd, UINT msg, WPARAM, LPARAM lParam) {
+        if (msg != neomifes::render::kMsgSyntaxTokensReady) {
+            return;
+        }
+        const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
+            reinterpret_cast<std::vector<neomifes::syntax::Token>*>(lParam));
+        renderPipeline.applyAsyncSyntaxTokens(std::move(*tokens));
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+    };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
                      &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &bookmarks,
                      &freeCursorModeEnabled, &freeCursorVirtualColumns, &altCursorAnchor,
