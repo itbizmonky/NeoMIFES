@@ -1868,6 +1868,34 @@ void drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y, std::u16string_vie
 
 **意図的にスコープ外とした項目:** アクティブガイドのスコープ全体ハイライト(`FoldingModel`実装後に再検討)、空行のガイド継承、タブ幅のユーザー設定UI、Bracket Pair Colorization(roadmap記述の誤記と判明、無関係な別機能)。詳細は`master_roadmap.md` §7参照。
 
+### 10.8 アウトライン抽出 (Phase 7f実装)
+
+関数/クラス/構造体/名前空間のシンボルツリーをヘッドレスに抽出する`neomifes::syntax::extractOutline()`を実装した。`Document`/`RenderPipeline`/UIへの依存は一切無く、`outline_pane`(WC_TREEVIEW)配線・折り畳みは後続サブフェーズへ据え置いた。
+
+```cpp
+// src/syntax/include/neomifes/syntax/outline.h
+enum class SymbolKind : std::uint8_t { Function, Class, Struct, Namespace };
+
+struct OutlineNode {
+    std::u16string           name;
+    document::TextPos        pos;              // シンボル名identifierの開始位置
+    document::TextRange      containingRange;  // 定義全体の範囲(将来のBreadcrumb逆引き用)
+    SymbolKind                symbolKind;
+    std::vector<OutlineNode> children;         // ネストした定義(メンバ関数・内部クラス等)
+};
+
+[[nodiscard]] std::vector<OutlineNode> extractOutline(std::u16string_view text, Language language);
+```
+
+**設計上の要点:**
+- **`SymbolKind`は`syntax::TokenKind`を再利用せず新設した。** `TokenKind`はPhase 7aでリーフレベルのテキスト着色専用に設計されており、`Function`/`Class`/`Namespace`等は「呼び出しと定義の文脈判定が必要」という理由で意図的に未実装のまま公開APIに置かれていない。アウトライン抽出は複合ノード(定義そのもの)だけを訪問するため衝突は起きないが、無関係な2つの分類概念を1つのenumに混在させないため独立させた
+- **既存`syntax.h`の`parseCpp()`/`parsePython()`/`parse()`とはツリーを共有しない、独立した2回目のパースとして実装した。** ファイルを開いた時/変更が落ち着いた時のみ低頻度で呼ばれる想定であり、ツリー共有によるパース回数削減はベンチマーク根拠の無い最適化と判断(CLAUDE.mdルール10)
+- **C++の`function_definition`は`"name"`フィールドを持たず、`"declarator"`フィールドの中に名前が入れ子になっている。** `declaratorChild()`ヘルパーが named field(`pointer_declarator`/`function_declarator`)と positional child(`reference_declarator`)の両方に対応する — node-types.jsonで確認した通り、`reference_declarator`は`"fields": {}`(位置引数のみ)という、`pointer_declarator`とは非対称な文法構造を持つ。qualified_identifier(`Widget::doThing()`のような out-of-line 定義)は自身の`"name"`フィールドが非修飾名を直接指すことを利用して解決する
+- **`resolveSymbolName()`は`Language`引数で言語ごとに分岐する。** C++/Pythonの両文法が関数定義ノードを同じ`"function_definition"`という型名で持つため、ノード型名だけで分岐すると言語混同を起こす(Pythonの`function_definition`は直接`"name"`フィールドを持つ素直な構造で、C++専用のdeclarator-unwrapパスを通すと名前解決に失敗する)
+- **`walkForOutline()`は明示スタックによる反復実装。** AST深さは編集対象のソースファイル依存で安全に有界ではないため、`syntax.cpp`の`walkTree()`(`TSTreeCursor`ベースの反復pre-order走査)と同じ理由で再帰を避けた。ネストした`OutlineNode`ツリーを構築する必要があるため、単純なcursor走査ではなく`scanStack`(スキャン再開点)+`resultLevels`/`pendingSymbols`(構築中の`vector<OutlineNode>`とその親シンボル)からなる明示的な2段スタック構成にした
+
+**意図的にスコープ外とした項目:** `outline_pane`(WC_TREEVIEW UI)・`main.cpp`配線、Breadcrumb(逆引き)、折り畳み(`FoldingModel`、Core+Rendering層を横断する別規模の変更と判明)、テンプレート特殊化・ラムダ式・演算子オーバーロード等の複雑なC++宣言構文からの名前抽出。詳細は`master_roadmap.md` §7参照。
+
 ---
 
 ## 11. ログ解析モード 詳細

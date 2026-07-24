@@ -1662,4 +1662,38 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 7eが完了した(コミット`29e4473`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7f以降(残り21言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。アウトライン/折り畳みに着手する場合、Bracket Pair Colorizationとの混同のような機能の取り違えが無いか実際の挙動で再確認してから設計すること。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 50 (2026-07-25): Phase 7f — アウトライン抽出 (OutlineNode、ヘッドレス)
+
+ユーザーから「次のPhaseへすすめ」と指示された。4つの候補(アウトライン抽出/真の増分再解析基盤/折り畳み/3言語目追加)をAskUserQuestionで提示し、**アウトライン抽出(ヘッドレス、推奨案)**が選ばれた。
+
+**着手前調査で判明した重要な事実:** 「折り畳み」は当初の想定より大規模な変更になる。`core::Viewport`(`src/core/include/neomifes/core/viewport.h`)は生の`document::LineNumber`(論理行番号)のみで動作しており、`RenderPipeline::drawVisibleLines()`/`hitTest()`/`computeCaretDraws()`も全て論理行=表示行という前提でハードコードされている。真の折り畳み実装には「論理行→表示行」の変換をCore+Rendering層を横断して差し込む必要があり、Indent guides(Phase 7e、RenderPipelineへの追記のみで完結)とは規模が違う。この発見を踏まえ、アウトライン抽出(ヘッドレス、UI統合なし)を先に済ませ、折り畳みは独立した後続サブフェーズへ据え置く方針に確定した。
+
+**着手前調査で確定した設計方針:**
+- `OutlineNode::symbolKind`はroadmapスケッチが指定する`syntax::TokenKind`型を採用せず、新規`enum class SymbolKind { Function, Class, Struct, Namespace }`を新設した。`TokenKind`はPhase 7aでリーフレベルのテキスト着色専用に設計されており、`Function`/`Class`/`Namespace`等は「呼び出しと定義の文脈判定が必要」という理由で意図的に未実装のまま公開APIに置かれていない — 無関係な2つの分類概念を1つのenumに混在させないための独立
+- アウトライン抽出は`syntax.h`の`parseCpp()`/`parsePython()`/`parse()`とツリーを共有しない、独立した2回目のパースとして実装した。ファイルを開いた時/変更が落ち着いた時のみ低頻度で呼ばれる想定であり、ツリー共有によるパース回数削減はベンチマーク根拠の無い最適化と判断(CLAUDE.mdルール10)
+- 実装着手前にスタンドアロンprobe(`ts_probe_outline`)でC++/Pythonのフィールド構造を実機確認する、7a〜7dで確立した規律を継続
+
+**実装:**
+- 新規`src/syntax/include/neomifes/syntax/outline.h` + `src/syntax/src/outline.cpp`: `SymbolKind`・`OutlineNode`・`extractOutline()`
+- 新規`tests/unit/syntax_outline_test.cpp`(13ケース)
+
+**発生した問題と修正(いずれもテストで発覚、追加probeでの検証を経て修正 — 記憶からの推測に頼らない規律がそのまま活きた):**
+- **Python関数の名前解決バグ。** C++/Pythonの両文法が関数定義ノードを同じ`"function_definition"`という型名で持つため、ノード型名だけで分岐する`resolveSymbolName()`がPython関数もC++専用のdeclarator-unwrapパスに誤って送っていた(Pythonには`"declarator"`フィールドが無いため名前解決が関数本体全体のテキストにフォールバックしていた)。`Language`引数を`resolveSymbolName()`/`walkForOutline()`/`extractOutline()`に通して修正した
+- **`reference_declarator`の名前解決バグ。** `int& getRef(int& x)`のような参照戻り値関数で、`& getRef(int& x)`という未解決テキストがそのまま返っていた。tree-sitter-cpp v0.23.4のnode-types.jsonを`gh api`で取得し確認したところ、**`pointer_declarator`は`"declarator"`という named field で子を公開するが、`reference_declarator`は`"fields": {}`(フィールド無し、位置引数のみ)という非対称な文法構造だった** — 実装のバグではなく文法自体の非対称性。`declaratorChild()`ヘルパー(named fieldを優先し、無ければ最初の named positional child にフォールバック)を追加して両方に対応した
+- **`misc-no-recursion`指摘。** 当初`walkForOutline()`は再帰実装だったが、AST深さは編集対象のソースファイル依存で安全に有界ではない(`piece_tree.cpp`のRB木走査のようなO(log n)保証が無い) — `syntax.cpp`の`walkTree()`が同じ理由で`TSTreeCursor`ベースの反復実装を採用していた前例と同じ判断で、明示スタック(`scanStack`+`resultLevels`+`pendingSymbols`の2段構成)による反復実装に書き換えて解消した
+- **`performance-enum-size`指摘。** 新設した`SymbolKind`/`ScanKind`に`: std::uint8_t`を付与(プロジェクト内の小規模enum群の既存慣例に合わせた)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全668テストpass(新規追加: `SyntaxOutlineTest`スイート13件)
+- clang-tidy新規警告0(上記2件の指摘を解消後)
+- ヘッドレス追加(main.cpp/UI無変更)のため実アプリ視覚確認は対象外
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7f行を追加(7g〜が次候補)、§7.10に折り畳み分離の経緯を追記、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.8(アウトライン抽出実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.40(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7fが完了した(コミット`0f54c73`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7g以降(残り21言語対応・真の増分再解析・折り畳み・アウトラインUI統合(`outline_pane`、WC_TREEVIEW)・ミニマップ・Breadcrumb・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。折り畳みに着手する場合、`core::Viewport`/`RenderPipeline`が論理行=表示行前提でハードコードされている(本セッションで確認済み)ことを踏まえ、Core+Rendering層を横断する変換の設計から始めること。3言語目を追加する際は、本セッションで発覚したC++/Python間の同名ノード構造差異のような取り違えを避けるため、スタンドアロンprobeでの実機検証を必ず先に行うこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

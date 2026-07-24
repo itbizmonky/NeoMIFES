@@ -216,7 +216,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7c | 非同期シンタックス再解析 (Syntax Worker Thread、全文書再解析のまま非同期化) | ✅ 完了 | §7 |
 | 7d | シンタックス多言語対応 (Python追加) + 言語ディスパッチ機構の一般化 | ✅ 完了 | §7 |
 | 7e | Indent guides (インデントガイド) | ✅ 完了 | §7 |
-| 7f〜 | 残り21言語 + 真の増分再解析 + アウトライン + 折り畳み + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
+| 7f | アウトライン抽出 (OutlineNode、ヘッドレス) | ✅ 完了 | §7 |
+| 7g〜 | 残り21言語 + 真の増分再解析 + 折り畳み + アウトラインUI統合 + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -981,6 +982,8 @@ public:
 - 折り畳みマーカは Line Gutter の右端に `+/-`
 - アウトライン UI (`src/ui/outline_pane.{h,cpp}`) は右側に折り畳みツリー (Win32 `WC_TREEVIEW`)
 
+> **Phase 7f着手前調査で判明:** アウトライン抽出(シンボルツリーの計算)と折り畳み(表示行変換)は当初想定より規模の異なる別サブフェーズだと判明した。`core::Viewport`/`RenderPipeline`は論理行=表示行という前提でハードコードされており、真の折り畳みにはCore+Rendering層を横断する変換の差し込みが必要。アウトライン抽出は`OutlineNode`ツリーを返すヘッドレス関数として先に独立させ(Phase 7f、下記実装後の確定事項参照)、折り畳み・`outline_pane`のWC_TREEVIEW UI統合は後続サブフェーズへ据え置いた。
+
 ### 7.11 性能目標
 - 100 万行 C++ ファイルの初回全解析: ≤ 5 秒 (バックグラウンド)
 - 1 文字入力後の増分解析: ≤ 50ms
@@ -1052,6 +1055,16 @@ public:
 - **タブ幅はユーザー設定不可の固定値4を`render_pipeline.cpp`に複製した。** `main.cpp`の`kTabWidth`(Phase 4b8dのタブ⇔スペース変換コマンドで確立済み)と同じ値だが、設定システム自体が本コードベースに存在しないため2箇所の手動同期が必要になる既知のトレードオフとして受容した
 - **ガイド本数は「先頭空白桁数 ÷ タブ幅」(floor)、VSCodeと同じ規約。** 空行/空白のみの行は前後の非空行から推測せず、自分自身の先頭空白桁数のみで判定する(VSCodeの「空行はコンテキストからガイドを継承する」機能は非対応)
 - **常時描画・トグル不可の設計にした。** 既存のキャレット/ガター/選択ハイライトも同様に常時描画のため、シンタックスハイライトの`setLanguage(nullopt)`のようなON/OFFスイッチを設ける根拠が無いと判断。`--measure-frame`の合成ベンチマーク文書は先頭空白を一切含まない行のみで構成されているため、実測ベンチマーク値への影響は「桁数0→ガイド0本」の早期リターンのみで実質ゼロだった(実測確認済み)
+
+### 実装後の確定事項/変更点 (2026-07-25、Phase 7f完了)
+
+**roadmap §7.10の「アウトライン」(関数/クラス/構造体/名前空間のシンボルツリー)を、折り畳みとは独立したヘッドレス機能として先に実装した。`neomifes::syntax::extractOutline()`はDocument/RenderPipeline/UIに一切依存せず、`outline_pane`(WC_TREEVIEW)配線・折り畳みは後続サブフェーズへ据え置いた。**
+
+- **`OutlineNode::symbolKind`はroadmapスケッチの`TokenKind`型指定を採用せず、新規`enum class SymbolKind { Function, Class, Struct, Namespace }`を新設した。** `TokenKind`はPhase 7aでリーフレベルのテキスト着色専用に設計されており、`Function`/`Class`/`Namespace`等は「呼び出しと定義の文脈判定が必要」という理由で意図的に未実装のまま公開APIに置かれていない。アウトライン抽出は複合ノード(定義そのもの)だけを訪問するためこの問題自体は起きないが、リーフ分類と複合ノード分類という無関係な2つの関心事を1つのenumに混在させないため独立させた
+- **アウトライン抽出は`syntax.h`の`parseCpp()`/`parsePython()`/`parse()`とツリーを共有しない、独立した2回目のパースとして実装した。** ファイルを開いた時/変更が落ち着いた時のみ低頻度で呼ばれる想定(トークン着色のような毎編集ではない)であり、ツリー共有によるパース回数削減はベンチマーク根拠の無い時期尚早な最適化と判断(CLAUDE.mdルール10)
+- **C++の`function_definition`は`"name"`フィールドを持たず、`"declarator"`フィールドの中に名前が入れ子になっている構造を、スタンドアロンprobeでの実機確認(node-types.json照合)を経て実装した。** `pointer_declarator`/`function_declarator`は`"declarator"`という named field で子を公開するが、**`reference_declarator`はnode-types.jsonで`"fields": {}`(フィールド無し、位置引数のみ)と確認した — pointer/referenceで文法構造が非対称という、tree-sitter-cpp自身の設計上の性質だった。** 当初この非対称性を見落とし、`getRef(int& x)`(reference_declarator経由)のケースで名前解決が失敗するテストが4件発覚し、`declaratorChild()`ヘルパー(named fieldを優先し、無ければ最初の named positional child にフォールバック)を追加して解消した
+- **C++/Pythonの両文法が関数定義ノードを同じ`"function_definition"`という型名で持つため、ノード型名だけでの分岐が言語混同バグを引き起こすことをテストで発見・修正した。** Pythonの`function_definition`は(C++と異なり)`"name"`フィールドを直接持つ素直な構造だが、`resolveSymbolName()`がノード型名のみで分岐していたためPython関数もC++専用のdeclarator-unwrapパスに誤って送られ、名前解決が関数本体全体のテキストにフォールバックしてしまっていた。`Language`引数を`resolveSymbolName()`/`walkForOutline()`/`extractOutline()`に通し、`Language::Cpp && nodeType == "function_definition"`の場合のみC++専用パスを通すよう修正した
+- **`walkForOutline()`は当初再帰実装で書いたが、clang-tidyの`misc-no-recursion`指摘を受けて明示スタックによる反復実装に書き換えた。** AST深さは編集対象のソースファイル依存であり安全に有界ではない(`piece_tree.cpp`のRB木走査のようなO(log n)保証が無い) — `syntax.cpp`の`walkTree()`が同じ理由で`TSTreeCursor`ベースの反復実装を採用していた前例と同じ判断。ネストしたOutlineNodeツリーを構築する必要があるため単純なcursor走査では足りず、`scanStack`(再帰呼び出しスタック相当)と`resultLevels`/`pendingSymbols`(各再帰呼び出しのローカル変数相当)からなる明示的な2段スタック構成にした
 
 ---
 

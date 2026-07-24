@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-25 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)はローカル検証・コミット(`29e4473`)完了・未push**)
+> **最終更新:** 2026-07-25 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -71,7 +71,8 @@
 | Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (push済み、§3.37参照) |
 | Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (push済み、§3.38参照) |
 | Phase 7e (Indent guides、インデントガイド) | ✅ 完了 (**未push**、§3.39参照) |
-| **次フェーズ選定 — Phase 7f以降(残り21言語/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) | ✅ 完了 (**未push**、§3.40参照) |
+| **次フェーズ選定 — Phase 7g以降(残り21言語/真の増分再解析/折り畳み/アウトラインUI統合等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1127,7 +1128,45 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** アクティブガイドのスコープ全体ハイライト(`FoldingModel`実装後に再検討)、空行のガイド継承、タブ幅のユーザー設定UI、真の増分再解析・残り21言語・アウトライン/折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.7参照。
 
-**Phase 7eはコミット済み(`29e4473`)・未push。** 次フェーズはPhase 7f以降(残り21言語・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+**Phase 7eはコミット済み(`29e4473`/`dcfb6f1`)・未push。**
+
+---
+
+### 3.40 Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) 完了記録
+
+ユーザーから「次のPhaseへすすめ」と指示された。4候補(アウトライン抽出/真の増分再解析基盤/折り畳み/3言語目追加)をAskUserQuestionで提示し、**アウトライン抽出(ヘッドレス、推奨案)**が選ばれた。
+
+**着手前調査で判明した重要な事実:** 「折り畳み」は当初の想定より大規模な変更になる。`core::Viewport`/`RenderPipeline`は論理行=表示行という前提でハードコードされており、真の折り畳みにはCore+Rendering層を横断する変換の差し込みが必要(Indent guides、Phase 7eのようなRenderPipeline追記のみでは完結しない)。この発見を踏まえ、アウトライン抽出(ヘッドレス、UI統合なし)を先に済ませ、折り畳みは独立した後続サブフェーズへ据え置く方針に確定した。
+
+**着手前調査で確定した設計方針:**
+- `OutlineNode::symbolKind`は`syntax::TokenKind`を再利用せず、新規`enum class SymbolKind`を新設(TokenKindはリーフレベルのテキスト着色専用、Phase 7aでFunction/Class/Namespace等を意図的に未実装のまま置いている判断を踏襲)
+- アウトライン抽出は`parseCpp()`/`parsePython()`/`parse()`とツリーを共有しない独立した2回目のパース(低頻度呼び出しのためベンチマーク根拠の無い最適化はしない、CLAUDE.mdルール10)
+- 実装着手前にスタンドアロンprobe(`ts_probe_outline`)でC++/Pythonのフィールド構造を実機確認する規律を継続
+
+**実装:**
+- 新規`src/syntax/include/neomifes/syntax/outline.h` + `src/syntax/src/outline.cpp`: `SymbolKind`・`OutlineNode`・`extractOutline()`
+- 新規`tests/unit/syntax_outline_test.cpp`(13ケース)
+
+**発生した問題と修正(いずれもテストで発覚、probeでの追加検証を経て修正):**
+- **Python関数の名前解決バグ:** C++/Pythonの両文法が関数定義ノードを同じ`"function_definition"`という型名で持つため、ノード型名だけで分岐する`resolveSymbolName()`がPython関数もC++専用のdeclarator-unwrapパスに誤って送っていた(Pythonには`"declarator"`フィールドが無いため名前解決が関数本体全体のテキストにフォールバックしていた)。`Language`引数を`resolveSymbolName()`/`walkForOutline()`/`extractOutline()`に通して修正
+- **`reference_declarator`の名前解決バグ:** `int& getRef(int& x)`のような参照戻り値関数で、`& getRef(int& x)`という未解決テキストがそのまま返っていた。node-types.jsonで確認したところ、`pointer_declarator`は`"declarator"`という named field で子を公開するが、**`reference_declarator`は`"fields": {}`(フィールド無し、位置引数のみ)という非対称な文法構造**だった。`declaratorChild()`ヘルパー(named fieldを優先し、無ければ最初の named positional child にフォールバック)を追加して両方に対応
+- **`misc-no-recursion`指摘:** 当初`walkForOutline()`は再帰実装だったが、AST深さはソースファイル依存で安全に有界ではないため(`syntax.cpp`の`walkTree()`が同じ理由で`TSTreeCursor`ベースの反復実装を採用していた前例と同じ)、明示スタック(`scanStack`+`resultLevels`+`pendingSymbols`)による反復実装に書き換えて解消
+- **`performance-enum-size`指摘:** 新設した`SymbolKind`/`ScanKind`に`: std::uint8_t`を付与(プロジェクト内の小規模enum群の既存慣例に合わせた)
+
+**テスト数:** 668件(新規追加: `SyntaxOutlineTest`スイート13件)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0。
+
+**完了条件:**
+- [x] C++の自由関数/メンバ関数/struct/namespace+ネストしたクラスが正しいOutlineNodeツリーになる(単体テストで確認)
+- [x] C++のポインタ/参照戻り値関数・qualified out-of-line定義(`Widget::doThing()`)が正しい名前解決になる
+- [x] Pythonの関数/クラス+メソッド/ネストした関数(クロージャ)が正しいOutlineNodeツリーになる
+- [x] 空文字列・定義を含まないスニペット・不正な構文でクラッシュしない
+- [x] ローカルDebug/Release/ubsan全668テストgreen、clang-tidy新規警告0
+
+**視覚確認は対象外。** ヘッドレス追加(main.cpp/UI無変更)のため実アプリでの確認は不要(Phase 7a/6aと同じ扱い)。
+
+**スコープ外(意図的、後続サブフェーズへ):** `outline_pane`(WC_TREEVIEW UI)・`main.cpp`配線、Breadcrumb、折り畳み(`FoldingModel`)、テンプレート特殊化・ラムダ式・演算子オーバーロード等の複雑なC++宣言構文からの名前抽出、真の増分再解析・残り21言語・ミニマップ・Sticky scroll・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.8参照。
+
+**Phase 7fはコミット済み(`0f54c73`)・未push。** 次フェーズはPhase 7g以降(残り21言語・真の増分再解析・折り畳み・アウトラインUI統合等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1180,12 +1219,13 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応:Python追加+
 言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
-**Phase 7e(Indent guides、§3.39参照)はローカル検証・コミット(`29e4473`)完了・未push。**
+**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)は
+ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
-**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7c/7d/7eのシンタックスハイライト・Indent guidesはこの手法で既に視覚確認済み(§3.36/§3.37/§3.38/§3.39参照)。**注意: この手法を使う際、単一インスタンス機構(Named Mutex)により、前回テスト実行の`NeoMIFES.exe`が`Stop-Process -Force`後も残留していると新規起動が黙って即終了しウィンドウが出ない事象がある(Phase 7eで実際に発生・解決済み) — 起動直後に`Get-Process -Name "NeoMIFES"`で残留プロセスの有無を確認する習慣をつけること。** 以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
+**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7c/7d/7eのシンタックスハイライト・Indent guidesはこの手法で既に視覚確認済み(§3.36/§3.37/§3.38/§3.39参照)。Phase 7fはヘッドレス実装(main.cpp/UI無変更)のため視覚確認対象は無い。**注意: この手法を使う際、単一インスタンス機構(Named Mutex)により、前回テスト実行の`NeoMIFES.exe`が`Stop-Process -Force`後も残留していると新規起動が黙って即終了しウィンドウが出ない事象がある(Phase 7eで実際に発生・解決済み) — 起動直後に`Get-Process -Name "NeoMIFES"`で残留プロセスの有無を確認する習慣をつけること。** 以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
   ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
 - 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
@@ -1194,22 +1234,26 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 - F12タグジャンプ・Grep結果ジャンプでC++↔Python↔非対応ファイル間を移動した際の色分けの追従/解除
 - Indent guidesのアクティブガイド(カーソル行の明るい表示)をSendKeysでカーソル移動しながら確認
 
-Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
+Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7f以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
-アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7eで確立したパターン(tree-sitterグラマー
+**次フェーズはPhase 7g以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+折り畳み・アウトラインUI統合(`outline_pane`、WC_TREEVIEW)・ミニマップ・Breadcrumb・
+Sticky scroll・Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7fで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
 合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
 detailed_design.md §10.6、Indent guidesはRenderPipelineへのdrawXxxOnLine追記・
-detailed_design.md §10.7参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
+detailed_design.md §10.7、アウトライン抽出は独立した2回目パース+明示スタック走査・
+detailed_design.md §10.8参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
 具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
-実出力を確認してからnamedLeafKindsForXテーブルを構築すること — 記憶からの推測は厳禁。
-アウトライン/折り畳みに着手する場合、Bracket Pair Colorizationとの混同(Phase 7eで発覚した
-roadmap記述の誤り)のような取り違えが無いか、実装対象の機能をVSCode等の実際の挙動で
-再確認してから設計すること。
+実出力を確認してからnamedLeafKindsForXテーブル/シンボルテーブルを構築すること — 記憶
+からの推測は厳禁(Phase 7fでC++/Pythonの`function_definition`同名ノードの構造差異を
+見落としたバグが実際に発生している、§3.40参照)。折り畳みに着手する場合、`core::Viewport`/
+`RenderPipeline`が論理行=表示行前提でハードコードされている(Phase 7f着手前調査で確認済み、
+master_roadmap.md §7.10参照)ことを踏まえ、Core+Rendering層を横断する変換の設計から
+始めること。
 
 着手前に本ファイル §3.19〜§3.39 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
