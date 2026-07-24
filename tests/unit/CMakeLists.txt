@@ -46,6 +46,7 @@ add_executable(neomifes_unit_tests
     app_tag_jump_test.cpp
     encoding_encoding_test.cpp
     syntax_syntax_test.cpp
+    syntax_outline_test.cpp
     app_syntax_language_test.cpp
 )
 
