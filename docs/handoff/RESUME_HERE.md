@@ -1022,7 +1022,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** C++以外の22言語、非同期増分解析(Syntax Worker Thread)、Theme(ユーザー設定可能な配色)システム、`TokenKind::Function`/`Operator`/`Attribute`/`Error`、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.4参照。
 
-**実アプリでの実際の色分け表示(キーワード/型/文字列/数値/コメント/プリプロセッサディレクティブが正しく色分けされているか)の視覚的確認は、この環境のWin32 GUI自動化制約により実施不可 — ユーザーに依頼する。** F12タグジャンプ・Grep結果ジャンプでC++↔非C++ファイル間を移動した際に色分けが正しく追従/解除されることも合わせて依頼。
+**実アプリでの実際の色分け表示は、PowerShell+GDI+ `CopyFromScreen`(2026-07-24発見、[`reference_no_win32_gui_automation.md`]で手順テンプレート化済み)でスクリーンショットを取得し視覚的に確認済み。** Preprocessor(ピンク)/Comment(緑)/Keyword(青)/Type(ティール)/String(オレンジ)/Number(黄緑)が設計通り全て正しく色分けされていた。F12タグジャンプ・Grep結果ジャンプでのC++↔非C++ファイル間の追従/解除、および5c3/5c4/5c5の残る視覚確認項目もこの手法で今後実施できる見込み(まだ未実施)。
 
 **Phase 7bはコミット済み(`a7432ef`)・未push。** 次フェーズはPhase 7c以降(多言語対応・非同期増分解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
 
@@ -1081,15 +1081,13 @@ Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
-**最優先の実アプリ視覚確認依頼(この環境にWin32 GUI自動化手段が無いため全て未実施):**
-- Phase 7bのシンタックスハイライト(C++ファイルを開いてキーワード/型/文字列/数値/コメント/
-  プリプロセッサディレクティブが正しく色分けされるか、F12・Grep結果ジャンプでC++↔非C++間を
-  移動した際の追従/解除、§3.36参照)
+**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7bのシンタックスハイライトはこの手法で既に視覚確認済み(§3.36参照、色分け全て正常)。以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
   ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
 - 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
 - 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
   履歴永続化確認、§3.34参照)
+- F12タグジャンプ・Grep結果ジャンプでC++↔非C++ファイル間を移動した際の色分けの追従/解除(Phase 7b)
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
@@ -1103,9 +1101,10 @@ SOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付け
 着手前に本ファイル §3.19〜§3.36 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
 Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
-Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認があれば、上記4件と合わせてこのセッションの
-冒頭でユーザーに依頼すること(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7aはヘッドレスのため
-視覚確認対象なし)。
+Shift+Alt+矢印・Shift+Alt+I/日本語IME確認は、上記4件と合わせてPowerShell+GDI+スクリーンショット
+手法(`reference_no_win32_gui_automation.md`)でこのセッション自身が視覚確認できないか先に
+試すこと。日本語IME合成のようにSendKeysだけでは再現しづらい入力は引き続きユーザーに依頼する
+(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7aはヘッドレスのため視覚確認対象なし)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
