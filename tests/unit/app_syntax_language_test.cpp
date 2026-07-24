@@ -6,44 +6,53 @@
 
 namespace {
 
-using neomifes::app::isCppSourceFile;
+using neomifes::app::detectLanguage;
+using neomifes::syntax::Language;
 
-TEST(IsCppSourceFileTest, RecognizesAllCppSourceExtensions) {
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.cpp")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.cc")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.cxx")));
+TEST(DetectLanguageTest, RecognizesAllCppSourceExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.cpp")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.cc")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.cxx")), Language::Cpp);
 }
 
-TEST(IsCppSourceFileTest, RecognizesAllCppHeaderExtensions) {
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.h")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.hpp")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.hxx")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.hh")));
+TEST(DetectLanguageTest, RecognizesAllCppHeaderExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.h")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.hpp")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.hxx")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.hh")), Language::Cpp);
 }
 
-TEST(IsCppSourceFileTest, IsCaseInsensitive) {
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.CPP")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.Hpp")));
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"foo.HXX")));
+TEST(DetectLanguageTest, RecognizesAllPythonExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.py")), Language::Python);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.pyw")), Language::Python);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.pyi")), Language::Python);
 }
 
-TEST(IsCppSourceFileTest, WorksWithFullAbsolutePath) {
-    EXPECT_TRUE(isCppSourceFile(std::filesystem::path(L"C:\\src\\neomifes\\main.cpp")));
+TEST(DetectLanguageTest, IsCaseInsensitive) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.CPP")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.Hpp")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.HXX")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.PY")), Language::Python);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.PyW")), Language::Python);
 }
 
-TEST(IsCppSourceFileTest, RejectsNonCppExtensions) {
-    EXPECT_FALSE(isCppSourceFile(std::filesystem::path(L"foo.txt")));
-    EXPECT_FALSE(isCppSourceFile(std::filesystem::path(L"foo.md")));
-    EXPECT_FALSE(isCppSourceFile(std::filesystem::path(L"foo.py")));
-    EXPECT_FALSE(isCppSourceFile(std::filesystem::path(L"foo.ts")));
+TEST(DetectLanguageTest, WorksWithFullAbsolutePath) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"C:\\src\\neomifes\\main.cpp")), Language::Cpp);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"C:\\src\\neomifes\\script.py")), Language::Python);
 }
 
-TEST(IsCppSourceFileTest, RejectsFileNameWithNoExtension) {
-    EXPECT_FALSE(isCppSourceFile(std::filesystem::path(L"Makefile")));
+TEST(DetectLanguageTest, RejectsNonRecognizedExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.txt")), std::nullopt);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.md")), std::nullopt);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ts")), std::nullopt);
 }
 
-TEST(IsCppSourceFileTest, RejectsEmptyPath) {
-    EXPECT_FALSE(isCppSourceFile(std::filesystem::path()));
+TEST(DetectLanguageTest, RejectsFileNameWithNoExtension) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"Makefile")), std::nullopt);
+}
+
+TEST(DetectLanguageTest, RejectsEmptyPath) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path()), std::nullopt);
 }
 
 }  // namespace

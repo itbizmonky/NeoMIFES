@@ -187,19 +187,19 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     // deviation from roadmap sec.7.9's "keep showing old tokens" sketch
     // (which assumes true incremental parsing, not implemented yet).
     m_tokens.clear();
-    if (m_syntaxHighlightingEnabled) {
-        // Lazily started here (not setSyntaxHighlightingEnabled()) because
-        // that can be called before RenderPipeline::attach() has set
-        // m_hwnd (main.cpp calls it right after wireNormalMode(), before
-        // window.create() runs) - refreshDocumentCacheIfStale() is only
-        // ever reached from render(), which requires a live m_device/m_hwnd
-        // already, so m_hwnd is guaranteed valid here. --measure-frame/
-        // -startup/-memory never enable syntax highlighting at all, so they
-        // never pay for an idle background thread either way.
+    if (m_language.has_value()) {
+        // Lazily started here (not setLanguage()) because that can be called
+        // before RenderPipeline::attach() has set m_hwnd (main.cpp calls it
+        // right after wireNormalMode(), before window.create() runs) -
+        // refreshDocumentCacheIfStale() is only ever reached from render(),
+        // which requires a live m_device/m_hwnd already, so m_hwnd is
+        // guaranteed valid here. --measure-frame/-startup/-memory never
+        // enable syntax highlighting at all, so they never pay for an idle
+        // background thread either way.
         if (!m_syntaxWorker.has_value()) {
             m_syntaxWorker.emplace(m_hwnd);
         }
-        m_syntaxWorker->requestParse(m_cachedSnapshot);
+        m_syntaxWorker->requestParse(m_cachedSnapshot, *m_language);
     }
     return {};
 }

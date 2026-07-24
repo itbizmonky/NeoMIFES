@@ -144,19 +144,21 @@ public:
         m_bookmarkedLines = std::move(lines);
     }
 
-    // Enables/disables C++ syntax-token coloring (Phase 7b). The app layer
-    // decides this from the open file's extension (neomifes::app::isCppSourceFile())
-    // - no general per-language dispatch exists yet, see syntax.h's TokenKind
-    // comment. Forces m_hasCachedSnapshot false so the very next render()
-    // unconditionally re-enters refreshDocumentCacheIfStale()'s refresh path
-    // and (re)requests a re-parse, rather than relying on Document::version()
-    // having moved - a freshly-loaded Document (e.g. after openDocumentAt())
-    // starts its own independent version counter, so trusting version() alone
-    // here risks a same-value coincidence across two different documents.
-    //
-    void setSyntaxHighlightingEnabled(bool enabled) noexcept {
-        m_syntaxHighlightingEnabled = enabled;
-        m_hasCachedSnapshot         = false;
+    // Enables/disables syntax-token coloring and selects which grammar to
+    // parse with (Phase 7b, generalized to a language parameter in Phase 7d).
+    // The app layer decides this from the open file's extension
+    // (neomifes::app::detectLanguage()). nullopt disables coloring entirely
+    // (m_tokens stays cleared, drawTokensOnLine() becomes a no-op) - same
+    // meaning Phase 7b's `enabled=false` had. Forces m_hasCachedSnapshot
+    // false so the very next render() unconditionally re-enters
+    // refreshDocumentCacheIfStale()'s refresh path and (re)requests a
+    // re-parse, rather than relying on Document::version() having moved - a
+    // freshly-loaded Document (e.g. after openDocumentAt()) starts its own
+    // independent version counter, so trusting version() alone here risks a
+    // same-value coincidence across two different documents.
+    void setLanguage(std::optional<syntax::Language> language) noexcept {
+        m_language          = language;
+        m_hasCachedSnapshot = false;
     }
 
     // Called once per completed background parse (Phase 7c) - main.cpp's
@@ -337,18 +339,18 @@ private:
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
-    // Phase 7b/7c: gate + cache for C++ syntax-token coloring.
+    // Phase 7b/7c/7d: gate + cache for syntax-token coloring.
     // refreshDocumentCacheIfStale() clears m_tokens and fires an async
-    // SyntaxWorker::requestParse() when this is true and the document
+    // SyntaxWorker::requestParse() when this has a value and the document
     // version moved; applyAsyncSyntaxTokens() repopulates m_tokens once
     // that request completes (see both functions' comments).
-    bool                                               m_syntaxHighlightingEnabled = false;
+    std::optional<syntax::Language>                    m_language;
     std::vector<syntax::Token>                         m_tokens;
     // Phase 7c: lazily constructed inside refreshDocumentCacheIfStale() on
     // the first actual parse request (needs a valid m_hwnd - see that
-    // function's comment for why it isn't constructed in
-    // setSyntaxHighlightingEnabled() instead). Never constructed at all for
-    // the --measure-* launch modes, which never enable syntax highlighting.
+    // function's comment for why it isn't constructed in setLanguage()
+    // instead). Never constructed at all for the --measure-* launch modes,
+    // which never enable syntax highlighting.
     std::optional<SyntaxWorker>                        m_syntaxWorker;
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive

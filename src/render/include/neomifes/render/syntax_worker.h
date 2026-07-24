@@ -1,9 +1,10 @@
 #pragma once
 
-// SyntaxWorker - runs neomifes::syntax::parseCpp() on a single dedicated
-// background thread (Phase 7c, roadmap sec.7.9), so RenderPipeline's UI
-// thread never blocks on a full-document re-parse (7a's benchmark: ~6.6s for
-// 1,000,000 lines). This is the first std::thread in the codebase -
+// SyntaxWorker - runs neomifes::syntax::parse() (language selected per
+// request, Phase 7d) on a single dedicated background thread (Phase 7c,
+// roadmap sec.7.9), so RenderPipeline's UI thread never blocks on a
+// full-document re-parse (7a's benchmark: ~6.6s for 1,000,000 lines). This is
+// the first std::thread in the codebase -
 // detailed_design.md sec.16's thread-safety table and buffer_snapshot.h's
 // "safe to hand out to arbitrary threads (search, syntax, plugin workers)"
 // comment both already anticipated exactly this consumer.
@@ -22,6 +23,7 @@
 #include <thread>
 
 #include "neomifes/document/buffer_snapshot.h"
+#include "neomifes/syntax/syntax.h"
 
 namespace neomifes::render {
 
@@ -52,11 +54,12 @@ public:
     SyntaxWorker& operator=(SyntaxWorker&&)      = delete;
 
     // Fire-and-forget. If the worker hasn't started a previous pending
-    // request yet, `snapshot` silently replaces it (no queue - only the
-    // most recent request matters, see this file's header comment). Safe to
-    // call only from the UI thread (same single-writer assumption as every
-    // other RenderPipeline method).
-    void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot) noexcept;
+    // request yet, (`snapshot`, `language`) silently replaces it (no queue -
+    // only the most recent request matters, see this file's header comment).
+    // Safe to call only from the UI thread (same single-writer assumption as
+    // every other RenderPipeline method).
+    void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                      syntax::Language                               language) noexcept;
 
 private:
     void workerLoop();
@@ -71,8 +74,19 @@ private:
     std::mutex              m_mutex;
     std::condition_variable m_cv;
     // Guarded by m_mutex. Set by requestParse(), consumed (and reset to
-    // nullptr) by workerLoop() - nullptr means "nothing pending".
+    // nullptr) by workerLoop() - nullptr means "nothing pending". Kept as a
+    // shared_ptr (not std::optional<PendingRequest>) deliberately: clang-tidy's
+    // bugprone-unchecked-optional-access can't see that workerLoop()'s
+    // std::exchange() below only ever runs after the wait predicate already
+    // confirmed non-null, and flags every subsequent access as unchecked -
+    // this shared_ptr-null-means-empty shape sidesteps that false positive
+    // entirely rather than fighting it with NOLINTs.
     std::shared_ptr<const document::BufferSnapshot> m_pending;
+    // Guarded by m_mutex, meaningful only while m_pending != nullptr (Phase
+    // 7d - workerLoop() must know which grammar to parse m_pending's text
+    // with; the two are always written together in requestParse() so they
+    // never disagree about which request they describe).
+    syntax::Language m_pendingLanguage = syntax::Language::Cpp;
     // Guarded by m_mutex. Set once by the destructor to wake the worker for
     // the final time and tell it to return instead of waiting again.
     bool m_shuttingDown = false;

@@ -25,12 +25,12 @@ target_link_libraries(neomifes_render
         # Engine rather than routing through the app layer.
         neomifes::document
         # render_pipeline.h's private m_tokens member needs syntax::Token's
-        # complete type (a std::vector member, not a pointer) even though no
-        # syntax:: type appears in this class's PUBLIC method signatures
-        # (Phase 7b, setSyntaxHighlightingEnabled(bool) only). PUBLIC anyway
-        # because every consumer that includes render_pipeline.h - chiefly
-        # neomifes_app_input/main.cpp - needs syntax.h's include path to
-        # compile that header at all.
+        # complete type (a std::vector member, not a pointer), and
+        # setLanguage()'s parameter is syntax::Language directly (Phase 7d;
+        # Phase 7b's original setSyntaxHighlightingEnabled(bool) took no
+        # syntax:: type at all). PUBLIC because every consumer that includes
+        # render_pipeline.h - chiefly neomifes_app_input/main.cpp - needs
+        # syntax.h's include path to compile that header at all.
         neomifes::syntax
     PRIVATE
         neomifes::compile_options

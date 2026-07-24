@@ -23,6 +23,7 @@ using neomifes::document::Document;
 using neomifes::document::TextRange;
 using neomifes::render::CursorVisual;
 using neomifes::render::RenderPipeline;
+using neomifes::syntax::Language;
 
 // RAII helper so every TEST body doesn't repeat the hidden-window dance.
 class HiddenWindow {
@@ -352,11 +353,39 @@ TEST(RenderTextSmokeTest, SyntaxHighlightingEnabledRendersWithoutError) {
     Document doc;
     doc.insertText(0, u"#include <cstdint>\n// leading comment\nint main() { return 42; }\n");
     pipeline.setDocument(&doc);
-    pipeline.setSyntaxHighlightingEnabled(true);
+    pipeline.setLanguage(Language::Cpp);
 
     const auto rendered = pipeline.render();
     ASSERT_TRUE(rendered.has_value())
         << "render() with syntax highlighting enabled failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+// Phase 7d: same shape as the C++ case above, confirming setLanguage()'s
+// generalized parameter actually reaches Python parsing/coloring end-to-end
+// (not just that it compiles) - render_syntax_worker_test.cpp already covers
+// the worker-thread dispatch itself in isolation; this exercises the whole
+// RenderPipeline path (refreshDocumentCacheIfStale() -> requestParse() ->
+// applyAsyncSyntaxTokens() -> drawTokensOnLine()) with real Python content.
+TEST(RenderTextSmokeTest, PythonSyntaxHighlightingRendersWithoutError) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"# leading comment\ndef foo(x):\n    return x + 1\n");
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Python);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with Python syntax highlighting enabled failed: "
         << neomifes::render::describe(rendered.error());
 }
 
@@ -376,13 +405,13 @@ TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectl
     Document doc;
     doc.insertText(0, u"int x = 1;\n");
     pipeline.setDocument(&doc);
-    pipeline.setSyntaxHighlightingEnabled(true);
+    pipeline.setLanguage(Language::Cpp);
 
     const auto first = pipeline.render();
     ASSERT_TRUE(first.has_value())
         << "first render() (highlighting on) failed: " << neomifes::render::describe(first.error());
 
-    pipeline.setSyntaxHighlightingEnabled(false);
+    pipeline.setLanguage(std::nullopt);
     const auto second = pipeline.render();
     ASSERT_TRUE(second.has_value())
         << "second render() (highlighting off) failed: " << neomifes::render::describe(second.error());

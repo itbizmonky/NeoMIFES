@@ -1,11 +1,11 @@
 #pragma once
 
 // neomifes::syntax - headless tokenizer built on tree-sitter (ADR-014,
-// Phase 7a). Given UTF-16 source text, parseCpp() returns a flat token
-// stream suitable for coloring - no Document/RenderPipeline dependency, no
-// async/incremental reparsing (single-shot ts_parser_parse_string_encoding()
-// per call). Both are deferred to later Phase 7 sub-phases; see
-// master_roadmap.md sec.7 "実装後の確定事項".
+// Phase 7a). Given UTF-16 source text, parseCpp()/parsePython()/parse()
+// return a flat token stream suitable for coloring - no Document/
+// RenderPipeline dependency, no async/incremental reparsing (single-shot
+// ts_parser_parse_string_encoding() per call). Both are deferred to later
+// Phase 7 sub-phases; see master_roadmap.md sec.7 "実装後の確定事項".
 //
 // tree-sitter types (TSNode/TSTree/...) never appear in this header - they
 // are an implementation detail confined to syntax.cpp, matching the
@@ -44,7 +44,18 @@ enum class TokenKind {
 struct Token {
     document::TextRange range;  // UTF-16 code-unit offsets, same convention as document::TextPos
     TokenKind           kind = TokenKind::Text;
+
+    friend constexpr bool operator==(const Token&, const Token&) = default;
 };
+
+// Phase 7d (multi-language dispatch generalization): only the two languages
+// with an actual tree-sitter grammar wired into cmake/Dependencies.cmake are
+// listed here, matching the same "don't put unimplemented enumerators in a
+// public API" rule cited for TokenKind above. A 3rd language repeats the
+// same pattern (grammar FetchContent block + namedLeafKindsForX() table in
+// syntax.cpp) rather than requiring a new abstraction - see master_roadmap.md
+// sec.7 "実装後の確定事項" for the Phase 7d rationale.
+enum class Language { Cpp, Python };
 
 // Parses `text` as C++ and returns a flat, left-to-right, non-overlapping
 // token stream covering every leaf of the syntax tree (whitespace and
@@ -57,5 +68,15 @@ struct Token {
 // classified the same as valid input would be, with no attempt to flag the
 // error location (no TokenKind::Error - see enum comment above).
 [[nodiscard]] std::vector<Token> parseCpp(std::u16string_view text);
+
+// Same contract as parseCpp(), for Python (tree-sitter-python v0.25.0).
+[[nodiscard]] std::vector<Token> parsePython(std::u16string_view text);
+
+// Thin dispatcher over parseCpp()/parsePython(). Kept alongside the two
+// individual functions (rather than replacing them) so existing callers/
+// tests that only care about one language can keep calling it directly, and
+// so per-language expected-output tests stay easy to write (Phase 7b/7c
+// precedent) - see syntax_syntax_test.cpp.
+[[nodiscard]] std::vector<Token> parse(std::u16string_view text, Language language);
 
 }  // namespace neomifes::syntax

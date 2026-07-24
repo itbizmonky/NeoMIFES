@@ -22,12 +22,14 @@ SyntaxWorker::~SyntaxWorker() {
     m_thread.join();
 }
 
-void SyntaxWorker::requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot) noexcept {
+void SyntaxWorker::requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                                syntax::Language                               language) noexcept {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         // Silently supersedes whatever request hadn't been picked up yet -
         // see this class's header comment on why there is no queue.
-        m_pending = std::move(snapshot);
+        m_pending         = std::move(snapshot);
+        m_pendingLanguage = language;
     }
     m_cv.notify_one();
 }
@@ -43,6 +45,7 @@ void SyntaxWorker::workerLoop() {
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     while (true) {
         std::shared_ptr<const document::BufferSnapshot> snapshot;
+        syntax::Language                                 language = syntax::Language::Cpp;
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_cv.wait(lock, [this] { return m_pending != nullptr || m_shuttingDown; });
@@ -50,17 +53,18 @@ void SyntaxWorker::workerLoop() {
                 return;
             }
             snapshot = std::exchange(m_pending, nullptr);
+            language = m_pendingLanguage;
         }
 
         // Full-document re-parse (no true tree-sitter incremental diffing
         // yet - see this class's header comment). Neither extract() nor
-        // parseCpp() is noexcept; a genuine std::bad_alloc is allowed to
+        // syntax::parse() is noexcept; a genuine std::bad_alloc is allowed to
         // propagate and terminate the process rather than being swallowed
         // here, matching BufferSnapshot::pieceView()'s own documented
         // stance on this (CLAUDE.md forbids unconditional catch(...)).
         const std::u16string text =
             snapshot->extract(document::TextRange{.start = 0, .end = snapshot->length()});
-        auto tokens = std::make_unique<std::vector<syntax::Token>>(syntax::parseCpp(text));
+        auto tokens = std::make_unique<std::vector<syntax::Token>>(syntax::parse(text, language));
 
         // Ownership transferred to whichever code handles kMsgSyntaxTokensReady
         // (main.cpp's onAppMessage hook) - it must reconstruct a unique_ptr

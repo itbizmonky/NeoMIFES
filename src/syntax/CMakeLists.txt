@@ -15,6 +15,7 @@ target_link_libraries(neomifes_syntax
         neomifes::compile_options
         tree-sitter
         tree-sitter-cpp-grammar
+        tree-sitter-python-grammar
 )
 
 set_target_properties(neomifes_syntax PROPERTIES

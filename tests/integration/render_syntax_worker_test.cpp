@@ -19,6 +19,7 @@ namespace {
 using neomifes::document::Document;
 using neomifes::render::kMsgSyntaxTokensReady;
 using neomifes::render::SyntaxWorker;
+using neomifes::syntax::Language;
 using neomifes::syntax::Token;
 
 // Same hidden-window pattern as render_text_smoke_test.cpp - a plain
@@ -83,7 +84,7 @@ TEST(SyntaxWorkerTest, RequestParseDeliversTokensViaWindowMessage) {
     doc.insertText(0, u"int x = 42;");
 
     SyntaxWorker worker(window.get());
-    worker.requestParse(doc.snapshot());
+    worker.requestParse(doc.snapshot(), Language::Cpp);
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
@@ -93,6 +94,32 @@ TEST(SyntaxWorkerTest, RequestParseDeliversTokensViaWindowMessage) {
     ASSERT_EQ(tokens->size(), 5u);
     EXPECT_EQ((*tokens)[0].kind, neomifes::syntax::TokenKind::Type);
     EXPECT_EQ((*tokens)[3].kind, neomifes::syntax::TokenKind::Number);
+}
+
+// Phase 7d: the same worker/message-passing path, but requesting a Python
+// parse - confirms the language parameter actually reaches
+// syntax::parse() inside the worker thread, not just that SyntaxWorker
+// compiles against the new signature.
+TEST(SyntaxWorkerTest, RequestParseWithPythonLanguageParsesAsPython) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    Document doc;
+    doc.insertText(0, u"x = 42");
+
+    SyntaxWorker worker(window.get());
+    worker.requestParse(doc.snapshot(), Language::Python);
+
+    const auto tokens = pumpForLatestTokens(5000);
+    ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
+    // Same known classification as SyntaxParsePythonTest.
+    // ClassifiesSimpleAssignment (syntax_syntax_test.cpp):
+    // x(Variable) =(Punctuation) 42(Number) - notably NOT Type for "x",
+    // unlike the C++ case above, since Python's grammar has no primitive_type
+    // leaf; a wrong (C++) dispatch would instead have produced 5 tokens.
+    ASSERT_EQ(tokens->size(), 3u);
+    EXPECT_EQ((*tokens)[0].kind, neomifes::syntax::TokenKind::Variable);
+    EXPECT_EQ((*tokens)[2].kind, neomifes::syntax::TokenKind::Number);
 }
 
 TEST(SyntaxWorkerTest, RapidRequestsCoalesceToOnlyTheLatest) {
@@ -109,8 +136,8 @@ TEST(SyntaxWorkerTest, RapidRequestsCoalesceToOnlyTheLatest) {
     // Fired back-to-back with no pump in between - whichever of these the
     // worker hasn't already started must be silently superseded (see
     // syntax_worker.h's class comment on why there is no queue).
-    worker.requestParse(firstDoc.snapshot());
-    worker.requestParse(lastDoc.snapshot());
+    worker.requestParse(firstDoc.snapshot(), Language::Cpp);
+    worker.requestParse(lastDoc.snapshot(), Language::Cpp);
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";

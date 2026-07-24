@@ -126,6 +126,31 @@ add_library(tree-sitter-cpp-grammar STATIC
 target_include_directories(tree-sitter-cpp-grammar PRIVATE "${tree-sitter-cpp_SOURCE_DIR}/src")
 target_link_libraries(tree-sitter-cpp-grammar PRIVATE tree-sitter)
 
+# ---- tree-sitter-python grammar (Phase 7d) ---------------------------------
+# Same SOURCE_SUBDIR "does-not-exist" workaround as tree-sitter-cpp above -
+# tree-sitter-python's own CMakeLists.txt has the identical
+# find_program(TREE_SITTER_CLI tree-sitter) regeneration problem (verified via
+# a standalone probe before this block was written, matching the same
+# discipline as ADR-014's original tree-sitter-cpp verification). Unlike C++,
+# Python's grammar needs src/scanner.c (an external scanner implementing
+# INDENT/DEDENT token generation for the language's indentation-based block
+# structure) in addition to src/parser.c - both are compiled directly below.
+FetchContent_Declare(
+    tree-sitter-python
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-python.git
+    GIT_TAG        v0.25.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-python)
+
+add_library(tree-sitter-python-grammar STATIC
+    "${tree-sitter-python_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-python_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-python-grammar PRIVATE "${tree-sitter-python_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-python-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -148,8 +173,9 @@ target_link_libraries(tree-sitter-cpp-grammar PRIVATE tree-sitter)
 # included in the FOLDER tidy-up below for consistency. tree-sitter/
 # tree-sitter-cpp-grammar are plain C static libs (Phase 7a, ADR-014) added
 # to the same loop rather than duplicating these property-setting calls.
+# tree-sitter-python-grammar (Phase 7d) is the same kind of target.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
-foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar)
+foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

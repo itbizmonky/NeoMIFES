@@ -670,10 +670,10 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
     findBar.setMatchCount(0, 0);
     renderPipeline.setMatchVisuals({});
     renderPipeline.setBookmarkedLines({});
-    // Phase 7b: track the newly-opened file so RenderPipeline knows whether
-    // to color it as C++.
+    // Phase 7b/7d: track the newly-opened file so RenderPipeline knows which
+    // language (if any) to color it as.
     currentDocumentPath = resolvedPath;
-    renderPipeline.setSyntaxHighlightingEnabled(neomifes::app::isCppSourceFile(resolvedPath));
+    renderPipeline.setLanguage(neomifes::app::detectLanguage(resolvedPath));
     ::SetFocus(hwnd);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     return true;
@@ -1335,10 +1335,10 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, 
     // called internally - this is RenderPipeline's own cached copy, pushed
     // earlier by handleBookmarkKey()'s setBookmarkedLines() call.
     renderPipeline.setBookmarkedLines({});
-    // Phase 7b: track the newly-opened file so RenderPipeline knows whether
-    // to color it as C++.
+    // Phase 7b/7d: track the newly-opened file so RenderPipeline knows which
+    // language (if any) to color it as.
     currentDocumentPath = match.path;
-    renderPipeline.setSyntaxHighlightingEnabled(neomifes::app::isCppSourceFile(match.path));
+    renderPipeline.setLanguage(neomifes::app::detectLanguage(match.path));
     ::SetFocus(hwnd);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
 }
@@ -1689,11 +1689,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     std::optional<std::uint32_t> freeCursorVirtualColumns;
     // Phase 7b: which file (if any) `document` was loaded from - Document
     // itself never tracks this (see syntax_language.h's file comment), and
-    // RenderPipeline::setSyntaxHighlightingEnabled() needs it to decide
-    // whether to color the current document as C++. Only meaningful in
-    // Normal mode, same rationale as searchHistoryPath above (load failures
-    // leave `document` empty, which parses to zero tokens - harmless, see
-    // the Phase 7b plan's Context section point 2).
+    // RenderPipeline::setLanguage() needs it to decide which language (if
+    // any) to color the current document as. Only meaningful in Normal mode,
+    // same rationale as searchHistoryPath above (load failures leave
+    // `document` empty, which parses to zero tokens - harmless, see the
+    // Phase 7b plan's Context section point 2).
     std::optional<std::filesystem::path> currentDocumentPath;
     if (args.mode == LaunchMode::Normal && args.openPath) {
         currentDocumentPath = *args.openPath;
@@ -1716,12 +1716,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
                        commandPalette, gotoLineBar, grepBar, grepState, searchHistory, bookmarks,
                        freeCursorModeEnabled, freeCursorVirtualColumns, currentDocumentPath);
-        // Phase 7b: reflect the startup document's language before the
+        // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
-        // but setSyntaxHighlightingEnabled() only touches plain member
-        // state, so it's safe to call before RenderPipeline is attached.
-        renderPipeline.setSyntaxHighlightingEnabled(
-            currentDocumentPath.has_value() && neomifes::app::isCppSourceFile(*currentDocumentPath));
+        // but setLanguage() only touches plain member state, so it's safe to
+        // call before RenderPipeline is attached.
+        renderPipeline.setLanguage(currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath)
+                                                        : std::nullopt);
     }
 
     if (!window.create(hInstance, cfg)) {
