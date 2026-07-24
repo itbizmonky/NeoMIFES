@@ -389,6 +389,34 @@ TEST(RenderTextSmokeTest, PythonSyntaxHighlightingRendersWithoutError) {
         << neomifes::render::describe(rendered.error());
 }
 
+// Phase 7e: exercises drawIndentGuidesOnLine() end-to-end with a multi-level
+// nested snippet (several distinct indent-guide levels) and a cursor placed
+// on one of the indented lines, so both the regular and active-line brush
+// paths run. Same "render() succeeds, no pixel-level assertion" scope as the
+// rest of this file.
+TEST(RenderTextSmokeTest, IndentGuidesRenderWithoutError) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"void f() {\n    if (x) {\n        y();\n    }\n}\n");
+    pipeline.setDocument(&doc);
+    // Cursor on the deepest-indented line ("        y();") so the active-
+    // guide brush path is exercised too.
+    pipeline.setCursorVisuals({CursorVisual{.position = 25}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with indent guides failed: " << neomifes::render::describe(rendered.error());
+}
+
 TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectly) {
     // Phase 7b: enabling then disabling must not leave the pipeline in a bad
     // state (m_tokens must actually clear, not just stop being consulted).

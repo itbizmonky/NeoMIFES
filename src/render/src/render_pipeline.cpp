@@ -8,6 +8,7 @@
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/render/d2d_factories.h"
+#include "neomifes/render/indent_guide_math.h"
 #include "neomifes/render/resize_math.h"
 #include "neomifes/render/viewport_math.h"
 
@@ -142,6 +143,8 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_numberBrush.Reset();
     m_commentBrush.Reset();
     m_preprocessorBrush.Reset();
+    m_indentGuideBrush.Reset();
+    m_activeIndentGuideBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -405,6 +408,28 @@ ID2D1SolidColorBrush* RenderPipeline::tokenBrush(syntax::TokenKind kind) noexcep
     return nullptr;  // unreachable, every TokenKind enumerator handled above
 }
 
+RenderExpected<void> RenderPipeline::ensureIndentGuideBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // Phase 7e: VSCode Dark+-inspired editorIndentGuide.background/
+    // activeBackground approximations, same "hardcoded, no Theme system yet"
+    // rationale as ensureTokenBrushes() above.
+    if (!m_indentGuideBrush) {
+        constexpr D2D1_COLOR_F kIndentGuideColor = {62.0F / 255.0F, 62.0F / 255.0F, 62.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kIndentGuideColor, m_indentGuideBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_activeIndentGuideBrush) {
+        constexpr D2D1_COLOR_F kActiveIndentGuideColor = {110.0F / 255.0F, 110.0F / 255.0F, 110.0F / 255.0F, 1.0F};
+        const HRESULT hr =
+            dc.CreateSolidColorBrush(kActiveIndentGuideColor, m_activeIndentGuideBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
@@ -459,6 +484,12 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
             // above doesn't matter.
             drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
             drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
+            // Phase 7e: a background element like the two calls above, so it
+            // must run before DrawTextLayout too - see this method's
+            // declaration comment for the isActiveLine approximation.
+            const bool isActiveLine = std::ranges::any_of(
+                caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
+            drawIndentGuidesOnLine(dc, y, lineSpan, isActiveLine);
             drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
             dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, y), *layoutResult, m_textBrush.Get());
             drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
@@ -662,6 +693,25 @@ void RenderPipeline::drawTokensOnLine(IDWriteTextLayout& layout, TextPos lineSta
     }
 }
 
+void RenderPipeline::drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y,
+                                            std::u16string_view lineSpan, bool isActiveLine) noexcept {
+    if (!m_indentGuideBrush || !m_activeIndentGuideBrush) {
+        return;
+    }
+    constexpr std::uint32_t kTabWidth            = 4;  // matches main.cpp's kTabWidth (Phase 4b8d)
+    constexpr float          kIndentGuideWidthDips = 1.0F;
+    const std::uint32_t indentColumns = computeIndentColumns(lineSpan, kTabWidth);
+    const std::uint32_t guideCount    = computeIndentGuideCount(indentColumns, kTabWidth);
+    ID2D1SolidColorBrush* brush = isActiveLine ? m_activeIndentGuideBrush.Get() : m_indentGuideBrush.Get();
+    for (std::uint32_t level = 1; level <= guideCount; ++level) {
+        const float x =
+            kGutterWidthDips + (static_cast<float>(level * kTabWidth) * m_charWidthDips);
+        const D2D1_RECT_F guideRect =
+            D2D1::RectF(x, y, x + kIndentGuideWidthDips, y + m_lineHeightDips);
+        dc.FillRectangle(guideRect, brush);
+    }
+}
+
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || !m_dwriteFactory ||
         m_dpiScale <= 0.0F) {
@@ -774,6 +824,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!tokenBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return tokenBrushResult;
+    }
+    auto indentGuideBrushResult = ensureIndentGuideBrushes(*dc);
+    if (!indentGuideBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return indentGuideBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

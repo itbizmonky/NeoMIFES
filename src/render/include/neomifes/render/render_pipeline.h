@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -230,6 +231,8 @@ private:
     // Phase 7b: one solid brush per colored TokenKind (Text/Variable/
     // Punctuation deliberately excluded - see tokenBrush()'s comment).
     [[nodiscard]] RenderExpected<void> ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept;
+    // Phase 7e: two brushes (regular / active) for indent guide lines.
+    [[nodiscard]] RenderExpected<void> ensureIndentGuideBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
 
@@ -320,6 +323,19 @@ private:
     // unstyled - they fall through to DrawTextLayout()'s default brush,
     // m_textBrush, exactly like a run with no DrawingEffect set at all).
     [[nodiscard]] ID2D1SolidColorBrush* tokenBrush(syntax::TokenKind kind) noexcept;
+    // Draws one thin vertical line per indent-guide level computed from
+    // lineSpan's leading whitespace (Phase 7e, indent_guide_math.h), at
+    // vertical offset `y`. Called from drawVisibleLines() alongside
+    // drawMatchesOnLine()/drawSelectionsOnLine() (background element, before
+    // DrawTextLayout). `isActiveLine` selects m_activeIndentGuideBrush
+    // (brighter) over m_indentGuideBrush - true for whichever line(s)
+    // computeCaretDraws() places a cursor on; this is a simplified
+    // "highlight this one line's guides" approximation of VSCode's "active
+    // indent guide" (the real feature highlights the guide across the whole
+    // enclosing scope, which needs block-range detection this codebase does
+    // not have yet - see the Phase 7e plan's Context section).
+    void drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y, std::u16string_view lineSpan,
+                                bool isActiveLine) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -377,6 +393,10 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_numberBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_commentBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_preprocessorBrush;
+    // Phase 7e: indent guide line brushes, same device-bound reset lifecycle
+    // as the brushes above. See ensureIndentGuideBrushes()/drawIndentGuidesOnLine().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_indentGuideBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_activeIndentGuideBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
     // Phase 4b8e: one fixed-pitch character's advance width, probed once
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()
