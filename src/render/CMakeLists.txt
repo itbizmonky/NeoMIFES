@@ -23,6 +23,14 @@ target_link_libraries(neomifes_render
         # ADR-010 for why Rendering Engine depends directly on Document
         # Engine rather than routing through the app layer.
         neomifes::document
+        # render_pipeline.h's private m_tokens member needs syntax::Token's
+        # complete type (a std::vector member, not a pointer) even though no
+        # syntax:: type appears in this class's PUBLIC method signatures
+        # (Phase 7b, setSyntaxHighlightingEnabled(bool) only). PUBLIC anyway
+        # because every consumer that includes render_pipeline.h - chiefly
+        # neomifes_app_input/main.cpp - needs syntax.h's include path to
+        # compile that header at all.
+        neomifes::syntax
     PRIVATE
         neomifes::compile_options
         # wchar_cast.h (u16string_view -> WCHAR* for DrawText)

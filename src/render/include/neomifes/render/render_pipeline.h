@@ -33,6 +33,11 @@
 #include "neomifes/render/render_device.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/text_layout_cache.h"
+// Phase 7b: m_tokens below needs syntax::Token's complete type (it's a
+// std::vector member, not a pointer), even though no syntax:: type appears
+// in this class's public method signatures. See src/render/CMakeLists.txt's
+// comment on why neomifes::syntax is linked PUBLIC despite that.
+#include "neomifes/syntax/syntax.h"
 
 namespace neomifes::document {
 class Document;
@@ -138,6 +143,20 @@ public:
         m_bookmarkedLines = std::move(lines);
     }
 
+    // Enables/disables C++ syntax-token coloring (Phase 7b). The app layer
+    // decides this from the open file's extension (neomifes::app::isCppSourceFile())
+    // - no general per-language dispatch exists yet, see syntax.h's TokenKind
+    // comment. Forces m_hasCachedSnapshot false so the very next render()
+    // unconditionally re-enters refreshDocumentCacheIfStale()'s refresh path
+    // and (re)computes m_tokens, rather than relying on Document::version()
+    // having moved - a freshly-loaded Document (e.g. after openDocumentAt())
+    // starts its own independent version counter, so trusting version() alone
+    // here risks a same-value coincidence across two different documents.
+    void setSyntaxHighlightingEnabled(bool enabled) noexcept {
+        m_syntaxHighlightingEnabled = enabled;
+        m_hasCachedSnapshot         = false;
+    }
+
     // Converts a client-area point (device pixels, e.g. from
     // WM_LBUTTONDOWN's lParam) to the nearest document::TextPos, using the
     // same TextLayoutCache/DPI/line-height state drawVisibleLines() already
@@ -191,6 +210,9 @@ private:
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept;
+    // Phase 7b: one solid brush per colored TokenKind (Text/Variable/
+    // Punctuation deliberately excluded - see tokenBrush()'s comment).
+    [[nodiscard]] RenderExpected<void> ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
 
@@ -255,6 +277,32 @@ private:
     // header for why the full "Line Gutter" feature stays a separate,
     // already-deferred future phase).
     void drawGutterOnLine(ID2D1DeviceContext6& dc, float y, document::LineNumber line) noexcept;
+    // Applies a per-token-kind DrawingEffect brush to `layout` for whichever
+    // m_tokens overlap [lineStart, lineEnd) (Phase 7b). Called from
+    // drawVisibleLines() BEFORE DrawTextLayout() (the effect must be set on
+    // the layout before it's drawn) - unlike drawSelectionsOnLine()/
+    // drawMatchesOnLine(), this isn't a background rectangle, so ordering
+    // relative to those two doesn't matter, only relative to DrawTextLayout.
+    // Re-applied every frame regardless of TextLayoutCache hit/miss, using
+    // the CURRENT frame's brushes: SetDrawingEffect() is a cheap metadata
+    // write (no reshape), and this deliberately avoids baking device-bound
+    // ID2D1Brush pointers into a layout that TextLayoutCache keeps alive
+    // across device loss (ADR-011 - see this file's top-of-class comment on
+    // m_layoutCache not being cleared in recreateDevice()).
+    //
+    // `tokenCursor` is threaded in/out by the caller across successive calls
+    // within one frame's line loop: visible lines are visited in increasing
+    // document order and m_tokens is sorted the same way (parseCpp()
+    // guarantees this - see syntax_syntax_test.cpp's
+    // TokensAreOrderedLeftToRightAndNonOverlapping), so a single forward
+    // sweep across the whole visible range costs O(tokens overlapping the
+    // viewport) total, not O(visible lines x total document tokens).
+    void drawTokensOnLine(IDWriteTextLayout& layout, document::TextPos lineStart,
+                          document::TextPos lineEnd, std::size_t& tokenCursor) noexcept;
+    // nullptr for TokenKind::Text/Variable/Punctuation (deliberately
+    // unstyled - they fall through to DrawTextLayout()'s default brush,
+    // m_textBrush, exactly like a run with no DrawingEffect set at all).
+    [[nodiscard]] ID2D1SolidColorBrush* tokenBrush(syntax::TokenKind kind) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -274,6 +322,12 @@ private:
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
+    // Phase 7b: gate + cache for C++ syntax-token coloring. m_tokens is
+    // recomputed (synchronously, via syntax::parseCpp()) inside
+    // refreshDocumentCacheIfStale() alongside m_cachedSnapshot - see that
+    // function and setSyntaxHighlightingEnabled() above.
+    bool                                               m_syntaxHighlightingEnabled = false;
+    std::vector<syntax::Token>                         m_tokens;
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush/m_selectionBrush are bound to the device
@@ -291,6 +345,14 @@ private:
     // Phase 4b8c: the bookmark gutter dot's brush, same device-bound reset
     // lifecycle as the brushes above.
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_bookmarkBrush;
+    // Phase 7b: one brush per colored TokenKind, same device-bound reset
+    // lifecycle as the brushes above. See ensureTokenBrushes()/tokenBrush().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_keywordBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_typeBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_stringBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_numberBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_commentBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_preprocessorBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
     // Phase 4b8e: one fixed-pitch character's advance width, probed once
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()

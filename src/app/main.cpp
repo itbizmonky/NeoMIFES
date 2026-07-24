@@ -53,6 +53,7 @@
 #include "neomifes/app/editor_input.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tag_jump.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
@@ -636,7 +637,8 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
                       FindReplaceState& findReplaceState,
                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
                       std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                      std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+                      std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                      std::optional<std::filesystem::path>& currentDocumentPath) {
     if (vkCode != VK_F12) {
         return false;
     }
@@ -668,6 +670,10 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
     findBar.setMatchCount(0, 0);
     renderPipeline.setMatchVisuals({});
     renderPipeline.setBookmarkedLines({});
+    // Phase 7b: track the newly-opened file so RenderPipeline knows whether
+    // to color it as C++.
+    currentDocumentPath = resolvedPath;
+    renderPipeline.setSyntaxHighlightingEnabled(neomifes::app::isCppSourceFile(resolvedPath));
     ::SetFocus(hwnd);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     return true;
@@ -951,7 +957,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         BookmarkManager& bookmarks, bool freeCursorModeEnabled,
                         std::optional<std::uint32_t>& freeCursorVirtualColumns,
                         std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                        std::optional<neomifes::document::TextPos>& rectangularAnchor) {
+                        std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                        std::optional<std::filesystem::path>& currentDocumentPath) {
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled,
                                    freeCursorVirtualColumns, selectionModel, document, renderPipeline,
                                    viewport)) {
@@ -982,7 +989,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     }
     if (handleTagJumpKey(hwnd, vkCode, document, dispatcher, selectionModel, viewport, bookmarks,
                          renderPipeline, findBar, findReplaceState, altCursorAnchor, rectangularAnchor,
-                         freeCursorVirtualColumns)) {
+                         freeCursorVirtualColumns, currentDocumentPath)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
@@ -1303,7 +1310,8 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, 
                       FindReplaceState& findReplaceState,
                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
                       std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                      std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+                      std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                      std::optional<std::filesystem::path>& currentDocumentPath) {
     if (resultIndex >= grepState.currentResults.size()) {
         return;
     }
@@ -1327,6 +1335,10 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, 
     // called internally - this is RenderPipeline's own cached copy, pushed
     // earlier by handleBookmarkKey()'s setBookmarkedLines() call.
     renderPipeline.setBookmarkedLines({});
+    // Phase 7b: track the newly-opened file so RenderPipeline knows whether
+    // to color it as C++.
+    currentDocumentPath = match.path;
+    renderPipeline.setSyntaxHighlightingEnabled(neomifes::app::isCppSourceFile(match.path));
     ::SetFocus(hwnd);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
 }
@@ -1340,7 +1352,8 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
                                  GrepState& grepState, SearchHistory& searchHistory,
                                  std::optional<neomifes::document::TextPos>& altCursorAnchor,
                                  std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                                 std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+                                 std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                                 std::optional<std::filesystem::path>& currentDocumentPath) {
     GrepBarConfig config{};
     config.onRunQuery = [&grepState, &grepBar, &searchHistory](std::u16string_view queryText,
                                                                 std::u16string_view folderText) {
@@ -1358,11 +1371,11 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
     };
     config.onResultActivated = [hwnd, &grepState, &document, &dispatcher, &selectionModel, &viewport,
                                 &bookmarks, &renderPipeline, &findBar, &findReplaceState,
-                                &altCursorAnchor, &rectangularAnchor,
-                                &freeCursorVirtualColumns](std::size_t resultIndex) {
+                                &altCursorAnchor, &rectangularAnchor, &freeCursorVirtualColumns,
+                                &currentDocumentPath](std::size_t resultIndex) {
         jumpToGrepResult(resultIndex, hwnd, grepState, document, dispatcher, selectionModel, viewport,
                         bookmarks, renderPipeline, findBar, findReplaceState, altCursorAnchor,
-                        rectangularAnchor, freeCursorVirtualColumns);
+                        rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -1384,12 +1397,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     GotoLineBar& gotoLineBar, GrepBar& grepBar, GrepState& grepState,
                     SearchHistory& searchHistory, BookmarkManager& bookmarks,
                     bool& freeCursorModeEnabled,
-                    std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+                    std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                    std::optional<std::filesystem::path>& currentDocumentPath) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
                           &grepBar, &grepState, &searchHistory, &bookmarks, &altCursorAnchor,
-                          &rectangularAnchor, &freeCursorModeEnabled,
-                          &freeCursorVirtualColumns](HWND hwnd) {
+                          &rectangularAnchor, &freeCursorModeEnabled, &freeCursorVirtualColumns,
+                          &currentDocumentPath](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -1428,7 +1442,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             buildGrepBarConfig(hwnd, document, dispatcher, selectionModel, viewport, bookmarks,
                               renderPipeline, findBar, findReplaceState, grepBar, grepState,
                               searchHistory, altCursorAnchor, rectangularAnchor,
-                              freeCursorVirtualColumns);
+                              freeCursorVirtualColumns, currentDocumentPath);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
@@ -1453,11 +1467,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
                      &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &bookmarks,
                      &freeCursorModeEnabled, &freeCursorVirtualColumns, &altCursorAnchor,
-                     &rectangularAnchor](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &rectangularAnchor,
+                     &currentDocumentPath](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
                           gotoLineBar, grepBar, bookmarks, freeCursorModeEnabled,
-                          freeCursorVirtualColumns, altCursorAnchor, rectangularAnchor);
+                          freeCursorVirtualColumns, altCursorAnchor, rectangularAnchor,
+                          currentDocumentPath);
     };
     cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
                            HWND hwnd, UINT vkCode, bool shiftDown) {
@@ -1655,6 +1671,17 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // real spaces the moment a character is typed (applyFreeCursorChar()).
     bool                          freeCursorModeEnabled = false;
     std::optional<std::uint32_t> freeCursorVirtualColumns;
+    // Phase 7b: which file (if any) `document` was loaded from - Document
+    // itself never tracks this (see syntax_language.h's file comment), and
+    // RenderPipeline::setSyntaxHighlightingEnabled() needs it to decide
+    // whether to color the current document as C++. Only meaningful in
+    // Normal mode, same rationale as searchHistoryPath above (load failures
+    // leave `document` empty, which parses to zero tokens - harmless, see
+    // the Phase 7b plan's Context section point 2).
+    std::optional<std::filesystem::path> currentDocumentPath;
+    if (args.mode == LaunchMode::Normal && args.openPath) {
+        currentDocumentPath = *args.openPath;
+    }
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -1672,7 +1699,13 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
                        commandPalette, gotoLineBar, grepBar, grepState, searchHistory, bookmarks,
-                       freeCursorModeEnabled, freeCursorVirtualColumns);
+                       freeCursorModeEnabled, freeCursorVirtualColumns, currentDocumentPath);
+        // Phase 7b: reflect the startup document's language before the
+        // first paint - attach() itself happens later inside onDeferredInit,
+        // but setSyntaxHighlightingEnabled() only touches plain member
+        // state, so it's safe to call before RenderPipeline is attached.
+        renderPipeline.setSyntaxHighlightingEnabled(
+            currentDocumentPath.has_value() && neomifes::app::isCppSourceFile(*currentDocumentPath));
     }
 
     if (!window.create(hInstance, cfg)) {

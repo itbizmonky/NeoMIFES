@@ -136,6 +136,12 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_matchBrush.Reset();
     m_currentMatchBrush.Reset();
     m_bookmarkBrush.Reset();
+    m_keywordBrush.Reset();
+    m_typeBrush.Reset();
+    m_stringBrush.Reset();
+    m_numberBrush.Reset();
+    m_commentBrush.Reset();
+    m_preprocessorBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -153,6 +159,7 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     if (m_document == nullptr) {
         m_hasCachedSnapshot = false;
         m_cachedSnapshot.reset();
+        m_tokens.clear();
         return {};
     }
     if (m_hasCachedSnapshot && m_document->version() == m_cachedDocumentVersion) {
@@ -169,6 +176,16 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     // the document has mutated at all, since Document::version() carries no
     // range information.
     m_layoutCache.clear();
+    // Phase 7b: re-tokenize synchronously, same "only on a real version
+    // change" gating as m_cachedSnapshot above (not every frame). No
+    // incremental reparse yet (see syntax.h) - large files may visibly stall
+    // on every edit, a known baseline limitation deferred to a future async
+    // Syntax Worker Thread (roadmap sec.7.9).
+    m_tokens.clear();
+    if (m_syntaxHighlightingEnabled) {
+        m_tokens = syntax::parseCpp(
+            m_cachedSnapshot->extract(TextRange{.start = 0, .end = m_cachedSnapshot->length()}));
+    }
     return {};
 }
 
@@ -303,6 +320,76 @@ RenderExpected<void> RenderPipeline::ensureBookmarkBrush(ID2D1DeviceContext6& dc
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // Phase 7b: VSCode Dark+-inspired palette, chosen for contrast against
+    // this pipeline's existing kBackgroundColor (RGB 30,30,30, see
+    // renderOnce()) and kTextColor (RGB 220,220,220, see ensureTextBrush()).
+    // Hardcoded (no Theme system exists in this codebase yet - see the
+    // Phase 7b plan's Context section) - a future user-configurable theme
+    // would replace these constants, not this brush-creation shape.
+    if (!m_keywordBrush) {
+        constexpr D2D1_COLOR_F kKeywordColor = {86.0F / 255.0F, 156.0F / 255.0F, 214.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kKeywordColor, m_keywordBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_typeBrush) {
+        constexpr D2D1_COLOR_F kTypeColor = {78.0F / 255.0F, 201.0F / 255.0F, 176.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kTypeColor, m_typeBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_stringBrush) {
+        constexpr D2D1_COLOR_F kStringColor = {206.0F / 255.0F, 145.0F / 255.0F, 120.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kStringColor, m_stringBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_numberBrush) {
+        constexpr D2D1_COLOR_F kNumberColor = {181.0F / 255.0F, 206.0F / 255.0F, 168.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kNumberColor, m_numberBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_commentBrush) {
+        constexpr D2D1_COLOR_F kCommentColor = {106.0F / 255.0F, 153.0F / 255.0F, 85.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kCommentColor, m_commentBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_preprocessorBrush) {
+        constexpr D2D1_COLOR_F kPreprocessorColor = {197.0F / 255.0F, 134.0F / 255.0F, 192.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kPreprocessorColor, m_preprocessorBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
+ID2D1SolidColorBrush* RenderPipeline::tokenBrush(syntax::TokenKind kind) noexcept {
+    switch (kind) {
+        case syntax::TokenKind::Keyword:      return m_keywordBrush.Get();
+        case syntax::TokenKind::Type:         return m_typeBrush.Get();
+        case syntax::TokenKind::String:       return m_stringBrush.Get();
+        case syntax::TokenKind::Number:       return m_numberBrush.Get();
+        case syntax::TokenKind::Comment:      return m_commentBrush.Get();
+        case syntax::TokenKind::Preprocessor: return m_preprocessorBrush.Get();
+        // Text/Variable/Punctuation deliberately unstyled - see this
+        // function's declaration comment in render_pipeline.h.
+        case syntax::TokenKind::Text:
+        case syntax::TokenKind::Variable:
+        case syntax::TokenKind::Punctuation:
+            return nullptr;
+    }
+    return nullptr;  // unreachable, every TokenKind enumerator handled above
+}
+
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
@@ -332,6 +419,7 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         m_cachedSnapshot->extract(TextRange{.start = startOffset, .end = endOffset});
 
     const std::vector<CaretDraw> caretDraws = computeCaretDraws();
+    std::size_t tokenCursor = 0;  // Phase 7b: threaded forward across the line loop, see drawTokensOnLine()'s comment
 
     std::u16string_view remaining(text);
     float                y         = 0.0F;
@@ -350,9 +438,13 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
             // highlight (Phase 4b2, N-cursor generalization Phase 4b7a).
             // Matches drawn first (Phase 5b3a) so an active text selection
             // layers visibly above match highlighting, both still behind
-            // the glyphs.
+            // the glyphs. Token colors (Phase 7b) are applied to the layout
+            // itself (not a background rect), so they must be set before
+            // DrawTextLayout - order relative to the two highlight calls
+            // above doesn't matter.
             drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
             drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
+            drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
             dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, y), *layoutResult, m_textBrush.Get());
             drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
             drawGutterOnLine(dc, y, line);
@@ -522,6 +614,39 @@ void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumb
     dc.FillEllipse(dot, m_bookmarkBrush.Get());
 }
 
+void RenderPipeline::drawTokensOnLine(IDWriteTextLayout& layout, TextPos lineStart, TextPos lineEnd,
+                                      std::size_t& tokenCursor) noexcept {
+    // Retire tokens that ended at or before this line's start - m_tokens is
+    // sorted left-to-right (see this method's declaration comment), so once
+    // a token is behind us it never needs revisiting. A token spanning
+    // multiple lines (e.g. a block comment) is NOT retired here - its
+    // range.end still lies past lineStart, so it stays at/after tokenCursor
+    // and gets reconsidered by the next line's call too.
+    while (tokenCursor < m_tokens.size() && m_tokens[tokenCursor].range.end <= lineStart) {
+        ++tokenCursor;
+    }
+    for (std::size_t i = tokenCursor; i < m_tokens.size(); ++i) {
+        const syntax::Token& token = m_tokens[i];
+        if (token.range.start >= lineEnd) {
+            break;  // sorted - nothing from here on can overlap this line either
+        }
+        ID2D1SolidColorBrush* brush = tokenBrush(token.kind);
+        if (brush == nullptr) {
+            continue;  // Text/Variable/Punctuation - falls through to DrawTextLayout()'s default brush
+        }
+        const TextPos overlapStart = std::max(lineStart, token.range.start);
+        const TextPos overlapEnd   = std::min(lineEnd, token.range.end);
+        if (overlapStart >= overlapEnd) {
+            continue;
+        }
+        const DWRITE_TEXT_RANGE dwRange{
+            .startPosition = static_cast<UINT32>(overlapStart - lineStart),
+            .length        = static_cast<UINT32>(overlapEnd - overlapStart),
+        };
+        layout.SetDrawingEffect(brush, dwRange);
+    }
+}
+
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || !m_dwriteFactory ||
         m_dpiScale <= 0.0F) {
@@ -629,6 +754,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!bookmarkBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return bookmarkBrushResult;
+    }
+    auto tokenBrushResult = ensureTokenBrushes(*dc);
+    if (!tokenBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return tokenBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

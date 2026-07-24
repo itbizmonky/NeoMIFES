@@ -333,6 +333,61 @@ TEST(RenderTextSmokeTest, MultipleCursorVisualsRenderWithoutErrorAndForceRedraw)
         << "multi-cursor change was frame-skipped instead of triggering a redraw";
 }
 
+TEST(RenderTextSmokeTest, SyntaxHighlightingEnabledRendersWithoutError) {
+    // Phase 7b: exercises the refreshDocumentCacheIfStale() -> parseCpp() ->
+    // drawTokensOnLine()/SetDrawingEffect() path end-to-end with real C++
+    // content (keyword, identifier, string, number, comment, preprocessor
+    // directive all present) - same "render() succeeds, no pixel-level
+    // assertion" scope as the rest of this file (see file header).
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"#include <cstdint>\n// leading comment\nint main() { return 42; }\n");
+    pipeline.setDocument(&doc);
+    pipeline.setSyntaxHighlightingEnabled(true);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with syntax highlighting enabled failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectly) {
+    // Phase 7b: enabling then disabling must not leave the pipeline in a bad
+    // state (m_tokens must actually clear, not just stop being consulted).
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"int x = 1;\n");
+    pipeline.setDocument(&doc);
+    pipeline.setSyntaxHighlightingEnabled(true);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() (highlighting on) failed: " << neomifes::render::describe(first.error());
+
+    pipeline.setSyntaxHighlightingEnabled(false);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (highlighting off) failed: " << neomifes::render::describe(second.error());
+}
+
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
