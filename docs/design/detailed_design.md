@@ -1728,12 +1728,12 @@ loadFile(const std::filesystem::path& path,
 - ~~TextMate 互換 (JSON/XML) → 独自 IR にコンパイル~~
 - ~~ホットリロード可能~~
 
-### 10.3 neomifes::syntax (Phase 7a 実装)
+### 10.3 neomifes::syntax (Phase 7a 実装、シグネチャは§10.6 Phase 7dで多言語対応)
 
-`neomifes::syntax::parseCpp()`(`src/syntax/include/neomifes/syntax/syntax.h`)は、tree-sitter(ADR-014)でC++ソースを解析し、フラットなToken列を返すヘッドレス関数。Document/RenderPipeline統合・非同期増分解析・他言語対応はいずれも後続サブフェーズへ意図的に据え置き(§7.12参照)。
+`neomifes::syntax::parseCpp()`(`src/syntax/include/neomifes/syntax/syntax.h`)は、tree-sitter(ADR-014)でC++ソースを解析し、フラットなToken列を返すヘッドレス関数。Document/RenderPipeline統合・非同期増分解析・他言語対応はいずれも後続サブフェーズへ意図的に据え置き(§7.12参照)。**本節のコード例はPhase 7a完了時点のC++単一言語版 - Phase 7dでLanguage enum/parsePython()/parse()が追加された現在の完全なシグネチャは§10.6参照。**
 
 ```cpp
-// src/syntax/include/neomifes/syntax/syntax.h
+// src/syntax/include/neomifes/syntax/syntax.h (Phase 7a時点、C++単一言語)
 enum class TokenKind {
     Text, Keyword, Type, Variable, Number, String, Comment, Punctuation, Preprocessor,
 };
@@ -1762,9 +1762,9 @@ struct Token {
 
 `neomifes::syntax::parseCpp()`(§10.3)を`neomifes::render::RenderPipeline`へ統合し、C++ファイルを開いた際に実際にトークン別配色で描画するようにした。C++単一言語のみ、非同期増分解析・多言語対応は後続サブフェーズへ据え置き。
 
-**`RenderPipeline`側の追加API:**
+**`RenderPipeline`側の追加API(Phase 7a時点、C++単一言語版 - Phase 7dで`setLanguage(std::optional<syntax::Language>)`へ一般化、§10.6参照):**
 ```cpp
-// render_pipeline.h
+// render_pipeline.h (Phase 7b時点)
 void setSyntaxHighlightingEnabled(bool enabled) noexcept;
 ```
 呼ぶと`m_syntaxHighlightingEnabled`を更新し、`m_hasCachedSnapshot = false`を立てて次回`render()`で無条件に`refreshDocumentCacheIfStale()`の再取得パスへ入るよう強制する(切り替え直後の新規Documentの`version()`が偶然一致するケースを気にせず済む)。
@@ -1775,7 +1775,7 @@ void setSyntaxHighlightingEnabled(bool enabled) noexcept;
 - **`IDWriteTextLayout::SetDrawingEffect(brush, range)` + `ID2D1DeviceContext::DrawTextLayout()`が範囲ごとに異なるブラシを自動的に使う標準機構であることを確認し、カスタム`IDWriteTextRenderer`は書いていない。** ただし`TextLayoutCache`(ADR-011)はデバイスロスト時に明示的クリアされない設計のため、色ブラシをキャッシュ済みレイアウトへ"焼き込む"(cache miss時にだけ`SetDrawingEffect`する)実装にすると、デバイス再生成後に古いブラシへのダングリング参照が残ってしまう。**この問題を避けるため、`drawTokensOnLine()`は`TextLayoutCache`のヒット/ミスに関わらず`drawVisibleLines()`の可視行ループから毎フレーム呼ばれる**(`SetDrawingEffect()`自体は再シェイピングを伴わない軽量なメタデータ書き込みのため、既存の`drawSelectionsOnLine()`/`drawMatchesOnLine()`と同じコスト特性)。`TextLayoutCache`自体・デバイスライフタイム関連コードは無変更
 - **`drawTokensOnLine()`は`m_tokens`(`parseCpp()`が左→右ソート済みで返すことをテストで保証済み)に対する二分走査を、`drawVisibleLines()`の可視行ループ全体を跨いで前進する`std::size_t tokenCursor`で実装。** `O(可視行数 × 全トークン数)`ではなく一回の前進走査で`O(可視範囲と重なるトークン数)`のコストに収まる。複数行にまたがるトークン(ブロックコメント等)はそのトークンのrange.endが現在行のlineStartを超えるまで`tokenCursor`が進まないため、正しく複数行にわたって再訪される
 
-**C++判定 (`neomifes::app::isCppSourceFile()`、`src/app/include/neomifes/app/syntax_language.h`):**
+**C++判定 (`neomifes::app::isCppSourceFile()`、`src/app/include/neomifes/app/syntax_language.h`、Phase 7b時点。Phase 7dで`detectLanguage()`へ完全に置き換わった - §10.6参照):**
 ```cpp
 [[nodiscard]] inline bool isCppSourceFile(const std::filesystem::path& path) noexcept;
 ```
@@ -1788,7 +1788,7 @@ void setSyntaxHighlightingEnabled(bool enabled) noexcept;
 `neomifes::render::SyntaxWorker`(`src/render/include/neomifes/render/syntax_worker.h`)が、§10.4の同期`syntax::parseCpp()`呼び出しを本コードベース初の`std::thread`へ移し、UIスレッドが大ファイルの全文書再解析でブロックされる問題(7aベンチマーク: 100万行で約6.6秒)を解消する。真の増分再解析(`ts_tree_edit()`)は未実装のまま、全文書再解析を非同期化しただけ。
 
 ```cpp
-// src/render/include/neomifes/render/syntax_worker.h
+// src/render/include/neomifes/render/syntax_worker.h (Phase 7dでLanguage引数を追加)
 inline constexpr UINT kMsgSyntaxTokensReady = WM_APP + 2;
 
 class SyntaxWorker {
@@ -1797,7 +1797,8 @@ public:
     ~SyntaxWorker();  // シャットダウン通知 + join()
 
     // 単一スロット合流 - 未着手の保留分は新しい方で上書き(キューなし)
-    void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot) noexcept;
+    void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                      syntax::Language                               language) noexcept;
 };
 ```
 
@@ -1810,6 +1811,37 @@ public:
 - **`refreshDocumentCacheIfStale()`は`Document::version()`変更時に`m_tokens`を即座にクリアし、非同期`requestParse()`を発火するだけ。** 全文書再解析のため編集後は既存トークンのオフセットが無効になりうる — roadmap §7.9の「解析中は古いトークンを表示し続ける」から意図的に外れ、色を一旦落として安全性を優先した(`applyAsyncSyntaxTokens()`が結果到着時に`m_tokens`を差し替え、`m_lastRenderedFrameState`をリセットしてADR-011の粗粒度フレームスキップに握りつぶされないようにする)
 
 **意図的にスコープ外とした項目:** 真の増分再解析(`ts_tree_edit()`、`Document`の編集範囲通知機構が前提)、デバウンス(合流ロジックで無駄な二重処理は防げているためベンチマーク根拠なしに追加しない)、C++以外の22言語。詳細は`master_roadmap.md` §7参照。
+
+### 10.6 シンタックス多言語対応 + 言語ディスパッチ機構の一般化 (Phase 7d実装)
+
+§10.3〜10.5がC++単一言語専用に作っていた`neomifes::syntax`/`RenderPipeline`/`SyntaxWorker`/`neomifes::app::syntax_language.h`を、Python(2言語目)追加と同時に一般化した。**多言語対応と汎用化を同時に行うことで、C++単独では検証できなかった抽象の妥当性(`TokenKind`・`classifyAnonymousLeaf()`が本当に言語非依存かどうか)を実データで確認した。**
+
+```cpp
+// src/syntax/include/neomifes/syntax/syntax.h (Phase 7d、現在の完全なシグネチャ)
+enum class Language { Cpp, Python };
+
+[[nodiscard]] std::vector<Token> parseCpp(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parsePython(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parse(std::u16string_view text, Language language);
+
+// src/render/include/neomifes/render/render_pipeline.h
+void setLanguage(std::optional<syntax::Language> language) noexcept;  // nullopt = ハイライト無効
+
+// src/app/include/neomifes/app/syntax_language.h (isCppSourceFile()を置き換え)
+[[nodiscard]] inline std::optional<syntax::Language> detectLanguage(
+    const std::filesystem::path& path) noexcept;
+```
+
+**設計上の要点:**
+- **`tree-sitter-python`(v0.25.0)は`tree-sitter-cpp`と全く同じCMake回避パターン(`SOURCE_SUBDIR "does-not-exist"` + 自前`add_library`、`cmake/Dependencies.cmake`参照)がそのまま流用できることを、実装着手前のスタンドアロンprobeで確認した。** `src/parser.c`に加え`src/scanner.c`(インデント/デデント処理の外部スキャナ)もコンパイル対象に含める点がC++との唯一の差
+- **`syntax.cpp`内部は言語共通部分(`classifyAnonymousLeaf()`・`walkTree()`・`parseWithLanguage()`ヘルパー・RAIIラッパ型)と言語固有部分(`namedLeafKindsForCpp()`/`namedLeafKindsForPython()`の2独立テーブル)に分離した。** `classifyLeaf()`/`appendLeafToken()`/`walkTree()`はどのテーブルを使うか引数で受け取るよう変更
+- **`classifyAnonymousLeaf()`(匿名リーフを構造的に分類する関数)は1行も変更せずPythonにもそのまま通用することを実機確認した。** Pythonの`async`/`await`/`lambda`/`and`/`or`/`not`/`is`等の全キーワードも、`:=`/`==`/`@`等の全演算子・記号も、「全ASCII英字ならKeyword、それ以外はPunctuation」という既存ルールと矛盾しなかった — Phase 7a設計時点の「C++の文法上、演算子/記号トークンに純英字のものが存在しない性質を利用した一般化」という狙い通りの結果
+- **`TokenKind`も無変更のままPythonに通用した。** Pythonの`True`/`False`/`None`/`...`(ellipsis)はC++の`true`/`false`/`this`/`null`と同じKeyword扱い。Pythonの型注釈(`x: int`)はtree-sitter-pythonの文法上プレーンな`identifier`ノードにしかならないため、`TokenKind::Type`は一度もPythonトークンに割り当てられない(既知の限界、LSP統合待ち)。`RenderPipeline`の描画側コード(`drawTokensOnLine`/`tokenBrush`/`ensureTokenBrushes`)は1行も変更していない — Phase 7bの6色ブラシがそのままPythonにも使えることが、`TokenKind`の言語非依存設計の実証になった
+- **既知の限界: `string_content`が`escape_sequence`を含む場合、`string_content`ノード自体はleafでなくなり(子ノードを持つcompound node)、`escape_sequence`前後のプレーンテキスト部分にはトークンが一切生成されない(無色表示)。** 例: `"hi\n"`の`"hi"`部分。標準プローブの完全ツリーダンプ(leaf以外のノードも出力する一時的な拡張)で確認した構造的事実。`walkTree()`がleafノード(`child_count()==0`)のみを訪問する設計のため、compound化した`string_content`の「子ノードでカバーされない自身のテキスト範囲」は捕捉されない。修正にはcompoundノードの「子の隙間」を埋める追加ロジックが必要だが、C++側の`Operator`非分離等と同種の受容済み制約として本フェーズのスコープには含めなかった
+- **`SyntaxWorker::m_pending`は当初`std::optional<PendingRequest>`(snapshot+languageの組)として実装したが、clang-tidyの`bugprone-unchecked-optional-access`が`m_cv.wait()`の述語と後続の`request->`アクセスの相関を追跡できず誤検知した。** `std::shared_ptr<const BufferSnapshot> m_pending`(nullptrで「保留なし」を表す元の設計のまま)+ 独立した`syntax::Language m_pendingLanguage`(`m_pending != nullptr`の間だけ意味を持つ)という2フィールド構成に変更し、`std::optional`自体を使わないことで誤検知を構造的に回避した
+- **`neomifes::app::isCppSourceFile()`を`detectLanguage()`へ完全に置き換えた(旧関数は削除、共存させていない)。** `.py`/`.pyw`/`.pyi`をPython、既存のC++拡張子群をC++として認識、それ以外は`nullopt`。シバン行によるPython判定は、C++判定も拡張子のみである対称性を優先し見送った
+
+**意図的にスコープ外とした項目:** C++/Python以外の21言語(3言語目以降は同じパターンを複製する)、真の増分再解析、Theme(ユーザー設定可能な配色)システム、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7参照。
 
 ---
 
@@ -1913,7 +1945,7 @@ Lua / JS / Python の全てに対して**共通の C ABI (プラグイン SDK)**
 | `Document` 書き込み | UI Thread のみ (Command 経由) |
 | `Document` 読み取り | `BufferSnapshot` を共有ポインタで配布し任意スレッドから参照可能 |
 | `RenderPipeline` | UI Thread のみ (内部の`SyntaxWorker`だけが別スレッド、下記) |
-| `neomifes::render::SyntaxWorker` (Phase 7c実装) | 本コードベース初の`std::thread`。専用ワーカー1本(Worker Poolではない、§10.5参照)が`BufferSnapshot`を消費し`syntax::parseCpp()`を実行、結果は`PostMessageW`(`WM_APP+2`)でUIスレッドへ通知 |
+| `neomifes::render::SyntaxWorker` (Phase 7c実装、Phase 7dでLanguage引数対応) | 本コードベース初の`std::thread`。専用ワーカー1本(Worker Poolではない、§10.5参照)が`BufferSnapshot`を消費し`syntax::parse(text, language)`を実行、結果は`PostMessageW`(`WM_APP+2`)でUIスレッドへ通知 |
 | `SearchService` | Worker Pool、結果はキュー経由 (未実装、roadmapスケッチのまま) |
 | `PluginContext` | プラグインごとにアフィニティ (別スレッドから呼ばない) |
 

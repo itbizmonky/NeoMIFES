@@ -1592,6 +1592,40 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 - `docs/handoff/RESUME_HERE.md`に新規§3.37(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
 - メモリ(`reference_no_win32_gui_automation.md`/`project_neomifes_state.md`/`MEMORY.md`)更新
 
-**次回:** Phase 7bとPhase 7cが両方完了した(コミット`a7432ef`/`aea429d`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。**PowerShell+GDI+スクリーンショット手法が使えるようになったため、5c3/5c4/5c5の実アプリ視覚確認は今後このセッション自身で試せる見込み(まだ未実施)。** 次フェーズはPhase 7d以降(多言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。
+**次回:** Phase 7bとPhase 7cが両方完了した(コミット`a7432ef`/`aea429d`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。**PowerShell+GDI+スクリーンショット手法が使えるようになったため、5c3/5c4/5c5の実アプリ視覚確認は今後このセッション自身で試せる見込み(まだ未実施)。** ~~次フェーズはPhase 7d以降(多言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。~~ **(訂正: 同日中の後続セッションでPhase 7dに着手・完了、下記Session 48参照)**
+
+## Session 48 (2026-07-24): Phase 7d — シンタックス多言語対応(Python追加)+ 言語ディスパッチ機構の一般化
+
+ユーザーから「次のPhaseへ進め」(原文「次のPahseへすすめ」、タイポ)と指示された。7a〜7cで一貫して「2言語目が実際に増えるまで汎用の言語ディスパッチ機構は作らない」と据え置いていた判断に、Python(2言語目)を実際に追加することで着手した。多言語対応と汎用化を同時に行うことで、C++単独では検証できなかった抽象の妥当性(`TokenKind`・匿名リーフ分類ロジックが本当に言語非依存かどうか)を実データで確認する狙い。
+
+**着手前調査で、`gh api`により`tree-sitter/tree-sitter-python`(v0.25.0、MIT)の実際のリポジトリ構造を確認した。** `src/parser.c`+`src/scanner.c`(外部スキャナがインデント/デデント処理を担う、tree-sitter-cppと同種の複雑な文法)、`bindings/c/tree_sitter/tree-sitter-python.h`のC ABI宣言、そして決定的に、tree-sitter-pythonの独自`CMakeLists.txt`が`tree-sitter-cpp`と全く同じ`find_program(TREE_SITTER_CLI tree-sitter)`ベースの再生成問題を持つことを確認 — Phase 7aで確立した`SOURCE_SUBDIR "does-not-exist"` + 自前`add_library`ターゲットの回避パターンがそのまま流用できることを、実装着手前に裏付けた。
+
+**Plan Modeで設計を確定し、ユーザー承認を得てから実装した:**
+1. **標準スタンドアロンprobe(`ts_probe_py`)を7aと同じディレクトリパターンで新設し、tree-sitter-python単体をフェッチ・ビルドして実際のパーサ出力を確認してから本体実装に進んだ。** 代表的なPythonスニペット(関数定義・デコレータ・docstring・f-string補間・エスケープシーケンス・raw/byte文字列・async/await/lambda/walrus演算子/内包表記・True/False/None/ellipsis・不正入力・日本語コメント・空/空白のみ入力)を実際にパースし、`node-types.json`との対応を交差検証した(記憶からの推測を避ける、CLAUDE.mdルール3)
+2. **`syntax.h`/`syntax.cpp`にLanguage enum・`parsePython()`・`parse(text, language)`ディスパッチャを追加。** 内部を言語共通部分(`classifyAnonymousLeaf()`・`walkTree()`・新規`parseWithLanguage()`ヘルパー)と言語固有部分(`namedLeafKindsForCpp()`/`namedLeafKindsForPython()`の2独立テーブル)に分離
+3. **`cmake/Dependencies.cmake`にtree-sitter-pythonブロックを追加**(tree-sitter-cppと同じ形)
+4. **`RenderPipeline::setSyntaxHighlightingEnabled(bool)`を`setLanguage(std::optional<syntax::Language>)`へ一般化。** 描画側コード(`drawTokensOnLine`/`tokenBrush`/`ensureTokenBrushes`)は無変更
+5. **`SyntaxWorker::requestParse()`にLanguage引数を追加**
+6. **`neomifes::app::isCppSourceFile()`を`detectLanguage()`へ完全に置き換え**(`.py`/`.pyw`/`.pyi`を追加認識)
+
+**probeで判明した重要な事実(記憶からの推測ではなく実機確認):**
+- **`classifyAnonymousLeaf()`(匿名リーフを構造的に分類する既存関数)は1行も変更せずPythonにもそのまま通用した。** Pythonの全キーワード(`async`/`await`/`lambda`/`and`/`or`/`not`/`is`等)・全演算子/記号(`:=`/`==`/`@`等)が「全ASCII英字ならKeyword、それ以外はPunctuation」という既存の構造的ルールと矛盾しなかった — Phase 7a設計時点の狙い通りの結果
+- **既知の限界として発見・記録: `string_content`が`escape_sequence`を含む場合(例: `"hi\n"`)、`string_content`ノード自体がcompound化し、`escape_sequence`前後のプレーンテキスト部分(`"hi"`)にはトークンが一切生成されない(無色表示)。** 標準プローブの完全ツリーダンプ(leaf以外のノードも出力する一時的な拡張を追加)で構造を特定した。`walkTree()`がleafノードのみ訪問する設計のため、compound化した`string_content`の「子ノードでカバーされない自身のテキスト範囲」は捕捉されない。修正は本フェーズのスコープ外とした
+
+**発生した設計問題と修正(実装中に自己発見):**
+- `SyntaxWorker::m_pending`を当初`std::optional<PendingRequest>`(snapshot+languageの組)として実装したが、clang-tidyの`bugprone-unchecked-optional-access`が`m_cv.wait()`の述語(`m_pending.has_value()`)と後続の`request->`アクセスの相関を追跡できず誤検知(エラー3件)した。`std::shared_ptr<const BufferSnapshot> m_pending`(nullptrで「保留なし」を表す元の設計のまま)+ 独立した`syntax::Language m_pendingLanguage`(`m_pending != nullptr`の間だけ意味を持つ)という2フィールド構成に変更し、`std::optional`自体を使わないことで誤検知を構造的に回避した
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全641テストpass(新規追加: `SyntaxParsePythonTest`スイート10件超・`SyntaxParseDispatcherTest`2件・`DetectLanguageTest`スイート・`SyntaxWorkerTest.RequestParseWithPythonLanguageParsesAsPython`・`RenderTextSmokeTest.PythonSyntaxHighlightingRendersWithoutError`)
+- clang-tidy新規警告0(`bugprone-unchecked-optional-access`エラー3件を上記の設計変更で解消)
+- **実アプリでPowerShell+GDI+スクリーンショット手法により視覚確認。** Pythonファイル(コメント・キーワード・文字列・f-string補間・数値を含む)を`--open`で開き、正しく色分けされていることを確認(コメント=緑、キーワード=青、文字列=オレンジ、数値=黄緑、f-string補間部分の識別子は無色で通常コードと同じ表示)。C++ファイルでも同じ手法で再確認し、退行が無いことを確認した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7d行を追加(7e〜が次候補)、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.6(多言語対応実装リファレンス)を追加、§10.3/§10.4/§10.5の古いコード例に「Phase 7d時点で置き換え」の注記を追加、§16(スレッド安全性)の`SyntaxWorker`行を更新
+- `docs/handoff/RESUME_HERE.md`に新規§3.38(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7b・7c・7dが全て完了した(コミット`a7432ef`/`aea429d`/`e672ca1`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7e以降(残り21言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。3言語目を追加する際は本セッションと同じくスタンドアロンprobeでの実機検証を必ず先に行うこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
 <!-- 次セッションはここに追記 -->

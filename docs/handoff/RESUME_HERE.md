@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)push済み・CI green確認済み(run 30069479419)。**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期シンタックス再解析 Syntax Worker Thread、§3.37参照)ともローカル検証・コミット(`a7432ef`/`aea429d`)完了・未push**)
+> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)push済み・CI green確認済み(run 30069479419)。**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期シンタックス再解析 Syntax Worker Thread、§3.37参照)・Phase 7d(シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化、§3.38参照)いずれもローカル検証・コミット(`a7432ef`/`aea429d`/`e672ca1`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -69,7 +69,8 @@
 | Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (push済み、§3.35参照) |
 | Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (**未push**、§3.36参照) |
 | Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (**未push**、§3.37参照) |
-| **次フェーズ選定 — Phase 7d以降(多言語対応/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (**未push**、§3.38参照) |
+| **次フェーズ選定 — Phase 7e以降(残り21言語/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1058,7 +1059,42 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** 真の増分再解析(`ts_tree_edit()`、`Document`の編集範囲通知機構が前提)、デバウンス、C++以外の22言語。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.5参照。
 
-**Phase 7cはコミット済み(`aea429d`)・未push。** 次フェーズはPhase 7d以降(多言語対応・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+**Phase 7cはコミット済み(`aea429d`)。**
+
+### 3.38 Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) 完了記録
+
+ユーザーから「次のPhaseへ進め」と指示された。7a〜7cで一貫して「2言語目が実際に増えるまで汎用の言語ディスパッチ機構は作らない」と据え置いていた判断に、Python(2言語目)を実際に追加することで着手。多言語対応と汎用化を同時に行うことで、C++単独では検証できなかった抽象の妥当性(`TokenKind`・匿名リーフ分類ロジックが本当に言語非依存かどうか)を実データで確認した。
+
+**着手前調査で、`tree-sitter-python`(v0.25.0)が`tree-sitter-cpp`と全く同じCMake回避パターン(`SOURCE_SUBDIR "does-not-exist"` + 自前`add_library`)がそのまま流用できることを`gh api`で確認した。** 実装の最初の一歩として、7aと同じくスタンドアロンprobe(`ts_probe_py`)でtree-sitter-python単体をフェッチ・ビルドし、代表的なPythonスニペット(関数定義・デコレータ・docstring・f-string補間・エスケープシーケンス・async/await/lambda/walrus/内包表記・True/False/None/ellipsis・不正入力)を実際にパースして`node-types.json`との対応を検証してから本体実装へ進んだ(記憶からの推測を避ける、CLAUDE.mdルール3)。
+
+**実装:**
+- `syntax.h`/`syntax.cpp`: `enum class Language { Cpp, Python }`、`parsePython()`、`parse(text, language)`ディスパッチャを追加。内部を言語共通部分(`classifyAnonymousLeaf()`・`walkTree()`・`parseWithLanguage()`ヘルパー)と言語固有部分(`namedLeafKindsForCpp()`/`namedLeafKindsForPython()`の2独立テーブル)に分離
+- `cmake/Dependencies.cmake`: `tree-sitter-python`ブロックをtree-sitter-cppと同じ形で追加(`src/parser.c`+`src/scanner.c`、外部スキャナがインデント/デデント処理を担う)
+- `RenderPipeline`: `setSyntaxHighlightingEnabled(bool)`を`setLanguage(std::optional<syntax::Language>)`へ一般化。描画側コード(`drawTokensOnLine`/`tokenBrush`/`ensureTokenBrushes`)は無変更 — Phase 7bの6色ブラシがPythonトークンにもそのまま使えることを実証
+- `SyntaxWorker::requestParse()`に`Language`引数を追加
+- `neomifes::app::syntax_language.h`: `isCppSourceFile()`を`detectLanguage()`(`.py`/`.pyw`/`.pyi`を追加認識)へ完全に置き換え
+
+**着手前調査・実装中に判明した重要な事実(記憶からの推測ではなく実機/probe確認):**
+- **`classifyAnonymousLeaf()`(匿名リーフを構造的に分類する関数、「全ASCII英字ならKeyword、それ以外はPunctuation」)は1行も変更せずPythonにもそのまま通用した。** Pythonの`async`/`await`/`lambda`/`and`/`or`/`not`/`is`等の全キーワード、`:=`/`==`/`@`等の全演算子・記号がこの構造的ルールと矛盾しなかった
+- **既知の限界として記録: `string_content`が`escape_sequence`を含む場合(例: `"hi\n"`)、`string_content`ノード自体がcompound化し、`escape_sequence`前後のプレーンテキスト部分(`"hi"`)にはトークンが一切生成されない(無色表示)。** 標準プローブの完全ツリーダンプで確認した構造的事実。walkTreeがleafノードのみ訪問する設計のため、compoundノードの「子の隙間」を埋める追加ロジックが必要だが、本フェーズのスコープには含めなかった(C++側の`Operator`非分離等と同種の受容済み制約)
+
+**発生した設計問題と修正(実装中に自己発見):**
+- `SyntaxWorker::m_pending`を当初`std::optional<PendingRequest>`(snapshot+languageの組)として実装したが、clang-tidyの`bugprone-unchecked-optional-access`が`m_cv.wait()`の述語と後続アクセスの相関を追跡できず誤検知した。`std::shared_ptr<const BufferSnapshot> m_pending`(nullptrで「保留なし」を表す元の設計のまま)+ 独立した`syntax::Language m_pendingLanguage`という2フィールド構成に変更し、`std::optional`自体を使わないことで誤検知を構造的に回避した
+
+**テスト数:** 641件(新規追加分含む、`SyntaxParsePythonTest`スイート・`SyntaxParseDispatcherTest`・`DetectLanguageTest`・`SyntaxWorkerTest.RequestParseWithPythonLanguageParsesAsPython`・`RenderTextSmokeTest.PythonSyntaxHighlightingRendersWithoutError`)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0(`bugprone-unchecked-optional-access`エラー1件を上記の設計変更で解消)。
+
+**完了条件:**
+- [x] `parsePython()`/`parse(text, Language::Python)`が標準プローブで確認した実際のtree-sitter-python出力と一致する分類を返す(単体テストで確認)
+- [x] `RenderPipeline::setLanguage(Language::Python)`後の`render()`が成功する(統合テストで確認)
+- [x] `SyntaxWorker::requestParse(snapshot, Language::Python)`が正しくPythonとして解析される(統合テストで確認)
+- [x] `detectLanguage()`が`.py`/`.pyw`/`.pyi`をPython、既存C++拡張子をC++、それ以外をnulloptと判定する(単体テストで確認)
+- [x] ローカルDebug/Release/ubsan全641テストgreen、clang-tidy新規警告0
+
+**実アプリでPowerShell+GDI+スクリーンショット手法で視覚確認済み。** Pythonファイル(コメント・キーワード・文字列・f-string補間・数値を含む)を開き、正しく色分けされていることを確認(コメント=緑、キーワード=青、文字列=オレンジ、数値=黄緑、f-string補間部分の識別子は無色)。C++ファイルでも同じ手法で再確認し、退行が無いことを確認した。
+
+**スコープ外(意図的、後続サブフェーズへ):** C++/Python以外の21言語(3言語目以降は同じパターンを複製)、真の増分再解析、Theme(ユーザー設定可能な配色)システム、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.6参照。
+
+**Phase 7dはコミット済み(`e672ca1`)・未push。** 次フェーズはPhase 7e以降(残り21言語・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1110,32 +1146,36 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC、§3.35参照)
 は完了・push済み・CI green確認済み(2026-07-24、run 30069479419)。
 **Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期
-シンタックス再解析 Syntax Worker Thread、§3.37参照)はともにローカル検証・コミット
-(`a7432ef`/`aea429d`)完了・未push。**
+シンタックス再解析 Syntax Worker Thread、§3.37参照)・Phase 7d(シンタックス多言語対応:
+Python追加+言語ディスパッチ機構の一般化、§3.38参照)はいずれもローカル検証・コミット
+(`a7432ef`/`aea429d`/`e672ca1`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
-**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7cのシンタックスハイライトはこの手法で既に視覚確認済み(§3.36/§3.37参照、色分け全て正常、編集後も非同期でUIをブロックせず反映されることを確認)。以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
+**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7c/7dのシンタックスハイライトはこの手法で既に視覚確認済み(§3.36/§3.37/§3.38参照、C++/Python双方の色分け全て正常、編集後も非同期でUIをブロックせず反映されることを確認)。以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
   ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
 - 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
 - 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
   履歴永続化確認、§3.34参照)
-- F12タグジャンプ・Grep結果ジャンプでC++↔非C++ファイル間を移動した際の色分けの追従/解除
+- F12タグジャンプ・Grep結果ジャンプでC++↔Python↔非対応ファイル間を移動した際の色分けの追従/解除
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7d以降(シンタックス多言語対応・真の増分再解析(ts_tree_edit)・
+**次フェーズはPhase 7e以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
 アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・
 Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a/7b/7cで確立したパターン(tree-sitterグラマー
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7dで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
-合流・detailed_design.md §10.5参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
-具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。
+合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
+detailed_design.md §10.6参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
+具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
+実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
+実出力を確認してからnamedLeafKindsForXテーブルを構築すること — 記憶からの推測は厳禁。
 
-着手前に本ファイル §3.19〜§3.37 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.38 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
 Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
 Shift+Alt+矢印・Shift+Alt+I/日本語IME確認は、上記4件と合わせてPowerShell+GDI+スクリーンショット
