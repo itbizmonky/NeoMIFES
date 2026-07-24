@@ -1,7 +1,7 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-21 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d 全てpush済み・CI green確認済み(run 29817789405、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。**roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)が完了しorigin/mainへ反映済み**)
-> ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`(`be82721..d318046`)、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
+> **最終更新:** 2026-07-22 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d はpush済み・CI green確認済み。**Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC)完了・コミット済み(`781b167`)・未push**、§3.35参照)
+> ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
 > 🗺️ **Phase 4b8・5b2・5b3・5c・6〜12 の実装詳細は [`docs/design/master_roadmap.md`](../design/master_roadmap.md) **v2.0** (2026 行、23 章) に一気通貫で規定済み。ペルソナ 7 種・競合ポジショニング・60 機能継承マトリクス・世界最速の裏付け技術要素・国際化/アクセシビリティ・セキュリティ・リリース・KPI・エコシステム・開発品質基盤 まで網羅。各フェーズ着手時はまず該当章を読んでから Plan Mode で詳細プランを起こす運用に確定。**
@@ -66,7 +66,8 @@
 | **Phase 6全体 (6a〜6d) — roadmap上の保留項目なし、完全に完了** | ✅ **完了 (push済み)** |
 | Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (push済み、§3.34参照) |
 | **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (push済み)** |
-| **次フェーズ選定 — Phase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (**未push**、§3.35参照) |
+| **次フェーズ選定 — Phase 7aをpush(ユーザー指示待ち)後、Phase 7b以降(多言語対応/Document・Rendering統合等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -959,7 +960,40 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **実アプリでのCtrl+F/Ctrl+Shift+F操作によるCtrl+Up/Down視覚的確認は、この環境のWin32 GUI自動化制約により未実施 — 既存のCtrl+Shift+F/F12視覚確認バックログと合わせてユーザーに依頼する。**
 
-**Phase 5全体(5a〜5c5)完了。** roadmap §5が要求していたFind bar・置換・コマンドパレット・Grep・実行時ファイルを開く機能・タグジャンプ・検索履歴永続化が全て揃った。**push実施 (2026-07-21):** ユーザーの「pushせよ」指示でPhase 6d・5c5分(`be82721..d318046`、4コミット)を`git push origin main`で送信。CI(run 29817789405)が全4ジョブ(release/debug/UBSan clang-cl/clang-tidy)success確認済み。次フェーズはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ等)への着手をユーザーに確認すること。
+**Phase 5全体(5a〜5c5)完了。** roadmap §5が要求していたFind bar・置換・コマンドパレット・Grep・実行時ファイルを開く機能・タグジャンプ・検索履歴永続化が全て揃った。**push実施 (2026-07-21):** ユーザーの「pushせよ」指示でPhase 6d・5c5分(`be82721..d318046`、4コミット)を`git push origin main`で送信。CI(run 29817789405)が全4ジョブ(release/debug/UBSan clang-cl/clang-tidy)success確認済み。
+
+---
+
+### 3.35 Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) 完了記録
+
+ユーザーから「Phase 7に進め」と指示された。Phase 7はroadmap §7が「シンタックス+アウトライン+折り畳み+ミニマップ+Breadcrumb+Sticky scroll+Indent guides+Semantic highlighting」を1章にまとめた最大級のフェーズ。CLAUDE.mdルール8(1PR=1責務)に従い最初のサブフェーズ(7a: エンジン選定+ADR+C++単一言語ヘッドレスPoC)のみに着手。
+
+**着手前調査で、既存ADR-003(Phase 0決定、TextMate互換文法採用)の前提に問題を発見した。** ADR-003の「`.tmLanguage.json`は100+言語分MIT/BSDで整備済み、コピペで導入可能」は文法**定義ファイル**の話であり、それを解釈する**インタプリタ**のC++向け実装が存在するかとは別問題だった。Web調査でTextMate文法インタプリタの成熟した実装はTypeScript(`vscode-textmate`)・C#(`TextMateSharp`)・Java(`eclipse/tm4e`)にしか存在せず、C++向け既製ライブラリが無いことを確認した。AskUserQuestionでユーザーに確認し、**tree-sitterへ切替(ADR-003見直し、推奨案)** が選ばれた — 成熟したCライブラリ・真の増分パース・豊富な言語グラマー資産を持ち、ADR-003が却下理由とした「バイナリ肥大」は実際には起動時メモリではなくディスクサイズの話で言語ごとの遅延ロードで回避可能と判明したため。
+
+**実装:**
+- ADR-014起票(ADR-003をSupersede)。`cmake/Dependencies.cmake`にtree-sitter core(`v0.26.11`)+`tree-sitter-cpp`(`v0.23.4`)をFetchContent追加
+- **`tree-sitter-cpp`の独自CMakeLists.txtを直接`add_subdirectory()`しない設計にした。** `find_program(TREE_SITTER_CLI tree-sitter)`ベースの`parser.c`再生成が未インストール環境でビルド失敗することをスタンドアロンprobeで実機確認(`TREE_SITTER_CLI-NOTFOUND generate ...`というコマンドが実際に実行されエラーになった)。`FetchContent_Declare(... SOURCE_SUBDIR "does-not-exist")`(populateのみ、`add_subdirectory()`はしない公式イディオム)+フェッチ済みソースを直接参照する自前`add_library`ターゲットで回避
+- **root`project()`に`LANGUAGES C`を追加。** tree-sitterは本プロジェクト初のC言語依存で、既存CXX専用ビルドツリーへの増分reconfigureで`CMAKE_C_COMPILE_OBJECT`等が未設定になる問題を実機で確認、ビルドディレクトリのフルクリーン再構成+root project()でのC言語明示宣言で解消
+- 新規`neomifes::syntax::parseCpp()`(`src/syntax/`)。`ts_parser_parse_string_encoding(..., TSInputEncodingUTF16LE)`で`std::u16string`を直接パース(UTF-8往復変換不要、バイトオフセット÷2が正確なCUオフセットになることを確認済み)
+- `TokenKind`はroadmapのフルスケッチから9値(Text/Keyword/Type/Variable/Number/String/Comment/Punctuation/Preprocessor)に縮小。Function(呼び出し文脈判定が必要)・Operator(匿名トークン集合に明確な境界が無い)は未実装のまま公開APIに置かない判断(Phase 6aの`Encoding`enum規約を踏襲)
+- ノード種別→TokenKind対応表は`tree-sitter-cpp`の`node-types.json`(230件)を実機参照+実際のパーサ出力で交差検証して構築(記憶からの推測を避けるため)。匿名leafノードは「英字のみ→Keyword、`#`始まり→Preprocessor、引用符→String、それ以外→Punctuation」という構造的ルールで分類
+- テスト数: 619(unit全体、うち新規14件)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0(外部C ABI関数名への`NOLINTNEXTLINE(readability-identifier-naming)`1件、テストの`modernize-use-ranges`1件を検出・修正)
+
+**発生したバグと修正:**
+- テスト作成時、tree-sitter-cppの実際のトークン分類を確認せず「int→Keyword」「#define行の全トークン→Preprocessor」と思い込んでアサーションを書き、2件のテスト失敗が発生。スタンドアロンprobeで実際の出力を確認したところ「int」は`primitive_type`(named leaf、Type)であり匿名Keywordトークンではなく、`#define FOO 1`の"FOO"は`identifier`(Variable)であることが判明。**実装ではなくテストの期待値の誤りだった** — 修正してテスト側を実際の(より意味的に正しい)分類に合わせた
+
+**完了条件:**
+- [x] tree-sitter/tree-sitter-cppがFetchContentで問題なくビルドできる(独自CMakeLists.txtのCLI依存回避込み)
+- [x] `parseCpp()`がUTF-16入力を直接パースし、正しいCUオフセットのToken列を返す(日本語コメントを含むテストで確認)
+- [x] 不正な構文でもクラッシュせずトークンを返す
+- [x] ローカルDebug/Release/ubsan全619テストgreen、clang-tidy新規警告0
+- [x] ベンチマーク実測(`BM_ParseCpp_Synthetic`、Release): 5万イテレーション(実質30万行、約10.8MB)を1977ms、100万行換算で約6.6秒 — roadmap目標(≤5秒)には未達、非同期化前の同期ベースラインとして記録
+
+**スコープ外(意図的、後続サブフェーズへ):** C++以外の22言語、Document/RenderPipeline統合(実際の色付け描画)、非同期増分解析(Syntax Worker Thread)、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.3参照。
+
+**ヘッドレス追加(main.cpp無変更)のため実アプリ視覚確認は対象外。**
+
+**Phase 7aはコミット済み(`781b167`)・未push。** セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7b以降(多言語対応、Document/Rendering統合等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1007,13 +1041,15 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 ## 6. 次回の推奨最初のプロンプト例
 
 ```
-RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5、Find bar + 置換行 +
-コマンドパレット + Grep + 実行時ファイルを開く機能 + タグジャンプ + 検索履歴永続化)・
-roadmap §6全体(6a〜6d、エンコーディング対応+自動判定+10GB mmap遅延デコード)が
-いずれも完了しており、**全コミットpush済み・CI green確認済み**(2026-07-21、run 29817789405)。
+RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)は
+完了・push済み・CI green確認済み。**Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・
+C++単一言語ヘッドレスPoC、§3.35参照)も完了・コミット済み(`781b167`)だが未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
+
+**未push分がある: Phase 7a(`781b167`)はローカルでコミット済みだが未push — セッション冒頭で
+ユーザーに push 指示を仰ぐこと。**
 
 **最優先の実アプリ視覚確認依頼(この環境にWin32 GUI自動化手段が無いため全て未実施):**
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
@@ -1022,17 +1058,19 @@ roadmap §6全体(6a〜6d、エンコーディング対応+自動判定+10GB mma
 - 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
   履歴永続化確認、§3.34参照)
 
-Phase 6a/6b1/6c1/6c2/6b2/6dはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
+Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7(シンタックス+アウトライン+折り畳み+ミニマップ+Breadcrumb+
-Sticky scroll+Indent guides+Semantic highlighting)一択。** roadmap §5・§6は完全に完了した
-ため、選択肢の並立は無い。Phase 7着手前調査 → Plan Mode で詳細設計を起こすこと。
+**次フェーズはPhase 7b以降(シンタックス多言語対応・Document/Rendering統合・アウトライン・
+折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7aで確立したパターン(tree-sitterグラマー追加は
+SOURCE_SUBDIR+自前add_libraryターゲット、ADR-014参照)を踏襲しつつ、次のサブフェーズの
+スコープをPlan Modeで具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。
 
-着手前に本ファイル §3.19〜§3.34 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.35 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
 Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
 Shift+Alt+矢印・Shift+Alt+I/日本語IME視覚確認があれば、上記3件と合わせてこのセッションの
-冒頭でユーザーに依頼すること(5c1・5c2・6a・6b1・6c1・6c2・6b2・6dはヘッドレスのため
+冒頭でユーザーに依頼すること(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7aはヘッドレスのため
 視覚確認対象なし)。
 ```
 

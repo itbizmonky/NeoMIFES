@@ -1491,4 +1491,40 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **追記 (同日): push実施 + CI確認。** ユーザーの「pushせよ」指示で、Phase 6d・5c5分の4コミット(`be82721..d318046`)を`git push origin main`で送信。CI(run 29817789405)がrelease/debug/UBSan(clang-cl)/clang-tidyの全4ジョブsuccessで確認完了。これでroadmap §5全体(5a〜5c5)・§6全体(6a〜6d)がorigin/mainへ完全に反映された。次フェーズはPhase 7一択。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 45 (2026-07-22): Phase 7a — 構文解析エンジン選定(ADR-014・tree-sitter導入)+ C++単一言語ヘッドレスPoC
+
+**経緯:** roadmap §5・§6が完全にpush済みとなった後、ユーザーから「Phase 7に進め」と指示された。Phase 7はroadmap §7が「シンタックス+アウトライン+折り畳み+ミニマップ+Breadcrumb+Sticky scroll+Indent guides+Semantic highlighting」を1章にまとめた、これまでで最大級のフェーズ。CLAUDE.mdルール8(1PR=1責務)に従い、最初のサブフェーズ(7a: 構文解析エンジン選定+ADR+C++単一言語ヘッドレスPoC)のみに着手する方針で調査を開始した。
+
+**重要な発見: 既存ADR-003(Phase 0決定、TextMate互換文法採用)の前提が崩れていた。** ADR-003は「`.tmLanguage.json`形式は100+言語分MIT/BSDで整備済み、コピペで導入可能」を根拠にしていたが、これは文法**定義ファイル**の再利用可能性の話であり、それを解釈する**インタプリタ**のC++向け実装が存在するかとは全くの別問題だった。WebSearch/gh apiでの調査の結果、TextMate文法インタプリタの成熟した実装はTypeScript(`microsoft/vscode-textmate`)・C#(`TextMateSharp`、vscode-textmateの.NET移植)・Java(`eclipse/tm4e`)にしか存在せず、**C++向けの既製ライブラリが見つからなかった**。採用するにはスコープスタック管理・oniguruma正規表現・`begin`/`end`/`while`パターン・ネストキャプチャを含むインタプリタ本体(数千行規模)をC++で新規に手書きする必要があり、CLAUDE.mdルール3(推測実装をしない)に照らしリスクが高いと判断した。
+
+一方、ADR-003が「バイナリ肥大が20MB要件を圧迫」を理由に却下していたtree-sitterは、依存ゼロの成熟したMITライセンスCライブラリ(`tree-sitter/tree-sitter`、最新リリース`v0.26.11`)で、真の増分パース・豊富な言語グラマー資産(`tree-sitter-cpp`もMIT・`v0.23.4`)を持つ。ADR-003の「20MB」懸念は実際には起動時メモリ(RSS)ではなくディスク上のグラマーデータサイズの話であり、言語ごとの遅延ロード設計を取れば実行時メモリへの影響は避けられることも判明した。AskUserQuestionでこの調査結果をユーザーに提示し確認した結果、**tree-sitterへ切替(ADR-003見直し、推奨案)** が選ばれた。
+
+**着手前の実機検証で判明した2つの技術的落とし穴:**
+1. **`tree-sitter-cpp`の独自CMakeLists.txtには`find_program(TREE_SITTER_CLI tree-sitter)`ベースの`add_custom_command`があり、既にコミット済みの`src/parser.c`があるにもかかわらず、未インストール環境(このマシンやCI含む)では`TREE_SITTER_CLI-NOTFOUND generate ...`というコマンドが実際に実行されビルドが失敗する。** スタンドアロンprobeで実機確認。`FetchContent_Declare(... SOURCE_SUBDIR "does-not-exist")`(公式ドキュメント記載のイディオム、ソースはpopulateするが`add_subdirectory()`はしない)+フェッチ済みソースを直接参照する自前`add_library`ターゲットで回避する設計に確定
+2. **root`project()`が`LANGUAGES CXX`のみを宣言しておりCが無かったため、既存のCXX専用ビルドツリーへtree-sitter(C言語)を増分reconfigureで追加しようとすると`CMAKE_C_COMPILE_OBJECT`等が未設定になりビルドが失敗する。** ビルドディレクトリのフルクリーン再構成(削除+`cmake --preset`)+root`project()`への`LANGUAGES C`明示追加の両方で解消した(本プロジェクト初のC言語依存)
+
+**実装:**
+- ADR-014起票(ADR-003をSupersede、ADR-006がADR-007にSupersedeされた際の形式を踏襲)、`docs/decisions/README.md`更新
+- `cmake/Dependencies.cmake`にtree-sitter core + `tree-sitter-cpp`をFetchContent追加
+- 新規`neomifes::syntax::parseCpp()`(`src/syntax/`)。`ts_parser_parse_string_encoding(..., TSInputEncodingUTF16LE)`で`std::u16string`を直接パース — UTF-8への往復変換不要、バイトオフセット÷2が正確なUTF-16 CUオフセットになることをスタンドアロンprobeで確認済み
+- `TokenKind`はroadmapのフルスケッチ(Function/Operator/TypeParameter/Enum/Namespace/Interface/Attribute/Error + modifiersビットフィールド)から9値(Text/Keyword/Type/Variable/Number/String/Comment/Punctuation/Preprocessor)に縮小。Function(呼び出し文脈判定が必要)・Operator(tree-sitter-cppの匿名トークン集合約200種に明確な境界が無い)は未実装のまま公開APIに置かない判断(Phase 6aの`Encoding`enum「未実装のenumeratorを置かない」規約を踏襲)
+- ノード種別→TokenKind対応表は`tree-sitter-cpp` v0.23.4の`node-types.json`(230件の名前付きノード型、gh apiで取得)を実機参照し、かつ実際のパーサ出力(既知C++スニペット)で交差検証して構築 — 記憶からの推測を避けた(CLAUDE.mdルール3)。匿名leafノード(キーワード・演算子・記号、約200種)は個別列挙せず「英字のみ→Keyword、`#`始まり→Preprocessor、引用符→String、それ以外→Punctuation」という構造的ルールで分類(C++の文法上、演算子/記号トークンに純英字のものが存在しない性質を利用した一般化、他言語への展開が効く設計)
+- `walkTree()`は`TSTreeCursor`を使ったイテレーティブなpre-order走査(C++呼び出しスタックの深さに依存しない、標準的な技法)
+
+**発生したバグと修正:**
+- テスト作成時、tree-sitter-cppの実際のトークン分類を確認せず「int→Keyword」「`#define`行の全トークン→Preprocessor」と思い込んでアサーションを書いてしまい、2件のテスト失敗が発生。スタンドアロンprobeで実際の出力を確認したところ「int」は`primitive_type`(named leaf、Type)であり匿名Keywordトークンではなく、`#define FOO 1`の"FOO"は`identifier`(Variable)であることが判明。**実装ではなくテストの期待値の誤りだった** — このセッション全体を通じて維持してきた「実機/実出力で検証してからテストを書く」規律が、まさにその規律を怠った箇所で自分自身の見落としを検出した形になった
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全619テストpass(新規14件)
+- clang-tidy: `src/`側で外部C ABI関数名(`tree_sitter_cpp`)への`readability-identifier-naming`を`NOLINTNEXTLINE`で抑制(命名規則を変更できない外部シンボルのため)。テストファイルで`modernize-use-ranges`(`std::find_if`→`std::ranges::find_if`)を検出・修正
+- ベンチマーク実測(`BM_ParseCpp_Synthetic`、Release): 5万イテレーション(実質30万行、UTF-16で約10.8MB)を1977ms、1行あたり約6.6μs。**100万行換算で約6.6秒 — roadmap §7.11目標(≤5秒)には未達。** 非同期化前の同期単発パースのベースライン値として記録(Phase 5aの`SearchService::findAll()`初回ベンチマークが「数GBファイルでも高速」目標に届いていなかったのと同じ位置づけ、CLAUDE.mdルール10に従い現時点での追加最適化は見送り)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7a行を追加(7b以降は次候補)、§7.3のstale記述(「Phase 7aでPoC→ADR-013」)を修正、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md` §10(旧TextMateスケッチ)にADR-014による方針転換の注記を追加、新規§10.3(`neomifes::syntax`実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.35(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7aが完了した(コミット`781b167`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7b以降(多言語対応・Document/Rendering統合等)、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

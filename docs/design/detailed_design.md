@@ -1717,14 +1717,46 @@ loadFile(const std::filesystem::path& path,
 
 ## 10. Syntax Engine 詳細
 
-### 10.1 増分解析
+> ⚠️ **本節は当初TextMate互換文法(ADR-003)を前提としたスケッチだったが、Phase 7a着手前レビューでADR-014によりtree-sitterへ切替済み。** §10.1/10.2は将来(非同期増分解析・アウトライン/折り畳み統合サブフェーズ)着手時の構想として残すが、tree-sitterでは10.2の「TextMate文法→独自IRコンパイル」は発生しない(グラマーはCソースとして静的リンクするのみ)。実装済みの内容は§10.3参照。
+
+### 10.1 増分解析 (未実装、将来構想)
 - 変更範囲を含む Region を最小単位で再解析
 - 結果はカラー ID の run-length で保持し、Rendering に渡す
 - 折り畳み範囲は解析結果から生成
 
-### 10.2 文法定義
-- TextMate 互換 (JSON/XML) → 独自 IR にコンパイル
-- ホットリロード可能
+### 10.2 文法定義 (旧スケッチ、ADR-014により対象外)
+- ~~TextMate 互換 (JSON/XML) → 独自 IR にコンパイル~~
+- ~~ホットリロード可能~~
+
+### 10.3 neomifes::syntax (Phase 7a 実装)
+
+`neomifes::syntax::parseCpp()`(`src/syntax/include/neomifes/syntax/syntax.h`)は、tree-sitter(ADR-014)でC++ソースを解析し、フラットなToken列を返すヘッドレス関数。Document/RenderPipeline統合・非同期増分解析・他言語対応はいずれも後続サブフェーズへ意図的に据え置き(§7.12参照)。
+
+```cpp
+// src/syntax/include/neomifes/syntax/syntax.h
+enum class TokenKind {
+    Text, Keyword, Type, Variable, Number, String, Comment, Punctuation, Preprocessor,
+};
+
+struct Token {
+    document::TextRange range;  // UTF-16コードユニットオフセット
+    TokenKind           kind = TokenKind::Text;
+};
+
+[[nodiscard]] std::vector<Token> parseCpp(std::u16string_view text);
+```
+
+**設計上の要点:**
+- **`ts_parser_parse_string_encoding(..., TSInputEncodingUTF16LE)`で`std::u16string`を直接パースし、UTF-8への往復変換を挟まない。** バイトオフセット÷2が常に正確なUTF-16コードユニットオフセットになることをスタンドアロンprobeで実機確認済み(`document::TextPos`の既存規約と自然に一致)
+- **公開ヘッダにtree-sitterの型(`TSNode`/`TSTree`等)を一切露出しない。** `nlohmann::json`を隠蔽したADR-013の設計判断を踏襲、実装は`syntax.cpp`内の無名namespaceに完全に閉じる
+- **`TokenKind`はroadmap §7.3のフルスケッチ(Function/Operator/TypeParameter/Enum/Namespace/Interface/Attribute/Error + modifiersビットフィールド)から縮小し9値のみ実装。** Functionは呼び出し/宣言の文脈判定(親ノード参照)が必要で単一leafの種別だけでは決定できず、Operatorはtree-sitter-cppの匿名トークン集合(約200種)にPunctuationとの明確な境界が無いため、いずれも後続サブフェーズへ据え置き(Phase 6aの`Encoding`enum同様「未実装のenumeratorを公開APIに置かない」規約を踏襲)
+- **ノード種別→TokenKind対応表は`tree-sitter-cpp` v0.23.4の`node-types.json`(230件の名前付きノード型)を実機参照し、実際のパーサ出力(既知C++スニペット)と交差検証して構築した。** 名前付きleafノード(`identifier`/`primitive_type`/`comment`/`string_content`等)は個別テーブル、匿名leafノード(キーワード・演算子・記号)は「英字のみならKeyword、`#`始まりならPreprocessor、引用符(`"`/`'`)ならString、それ以外はPunctuation」という構造的ルールで分類 — C++の文法上、演算子/記号トークンに純英字のものが存在しない性質を利用した一般化
+- **`walkTree()`は`TSTreeCursor`を使ったイテレーティブなpre-order走査。** C++呼び出しスタックの深さに依存しない(tree-sitterのカーソルAPI自体が内部スタックを持つ標準的な技法)
+- **tree-sitter-cppのCMakeLists.txtを直接`add_subdirectory()`しない。** `find_program(TREE_SITTER_CLI tree-sitter)`ベースの`parser.c`再生成が未インストール環境でビルド失敗することをスタンドアロンprobeで確認したため、`SOURCE_SUBDIR "does-not-exist"`(populateのみ、add_subdirectory()はしない公式イディオム)+フェッチ済みソースを直接参照する自前`add_library`ターゲットで回避(`cmake/Dependencies.cmake`参照、詳細はADR-014)
+
+**意図的にスコープ外とした項目:** Document/RenderPipeline統合(実際の色付け描画)、非同期増分解析(Syntax Worker Thread)、C++以外の22言語、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7参照。
+
+**ベンチマーク実測(Release、`BM_ParseCpp_Synthetic`):** 5万イテレーション(実質30万行、UTF-16で約10.8MB)を1977msで解析。1行あたり約6.6μs、100万行換算で約6.6秒 — roadmap §7.11目標(≤5秒)には未達。同期単発パースのベースライン値として記録、非同期化(後続サブフェーズ)で設計自体が変わる見込みのため現時点での追加最適化は見送り。
 
 ---
 
