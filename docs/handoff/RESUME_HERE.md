@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)push済み・CI green確認済み(run 30069479419)。**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期シンタックス再解析 Syntax Worker Thread、§3.37参照)・Phase 7d(シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化、§3.38参照)いずれもローカル検証・コミット(`a7432ef`/`aea429d`/`e672ca1`)完了・未push**)
+> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・**Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)全てpush済み・CI green確認済み**(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s))
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -67,9 +67,9 @@
 | Phase 5c5 (検索履歴永続化: `core::SearchHistory`、Find bar + Grep共有、Ctrl+Up/Down) | ✅ 完了 (push済み、§3.34参照) |
 | **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (push済み)** |
 | Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (push済み、§3.35参照) |
-| Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (**未push**、§3.36参照) |
-| Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (**未push**、§3.37参照) |
-| Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (**未push**、§3.38参照) |
+| Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (push済み、§3.36参照) |
+| Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (push済み、§3.37参照) |
+| Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (push済み、§3.38参照) |
 | **次フェーズ選定 — Phase 7e以降(残り21言語/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
@@ -1026,7 +1026,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **実アプリでの実際の色分け表示は、PowerShell+GDI+ `CopyFromScreen`(2026-07-24発見、[`reference_no_win32_gui_automation.md`]で手順テンプレート化済み)でスクリーンショットを取得し視覚的に確認済み。** Preprocessor(ピンク)/Comment(緑)/Keyword(青)/Type(ティール)/String(オレンジ)/Number(黄緑)が設計通り全て正しく色分けされていた。F12タグジャンプ・Grep結果ジャンプでのC++↔非C++ファイル間の追従/解除、および5c3/5c4/5c5の残る視覚確認項目もこの手法で今後実施できる見込み(まだ未実施)。
 
-**Phase 7bはコミット済み(`a7432ef`)・未push。** 次フェーズはPhase 7c以降(多言語対応・非同期増分解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+**Phase 7bはpush済み(`a7432ef`)・CI green確認済み(2026-07-24、run 30095471821)。**
 
 ---
 
@@ -1059,7 +1059,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** 真の増分再解析(`ts_tree_edit()`、`Document`の編集範囲通知機構が前提)、デバウンス、C++以外の22言語。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.5参照。
 
-**Phase 7cはコミット済み(`aea429d`)。**
+**Phase 7cはpush済み(`aea429d`)・CI green確認済み(2026-07-24、run 30095471821)。**
 
 ### 3.38 Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) 完了記録
 
@@ -1094,7 +1094,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** C++/Python以外の21言語(3言語目以降は同じパターンを複製)、真の増分再解析、Theme(ユーザー設定可能な配色)システム、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.6参照。
 
-**Phase 7dはコミット済み(`e672ca1`)・未push。** 次フェーズはPhase 7e以降(残り21言語・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+**Phase 7dはpush済み(`e672ca1`)・CI green確認済み(2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。** 次フェーズはPhase 7e以降(残り21言語・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1143,12 +1143,10 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC、§3.35参照)
-は完了・push済み・CI green確認済み(2026-07-24、run 30069479419)。
-**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期
-シンタックス再解析 Syntax Worker Thread、§3.37参照)・Phase 7d(シンタックス多言語対応:
-Python追加+言語ディスパッチ機構の一般化、§3.38参照)はいずれもローカル検証・コミット
-(`a7432ef`/`aea429d`/`e672ca1`)完了・未push。**
+**Phase 7a〜7d(構文解析エンジン選定 §3.35、C++シンタックスハイライト統合 §3.36、
+非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応:Python追加+
+言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
+(2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
