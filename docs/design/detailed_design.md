@@ -1781,7 +1781,35 @@ void setSyntaxHighlightingEnabled(bool enabled) noexcept;
 ```
 拡張子ベース(`.cpp/.cc/.cxx/.h/.hpp/.hxx/.hh`、大文字小文字無視)のヘッダオンリー純粋関数。`document::Document`は自分のロード元パスを保持しないため、`main.cpp`に新規状態`currentDocumentPath`(`std::optional<std::filesystem::path>`)を追加し、起動時(`--open`)・F12タグジャンプ成功時・Grep結果ジャンプ成功時の3箇所で更新して`setSyntaxHighlightingEnabled()`へ渡す。汎用言語レジストリ(roadmap §7.3の`SyntaxEngine::registerLanguage()`)は2言語目が実際に増えるまで作らない判断。`--measure-frame`モードはこの配線の対象外のまま(既存ベンチマークベースラインへの影響を避けるため)。
 
-**意図的にスコープ外とした項目:** C++以外の22言語、非同期増分解析(Syntax Worker Thread)、Theme(ユーザー設定可能な配色)システム、`TokenKind::Function`/`Operator`/`Attribute`/`Error`、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7参照。
+**意図的にスコープ外とした項目:** C++以外の22言語、非同期増分解析(Syntax Worker Thread、→Phase 7cで実装)、Theme(ユーザー設定可能な配色)システム、`TokenKind::Function`/`Operator`/`Attribute`/`Error`、折り畳み・アウトライン・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting。詳細は`master_roadmap.md` §7参照。
+
+### 10.5 非同期シンタックス再解析 (Phase 7c実装)
+
+`neomifes::render::SyntaxWorker`(`src/render/include/neomifes/render/syntax_worker.h`)が、§10.4の同期`syntax::parseCpp()`呼び出しを本コードベース初の`std::thread`へ移し、UIスレッドが大ファイルの全文書再解析でブロックされる問題(7aベンチマーク: 100万行で約6.6秒)を解消する。真の増分再解析(`ts_tree_edit()`)は未実装のまま、全文書再解析を非同期化しただけ。
+
+```cpp
+// src/render/include/neomifes/render/syntax_worker.h
+inline constexpr UINT kMsgSyntaxTokensReady = WM_APP + 2;
+
+class SyntaxWorker {
+public:
+    explicit SyntaxWorker(HWND targetHwnd);
+    ~SyntaxWorker();  // シャットダウン通知 + join()
+
+    // 単一スロット合流 - 未着手の保留分は新しい方で上書き(キューなし)
+    void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot) noexcept;
+};
+```
+
+**設計上の要点:**
+- **単一スロットのリクエスト合流。** `std::mutex`+`std::condition_variable`で保護された`m_pending`(1個のみ)。ワーカーが処理中に新しいリクエストが来たら、まだ着手していない保留分を上書きするだけでキューには積まない。高速タイピング中に版が古いリクエストを律儀に処理する無駄を避ける
+- **完了通知は`PostMessageW(hwnd, kMsgSyntaxTokensReady, 0, ヒープ確保したvector<Token>*)`。** 受信側(`main.cpp`)が即座に`unique_ptr`で所有権を回収する契約。`PostMessageW`が失敗した場合(シャットダウン競合等)は`tokens`(まだ`unique_ptr`が握っている)のデストラクタが回収し、リークしない
+- **メンバ宣言順が重要。** `m_mutex`/`m_cv`/`m_pending`/`m_shuttingDown`を`m_thread`より前に宣言する(コンストラクタの初期化子リストの順序ではなく宣言順で構築される) — さもないと`workerLoop()`が未構築のmutexを触る可能性がある
+- **`neomifes::render`は`neomifes::ui`に依存しない設計を維持した。** `kMsgSyntaxTokensReady`はrender::側に定義。`ui::MainWindow`には型を一切知らない汎用`onAppMessage(HWND, UINT msg, WPARAM, LPARAM)`フックを新設し(`onCommand`と同じ「未解釈のまま転送」パターン)、`WM_APP`以上の未解釈メッセージを全て転送するだけにした。main.cppだけが両方の型を知っており、`msg == kMsgSyntaxTokensReady`を判定して`RenderPipeline::applyAsyncSyntaxTokens()`を呼ぶ
+- **ワーカーは`RenderPipeline::attach()`後、`refreshDocumentCacheIfStale()`内で遅延生成する。** `setSyntaxHighlightingEnabled(true)`はmain.cppの起動シーケンスで`attach()`より前に呼ばれることがあり、その時点では`m_hwnd`がまだ`nullptr`。`refreshDocumentCacheIfStale()`は`render()`経由でしか到達しないため`m_hwnd`が有効であることが保証される。`--measure-frame`/`-startup`/`-memory`はシンタックスハイライトを一切有効化しないため、これらの計測モードでは背景スレッドが1つも生成されない(既存ベンチマークベースラインへの影響を避ける)
+- **`refreshDocumentCacheIfStale()`は`Document::version()`変更時に`m_tokens`を即座にクリアし、非同期`requestParse()`を発火するだけ。** 全文書再解析のため編集後は既存トークンのオフセットが無効になりうる — roadmap §7.9の「解析中は古いトークンを表示し続ける」から意図的に外れ、色を一旦落として安全性を優先した(`applyAsyncSyntaxTokens()`が結果到着時に`m_tokens`を差し替え、`m_lastRenderedFrameState`をリセットしてADR-011の粗粒度フレームスキップに握りつぶされないようにする)
+
+**意図的にスコープ外とした項目:** 真の増分再解析(`ts_tree_edit()`、`Document`の編集範囲通知機構が前提)、デバウンス(合流ロジックで無駄な二重処理は防げているためベンチマーク根拠なしに追加しない)、C++以外の22言語。詳細は`master_roadmap.md` §7参照。
 
 ---
 
@@ -1884,12 +1912,14 @@ Lua / JS / Python の全てに対して**共通の C ABI (プラグイン SDK)**
 |---|---|
 | `Document` 書き込み | UI Thread のみ (Command 経由) |
 | `Document` 読み取り | `BufferSnapshot` を共有ポインタで配布し任意スレッドから参照可能 |
-| `RenderPipeline` | UI Thread のみ |
-| `SearchService` | Worker Pool、結果はキュー経由 |
+| `RenderPipeline` | UI Thread のみ (内部の`SyntaxWorker`だけが別スレッド、下記) |
+| `neomifes::render::SyntaxWorker` (Phase 7c実装) | 本コードベース初の`std::thread`。専用ワーカー1本(Worker Poolではない、§10.5参照)が`BufferSnapshot`を消費し`syntax::parseCpp()`を実行、結果は`PostMessageW`(`WM_APP+2`)でUIスレッドへ通知 |
+| `SearchService` | Worker Pool、結果はキュー経由 (未実装、roadmapスケッチのまま) |
 | `PluginContext` | プラグインごとにアフィニティ (別スレッドから呼ばない) |
 
 - **不変オブジェクト + shared_ptr 配布** を軸にロックを最小化
 - どうしても必要な排他は `std::shared_mutex`、細粒度化
+- `SyntaxWorker`は`std::mutex`+`std::condition_variable`による単一スロットのリクエスト合流(キューではない)、詳細は§10.5参照
 
 ---
 

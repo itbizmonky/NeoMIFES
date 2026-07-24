@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)push済み・CI green確認済み(run 30069479419)。**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)ローカル検証・コミット(`a7432ef`)完了・未push**)
+> **最終更新:** 2026-07-24 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC、§3.35参照)push済み・CI green確認済み(run 30069479419)。**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期シンタックス再解析 Syntax Worker Thread、§3.37参照)ともローカル検証・コミット(`a7432ef`/`aea429d`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -68,7 +68,8 @@
 | **Phase 5全体 (5a〜5c5) — roadmap §5全体、完全に完了** | ✅ **完了 (push済み)** |
 | Phase 7a (構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC) | ✅ 完了 (push済み、§3.35参照) |
 | Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (**未push**、§3.36参照) |
-| **次フェーズ選定 — Phase 7c以降(多言語対応/非同期増分解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (**未push**、§3.37参照) |
+| **次フェーズ選定 — Phase 7d以降(多言語対応/真の増分再解析/アウトライン等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1028,6 +1029,39 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 ---
 
+### 3.37 Phase 7c (非同期シンタックス再解析: Syntax Worker Thread) 完了記録
+
+ユーザーから「次のPhaseに進め」と指示された。7bが「同期・UIスレッドで全文書再解析」だったため既知の制約(大ファイルで編集のたびにカクつく)として明記していた非同期化(roadmap §7.9)に着手。本プロジェクト初の`std::thread`導入。
+
+**着手前調査で、`detailed_design.md` §16(スレッド安全性)・`buffer_snapshot.h`のヘッダコメント("safe to hand out to arbitrary threads (search, syntax, plugin workers)")が、この非同期syntaxワーカーを元から想定していたことを確認した。** 推測ではなく既存ドキュメントの記述で裏付けた設計方針。
+
+**実装:**
+- 新規`neomifes::render::SyntaxWorker`(`src/render/`)。単一の専用ワーカースレッド+単一スロット合流(処理前の未着手リクエストは新しい方で上書き、キューは持たない)
+- `RenderPipeline::refreshDocumentCacheIfStale()`が`Document::version()`変更検知時に`m_tokens`を即座にクリアし、非同期`requestParse()`を発火するだけに変更。**全文書再解析のままのため、roadmap §7.9の「解析中は古いトークンを表示し続ける」から意図的に逸脱し、色を一旦落として安全性を優先した**(1文字の編集でも以降の全トークンのオフセットが無効になりうるため、古いトークンをそのまま描画すると間違った位置に間違った色を塗る危険がある)
+- ワーカーは`RenderPipeline::attach()`後(`m_hwnd`が有効になってから)`refreshDocumentCacheIfStale()`内で遅延生成。`--measure-frame`/`-startup`/`-memory`はシンタックスハイライトを一切有効化しないため、これらの計測モードには影響しない
+- `neomifes::ui::MainWindow`に汎用`onAppMessage`フック新設(`onCommand`と同じ「wParam/lParam未解釈のまま転送」パターン)。`WM_APP+`の未解釈メッセージを転送するだけで、`ui::`は`render::`/`syntax::`の型を一切知らないまま維持
+
+**発生した設計ミスと修正(実装中に自己発見):**
+- 当初`kMsgSyntaxTokensReady`を`ui::main_window.h`に置き`render::SyntaxWorker`がそれを参照する設計にしていたが、これは`render::`が`ui::`に依存することになり、CLAUDE.mdのレイヤ依存規則(`[UI Shell] → [Rendering Engine]`、下位は上位を知らない)に違反すると気づいた。定数をrender::側へ移し、`ui::MainWindow`側は型を知らない汎用`onAppMessage`フックに変更して解決
+- `setSyntaxHighlightingEnabled(true)`の初回呼び出し時点でワーカーを生成する設計を最初に検討したが、そのメソッドは`RenderPipeline::attach()`より前(main.cppの起動シーケンス)に呼ばれることがあり`m_hwnd`がまだ`nullptr`になりうると判明。`refreshDocumentCacheIfStale()`(`render()`経由でのみ到達、`attach()`後保証済み)側での遅延生成に変更した
+- clang-tidyの静的解析器(`clang-analyzer-cplusplus.NewDeleteLeaks`)がヒープ確保したトークンベクタの「リーク」を誤検知(`PostMessageW`経由の別翻訳単位への所有権移譲を検出できない)。`PostMessageW`失敗時(シャットダウン競合等)は`unique_ptr`側で確実に回収するようガードした上で、既知の誤検知として`NOLINTNEXTLINE`で抑制
+
+**テスト数:** 626→627(新規2件、実HWND+実スレッドでの統合テスト`render_syntax_worker_test.cpp`)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0。
+
+**完了条件:**
+- [x] `SyntaxWorker::requestParse()`が実際にバックグラウンドスレッドで`parseCpp()`を実行し、`PostMessageW`経由で結果を通知する(統合テストで確認)
+- [x] 高速連続リクエストが単一スロットで合流し、最終的に最新リクエストの結果のみが届く(統合テストで確認)
+- [x] `--measure-frame`/`-startup`/`-memory`への影響なし(シンタックスハイライトを有効化しないため未検証だが設計上到達しない経路であることをコードレビューで確認)
+- [x] ローカルDebug/Release/ubsan全627テストgreen、clang-tidy新規警告0
+
+**実アプリでPowerShell+GDI+スクリーンショット手法で視覚確認済み。** 編集直後・編集から約1.2秒後の2枚を撮影し、新しく入力した行にも正しく色分けが反映され、アプリがハングせず応答し続けることを確認した(小さいテストファイルのため非同期の遅延は体感できないほど高速で、「編集直後は無色→後で色付く」過程を写真で捉えることはできなかったが、これは性能上望ましい結果)。
+
+**スコープ外(意図的、後続サブフェーズへ):** 真の増分再解析(`ts_tree_edit()`、`Document`の編集範囲通知機構が前提)、デバウンス、C++以外の22言語。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.5参照。
+
+**Phase 7cはコミット済み(`aea429d`)・未push。** 次フェーズはPhase 7d以降(多言語対応・真の増分再解析・アウトライン・折り畳み等)の詳細をPlan Modeで設計してから着手。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1075,30 +1109,33 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
 Phase 7a(構文解析エンジン選定: ADR-014・tree-sitter導入・C++単一言語ヘッドレスPoC、§3.35参照)
 は完了・push済み・CI green確認済み(2026-07-24、run 30069479419)。
-**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)はローカル検証・コミット
-(`a7432ef`)完了・未push。**
+**Phase 7b(C++シンタックスハイライトのRenderPipeline統合、§3.36参照)・Phase 7c(非同期
+シンタックス再解析 Syntax Worker Thread、§3.37参照)はともにローカル検証・コミット
+(`a7432ef`/`aea429d`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
-**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7bのシンタックスハイライトはこの手法で既に視覚確認済み(§3.36参照、色分け全て正常)。以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
+**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7cのシンタックスハイライトはこの手法で既に視覚確認済み(§3.36/§3.37参照、色分け全て正常、編集後も非同期でUIをブロックせず反映されることを確認)。以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
 - 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
   ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
 - 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
 - 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
   履歴永続化確認、§3.34参照)
-- F12タグジャンプ・Grep結果ジャンプでC++↔非C++ファイル間を移動した際の色分けの追従/解除(Phase 7b)
+- F12タグジャンプ・Grep結果ジャンプでC++↔非C++ファイル間を移動した際の色分けの追従/解除
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7aはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7c以降(シンタックス多言語対応・非同期増分解析・アウトライン・折り畳み・
-ミニマップ・Breadcrumb・Sticky scroll・Indent guides・Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a/7bで確立したパターン(tree-sitterグラマー追加は
-SOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの毎フレーム
-再適用・detailed_design.md §10.4参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
+**次フェーズはPhase 7d以降(シンタックス多言語対応・真の増分再解析(ts_tree_edit)・
+アウトライン・折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Indent guides・
+Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7a/7b/7cで確立したパターン(tree-sitterグラマー
+追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
+毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
+合流・detailed_design.md §10.5参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
 具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。
 
-着手前に本ファイル §3.19〜§3.36 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.37 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
 Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
 Shift+Alt+矢印・Shift+Alt+I/日本語IME確認は、上記4件と合わせてPowerShell+GDI+スクリーンショット

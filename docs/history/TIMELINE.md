@@ -1560,6 +1560,38 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 - `docs/handoff/RESUME_HERE.md`に新規§3.36(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
 - メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
 
-**次回:** Phase 7bが完了した(コミット`a7432ef`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。**実際の色分け表示(キーワード/型/文字列/数値/コメント/プリプロセッサ)の視覚的確認はこの環境のWin32 GUI自動化制約により実施不可 — ユーザーに依頼すること。** 次フェーズはPhase 7c以降(多言語対応・非同期増分解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+**次回:** Phase 7bが完了した(コミット`a7432ef`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。~~実際の色分け表示の視覚的確認はこの環境のWin32 GUI自動化制約により実施不可 — ユーザーに依頼すること。~~ **(訂正: 同セッション後半でこの前提が誤りと判明、下記Session 47参照)** 次フェーズはPhase 7c以降(多言語対応・非同期増分解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
+## Session 47 (2026-07-24): Win32 GUI自動化手段の発見(訂正) + Phase 7c — 非同期シンタックス再解析 (Syntax Worker Thread)
+
+**前半: Win32 GUIスクリーンショット手段の発見。** Phase 7b完了報告でユーザーから「"Win32 GUI自動化手段が無い"とはどういうことか、実現に必要なタスクを提示してほしい」と問われた。過去のセッション(Phase 4b1、2026-07-17)で「ブラウザ専用ツールしか無いから無理」と結論して以降、一度も再検証せずその結論を踏襲し続けていたことが判明。実際にPowerShell + .NET(`System.Drawing.Graphics.CopyFromScreen`)+ Win32 P/Invoke(`GetWindowRect`/`SetForegroundWindow`)を試したところ、ネイティブウィンドウのスクリーンショットが問題なく取得でき、`Read`ツールで画像として視覚確認できることを実機で確認した。副産物として、Phase 7bのシンタックスハイライトが設計通り正しく動作していることも初めて視覚的に確認できた(Preprocessor=ピンク、Comment=緑、Keyword=青、Type=ティール、String=オレンジ、Number=黄緑、全て正常)。`reference_no_win32_gui_automation.md`(メモリ)を手順テンプレート付きで訂正した。
+
+**後半: Phase 7c(非同期シンタックス再解析)。** ユーザーから「次のPhaseに進め」と指示された。7bは`Document::version()`変更のたびに`syntax::parseCpp()`をUIスレッド上で同期的に全文書へ実行する設計で、7aのベンチマーク(100万行で約6.6秒)を踏まえ「大ファイルでは編集のたびにカクつく」ことを既知の制約として明記していた。roadmap §7.9が名指しで要求する「Syntax Worker Thread」に着手した。本プロジェクト初の`std::thread`導入。
+
+**着手前調査で、`detailed_design.md` §16(スレッド安全性)・`buffer_snapshot.h`のヘッダコメント("safe to hand out to arbitrary threads (search, syntax, plugin workers)")が、この非同期syntaxワーカーを元から想定していたことを確認した。** 推測ではなく既存ドキュメントの記述で裏付けた設計方針。真の増分再解析(`ts_tree_edit()`)は`Document`の編集範囲通知機構(EditEvent購読)が本コードベースに一切存在しないため対象外とし、「全文書再解析はそのまま、実行スレッドだけ変える」ことに絞った。
+
+**実装:**
+- 新規`neomifes::render::SyntaxWorker`(`src/render/`)。単一の専用ワーカースレッド+単一スロット合流(処理前の未着手リクエストは新しい方で上書き、キューは持たない)
+- `RenderPipeline::refreshDocumentCacheIfStale()`が`Document::version()`変更検知時に`m_tokens`を即座にクリアし、非同期`requestParse()`を発火するだけに変更。**全文書再解析のままのため、roadmap §7.9の「解析中は古いトークンを表示し続ける」から意図的に逸脱し、色を一旦落として安全性を優先した**(1文字の編集でも以降の全トークンのオフセットが無効になりうるため、古いトークンをそのまま描画すると間違った位置に間違った色を塗る危険がある)
+- ワーカーは`RenderPipeline::attach()`後(`m_hwnd`が有効になってから)`refreshDocumentCacheIfStale()`内で遅延生成。`--measure-frame`/`-startup`/`-memory`はシンタックスハイライトを一切有効化しないため、これらの計測モードには影響しない
+- `neomifes::ui::MainWindow`に汎用`onAppMessage`フック新設(`onCommand`と同じ「wParam/lParam未解釈のまま転送」パターン)
+
+**発生した設計ミスと修正(実装中に自己発見):**
+- 当初`kMsgSyntaxTokensReady`を`ui::main_window.h`に置き`render::SyntaxWorker`がそれを参照する設計にしていたが、これは`render::`が`ui::`に依存することになり、CLAUDE.mdのレイヤ依存規則(`[UI Shell] → [Rendering Engine]`、下位は上位を知らない)に違反すると気づいた。定数をrender::側へ移し、`ui::MainWindow`側は型を知らない汎用`onAppMessage`フックに変更して解決した
+- `setSyntaxHighlightingEnabled(true)`の初回呼び出し時点でワーカーを生成する設計を最初に検討したが、そのメソッドは`RenderPipeline::attach()`より前(main.cppの起動シーケンス)に呼ばれることがあり`m_hwnd`がまだ`nullptr`になりうると判明。`refreshDocumentCacheIfStale()`(`render()`経由でのみ到達、`attach()`後保証済み)側での遅延生成に変更した
+- clang-tidyの静的解析器(`clang-analyzer-cplusplus.NewDeleteLeaks`)がヒープ確保したトークンベクタの「リーク」を誤検知(`PostMessageW`経由の別翻訳単位への所有権移譲を検出できない)。`PostMessageW`失敗時(シャットダウン競合等)は`unique_ptr`側で確実に回収するようガードした上で、既知の誤検知として`NOLINTNEXTLINE`で抑制した
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全627テストpass(新規2件、実HWND+実スレッドでの統合テスト`render_syntax_worker_test.cpp` — 単一リクエストの完了通知、高速連続リクエストの合流を検証)
+- clang-tidy新規警告0
+- **実アプリでPowerShell+GDI+スクリーンショット手法を初めて本格活用して視覚確認。** C++ファイルを開き、編集し、編集直後と約1.2秒後の2枚を撮影 — 新しく入力した行にも正しく色分けが反映され、アプリがハングせず応答し続けることを確認した(テストファイルが小さいため非同期の遅延は体感できないほど高速で、「編集直後は無色→後で色付く」過程を写真で捉えることはできなかったが、これは性能上望ましい結果)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7c行を追加(7d〜が次候補)、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.5(SyntaxWorker実装リファレンス)を追加、§16(スレッド安全性)の表に`SyntaxWorker`の行を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.37(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`reference_no_win32_gui_automation.md`/`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7bとPhase 7cが両方完了した(コミット`a7432ef`/`aea429d`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。**PowerShell+GDI+スクリーンショット手法が使えるようになったため、5c3/5c4/5c5の実アプリ視覚確認は今後このセッション自身で試せる見込み(まだ未実施)。** 次フェーズはPhase 7d以降(多言語対応・真の増分再解析・アウトライン・折り畳み等)、着手前にPlan Modeで詳細設計を起こすこと。
 
 <!-- 次セッションはここに追記 -->
