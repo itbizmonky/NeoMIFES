@@ -44,6 +44,7 @@ add_executable(neomifes_unit_tests
     util_tag_jump_parser_test.cpp
     app_tag_jump_test.cpp
     encoding_encoding_test.cpp
+    syntax_syntax_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -56,6 +57,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::render
         neomifes::core
         neomifes::search
+        neomifes::syntax
         neomifes::app_input
         neomifes::ui
         GTest::gtest

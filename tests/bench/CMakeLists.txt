@@ -80,3 +80,19 @@ target_link_libraries(neomifes_search_bench
 set_target_properties(neomifes_search_bench PROPERTIES
     FOLDER "tests"
 )
+
+add_executable(neomifes_syntax_bench
+    syntax_parse_bench.cpp
+)
+
+target_link_libraries(neomifes_syntax_bench
+    PRIVATE
+        neomifes::compile_options
+        neomifes::syntax
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+set_target_properties(neomifes_syntax_bench PROPERTIES
+    FOLDER "tests"
+)

@@ -11,6 +11,13 @@ add_subdirectory(util)
 add_subdirectory(encoding)
 add_subdirectory(platform)
 add_subdirectory(document)
+# neomifes_syntax (Phase 7a, ADR-014) depends on neomifes::document (TextRange/
+# TextPos only) and links the tree-sitter/tree-sitter-cpp-grammar targets
+# declared in cmake/Dependencies.cmake - placed after document per the same
+# "declare after what it depends on" convention as encoding/platform above,
+# though add_subdirectory() order itself doesn't affect CMake's cross-directory
+# target_link_libraries() resolution.
+add_subdirectory(syntax)
 add_subdirectory(core)
 # neomifes_search links re2::re2 (unconditionally fetched, see root
 # CMakeLists.txt / cmake/Dependencies.cmake). Unconditional since Phase 5b3a:

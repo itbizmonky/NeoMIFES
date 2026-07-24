@@ -8,7 +8,7 @@
 |---|---|---|
 | [ADR-001](ADR-001-build-system.md) | ビルドシステムに CMake を採用する | Accepted |
 | [ADR-002](ADR-002-regex-engine.md) | 正規表現エンジンに RE2 を採用する | Accepted |
-| [ADR-003](ADR-003-syntax-definition.md) | シンタックス定義に TextMate 互換文法を採用する | Accepted |
+| [ADR-003](ADR-003-syntax-definition.md) | シンタックス定義に TextMate 互換文法を採用する | ~~Superseded by ADR-014~~ |
 | [ADR-004](ADR-004-http-client.md) | HTTP クライアントに WinHTTP を採用する | Accepted |
 | [ADR-005](ADR-005-min-msvc-version.md) | 最低 MSVC バージョンを VS 2022 17.13 以上とする | Accepted |
 | [ADR-006](ADR-006-piece-tree-implementation.md) | Piece Tree を Path-Copying Persistent RB-Tree で実装する | ~~Superseded by ADR-007~~ |
@@ -19,6 +19,7 @@
 | [ADR-011](ADR-011-phase3c-render-cache-scope.md) | Phase 3c は TextLayoutCache のみを実装し、GlyphCache と細粒度 DamageTracker を延期する | Accepted |
 | [ADR-012](ADR-012-phase4a-editor-core-scope.md) | Phase 4a は Command/Undo/Selection のヘッドレス基盤のみを実装し、UI配線・圧縮/ディスクスワップ・矩形選択を延期する | Accepted |
 | [ADR-013](ADR-013-json-library.md) | JSON 入出力ライブラリに nlohmann/json を採用する | Accepted |
+| [ADR-014](ADR-014-syntax-engine-tree-sitter.md) | 構文解析エンジンに tree-sitter を採用する (ADR-003 を置き換え) | Accepted |
 
 ## 運用ルール
 

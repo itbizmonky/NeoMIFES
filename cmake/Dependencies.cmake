@@ -87,6 +87,45 @@ set(JSON_Install    OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(nlohmann_json)
 
+# ---- tree-sitter core (ADR-014) --------------------------------------------
+FetchContent_Declare(
+    tree-sitter
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+    GIT_TAG        v0.26.11
+    GIT_SHALLOW    TRUE
+    EXCLUDE_FROM_ALL
+)
+set(TREE_SITTER_FEATURE_WASM OFF CACHE BOOL "" FORCE)  # roadmap sec.7.3 "WASM除外版"
+# BUILD_SHARED_LIBS OFF already forced above (RE2 block) and stays in effect.
+
+FetchContent_MakeAvailable(tree-sitter)
+
+# ---- tree-sitter-cpp grammar (ADR-014) --------------------------------------
+# SOURCE_SUBDIR pointing at a nonexistent path is the documented FetchContent
+# idiom for "populate the source but do NOT add_subdirectory() it" - needed
+# because tree-sitter-cpp's own CMakeLists.txt has an add_custom_command that
+# tries to regenerate src/parser.c via a `tree-sitter` CLI binary
+# (find_program(TREE_SITTER_CLI tree-sitter)) that isn't installed on this
+# machine (or CI), which fails the build even though the already-committed
+# parser.c works fine as-is (verified via a standalone probe, see ADR-014
+# "実装上の注意点"). Instead, a small add_library() below compiles the
+# fetched parser.c/scanner.c directly, bypassing that CMakeLists.txt.
+FetchContent_Declare(
+    tree-sitter-cpp
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-cpp.git
+    GIT_TAG        v0.23.4
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-cpp)
+
+add_library(tree-sitter-cpp-grammar STATIC
+    "${tree-sitter-cpp_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-cpp_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-cpp-grammar PRIVATE "${tree-sitter-cpp_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-cpp-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -106,9 +145,11 @@ FetchContent_MakeAvailable(nlohmann_json)
 # (Sanitizers.cmake) intact. nlohmann_json is INTERFACE-only (header-only,
 # no compiled sources of its own), so it has no MSVC_RUNTIME_LIBRARY/
 # COMPILE_WARNING_AS_ERROR properties to fight in the first place, but is
-# included in the FOLDER tidy-up below for consistency.
+# included in the FOLDER tidy-up below for consistency. tree-sitter/
+# tree-sitter-cpp-grammar are plain C static libs (Phase 7a, ADR-014) added
+# to the same loop rather than duplicating these property-setting calls.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
-foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json)
+foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

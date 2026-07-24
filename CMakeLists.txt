@@ -3,7 +3,13 @@ cmake_minimum_required(VERSION 3.28)
 project(NeoMIFES
     VERSION 0.0.1
     DESCRIPTION "NeoMIFES - Windows native text editor"
-    LANGUAGES CXX
+    # C added in Phase 7a (ADR-014): tree-sitter core + tree-sitter-cpp-grammar
+    # are plain C libraries. Declaring both languages at the top level (rather
+    # than relying solely on tree-sitter's own nested project(... LANGUAGES C)
+    # call to introduce it) avoids CMAKE_C_COMPILE_OBJECT/CMAKE_C_ARCHIVE_*
+    # going undetected on an incremental reconfigure of a build tree that
+    # predates this dependency - observed firsthand when adding it.
+    LANGUAGES CXX C
 )
 
 # -----------------------------------------------------------------------------
