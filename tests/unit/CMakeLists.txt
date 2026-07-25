@@ -48,6 +48,7 @@ add_executable(neomifes_unit_tests
     syntax_syntax_test.cpp
     syntax_outline_test.cpp
     app_syntax_language_test.cpp
+    app_outline_bridge_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

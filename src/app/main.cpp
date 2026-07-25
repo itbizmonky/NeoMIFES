@@ -53,6 +53,7 @@
 #include "neomifes/app/editor_input.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/outline_bridge.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tag_jump.h"
 #include "neomifes/core/bookmark_manager.h"
@@ -83,6 +84,7 @@
 #include "neomifes/ui/goto_line_parser.h"
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/main_window.h"
+#include "neomifes/ui/outline_pane.h"
 #include "neomifes/util/tag_jump_parser.h"
 
 #include "frame_profile.h"
@@ -133,6 +135,8 @@ using neomifes::ui::GrepBarConfig;
 using neomifes::ui::kWindowClassName;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
+using neomifes::ui::OutlinePane;
+using neomifes::ui::OutlinePaneConfig;
 
 // Fixed name (not a random GUID) so every launch of this build targets the
 // same mutex. "Local\" keeps it session-scoped rather than machine-global.
@@ -229,7 +233,10 @@ LaunchArgs parseArgs() noexcept {
 // controls), but calling it costs nothing and removes any doubt about
 // comctl32 being loaded before the first CreateWindowExW(WC_EDITW, ...).
 void initCommonControls() noexcept {
-    const INITCOMMONCONTROLSEX icc{.dwSize = sizeof(icc), .dwICC = ICC_STANDARD_CLASSES};
+    // ICC_TREEVIEW_CLASSES added for OutlinePane's WC_TREEVIEW (Phase 7g) -
+    // this codebase's first control outside ICC_STANDARD_CLASSES.
+    const INITCOMMONCONTROLSEX icc{.dwSize = sizeof(icc),
+                                   .dwICC   = ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES};
     ::InitCommonControlsEx(&icc);
 }
 
@@ -575,6 +582,63 @@ bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar)
         return true;
     }
     return false;
+}
+
+// Recomputes and displays the outline for the currently open document
+// (Phase 7g) - called from handleOutlineKey() below whenever the panel is
+// (re-)shown. No language detected (currentDocumentPath unset, or an
+// unrecognized extension) yields an empty panel rather than refusing to
+// open it - same "harmless empty result, no special-casing" convention as
+// buildGrepQueryFromInput() on an empty query.
+void refreshOutlinePane(const Document& document,
+                        const std::optional<std::filesystem::path>& currentDocumentPath,
+                        neomifes::ui::OutlinePane& outlinePane) {
+    std::vector<neomifes::ui::OutlineItem> items;
+    const auto language =
+        currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath) : std::nullopt;
+    if (language) {
+        const auto            snapshot = document.snapshot();
+        const std::u16string  text = snapshot->extract(TextRange{.start = 0, .end = snapshot->length()});
+        const auto             nodes = neomifes::syntax::extractOutline(text, *language);
+        items                        = neomifes::app::buildOutlineItems(nodes);
+    }
+    outlinePane.showWith(std::move(items));
+}
+
+// Ctrl+Shift+O while the document editing area has focus (Phase 7g) -
+// unlike handleCommandPaletteKey()/handleGrepKey(), this TOGGLES (a second
+// press while visible hides it) rather than only ever showing. An outline
+// view is a persistent navigation aid the user dismisses with the same key
+// they opened it with, not a one-shot search/command tool - see
+// outline_pane.h's class comment.
+bool handleOutlineKey(UINT vkCode, bool shiftDown, bool ctrlDown, const Document& document,
+                      const std::optional<std::filesystem::path>& currentDocumentPath,
+                      neomifes::ui::OutlinePane& outlinePane) {
+    if (!ctrlDown || !shiftDown || vkCode != 'O') {
+        return false;
+    }
+    if (outlinePane.isVisible()) {
+        outlinePane.hide();
+    } else {
+        refreshOutlinePane(document, currentDocumentPath, outlinePane);
+    }
+    return true;
+}
+
+// OutlinePaneConfig::onItemSelected (Phase 7g) - unlike jumpToGotoTarget()/
+// openDocumentAt(), no line/column conversion is needed: the targetPos
+// OutlinePane echoes back is already a 0-based document::TextPos into the
+// SAME open document, not a cross-file jump. The panel is deliberately left
+// open afterward (see outline_pane.h's class comment) - this function never
+// touches it.
+void jumpToOutlinePosition(std::uint64_t targetPos, HWND hwnd, const Document& document,
+                           SelectionModel& selectionModel, Viewport& viewport,
+                           RenderPipeline& renderPipeline) {
+    const auto pos =
+        std::min(static_cast<neomifes::document::TextPos>(targetPos), document.length());
+    selectionModel.moveAllTo(pos);
+    viewport.ensureVisible(pos, document);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
 }
 
 // Ctrl+G while the document editing area has focus (Phase 4b8b) - same
@@ -954,7 +1018,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         Viewport& viewport, Document& document, RenderPipeline& renderPipeline,
                         FindBar& findBar, FindReplaceState& findReplaceState,
                         CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
-                        BookmarkManager& bookmarks, bool freeCursorModeEnabled,
+                        OutlinePane& outlinePane, BookmarkManager& bookmarks,
+                        bool freeCursorModeEnabled,
                         std::optional<std::uint32_t>& freeCursorVirtualColumns,
                         std::optional<neomifes::document::TextPos>& altCursorAnchor,
                         std::optional<neomifes::document::TextPos>& rectangularAnchor,
@@ -978,6 +1043,9 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
         return;
     }
     if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar)) {
+        return;
+    }
+    if (handleOutlineKey(vkCode, shiftDown, ctrlDown, document, currentDocumentPath, outlinePane)) {
         return;
     }
     if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
@@ -1384,6 +1452,40 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
     return config;
 }
 
+// Builds OutlinePaneConfig, creates the panel, and - if that succeeds -
+// primes its initial position/size (Phase 7g bug fix, discovered via
+// EnumChildWindows during visual verification): onDeferredInit runs via a
+// POSTED message, strictly after the WM_SIZE that fires as part of
+// MainWindow::create()'s own ShowWindow() call, so by the time it runs that
+// one-off WM_SIZE has already come and gone and cfg.onResize (hence
+// outlinePane.onParentResized()) will not fire again until the user manually
+// resizes the window. Without the explicit priming call here, the panel
+// stays stuck at its CreateWindowExW-time placeholder rect (0,0,10,10) the
+// first time it's shown. (The four other overlays created in
+// wireNormalMode()'s onDeferredInit below have this same latent gap; fixing
+// them is out of scope here - see the Phase 7g completion notes.) Pulled out
+// to its own function - same cognitive-complexity reason as
+// handleKeyDownEvent()/handleCharEvent() above - rather than left inline in
+// onDeferredInit's already-long lambda body.
+void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Document& document,
+                                  SelectionModel& selectionModel, Viewport& viewport,
+                                  RenderPipeline& renderPipeline, OutlinePane& outlinePane) {
+    OutlinePaneConfig config{};
+    config.onItemSelected = [hwnd, &document, &selectionModel, &viewport,
+                             &renderPipeline](std::uint64_t targetPos) {
+        jumpToOutlinePosition(targetPos, hwnd, document, selectionModel, viewport, renderPipeline);
+    };
+    config.onClosed = [hwnd]() { ::SetFocus(hwnd); };
+    if (!outlinePane.create(hwnd, hInstance, config)) {
+        return;
+    }
+    RECT clientRect{};
+    ::GetClientRect(hwnd, &clientRect);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    outlinePane.onParentResized(static_cast<std::uint32_t>(clientRect.right),
+                                static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
@@ -1395,15 +1497,15 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
                     FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
                     GotoLineBar& gotoLineBar, GrepBar& grepBar, GrepState& grepState,
-                    SearchHistory& searchHistory, BookmarkManager& bookmarks,
+                    SearchHistory& searchHistory, OutlinePane& outlinePane, BookmarkManager& bookmarks,
                     bool& freeCursorModeEnabled,
                     std::optional<std::uint32_t>& freeCursorVirtualColumns,
                     std::optional<std::filesystem::path>& currentDocumentPath) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
-                          &grepBar, &grepState, &searchHistory, &bookmarks, &altCursorAnchor,
-                          &rectangularAnchor, &freeCursorModeEnabled, &freeCursorVirtualColumns,
-                          &currentDocumentPath](HWND hwnd) {
+                          &grepBar, &grepState, &searchHistory, &outlinePane, &bookmarks,
+                          &altCursorAnchor, &rectangularAnchor, &freeCursorModeEnabled,
+                          &freeCursorVirtualColumns, &currentDocumentPath](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -1444,9 +1546,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                               searchHistory, altCursorAnchor, rectangularAnchor,
                               freeCursorVirtualColumns, currentDocumentPath);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
+
+        // Same non-fatal treatment as findBar.create() above.
+        createAndPositionOutlinePane(hwnd, hInstance, document, selectionModel, viewport, renderPipeline,
+                                     outlinePane);
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
-    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar](
+    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane](
                        HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
@@ -1458,11 +1564,18 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPalette.onParentResized(w, dpiScale);
         gotoLineBar.onParentResized(w, dpiScale);
         grepBar.onParentResized(w, dpiScale);
+        outlinePane.onParentResized(w, h, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette, &grepBar](HWND, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
+    };
+    // Phase 7g: OutlinePane's WC_TREEVIEW is this codebase's first control
+    // that notifies via WM_NOTIFY rather than WM_COMMAND - see
+    // MainWindowConfig::onNotify's doc comment (main_window.h).
+    cfg.onNotify = [&outlinePane](HWND, WPARAM wParam, LPARAM lParam) {
+        return outlinePane.handleNotify(wParam, lParam);
     };
     // Phase 7c: SyntaxWorker's background-thread parse completion signal.
     // MainWindow forwards every WM_APP+ message it doesn't itself interpret
@@ -1481,13 +1594,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &bookmarks,
-                     &freeCursorModeEnabled, &freeCursorVirtualColumns, &altCursorAnchor,
+                     &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
+                     &bookmarks, &freeCursorModeEnabled, &freeCursorVirtualColumns, &altCursorAnchor,
                      &rectangularAnchor,
                      &currentDocumentPath](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
-                          gotoLineBar, grepBar, bookmarks, freeCursorModeEnabled,
+                          gotoLineBar, grepBar, outlinePane, bookmarks, freeCursorModeEnabled,
                           freeCursorVirtualColumns, altCursorAnchor, rectangularAnchor,
                           currentDocumentPath);
     };
@@ -1656,6 +1769,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // findReplaceState above).
     GrepBar   grepBar;
     GrepState grepState;
+    // Symbol outline panel (Ctrl+Shift+O, Phase 7g) - a single WC_TREEVIEW,
+    // see outline_pane.h's class comment for how it differs from the
+    // overlays above (WM_NOTIFY routing, stays open after a jump).
+    OutlinePane outlinePane;
     // Search-pattern history (Phase 5c5) - shared by Find bar's find edit
     // and the Grep dialog's query edit (deliberately NOT the command
     // palette - core::search_history.h's file comment explains why). Only
@@ -1714,8 +1831,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     } else {
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette, gotoLineBar, grepBar, grepState, searchHistory, bookmarks,
-                       freeCursorModeEnabled, freeCursorVirtualColumns, currentDocumentPath);
+                       commandPalette, gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
+                       bookmarks, freeCursorModeEnabled, freeCursorVirtualColumns, currentDocumentPath);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

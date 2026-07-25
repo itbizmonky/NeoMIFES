@@ -101,6 +101,17 @@ struct MainWindowConfig {
     // window behavior to preserve, unlike WM_SYSKEYDOWN's conditional
     // fall-through above.
     std::function<void(HWND, UINT msg, WPARAM, LPARAM)> onAppMessage;
+    // Optional: invoked from WM_NOTIFY (Phase 7g - OutlinePane's WC_TREEVIEW
+    // is this codebase's first control that notifies via WM_NOTIFY rather
+    // than WM_COMMAND; every earlier child control - WC_EDIT/WC_LISTBOX -
+    // notified via onCommand above instead). wParam/lParam are passed
+    // through unexamined, same "caller decodes" contract as onCommand/
+    // onAppMessage - MainWindow never learns what NMHDR::code means, keeping
+    // neomifes::ui independent of any specific control's notification
+    // payload types. The return value becomes wndProc's WM_NOTIFY result;
+    // 0 (no handler configured) is a safe default for TreeView, which does
+    // not require a specific non-zero reply.
+    std::function<LRESULT(HWND, WPARAM, LPARAM)> onNotify;
 };
 
 class MainWindow {
@@ -148,6 +159,7 @@ private:
     void handleMouseMove(LPARAM lParam) noexcept;
     void handleMouseUp() noexcept;
     void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
+    LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
@@ -162,6 +174,7 @@ private:
     std::function<void(HWND, std::int32_t, std::int32_t)>            m_onMouseDrag;
     std::function<void(HWND, WPARAM, LPARAM)>                         m_onCommand;
     std::function<void(HWND, UINT, WPARAM, LPARAM)>                   m_onAppMessage;
+    std::function<LRESULT(HWND, WPARAM, LPARAM)>                      m_onNotify;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;

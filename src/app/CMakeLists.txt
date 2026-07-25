@@ -21,6 +21,9 @@ target_link_libraries(neomifes_app_input
         # search::GrepQuery/GrepMatch in their public signatures - same
         # reasoning as core/document above (document_open.h).
         neomifes::search
+        # outline_bridge.h (Phase 7g) exposes syntax::OutlineNode in its
+        # public signature - same reasoning as neomifes::search above.
+        neomifes::syntax
     PRIVATE
         neomifes::compile_options
         neomifes::util

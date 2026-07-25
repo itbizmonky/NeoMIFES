@@ -66,6 +66,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onMouseDrag    = config.onMouseDrag;
     m_onCommand      = config.onCommand;
     m_onAppMessage   = config.onAppMessage;
+    m_onNotify       = config.onNotify;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -167,6 +168,8 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
         case WM_COMMAND:
             handleCommand(wParam, lParam);
             return 0;
+        case WM_NOTIFY:
+            return handleNotify(wParam, lParam);
         case WM_ERASEBKGND:
             // We paint the full client rect in WM_PAINT; suppress default erase to
             // avoid flicker.
@@ -336,6 +339,13 @@ void MainWindow::handleCommand(WPARAM wParam, LPARAM lParam) noexcept {
     if (m_onCommand) {
         m_onCommand(m_hwnd, wParam, lParam);
     }
+}
+
+LRESULT MainWindow::handleNotify(WPARAM wParam, LPARAM lParam) noexcept {
+    if (m_onNotify) {
+        return m_onNotify(m_hwnd, wParam, lParam);
+    }
+    return 0;
 }
 
 }  // namespace neomifes::ui
