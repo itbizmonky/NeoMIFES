@@ -1696,4 +1696,38 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 7fが完了した(コミット`0f54c73`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7g以降(残り21言語対応・真の増分再解析・折り畳み・アウトラインUI統合(`outline_pane`、WC_TREEVIEW)・ミニマップ・Breadcrumb・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。折り畳みに着手する場合、`core::Viewport`/`RenderPipeline`が論理行=表示行前提でハードコードされている(本セッションで確認済み)ことを踏まえ、Core+Rendering層を横断する変換の設計から始めること。3言語目を追加する際は、本セッションで発覚したC++/Python間の同名ノード構造差異のような取り違えを避けるため、スタンドアロンprobeでの実機検証を必ず先に行うこと。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 51 (2026-07-26): Phase 7g — アウトラインUI統合 (`ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O)
+
+ユーザーから「次のPhaseへすすめ」と指示された。4つの候補(アウトラインUI統合/3言語目追加/折り畳み/真の増分再解析)をAskUserQuestionで提示し、**アウトラインUI統合(推奨案)**が選ばれた — Phase 7fで作ったヘッドレスな核を実際にUIへ繋ぐ、5a→5b・6a→6d・7a→7bと同じ順序。
+
+**着手前調査で確定した設計方針:**
+- `WC_TREEVIEW`はこのコードベース初出のコントロール型で、通知が`WM_COMMAND`ではなく`WM_NOTIFY`で届くと判明した。`MainWindowConfig`に新規`onNotify`フック(`onCommand`/`onAppMessage`と同じ「未解釈のまま転送」形)を追加、`InitCommonControlsEx`に`ICC_TREEVIEW_CLASSES`を追加した
+- アウトライン項目選択→即ジャンプだがパネルは閉じない設計にした。`FindBar`/`GrepBar`/`CommandPalette`は全て「アクション後に隠れる」設計(検索/コマンド実行という単発ツールの性質)だが、アウトラインは複数シンボルを連続して見て回るナビゲーション補助(VSCode Outlineビューと同じ性質)であるため意図的に異なる挙動にした
+- ジャンプは`app::openDocumentAt()`を使わず、既存`jumpToGotoTarget()`と同型の同一ドキュメント内ジャンプ(`OutlineNode::pos`は既に絶対`TextPos`のため行/桁変換不要)にした
+- パネルは右ドッキング・フル高さのオーバーレイにした(`FindBar`等の固定サイズボックスとは意図的な逸脱、ドキュメント全体のシンボル構造を見渡す用途のため)。`RenderPipeline`の描画幅は狭めない(既存オーバーレイと同じ「重ねるだけ」設計を維持)
+
+**実装:**
+- 新規`src/ui/include/neomifes/ui/outline_pane.h` + `src/ui/src/outline_pane.cpp`: `OutlineItem`・`OutlinePane`(`populateTree()`は明示スタックで反復実装 — Phase 7fの`walkForOutline()`が`misc-no-recursion`指摘を受けた直後だったため、同じ轍を踏まないよう予防的に反復にした)
+- `MainWindowConfig`/`MainWindow`に`onNotify`フック新設
+- 新規`src/app/include/neomifes/app/outline_bridge.h`: `syntax::OutlineNode → ui::OutlineItem`変換(`buildOutlineItems()`)
+- `main.cpp`: `handleOutlineKey`(Ctrl+Shift+Oトグル)・`refreshOutlinePane`・`jumpToOutlinePosition`・`createAndPositionOutlinePane`新設、`wireNormalMode()`へ配線
+
+**発生した問題と修正(いずれも視覚確認中の実機調査で発覚):**
+- **`EnumChildWindows`(P/Invoke)による構造検証で、既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)全てに共通する潜在バグを発見した。** 全て`wireNormalMode()`の`onDeferredInit`(`WM_SIZE`より後に走る投稿メッセージ)内で`.create()`されるが、位置決めは`cfg.onResize`(`WM_SIZE`)からしか呼ばれない。`WM_SIZE`は`MainWindow::create()`内の`ShowWindow()`呼び出し時に一度だけ先に発火し、その時点ではこれらのコントロールがまだ存在しないため、後から作られても二度と自動で位置決めされず、ユーザーが手動でウィンドウをリサイズするまでプレースホルダ座標(`0,0,10,10`)に居座り続ける。`OutlinePane`は`create()`成功直後に`::GetClientRect`+`::GetDpiForWindow`で明示的に`onParentResized()`を呼ぶ(`createAndPositionOutlinePane()`)ことで解消した。既存4オーバーレイの同じ問題はspawn_taskで別タスク(task_e3df1519)として切り出した(CLAUDE.mdルール8、1PR=1責務)
+- **この環境の合成キーボード入力ではCtrl/Shift等の修飾キーが機能しないことが判明した。** `SendKeys`(高レベルAPI)・`keybd_event`(低レベルAPI)・`SendInput`(最新の低レベルAPI)の3種類全てで試したが、いずれもアプリ側の`GetKeyState`が「押されている」を検知できず、対応するオーバーレイが一切開かなかった。さらに`SendInput`直後に`GetAsyncKeyState`を呼んでも「押されていない」を返すことを確認し、OSレベルの非同期キー状態テーブル自体が更新されていない(この自動化サンドボックス環境が合成された修飾キー入力そのものを拒否している)ことを突き止めた。一方、プレーンな文字タイピング(SendKeys)はWM_CHARとして正常に届く(実際にHELLOがドキュメントへ挿入されるのを確認)ため、修飾キーを伴う組み合わせだけが特異的に機能しない。この発見を`reference_no_win32_gui_automation.md`メモリへ反映し、以前の「SendKeysで再現できる見込み」という記述(2026-07-24時点)を訂正した
+- `wireNormalMode`のcognitive complexityが26(閾値25)を超過 → outline pane生成+初期配置ロジックを`createAndPositionOutlinePane()`ヘルパーへ完全に外出しして解消した
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、全672テストpass(新規追加: `AppOutlineBridgeTest`スイート4件)
+- clang-tidy新規警告0(`cppcoreguidelines-pro-type-union-access`・`readability-qualified-auto`・`misc-misplaced-const`・cognitive-complexity超過を都度検出・修正)
+- **`EnumChildWindows`で`OutlinePane`(`SysTreeView32`)が実際に生成され、右ドッキング・フル高さで正しく位置決めされることを確認した**(`rect=(1032,131)-(1292,892)`、1200×800ウィンドウに対して正しい右端配置)。上記の環境制約により、Ctrl+Shift+Oを実際に押してパネルが開く様子・クリックでのジャンプ・Escapeでの終了はスクリーンショットで確認できず、構造検証+単体テスト+コードレビューで代替した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7g行を追加(7h〜が次候補)、§7に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.9(アウトラインUI統合実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.41(完了記録)、§1状態表・§6推奨プロンプト(修飾キー制約の訂正を含む)・冒頭メタデータを更新
+- メモリ(`reference_no_win32_gui_automation.md`・`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7gが完了した(コミット`3c99cf6`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7h以降(残り21言語対応・真の増分再解析・折り畳み・ミニマップ・Breadcrumb・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が残っている — ユーザーが起動していなければこのセッションで拾ってもよい。修飾キーを伴うショートカットの視覚確認は`EnumChildWindows`による構造検証で代替すること(`reference_no_win32_gui_automation.md`参照)。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

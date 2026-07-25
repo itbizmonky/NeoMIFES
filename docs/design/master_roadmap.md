@@ -217,7 +217,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7d | シンタックス多言語対応 (Python追加) + 言語ディスパッチ機構の一般化 | ✅ 完了 | §7 |
 | 7e | Indent guides (インデントガイド) | ✅ 完了 | §7 |
 | 7f | アウトライン抽出 (OutlineNode、ヘッドレス) | ✅ 完了 | §7 |
-| 7g〜 | 残り21言語 + 真の増分再解析 + 折り畳み + アウトラインUI統合 + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
+| 7g | アウトラインUI統合 (OutlinePane、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 | §7 |
+| 7h〜 | 残り21言語 + 真の増分再解析 + 折り畳み + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1065,6 +1066,18 @@ public:
 - **C++の`function_definition`は`"name"`フィールドを持たず、`"declarator"`フィールドの中に名前が入れ子になっている構造を、スタンドアロンprobeでの実機確認(node-types.json照合)を経て実装した。** `pointer_declarator`/`function_declarator`は`"declarator"`という named field で子を公開するが、**`reference_declarator`はnode-types.jsonで`"fields": {}`(フィールド無し、位置引数のみ)と確認した — pointer/referenceで文法構造が非対称という、tree-sitter-cpp自身の設計上の性質だった。** 当初この非対称性を見落とし、`getRef(int& x)`(reference_declarator経由)のケースで名前解決が失敗するテストが4件発覚し、`declaratorChild()`ヘルパー(named fieldを優先し、無ければ最初の named positional child にフォールバック)を追加して解消した
 - **C++/Pythonの両文法が関数定義ノードを同じ`"function_definition"`という型名で持つため、ノード型名だけでの分岐が言語混同バグを引き起こすことをテストで発見・修正した。** Pythonの`function_definition`は(C++と異なり)`"name"`フィールドを直接持つ素直な構造だが、`resolveSymbolName()`がノード型名のみで分岐していたためPython関数もC++専用のdeclarator-unwrapパスに誤って送られ、名前解決が関数本体全体のテキストにフォールバックしてしまっていた。`Language`引数を`resolveSymbolName()`/`walkForOutline()`/`extractOutline()`に通し、`Language::Cpp && nodeType == "function_definition"`の場合のみC++専用パスを通すよう修正した
 - **`walkForOutline()`は当初再帰実装で書いたが、clang-tidyの`misc-no-recursion`指摘を受けて明示スタックによる反復実装に書き換えた。** AST深さは編集対象のソースファイル依存であり安全に有界ではない(`piece_tree.cpp`のRB木走査のようなO(log n)保証が無い) — `syntax.cpp`の`walkTree()`が同じ理由で`TSTreeCursor`ベースの反復実装を採用していた前例と同じ判断。ネストしたOutlineNodeツリーを構築する必要があるため単純なcursor走査では足りず、`scanStack`(再帰呼び出しスタック相当)と`resultLevels`/`pendingSymbols`(各再帰呼び出しのローカル変数相当)からなる明示的な2段スタック構成にした
+
+### 実装後の確定事項/変更点 (2026-07-26、Phase 7g完了)
+
+**roadmap §7.10の「アウトライン」の残り半分、UI統合(`outline_pane`、WC_TREEVIEW)を実装した。Ctrl+Shift+Oで右ドッキング・フル高さのシンボルツリーパネルをトグル表示し、クリックで同一ドキュメント内の該当位置へジャンプする。**
+
+- **`WC_TREEVIEW`はこのコードベース初出のコントロール型で、通知が`WM_COMMAND`ではなく`WM_NOTIFY`で届くことが判明した。** `FindBar`/`GrepBar`/`CommandPalette`が使ってきたWC_EDIT/WC_LISTBOXとは別チャンネルのため、`MainWindowConfig`に新規`onNotify`フック(`onCommand`/`onAppMessage`と同じ「未解釈のまま転送」形)を追加した。`InitCommonControlsEx`の`dwICC`に`ICC_TREEVIEW_CLASSES`を追加(既存`ICC_STANDARD_CLASSES`のみでは`WC_TREEVIEWW`クラスが登録されない)
+- **アウトライン項目を選択したら即座にジャンプするが、パネルは閉じない設計にした。** `FindBar`/`GrepBar`/`CommandPalette`は全て「アクション実行後に隠れる」設計(検索/コマンド実行という単発ツールの性質)だが、アウトラインは複数シンボルを連続して見て回るナビゲーション補助(VSCodeのOutlineビューと同じ性質)であるため意図的に異なる挙動にした。Escapeキーで明示的に閉じる
+- **`ui::OutlinePane`は`syntax::OutlineNode`を直接知らない。** 新規`ui::OutlineItem`(UI専用ミラー型、`targetPos`は解釈しないopaqueな`std::uint64_t`)を公開APIとし、`syntax::OutlineNode → ui::OutlineItem`の変換は新規`neomifes::app::buildOutlineItems()`(ヘッダオンリー)がapp層で行う — 既存の「`ui::`はWin32機構のみ、ドメイン型は呼び出し側が変換して渡す」原則をそのまま踏襲
+- **ジャンプは`app::openDocumentAt()`を使わない。** `OutlineNode::pos`は既に開いている同一ドキュメント内の絶対`document::TextPos`であり、別ファイルを開く操作ではないため、既存`jumpToGotoTarget()`と同型の「同一ドキュメント内ジャンプ」(`selectionModel.moveAllTo()` → `viewport.ensureVisible()` → `syncRenderStateAndInvalidate()`)をそのまま踏襲した。行/桁変換も不要(`OutlineNode::pos`は既に0始まりの絶対オフセット)
+- **パネルは右ドッキング・フル高さのオーバーレイにした(`FindBar`/`GrepBar`/`CommandPalette`の固定サイズボックスとは意図的な逸脱)。** アウトライン閲覧はドキュメント全体のシンボル構造を見渡す用途であり、`GrepBar`の`kListHeightDips=240`のような固定高さでは実用に耐えないと判断した。`RenderPipeline`の描画幅は狭めない(既存オーバーレイと同じ「重ねるだけ」設計を維持)
+- **視覚確認中、Win32 `EnumChildWindows`による構造検証(キーボード入力が使えない制約への対処、詳細後述)で既存の潜在バグを発見・修正した。** `FindBar`/`CommandPalette`/`GotoLineBar`/`GrepBar`/`OutlinePane`は全て`wireNormalMode()`の`onDeferredInit`(`WM_PAINT`初回完了後に走る投稿メッセージ)内で`.create()`されるが、位置決めは`cfg.onResize`(`WM_SIZE`)からしか呼ばれない。`WM_SIZE`は`MainWindow::create()`内の`ShowWindow()`呼び出し時に一度だけ先に発火し、その時点ではこれらのコントロールがまだ存在しないため、後から作られても二度と自動で位置決めされず、ユーザーが手動でウィンドウをリサイズするまでプレースホルダ座標(`0,0,10,10`)に居座り続けるバグだった。`OutlinePane`は`create()`成功直後に`::GetClientRect`+`::GetDpiForWindow`で明示的に`onParentResized()`を呼ぶことで解消したが、既存4オーバーレイの同じ問題は本フェーズのスコープ外として別タスクへ切り出した(1PR=1責務、CLAUDE.mdルール8)
+- **この環境の自動化キーボード入力では、Ctrl/Shift等の修飾キーを伴うショートカットを合成できないことが判明した。** `SendKeys`・`keybd_event`・`SendInput`の3種の入力合成APIいずれを使っても、送信直後に`GetAsyncKeyState`で確認すると修飾キーが「押されていない」ままだった — OSレベルの非同期キー状態テーブル自体が更新されておらず、この自動化サンドボックス環境が合成された修飾キー入力そのものを受け付けない制約と判明した(プレーンな文字タイピングはWM_CHARとして正常に届く)。この制約により、Ctrl+Shift+Oを実際に押してパネルが開く様子はスクリーンショットで確認できなかったため、代わりに`EnumChildWindows`でコントロールの生成・位置・サイズを直接検証する方式で代替した(詳細は`reference_no_win32_gui_automation.md`メモリ参照)
 
 ---
 

@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-25 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`)完了・未push**)
+> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -72,7 +72,8 @@
 | Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (push済み、§3.38参照) |
 | Phase 7e (Indent guides、インデントガイド) | ✅ 完了 (**未push**、§3.39参照) |
 | Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) | ✅ 完了 (**未push**、§3.40参照) |
-| **次フェーズ選定 — Phase 7g以降(残り21言語/真の増分再解析/折り畳み/アウトラインUI統合等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 (**未push**、§3.41参照) |
+| **次フェーズ選定 — Phase 7h以降(残り21言語/真の増分再解析/折り畳み/ミニマップ等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1166,7 +1167,43 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** `outline_pane`(WC_TREEVIEW UI)・`main.cpp`配線、Breadcrumb、折り畳み(`FoldingModel`)、テンプレート特殊化・ラムダ式・演算子オーバーロード等の複雑なC++宣言構文からの名前抽出、真の増分再解析・残り21言語・ミニマップ・Sticky scroll・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.8参照。
 
-**Phase 7fはコミット済み(`0f54c73`)・未push。** 次フェーズはPhase 7g以降(残り21言語・真の増分再解析・折り畳み・アウトラインUI統合等)の詳細をPlan Modeで設計してから着手。
+**Phase 7fはコミット済み(`0f54c73`/`7135b83`)・未push。**
+
+---
+
+### 3.41 Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) 完了記録
+
+ユーザーから「次のPhaseへすすめ」と指示された。4候補(アウトラインUI統合/3言語目追加/折り畳み/真の増分再解析)をAskUserQuestionで提示し、**アウトラインUI統合(推奨案)**が選ばれた — Phase 7fで作ったヘッドレスな核を実際にUIへ繋ぐ、5a→5b・6a→6d・7a→7bと同じ順序。
+
+**着手前調査で確定した設計方針:**
+- `WC_TREEVIEW`はこのコードベース初出のコントロール型で、通知が`WM_COMMAND`ではなく`WM_NOTIFY`で届くと判明 → `MainWindowConfig`に新規`onNotify`フックを追加(`onCommand`/`onAppMessage`と同じ「未解釈のまま転送」形)。`InitCommonControlsEx`に`ICC_TREEVIEW_CLASSES`追加
+- アウトライン項目選択→即ジャンプだがパネルは閉じない(`FindBar`等の「アクション後に隠れる」設計と意図的に異なる、VSCode Outlineビューと同じ「持続するナビゲーション補助」という性質のため)
+- ジャンプは`app::openDocumentAt()`を使わず、`jumpToGotoTarget()`と同型の同一ドキュメント内ジャンプ(`OutlineNode::pos`は既に絶対`TextPos`のため行/桁変換不要)
+- パネルは右ドッキング・フル高さのオーバーレイ(`FindBar`等の固定サイズボックスから意図的に逸脱、ドキュメント全体のシンボル構造を見渡す用途のため)
+
+**実装:**
+- 新規`src/ui/include/neomifes/ui/outline_pane.h` + `src/ui/src/outline_pane.cpp`: `OutlineItem`・`OutlinePane`(WC_TREEVIEW、`populateTree()`は明示スタックで反復実装)
+- `MainWindowConfig`/`MainWindow`に`onNotify`フック新設
+- 新規`src/app/include/neomifes/app/outline_bridge.h`: `syntax::OutlineNode → ui::OutlineItem`変換(`buildOutlineItems()`)
+- `main.cpp`: `handleOutlineKey`(Ctrl+Shift+Oトグル)・`refreshOutlinePane`・`jumpToOutlinePosition`・`createAndPositionOutlinePane`新設、`wireNormalMode()`へ配線
+
+**発生した問題と修正:**
+- **視覚確認中、Win32 `EnumChildWindows`(P/Invoke)による構造検証で既存の潜在バグを発見。** `FindBar`/`CommandPalette`/`GotoLineBar`/`GrepBar`/`OutlinePane`は全て`onDeferredInit`(`WM_SIZE`より後に走る投稿メッセージ)内で`.create()`されるため、`cfg.onResize`経由の位置決めが二度と発火せず、ユーザーが手動リサイズするまでプレースホルダ座標(`0,0,10,10`)に居座り続ける。`OutlinePane`は`create()`直後に`::GetClientRect`+`::GetDpiForWindow`で明示的に`onParentResized()`を呼ぶ(`createAndPositionOutlinePane()`)ことで解消。既存4オーバーレイの同じ問題は別タスクとして切り出した(spawn_task、CLAUDE.mdルール8の1PR=1責務)
+- **この環境の合成キーボード入力ではCtrl/Shift等の修飾キーが機能しないと判明。** `SendKeys`・`keybd_event`・`SendInput`の3種全てで試したが、送信直後の`GetAsyncKeyState`が「押されていない」を返し続けた(OSレベルの非同期キー状態テーブル自体が更新されない、この自動化サンドボックス特有の制約と判明)。プレーンな文字タイピングはWM_CHARとして正常に届く(実際にHELLOがドキュメントへ挿入されるのを確認済み)ため、修飾キー付き組み合わせだけが特異的に機能しない。詳細は`reference_no_win32_gui_automation.md`参照
+- `wireNormalMode`のcognitive complexityが26(閾値25)を超過 → `createAndPositionOutlinePane()`ヘルパーへ完全に外出しして解消
+
+**テスト数:** 672件(新規追加: `AppOutlineBridgeTest`スイート4件)。ローカルDebug/Release/ubsan全green、clang-tidy新規警告0。
+
+**完了条件:**
+- [x] `buildOutlineItems()`が空/単一/3階層ネスト/兄弟順序を正しく変換する(単体テストで確認)
+- [x] `OutlinePane`(`SysTreeView32`)が実際に生成され、右ドッキング・フル高さで正しく位置決めされることを`EnumChildWindows`で確認(`rect=(1032,131)-(1292,892)`、1200×800ウィンドウに対して正しい右端配置)
+- [x] ローカルDebug/Release/ubsan全672テストgreen、clang-tidy新規警告0
+
+**実アプリでの視覚確認は部分的。** 上記の環境制約によりCtrl+Shift+Oを実際に押してパネルが開く様子・クリックでのジャンプ・Escapeでの終了はスクリーンショットで確認できなかった。`EnumChildWindows`による構造検証(コントロール生成・正しい位置決め)と単体テスト・コードレビューで代替した。ユーザー自身の実機でのキーボード操作による最終確認を推奨する。
+
+**スコープ外(意図的、後続サブフェーズへ):** 表示中のライブ追従、シンボル種別アイコン表示、折り畳み状態の永続化、ファイル切替時の自動再表示、`RenderPipeline`描画幅の真のドッキング狭小化、既存4オーバーレイの初期位置決めバグ修正(spawn_taskで別タスク化済み)。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.9参照。
+
+**Phase 7gはコミット済み(`3c99cf6`)・未push。** 次フェーズはPhase 7h以降(残り21言語・真の増分再解析・折り畳み・ミニマップ等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1219,33 +1256,40 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応:Python追加+
 言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
-**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)は
-ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`)完了・未push。**
+**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
+Phase 7g(アウトラインUI統合、§3.41参照)はローカル検証・コミット
+(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
 
-**(2026-07-24訂正) 「Win32 GUI自動化手段が無い」という前提は誤りだった。** PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブウィンドウを実際にスクリーンショット撮影でき、`Read`ツールで画像として視覚確認できることを確認済み(`reference_no_win32_gui_automation.md`に手順テンプレート化)。Phase 7b/7c/7d/7eのシンタックスハイライト・Indent guidesはこの手法で既に視覚確認済み(§3.36/§3.37/§3.38/§3.39参照)。Phase 7fはヘッドレス実装(main.cpp/UI無変更)のため視覚確認対象は無い。**注意: この手法を使う際、単一インスタンス機構(Named Mutex)により、前回テスト実行の`NeoMIFES.exe`が`Stop-Process -Force`後も残留していると新規起動が黙って即終了しウィンドウが出ない事象がある(Phase 7eで実際に発生・解決済み) — 起動直後に`Get-Process -Name "NeoMIFES"`で残留プロセスの有無を確認する習慣をつけること。** 以下は同じ手法でまだ未実施の項目 — キー入力の送出(`SendKeys`、キーボードのみ)と組み合わせれば検証できる見込み:
-- 5c3のCtrl+Shift+F(GrepBar表示・フォルダ/クエリ入力・Enter実行・結果一覧・クリック選択・
-  ダブルクリックジャンプ・Escape閉じる・Tab切替・日本語IME、§3.26参照)
-- 5c4のF12(ビルドエラー風テキストを含む行でのジャンプ・マッチ無し行での無反応、§3.27参照)
-- 5c5のCtrl+Up/Ctrl+Down(Find bar・Grepダイアログ双方での履歴辿り、アプリ再起動後の
-  履歴永続化確認、§3.34参照)
-- F12タグジャンプ・Grep結果ジャンプでC++↔Python↔非対応ファイル間を移動した際の色分けの追従/解除
-- Indent guidesのアクティブガイド(カーソル行の明るい表示)をSendKeysでカーソル移動しながら確認
+**(2026-07-24確認) PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブ
+ウィンドウのスクリーンショット撮影・`Read`ツールでの視覚確認は可能。プレーンな文字入力
+(`SendKeys`)もWM_CHARとして正常に届く(`reference_no_win32_gui_automation.md`参照)。**
+
+**(2026-07-26確認、重要) Ctrl/Shift等の修飾キーを伴うショートカットは、この環境の合成
+キーボード入力(`SendKeys`/`keybd_event`/`SendInput`のいずれも)では再現できない —
+送信直後に`GetAsyncKeyState`で確認しても「押されていない」を返し続けることまで確認済み
+(サンドボックス環境がOSレベルで拒否している)。このため、Ctrl+F/Ctrl+Shift+P/Ctrl+Shift+F/
+Ctrl+G/Ctrl+Up・Down/Shift+Alt+ドラッグ等、修飾キーを伴う操作は「実際に押してスクリーン
+ショットで確認する」ことができない。代わりに`EnumChildWindows`(P/Invoke)でコントロールの
+クラス名・`GetDlgCtrlID`・`GetWindowRect`を直接調べる構造検証で代替すること(Phase 7gで
+実際にこの手法だけでバグを1件発見・修正した、§3.41参照)。日本語IME合成同様、この種の
+検証はユーザー自身の実機確認に委ねる運用に切り替えること — 「SendKeysで再現できる見込み」
+という以前の記述(2026-07-24時点)は誤りだったので今後参照しないこと。**
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7g以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
-折り畳み・アウトラインUI統合(`outline_pane`、WC_TREEVIEW)・ミニマップ・Breadcrumb・
-Sticky scroll・Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7fで確立したパターン(tree-sitterグラマー
+**次フェーズはPhase 7h以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7gで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
 合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
 detailed_design.md §10.6、Indent guidesはRenderPipelineへのdrawXxxOnLine追記・
 detailed_design.md §10.7、アウトライン抽出は独立した2回目パース+明示スタック走査・
-detailed_design.md §10.8参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
+detailed_design.md §10.8、アウトラインUI統合はWM_NOTIFYベースのWC_TREEVIEW・
+detailed_design.md §10.9参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
 具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
 実出力を確認してからnamedLeafKindsForXテーブル/シンボルテーブルを構築すること — 記憶
@@ -1255,13 +1299,17 @@ detailed_design.md §10.8参照)を踏襲しつつ、次のサブフェーズの
 master_roadmap.md §7.10参照)ことを踏まえ、Core+Rendering層を横断する変換の設計から
 始めること。
 
-着手前に本ファイル §3.19〜§3.39 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
-まだ実施していない実アプリでのCtrl+F/Ctrl+H/Ctrl+Shift+P/Shift+Alt+ドラッグ(矩形選択)/
-Ctrl+G/Ctrl+F2・F2/コマンドパレットのタブ変換2種/Toggle Free Cursor Mode/N対N貼り付け/
-Shift+Alt+矢印・Shift+Alt+I/日本語IME確認は、上記5件と合わせてPowerShell+GDI+スクリーンショット
-手法(`reference_no_win32_gui_automation.md`)でこのセッション自身が視覚確認できないか先に
-試すこと。日本語IME合成のようにSendKeysだけでは再現しづらい入力は引き続きユーザーに依頼する
-(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7aはヘッドレスのため視覚確認対象なし)。
+**別タスク(spawn_task済み、task_e3df1519): FindBar/CommandPalette/GotoLineBar/GrepBarの
+初期位置決めバグ修正。** Phase 7g視覚確認中に`EnumChildWindows`で発見 — `onDeferredInit`
+(WM_SIZEより後に走る投稿メッセージ)内で`.create()`されるため、ユーザーが手動でウィンドウを
+リサイズするまで正しい位置に配置されない。`OutlinePane`(Phase 7g)は`create()`直後に
+`GetClientRect`+`GetDpiForWindow`で明示的に`onParentResized()`を呼んで解消済み — 同じパターンを
+残り4オーバーレイへ適用すればよい。ユーザーがこのタスクを起動していなければ、このセッションで
+拾って対応してもよい。
+
+着手前に本ファイル §3.19〜§3.41 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+修飾キーを伴わない操作(日本語IME確認含む)は引き続きユーザーに依頼する
+(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7a・7fはヘッドレスのため視覚確認対象なし)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

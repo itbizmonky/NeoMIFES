@@ -1896,6 +1896,49 @@ struct OutlineNode {
 
 **意図的にスコープ外とした項目:** `outline_pane`(WC_TREEVIEW UI)・`main.cpp`配線、Breadcrumb(逆引き)、折り畳み(`FoldingModel`、Core+Rendering層を横断する別規模の変更と判明)、テンプレート特殊化・ラムダ式・演算子オーバーロード等の複雑なC++宣言構文からの名前抽出。詳細は`master_roadmap.md` §7参照。
 
+### 10.9 アウトラインUI統合 (Phase 7g実装)
+
+Phase 7fの`extractOutline()`を実際にUIへ繋いだ。新規`ui::OutlinePane`(WC_TREEVIEW)をCtrl+Shift+Oでトグル表示し、クリックで同一ドキュメント内の該当位置へジャンプする。
+
+```cpp
+// src/ui/include/neomifes/ui/outline_pane.h
+struct OutlineItem {
+    std::u16string            name;
+    std::uint64_t             targetPos = 0;  // opaque、ui::層は解釈しない
+    std::vector<OutlineItem>  children;
+};
+
+struct OutlinePaneConfig {
+    std::function<void(std::uint64_t targetPos)> onItemSelected;
+    std::function<void()> onClosed;
+};
+
+class OutlinePane {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const OutlinePaneConfig& config);
+    void showWith(std::vector<OutlineItem> items) noexcept;
+    void hide() noexcept;
+    void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight, float dpiScale) noexcept;
+    LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;  // TVN_SELCHANGEDW
+    // ...
+};
+
+// src/app/include/neomifes/app/outline_bridge.h
+[[nodiscard]] std::vector<ui::OutlineItem> buildOutlineItems(
+    const std::vector<syntax::OutlineNode>& nodes);
+```
+
+**設計上の要点:**
+- **`WC_TREEVIEW`はこのコードベース初出のコントロール型で、通知が`WM_COMMAND`ではなく`WM_NOTIFY`で届く。** `MainWindowConfig`に新規`onNotify`フック(`onCommand`/`onAppMessage`と同じ「未解釈のまま転送」形)を追加した。`InitCommonControlsEx`の`dwICC`に`ICC_TREEVIEW_CLASSES`を追加(既存`ICC_STANDARD_CLASSES`だけでは`WC_TREEVIEWW`クラス未登録)
+- **アウトライン項目を選択したら即座にジャンプするが、パネルは閉じない。** `FindBar`/`GrepBar`/`CommandPalette`(検索/コマンド実行という単発ツール)の「アクション後に隠れる」設計とは意図的に異なる — アウトラインは複数シンボルを連続して見て回るナビゲーション補助のため。Escapeキーで明示的に閉じる
+- **`ui::OutlinePane`は`syntax::OutlineNode`を直接知らない。** `ui::OutlineItem`(UI専用ミラー型、`targetPos`は解釈しないopaqueな`std::uint64_t`)を公開APIとし、`app::buildOutlineItems()`(ヘッダオンリー)が変換を担う — 既存の「`ui::`はWin32機構のみ」原則を踏襲
+- **ジャンプは`app::openDocumentAt()`を使わない。** `OutlineNode::pos`は既に開いている同一ドキュメント内の絶対`document::TextPos`のため、`jumpToGotoTarget()`と同型の`selectionModel.moveAllTo()` → `viewport.ensureVisible()` → `syncRenderStateAndInvalidate()`をそのまま踏襲(行/桁変換不要)
+- **パネルは右ドッキング・フル高さのオーバーレイ(`FindBar`等の固定サイズボックスとは意図的な逸脱)。** `RenderPipeline`の描画幅は狭めない(既存オーバーレイと同じ「重ねるだけ」設計)
+- **`populateTree()`はTreeView項目挿入を明示スタックで反復実装した。** `OutlineNode`のネスト自体はシンボル定義の入れ子(生AST深さより浅い)だが、Phase 7fの`walkForOutline()`が`misc-no-recursion`指摘を受けた直後だったため、同じ轍を踏まないよう予防的に反復にした。子を逆順にスタックへ積むことで`TVI_LAST`挿入順が元の左→右順を保つ
+- **既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)に共通する潜在バグを`EnumChildWindows`で発見した。** `onDeferredInit`(`WM_SIZE`より後に走る投稿メッセージ)内で`.create()`されるため、`cfg.onResize`経由の位置決めが二度と発火せず、ユーザーが手動リサイスするまでプレースホルダ座標に留まる。`OutlinePane`は`create()`直後に`::GetClientRect`+`::GetDpiForWindow`で明示的に`onParentResized()`を呼んで解消したが、既存4オーバーレイの修正は別タスクへ切り出した(spawn_task、CLAUDE.mdルール8)
+
+**意図的にスコープ外とした項目:** 表示中のライブ追従(編集のたびの自動再計算)、シンボル種別ごとのアイコン表示、折り畳み状態の永続化、ファイル切替時の自動再表示、`RenderPipeline`描画幅の真のドッキング狭小化。詳細は`master_roadmap.md` §7参照。
+
 ---
 
 ## 11. ログ解析モード 詳細
