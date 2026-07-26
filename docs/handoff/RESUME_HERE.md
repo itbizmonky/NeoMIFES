@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`)完了・未push**)
+> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -73,7 +73,8 @@
 | Phase 7e (Indent guides、インデントガイド) | ✅ 完了 (**未push**、§3.39参照) |
 | Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) | ✅ 完了 (**未push**、§3.40参照) |
 | Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 (**未push**、§3.41参照) |
-| **次フェーズ選定 — Phase 7h以降(残り21言語/真の増分再解析/折り畳み/ミニマップ等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) | ✅ 完了 (**未push**、§3.42参照) |
+| **次フェーズ選定 — Phase 7i以降(残り21言語/真の増分再解析/折り畳み/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1203,7 +1204,39 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** 表示中のライブ追従、シンボル種別アイコン表示、折り畳み状態の永続化、ファイル切替時の自動再表示、`RenderPipeline`描画幅の真のドッキング狭小化、既存4オーバーレイの初期位置決めバグ修正(spawn_taskで別タスク化済み)。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.9参照。
 
-**Phase 7gはコミット済み(`3c99cf6`)・未push。** 次フェーズはPhase 7h以降(残り21言語・真の増分再解析・折り畳み・ミニマップ等)の詳細をPlan Modeで設計してから着手。
+**Phase 7gはコミット済み(`3c99cf6`)・ドキュメント同期は`e75bead`。**
+
+### 3.42 Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) 完了記録
+
+ユーザーから「継続して実行せよ」と指示された。4候補(Breadcrumb/3言語目追加/折り畳み/真の増分再解析)をAskUserQuestionで提示し、**Breadcrumb(推奨案)**が選ばれた — Phase 7f/7gで作った`OutlineNode`資産を最も直接活かせる選択肢。
+
+**着手前調査で確定した設計方針:**
+- `findBreadcrumbPath(pos, tree)`は`OutlineNode::containingRange`(Phase 7fで「将来のBreadcrumb逆引き用」と明記済み)の逆引きで実装。当初は木の浅さを根拠に通常の再帰で設計したが、`src/.clang-tidy`の`WarningsAsErrors: '*'`下で`misc-no-recursion`が深さの証明可能性に関わらず自己再帰を一律エラー化することが判明し、明示ループへ書き換えた
+- `render::CursorVisual`に新規`bool isPrimary`フィールドを追加(デフォルト`false`)。`core::Cursor::isPrimary`は既存だが`CursorVisual`側に転送されておらず、Breadcrumbが「どのカーソルが主カーソルか」を判別できなかったため
+- Breadcrumb用アウトライン木のキャッシュは`m_tokens`と同じタイミング(ドキュメント更新時)で同期的に再計算。非同期化はベンチマーク根拠が無いため見送り(Phase 7b→7cの前例と同じ順序、CLAUDE.mdルール10)
+- 垂直座標系に新規`kBreadcrumbHeightDips`オフセットを導入し、既存の水平オフセット`kGutterWidthDips`と同じ構造(`drawVisibleLines()`のy起点・`hitTest()`のyDipクランプ・`computeVisibleLineCount()`への実効高さ)を縦方向にもミラー
+
+**実装:**
+- `src/syntax/include/neomifes/syntax/outline.h` + `.cpp`: `findBreadcrumbPath()`新設
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `CursorVisual::isPrimary`・`kBreadcrumbHeightDips`・`m_cachedOutline`・`ensureBreadcrumbBrush()`・`drawBreadcrumb()`新設、`drawVisibleLines()`/`hitTest()`/`refreshDocumentCacheIfStale()`更新
+- `src/app/main.cpp`: `syncRenderStateAndInvalidate()`に`.isPrimary`転送を1行追加
+
+**発生した問題と修正:**
+- **`misc-no-recursion`(前述の通り)** → 明示ループへ書き換え、`outline.h`のヘッダコメントも「lint都合の実装選択」と明記
+- **`hitTest()`のyDipオフセット変更により既存テスト`HitTestReturnsPositionsWithinKnownLineBounds`が回帰。** 「1行下」を表すハードコードされたyピクセル値(20px)がBreadcrumb帯(24px)に収まってしまい、期待した行に届かなくなっていた → テスト側の座標値を50pxへ更新(帯+1行分を確実に超える値)
+- **実アプリ視覚確認で、Breadcrumbが起動直後(ファイルを開いた直後、カーソル未移動)は全く表示されないことを発見。** 原因調査の結果、`wireNormalMode()`の`onDeferredInit`が`renderPipeline.attach()`/`setDocument()`は呼ぶ一方、`syncRenderStateAndInvalidate()`を一度も呼んでおらず、`m_cursorVisuals`がユーザーの最初のカーソル移動まで空のままだった既存の潜在バグと判明(Breadcrumb固有ではなくキャレット描画自体も影響を受けていた)。`onDeferredInit`末尾の`::InvalidateRect()`を`syncRenderStateAndInvalidate()`呼び出しに置き換えて解消 — Phase 7gの「他4オーバーレイの同種バグは別タスクへ切り出す」判断とは異なり、Breadcrumbと不可分の共有ロジックの根本原因だったため同一PR内で修正した(切り分け不可能な性質のバグ)
+
+**テスト数:** ctest実測678件(新規追加: `FindBreadcrumbPathTest`スイート6件、`RenderTextSmokeTest.BreadcrumbRendersWithoutError`1件、既存`HitTestReturnsPositionsWithinKnownLineBounds`はyDipオフセット変更に伴い座標値を更新)。ローカルDebug/Release/ubsan全green(各678件)、clang-tidy新規警告0。
+
+**完了条件:**
+- [x] `findBreadcrumbPath()`が空木/範囲外/単一階層/3階層ネスト/境界(半開区間)/兄弟選択を正しく処理する(単体テストで確認)
+- [x] `render_text_smoke_test.cpp`にBreadcrumb描画を含むrender()成功ケースを追加
+- [x] ローカルDebug/Release/ubsan全678テストgreen(ctest実測)、clang-tidy新規警告0
+- [x] **実アプリでC++ファイル(namespace > class > method 3階層)を開き、起動直後(カーソル移動なし)・矢印キーでのカーソル移動後の両方でBreadcrumbが正しく表示・更新されることをスクリーンショットで確認済み。** 矢印キーは修飾キーを伴わないため、Phase 7gで判明した合成入力制約の対象外で、通常のSendKeys+スクリーンショット手法がそのまま機能した(Phase 7gの`EnumChildWindows`代替手法は本フェーズでは不要だった)
+
+**スコープ外(意図的、後続サブフェーズへ):** Breadcrumbクリックでのジャンプ・ドロップダウン、アウトライン抽出の非同期化、非対応言語ファイルでの代替表示。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.10参照。
+
+**Phase 7hはコミット済み(`853556b`)・未push。** 次フェーズはPhase 7i以降(残り21言語・真の増分再解析・折り畳み・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1257,8 +1290,9 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
 **Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
-Phase 7g(アウトラインUI統合、§3.41参照)はローカル検証・コミット
-(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`)完了・未push。**
+Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)は
+ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
+`853556b`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1280,24 +1314,29 @@ Ctrl+G/Ctrl+Up・Down/Shift+Alt+ドラッグ等、修飾キーを伴う操作は
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7h以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
-折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7gで確立したパターン(tree-sitterグラマー
+**次フェーズはPhase 7i以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+折り畳み・ミニマップ・Sticky scroll・Semantic highlighting)。**
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7hで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
 合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
 detailed_design.md §10.6、Indent guidesはRenderPipelineへのdrawXxxOnLine追記・
 detailed_design.md §10.7、アウトライン抽出は独立した2回目パース+明示スタック走査・
 detailed_design.md §10.8、アウトラインUI統合はWM_NOTIFYベースのWC_TREEVIEW・
-detailed_design.md §10.9参照)を踏襲しつつ、次のサブフェーズのスコープをPlan Modeで
-具体化してから着手すること(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
+detailed_design.md §10.9、BreadcrumbはkGutterWidthDips方式を縦方向にミラーした
+新規座標オフセット+OutlineNodeツリーの逆引き・detailed_design.md §10.10参照)を
+踏襲しつつ、次のサブフェーズのスコープをPlan Modeで具体化してから着手すること
+(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
 実出力を確認してからnamedLeafKindsForXテーブル/シンボルテーブルを構築すること — 記憶
 からの推測は厳禁(Phase 7fでC++/Pythonの`function_definition`同名ノードの構造差異を
 見落としたバグが実際に発生している、§3.40参照)。折り畳みに着手する場合、`core::Viewport`/
 `RenderPipeline`が論理行=表示行前提でハードコードされている(Phase 7f着手前調査で確認済み、
 master_roadmap.md §7.10参照)ことを踏まえ、Core+Rendering層を横断する変換の設計から
-始めること。
+始めること。**新規のRenderPipeline系機能で`src/`配下のコードに再帰関数を書く場合は、
+`src/.clang-tidy`が`WarningsAsErrors: '*'`のため`misc-no-recursion`が木の実際の深さに
+関わらず一律エラー化することをPhase 7hで再確認済み(§3.42参照)— 再帰で書いた場合は
+clang-tidy実行時に明示ループへの書き換えが必要になる前提で見積もること。**
 
 **別タスク(spawn_task済み、task_e3df1519): FindBar/CommandPalette/GotoLineBar/GrepBarの
 初期位置決めバグ修正。** Phase 7g視覚確認中に`EnumChildWindows`で発見 — `onDeferredInit`
@@ -1307,7 +1346,7 @@ master_roadmap.md §7.10参照)ことを踏まえ、Core+Rendering層を横断�
 残り4オーバーレイへ適用すればよい。ユーザーがこのタスクを起動していなければ、このセッションで
 拾って対応してもよい。
 
-着手前に本ファイル §3.19〜§3.41 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.42 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 修飾キーを伴わない操作(日本語IME確認含む)は引き続きユーザーに依頼する
 (5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7a・7fはヘッドレスのため視覚確認対象なし)。
 ```

@@ -1730,4 +1730,37 @@ Phase 6内の残り2候補(6b2=ISO-2022-JP、6c2=行末コード判定)を比較
 
 **次回:** Phase 7gが完了した(コミット`3c99cf6`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7h以降(残り21言語対応・真の増分再解析・折り畳み・ミニマップ・Breadcrumb・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が残っている — ユーザーが起動していなければこのセッションで拾ってもよい。修飾キーを伴うショートカットの視覚確認は`EnumChildWindows`による構造検証で代替すること(`reference_no_win32_gui_automation.md`参照)。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 52 (2026-07-26): Phase 7h — Breadcrumb (カーソル位置のシンボルパス表示)
+
+Phase 7g完了直後、ユーザーから「継続して実行せよ」と指示された。4つの候補(Breadcrumb/3言語目追加/折り畳み/真の増分再解析)をAskUserQuestionで提示し、**Breadcrumb(推奨案)**が選ばれた — Phase 7f/7gで作った`OutlineNode`ツリー資産を最も直接活かせる選択肢。
+
+**着手前調査で確定した設計方針:**
+- `syntax::findBreadcrumbPath(pos, tree)`は`OutlineNode::containingRange`(Phase 7fで「将来のBreadcrumb逆引き用」と明記済みのフィールド)の逆引きで実装する方針を固めた。木自体の浅さ(シンボル定義の入れ子のみ)を根拠に、Phase 7gの`buildOutlineItems()`と同じ理由で通常の再帰として設計した
+- `render::CursorVisual`に`isPrimary`フィールドが無いため「どのカーソルが主カーソルか」をBreadcrumbが判別できないことが判明した。`core::Cursor::isPrimary`は既存だが`CursorVisual`側に転送されていなかった
+- Breadcrumb用アウトライン木のキャッシュは、Phase 7bが最初は同期トークン抽出で出荷しPhase 7cで初めて非同期化した前例に倣い、`m_tokens`と同じタイミングで同期的に再計算する方針にした(ベンチマーク根拠の無い非同期化は見送り、CLAUDE.mdルール10)
+- 垂直座標系に新規`kBreadcrumbHeightDips`オフセットを導入し、既存の水平オフセット`kGutterWidthDips`(ガター幅)が担っていた構造を縦方向にもミラーする設計にした
+
+**実装:**
+- `src/syntax/include/neomifes/syntax/outline.h` + `.cpp`: `findBreadcrumbPath()`新設
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `CursorVisual::isPrimary`・`kBreadcrumbHeightDips`・`m_cachedOutline`・`ensureBreadcrumbBrush()`・`drawBreadcrumb()`新設、`drawVisibleLines()`/`hitTest()`/`refreshDocumentCacheIfStale()`更新
+- `src/app/main.cpp`: `syncRenderStateAndInvalidate()`に`.isPrimary`転送を1行追加
+
+**発生した問題と修正:**
+- **clang-tidyで`findBreadcrumbPath()`が`misc-no-recursion`に抵触した。** 当初は木の浅さを根拠に通常の再帰で実装したが、`src/.clang-tidy`が`WarningsAsErrors: '*'`を設定しているため、`misc-no-recursion`は深さの証明可能性に関わらず自己再帰を一律検出・エラー化することが判明した(Phase 7fの`walkForOutline()`と同じ状況)。明示ループへ書き換え、ヘッダコメントも「lint都合の実装選択であり木の浅さの主張自体は変わらず正しい」と明記した
+- **`hitTest()`のyDipオフセット変更により、既存テスト`HitTestReturnsPositionsWithinKnownLineBounds`が回帰した。** 「1行下」を表すハードコードされたyピクセル値(20px)がBreadcrumb帯(24px)に収まってしまい、期待した行(line 1)ではなくline 0に留まっていた。テスト側の座標値を50px(帯+1行分を確実に超える値)へ更新して解消した
+- **実アプリ視覚確認で、ファイルを`--open`で開いた直後(カーソル移動なし)はBreadcrumbが全く表示されない既存の潜在バグを発見した。** 原因調査の結果、`wireNormalMode()`の`onDeferredInit`が`renderPipeline.attach()`/`setDocument()`は呼ぶ一方、初期カーソル状態を`RenderPipeline`へ反映する`syncRenderStateAndInvalidate()`を一度も呼んでおらず、`m_cursorVisuals`がユーザーの最初のカーソル移動まで空のままだった。これはBreadcrumb固有の問題ではなくキャレット描画自体にも及ぶ既存バグ(起動直後はキャレットも実質不可視だった)であり、`onDeferredInit`末尾の`::InvalidateRect()`を`syncRenderStateAndInvalidate()`呼び出しに置き換えることで、Breadcrumbとキャレット両方を同時に解消した。Phase 7gの「既存4オーバーレイの同種バグは別タスクへ切り出す」判断とは異なり、今回は1箇所の共有ロジックが根本原因で切り分けが不可能な性質のバグだったため、同一PR内で修正する判断をした
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest実測678件全pass(新規追加: `FindBreadcrumbPathTest`スイート6件、`RenderTextSmokeTest.BreadcrumbRendersWithoutError`1件)
+- clang-tidy新規警告0(`misc-no-recursion`を検出・修正)
+- **実アプリでC++ファイル(namespace > class > method の3階層)を`--open`で開き、起動直後(カーソル移動なし)と矢印キーでのカーソル移動後の両方でBreadcrumbが正しく表示・更新されることをスクリーンショットで確認した。** 矢印キーは修飾キーを伴わないため、Phase 7gで判明した「修飾キー付きショートカットは合成入力できない」制約の対象外で、通常のSendKeys+スクリーンショット手法がそのまま機能した(`EnumChildWindows`による代替検証は本フェーズでは不要だった)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7h行を追加(7i〜が次候補)、§7に「実装後の確定事項/変更点(Phase 7h完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.10(Breadcrumb実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.42(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7hが完了した(コミット`853556b`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7i以降(残り21言語対応・真の増分再解析・折り畳み・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)の初期位置決めバグ修正が依然として残っている — ユーザーが起動していなければこのセッションで拾ってもよい。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

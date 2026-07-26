@@ -1939,6 +1939,35 @@ public:
 
 **意図的にスコープ外とした項目:** 表示中のライブ追従(編集のたびの自動再計算)、シンボル種別ごとのアイコン表示、折り畳み状態の永続化、ファイル切替時の自動再表示、`RenderPipeline`描画幅の真のドッキング狭小化。詳細は`master_roadmap.md` §7参照。
 
+### 10.10 Breadcrumb (Phase 7h実装)
+
+Phase 7f/7gの`OutlineNode`ツリー資産をカーソル位置からの逆引きに再利用し、`RenderPipeline`の上部に常時表示のBreadcrumbストリップを追加した。
+
+```cpp
+// src/syntax/include/neomifes/syntax/outline.h
+[[nodiscard]] std::vector<const OutlineNode*> findBreadcrumbPath(
+    document::TextPos pos, const std::vector<OutlineNode>& nodes);
+
+// src/render/include/neomifes/render/render_pipeline.h
+struct CursorVisual {
+    document::TextPos   position       = 0;
+    document::TextRange selectionRange{};
+    std::uint32_t       virtualColumnOffset = 0;
+    bool                 isPrimary           = false;  // Phase 7h
+    // ...
+};
+```
+
+**設計上の要点:**
+- **`findBreadcrumbPath()`は`OutlineNode::containingRange`([start, end)半開区間)の線形探索で実装した。** `nodes`の各レベルで`pos`を含むノードを探し、見つかればそのノードの`children`へ降りて繰り返す明示ループ — `src/.clang-tidy`の`WarningsAsErrors: '*'`下で`misc-no-recursion`が(木の実際の浅さに関わらず)自己再帰を一律検出するため、`walkForOutline()`と同じ理由で反復実装にした
+- **`CursorVisual::isPrimary`(デフォルト`false`)を新設し、`main.cpp`の`syncRenderStateAndInvalidate()`が`cursor.isPrimary`をそのまま転送する。** `drawBreadcrumb()`は`m_cursorVisuals`を線形探索して`isPrimary == true`の1件だけを使う(複数カーソル時も主カーソルの位置のみ)
+- **`m_cachedOutline`は`refreshDocumentCacheIfStale()`内で`m_tokens`と同じタイミング(ドキュメントバージョン変更時)に同期的に再計算する。** `syntax::extractOutline()`を直接呼び出し、`SyntaxWorker`のような非同期化はベンチマーク根拠が無いため見送った(Phase 7b→7cの前例と同じ順序)
+- **`kBreadcrumbHeightDips`(24.0F)を新設し、`kGutterWidthDips`の縦版として3箇所を更新した:** `drawVisibleLines()`の`y`初期値、`hitTest()`の`yDip`(帯内クリックは先頭行にクランプ)、`drawVisibleLines()`内の`computeVisibleLineCount()`呼び出しに渡す実効高さ(`m_height`からBreadcrumb帯の高さを引いたpx値)。`computeVisibleLineCount()`自体のシグネチャは変更しない
+- **`drawBreadcrumb()`は`m_breadcrumbBackgroundBrush`で帯を塗った後、`findBreadcrumbPath()`の結果を`" > "`で連結し、その場限りの`IDWriteTextLayout`(`TextLayoutCache`は行番号キー専用のため流用しない)で描画する。** パスが空でも帯自体は描画する(「このシンボルの外にいる」ことを示す)
+- **実アプリ視覚確認で、Breadcrumbとは別に既存の潜在バグを発見・修正した。** `onDeferredInit`が起動時の初期カーソル状態を`RenderPipeline`へ一度も同期していなかった(`syncRenderStateAndInvalidate()`が呼ばれておらず`m_cursorVisuals`が空のまま)ため、ファイルを開いた直後はBreadcrumbもキャレットも不可視だった。`onDeferredInit`末尾の`InvalidateRect()`を`syncRenderStateAndInvalidate()`に置き換えて解消した
+
+**意図的にスコープ外とした項目:** Breadcrumbクリックでのジャンプ・ドロップダウン、アウトライン抽出の非同期化、非対応言語ファイルでの代替表示。詳細は`master_roadmap.md` §7参照。
+
 ---
 
 ## 11. ログ解析モード 詳細

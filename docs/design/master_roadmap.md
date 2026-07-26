@@ -218,7 +218,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7e | Indent guides (インデントガイド) | ✅ 完了 | §7 |
 | 7f | アウトライン抽出 (OutlineNode、ヘッドレス) | ✅ 完了 | §7 |
 | 7g | アウトラインUI統合 (OutlinePane、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 | §7 |
-| 7h〜 | 残り21言語 + 真の増分再解析 + 折り畳み + ミニマップ + breadcrumb + sticky scroll | ⏭️ 次候補 | §7 |
+| 7h | Breadcrumb (カーソル位置のシンボルパス表示) | ✅ 完了 | §7 |
+| 7i〜 | 残り21言語 + 真の増分再解析 + 折り畳み + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1078,6 +1079,17 @@ public:
 - **パネルは右ドッキング・フル高さのオーバーレイにした(`FindBar`/`GrepBar`/`CommandPalette`の固定サイズボックスとは意図的な逸脱)。** アウトライン閲覧はドキュメント全体のシンボル構造を見渡す用途であり、`GrepBar`の`kListHeightDips=240`のような固定高さでは実用に耐えないと判断した。`RenderPipeline`の描画幅は狭めない(既存オーバーレイと同じ「重ねるだけ」設計を維持)
 - **視覚確認中、Win32 `EnumChildWindows`による構造検証(キーボード入力が使えない制約への対処、詳細後述)で既存の潜在バグを発見・修正した。** `FindBar`/`CommandPalette`/`GotoLineBar`/`GrepBar`/`OutlinePane`は全て`wireNormalMode()`の`onDeferredInit`(`WM_PAINT`初回完了後に走る投稿メッセージ)内で`.create()`されるが、位置決めは`cfg.onResize`(`WM_SIZE`)からしか呼ばれない。`WM_SIZE`は`MainWindow::create()`内の`ShowWindow()`呼び出し時に一度だけ先に発火し、その時点ではこれらのコントロールがまだ存在しないため、後から作られても二度と自動で位置決めされず、ユーザーが手動でウィンドウをリサイズするまでプレースホルダ座標(`0,0,10,10`)に居座り続けるバグだった。`OutlinePane`は`create()`成功直後に`::GetClientRect`+`::GetDpiForWindow`で明示的に`onParentResized()`を呼ぶことで解消したが、既存4オーバーレイの同じ問題は本フェーズのスコープ外として別タスクへ切り出した(1PR=1責務、CLAUDE.mdルール8)
 - **この環境の自動化キーボード入力では、Ctrl/Shift等の修飾キーを伴うショートカットを合成できないことが判明した。** `SendKeys`・`keybd_event`・`SendInput`の3種の入力合成APIいずれを使っても、送信直後に`GetAsyncKeyState`で確認すると修飾キーが「押されていない」ままだった — OSレベルの非同期キー状態テーブル自体が更新されておらず、この自動化サンドボックス環境が合成された修飾キー入力そのものを受け付けない制約と判明した(プレーンな文字タイピングはWM_CHARとして正常に届く)。この制約により、Ctrl+Shift+Oを実際に押してパネルが開く様子はスクリーンショットで確認できなかったため、代わりに`EnumChildWindows`でコントロールの生成・位置・サイズを直接検証する方式で代替した(詳細は`reference_no_win32_gui_automation.md`メモリ参照)
+
+### 実装後の確定事項/変更点 (2026-07-26、Phase 7h完了)
+
+**roadmap §7.5の「Breadcrumb」を実装した。カーソル位置が所属するシンボルパス(`outer > Widget > getValue`形式)を、Phase 7f/7gで作った`OutlineNode`ツリー資産の逆引きで常時表示する。**
+
+- **`syntax::findBreadcrumbPath(pos, tree)`は`OutlineNode::containingRange`(Phase 7fで「将来のBreadcrumb逆引き用」と明記していたフィールド)の線形探索で実装した。** 当初は`extractOutline()`が返す木の浅さ(シンボル定義の入れ子のみ、生AST深さではない)を根拠に通常の再帰で実装したが、`src/`配下は`WarningsAsErrors: '*'`(`src/.clang-tidy`)のため`misc-no-recursion`は深さの証明可能性に関係なく自己再帰を一律検出・エラー化することが判明し、Phase 7fの`walkForOutline()`と同じ理由で明示ループへ書き換えた(木自体の浅さの主張自体は変わらず正しい、lint都合の実装選択であることをヘッダコメントに明記)
+- **`render::CursorVisual`に新規`bool isPrimary`フィールドを追加した。** `core::Cursor::isPrimary`は既存だが`RenderPipeline`側の`CursorVisual`には保存されておらず、「どのカーソルが主カーソルか」をBreadcrumbが判別できなかったため、`main.cpp`の`syncRenderStateAndInvalidate()`の1行を拡張して転送するようにした。デフォルト値`= false`により既存の部分的designated initializer構築箇所は無修正で済んだ
+- **Breadcrumb用アウトライン木のキャッシュ(`m_cachedOutline`)は`m_tokens`と同じタイミング(`refreshDocumentCacheIfStale()`、ドキュメントバージョン変更時)で同期的に再計算する設計にした。** シンタックストークン着色と同様に非同期化(`SyntaxWorker`拡張または新規ワーカー)する発想もあったが、ベンチマーク根拠が無い時期尚早な最適化と判断し見送った(CLAUDE.mdルール10)。Phase 7bが最初は同期トークン抽出で出荷し、Phase 7cで初めて非同期化した前例と同じ順序を踏襲。既知の制約として「非常に大きなファイルでは編集直後にBreadcrumbが一時的に古くなりうる」ことを許容する
+- **垂直座標系に新規`kBreadcrumbHeightDips`オフセットを導入した。** 既存の水平オフセット`kGutterWidthDips`(ガター幅)が担っていた「このファイル内の全x座標消費箇所が合意する必要がある」という構造を縦方向にもミラーし、`drawVisibleLines()`の描画開始y座標・`hitTest()`のyDip変換(帯内クリックは先頭行にクランプ)・`computeVisibleLineCount()`への実効高さ引数の3箇所を更新した。`computeVisibleLineCount()`自体のシグネチャは変更せず、呼び出し側で実効高さを計算する方式を維持した(Windows SDK非依存の純粋関数という性質を保つ)
+- **実アプリ視覚確認で、Breadcrumb実装とは別に既存の潜在バグを1件発見・修正した。** `wireNormalMode()`の`onDeferredInit`は`renderPipeline.attach()`/`setDocument()`を呼ぶ一方、`syncRenderStateAndInvalidate()`(カーソル状態をRenderPipelineへ反映する関数)を一度も呼んでいなかったため、`m_cursorVisuals`はユーザーが最初にカーソルを動かすまで空のままだった。ファイルを`--open`で開いた直後のスクリーンショットでBreadcrumbが完全に無表示だったことから発覚 — この根本原因はBreadcrumb固有ではなくキャレット描画自体にも及ぶ(起動直後はキャレットも実質不可視だった)ため、`onDeferredInit`末尾の`::InvalidateRect()`を`syncRenderStateAndInvalidate()`呼び出しに置き換える形で、Breadcrumbとキャレット両方を同時に解消した(1箇所の共有ロジックの根本修正であり、Phase 7gの「他4オーバーレイの同種バグは別タスクへ切り出す」判断とは異なり、切り分けが不可能な性質のバグだったため同一PR内で修正)
+- **実アプリでC++ファイル(namespace > class > method の3階層)を開き、`--open`起動直後(カーソル移動なし)と矢印キーでのカーソル移動後の両方でBreadcrumbが正しく表示・更新されることをスクリーンショットで確認した。** 矢印キーは修飾キーを伴わないため、Phase 7gで判明した「修飾キー付きショートカットは合成入力できない」制約の対象外で、通常のSendKeys+スクリーンショット手法がそのまま機能した
 
 ---
 
