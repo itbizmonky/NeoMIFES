@@ -1970,6 +1970,57 @@ struct CursorVisual {
 
 ---
 
+### 10.11 折り畳み コア基盤 (Phase 7i実装)
+
+Phase 7f/7gの`OutlineNode`ツリーを折り畳み対象領域としてそのまま流用し、`core::FoldingModel`(論理行番号ベース、二重座標系は不採用)+ キーボードトグルのみのv1を実装した。ガター+/-クリックでのトグルは次サブフェーズへ据え置いた。
+
+```cpp
+// src/core/include/neomifes/core/folding_model.h
+struct FoldRegion {
+    document::LineNumber headerLine;        // 折り畳んでも常に見える行
+    document::LineNumber endLineInclusive;  // 折り畳み時に隠れる範囲の最終行
+    bool                  folded = false;
+};
+
+class FoldingModel {
+public:
+    void setFoldableRegions(std::vector<FoldRegion> regions);  // headerLineで既存folded状態を引き継ぐ
+    void toggleFold(document::LineNumber headerLine) noexcept;
+    [[nodiscard]] bool isLineHidden(document::LineNumber line) const noexcept;
+    [[nodiscard]] bool isFoldHeader(document::LineNumber line) const noexcept;
+    [[nodiscard]] std::optional<FoldRegion> foldedRegionContaining(document::LineNumber line) const noexcept;
+    bool revealLine(document::LineNumber line) noexcept;  // lineを覆う全折り畳みを展開
+    // ...
+};
+
+// src/render/include/neomifes/render/render_pipeline.h
+struct FoldVisual {
+    document::LineNumber headerLine;
+    document::LineNumber endLineInclusive;
+    bool                  folded = false;
+};
+void setFoldRegions(std::vector<FoldVisual> regions) noexcept;
+
+// src/app/include/neomifes/app/editor_input.h
+bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown, core::CommandDispatcher& dispatcher,
+                   core::SelectionModel& selection, core::Viewport& viewport,
+                   const document::Document& document,
+                   const core::FoldingModel* folding = nullptr);  // Phase 7i、既定nullptrで既存呼び出し無改修
+```
+
+**設計上の要点:**
+- **二重座標系(roadmap §7.10原案の「`Viewport`が表示行を管理」)は不採用にした。** `document::LineNumber`は全レイヤーで論理行番号のまま維持し、`RenderPipeline::isLineHidden()`を`drawVisibleLines()`(可視行のみ描画、`y`は隠れた行では進めない)・`hitTest()`(可視行のみを数えて着地行を決定、構造的にクリックが隠れた行へ到達不可能)の2消費箇所で使う。`core::Viewport`/`core::SelectionModel`は無改修
+- **`app::buildFoldRegions()`(`src/app/include/neomifes/app/fold_bridge.h`)は`OutlineNode`ツリーを平坦化して`FoldRegion`のリストに変換する。** 1行に収まるシンボル(`endLineInclusive <= headerLine`)は除外する。`walkForOutline()`の`misc-no-recursion`指摘を踏まえ、最初から明示スタックによる反復実装にした
+- **`FoldingModel`は`BookmarkManager`と同じ「編集追従なし」制約を踏襲する。** EditEvent購読機構がこのコードベースに無いため、再計算はファイルを開いた時点で1回+アウトラインパネルを開くたびの2箇所のみ(`extractCurrentOutline()`ヘルパーで同じパース結果を`outlinePane.showWith()`と`foldingModel.setFoldableRegions()`の両方へ供給、二重パースを回避)。既存の折り畳み状態は`headerLine`一致で引き継ぐ
+- **移動キー(Up/Down/PageUp/PageDown)による隠れた行への着地は`editor_input.cpp`の新規`snapPastHiddenLine()`が補正する。** `selection.moveAll()`実行後、着地行が隠れていれば`foldedRegionContaining()`で覆っている領域を取得し、移動方向の境界(Up/PageUp→`headerLine`、Down/PageDown→`endLineInclusive + 1`)へスナップする(列位置は保持しない、v1の簡略化)。`applyMovementKey()`自体は`editor_input.cpp`の無名namespace内で内部リンケージのため、`main.cpp`から直接folding引数を渡せない — 公開APIの`handleKeyDown()`側に`const core::FoldingModel* folding = nullptr`引数を追加し内部で伝播する形にした
+- **ジャンプ経路は「同一ドキュメント内」と「別ファイル」で異なる補正にした。** Ctrl+G(`jumpToGotoTarget()`)・F2ブックマーク次/前(`handleBookmarkKey()`)は着地行を`foldingModel.revealLine()`で自動展開する。Grep結果ジャンプ・タグジャンプ(F12)は`openDocumentAt()`が`Document`を丸ごと差し替えるため、展開ではなく`foldingModel.setFoldableRegions({})`で全クリアする — 旧ファイルの行番号キーの折り畳み領域を新ファイルへ持ち越すと無関係な行を隠す実害があるため。アウトラインパネルからのジャンプ(常にシンボル見出し行へ着地)とマウスクリック(`hitTest()`自体が可視行しか歩かない)は補正不要
+- **ガター折り畳みマーカ(▶折畳/▼展開)は`drawGutterOnLine()`に追加描画するが、クリック判定は実装しない(v1のスコープ外、次サブフェーズへ)。** 唯一のトグル手段はコマンドパレットの新規コマンド`view.toggleFoldAtCursor`(「Fold/Unfold at Cursor」) — 主カーソル行が折り畳み見出しでなければno-op
+- **`RenderPipeline::drawVisibleLines()`の1行描画ロジック(ハイライト・インデントガイド・トークン・グリフ・キャレット・ガター・折り畳みヘッダマーカーの一式)を新規`drawTextLine()`private関数へ抽出した。** 隠れた行スキップロジック追加により`readability-function-cognitive-complexity`(閾値25)を実測31で超過したためのclang-tidy対応 — `computeCaretDraws()`のPhase 4b7a抽出と同じ理由
+
+**意図的にスコープ外とした項目:** ガター+/-クリックでのトグル、`{}`ブレースマッチングによる任意ブロック折り畳み、折り畳み状態のファイル跨ぎ永続化・Undo/Redo連動、毎編集ごとの折り畳み領域再計算、複数カーソル対応の折り畳みトグル。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

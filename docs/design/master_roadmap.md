@@ -219,7 +219,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7f | アウトライン抽出 (OutlineNode、ヘッドレス) | ✅ 完了 | §7 |
 | 7g | アウトラインUI統合 (OutlinePane、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 | §7 |
 | 7h | Breadcrumb (カーソル位置のシンボルパス表示) | ✅ 完了 | §7 |
-| 7i〜 | 残り21言語 + 真の増分再解析 + 折り畳み + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
+| 7i | 折り畳み コア基盤 (FoldingModel、キーボードトグルのみ、ガタークリックは次候補) | ✅ 完了 | §7 |
+| 7j〜 | 残り21言語 + 真の増分再解析 + ガター+/-クリック折り畳みトグル + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -985,6 +986,8 @@ public:
 - アウトライン UI (`src/ui/outline_pane.{h,cpp}`) は右側に折り畳みツリー (Win32 `WC_TREEVIEW`)
 
 > **Phase 7f着手前調査で判明:** アウトライン抽出(シンボルツリーの計算)と折り畳み(表示行変換)は当初想定より規模の異なる別サブフェーズだと判明した。`core::Viewport`/`RenderPipeline`は論理行=表示行という前提でハードコードされており、真の折り畳みにはCore+Rendering層を横断する変換の差し込みが必要。アウトライン抽出は`OutlineNode`ツリーを返すヘッドレス関数として先に独立させ(Phase 7f、下記実装後の確定事項参照)、折り畳み・`outline_pane`のWC_TREEVIEW UI統合は後続サブフェーズへ据え置いた。
+>
+> **Phase 7i完了時点の確定:** 上記2行目の「`Viewport`が表示行で管理、内部で論理行に変換」という二重座標系案は不採用となった。実際には`document::LineNumber`を全レイヤーで論理行番号のまま維持し、`RenderPipeline`の描画/hitTest/移動キー補正の3消費箇所だけに「隠れた行をスキップするローカルなウォーク」を追加する方式にした(`Viewport`/`SelectionModel`は無改修)。ガター折り畳みマーカ自体は`+/-`ではなく▶(折畳)/▼(展開)のシェブロンで実装し、**クリックでのトグルは未実装のまま次サブフェーズへ据え置いた**(v1はコマンドパレット経由のキーボードトグルのみ)。詳細は本ファイル §7 の「実装後の確定事項/変更点 (Phase 7i完了)」を参照。
 
 ### 7.11 性能目標
 - 100 万行 C++ ファイルの初回全解析: ≤ 5 秒 (バックグラウンド)
@@ -1090,6 +1093,19 @@ public:
 - **垂直座標系に新規`kBreadcrumbHeightDips`オフセットを導入した。** 既存の水平オフセット`kGutterWidthDips`(ガター幅)が担っていた「このファイル内の全x座標消費箇所が合意する必要がある」という構造を縦方向にもミラーし、`drawVisibleLines()`の描画開始y座標・`hitTest()`のyDip変換(帯内クリックは先頭行にクランプ)・`computeVisibleLineCount()`への実効高さ引数の3箇所を更新した。`computeVisibleLineCount()`自体のシグネチャは変更せず、呼び出し側で実効高さを計算する方式を維持した(Windows SDK非依存の純粋関数という性質を保つ)
 - **実アプリ視覚確認で、Breadcrumb実装とは別に既存の潜在バグを1件発見・修正した。** `wireNormalMode()`の`onDeferredInit`は`renderPipeline.attach()`/`setDocument()`を呼ぶ一方、`syncRenderStateAndInvalidate()`(カーソル状態をRenderPipelineへ反映する関数)を一度も呼んでいなかったため、`m_cursorVisuals`はユーザーが最初にカーソルを動かすまで空のままだった。ファイルを`--open`で開いた直後のスクリーンショットでBreadcrumbが完全に無表示だったことから発覚 — この根本原因はBreadcrumb固有ではなくキャレット描画自体にも及ぶ(起動直後はキャレットも実質不可視だった)ため、`onDeferredInit`末尾の`::InvalidateRect()`を`syncRenderStateAndInvalidate()`呼び出しに置き換える形で、Breadcrumbとキャレット両方を同時に解消した(1箇所の共有ロジックの根本修正であり、Phase 7gの「他4オーバーレイの同種バグは別タスクへ切り出す」判断とは異なり、切り分けが不可能な性質のバグだったため同一PR内で修正)
 - **実アプリでC++ファイル(namespace > class > method の3階層)を開き、`--open`起動直後(カーソル移動なし)と矢印キーでのカーソル移動後の両方でBreadcrumbが正しく表示・更新されることをスクリーンショットで確認した。** 矢印キーは修飾キーを伴わないため、Phase 7gで判明した「修飾キー付きショートカットは合成入力できない」制約の対象外で、通常のSendKeys+スクリーンショット手法がそのまま機能した
+
+### 実装後の確定事項/変更点 (2026-07-26、Phase 7i完了)
+
+**roadmap §7.10の「折り畳み」のコア基盤(`core::FoldingModel`、キーボードトグルのみ)を実装した。ガター+/-クリックでのトグルは意図的に次のサブフェーズへ据え置いた。**
+
+- **roadmap原案の「`Viewport`が表示行(display line)空間を管理し内部で論理行へ変換する」二重座標系は不採用にした。** `document::LineNumber`はコードベース全体で「論理行番号」の意味のまま維持し、`RenderPipeline`の描画(`drawVisibleLines()`)・`hitTest()`・移動キー補正(`editor_input.cpp`)の3消費箇所それぞれに「隠れた行をスキップする」ローカルなウォークを追加する方式にした。`core::Viewport`は自身のヘッダコメントが予言していた通り無改修のまま、`core::SelectionModel`も無改修のまま実現できた — 二重座標系はViewport/RenderPipeline/SelectionModel全体を横断する遥かに大きな改修になる一方、ベンチマーク根拠のない先行実装になる(CLAUDE.mdルール10)ため見送った
+- **折り畳み対象領域はPhase 7f/7gの`syntax::OutlineNode`(関数/クラス/構造体/名前空間)をそのまま流用した。** `{}`ブレースマッチングによる任意ブロック(if/for/while等)の折り畳みは新規AST走査基盤が要る別スコープとして意図的に外した。新規`app::buildFoldRegions()`(`fold_bridge.h`)が`OutlineNode`ツリーを平坦化して`core::FoldRegion`のリストに変換する — Phase 7fの`walkForOutline()`が`misc-no-recursion`指摘を2回連続で受けた教訓を踏まえ、この関数は最初から明示スタックによる反復実装で書いた
+- **`core::FoldingModel`は`core::BookmarkManager`と同じ「編集追従なし」制約をそのまま踏襲した。** このコードベースにはEditEvent購読機構が無いため、折り畳み領域はファイルを開いた時点で1回+アウトラインパネル(Ctrl+Shift+O)を開くたびに再計算(既存の`refreshOutlinePane()`が既に`extractOutline()`を呼んでいるためコスト0で相乗り可能)のみで、毎編集での再計算はしない。既存の折り畳み状態は見出し行番号(`headerLine`)で照合し、まだ存在する領域は畳んだまま維持する(`setFoldableRegions()`)
+- **カーソルが隠れた行に入り込むケースを、移動キー(Up/Down/PageUp/PageDown)とジャンプ経路とで異なる補正方式にした。** 移動キー(`editor_input.cpp`の新規`snapPastHiddenLine()`)は最短距離で折り畳み範囲の境界へスナップする。同一ドキュメント内ジャンプ(Ctrl+G、F2ブックマーク次/前)は着地行を含む全ての折り畳みを`FoldingModel::revealLine()`で自動展開する。**別ファイルへのジャンプ(Grep結果、タグジャンプF12)は`openDocumentAt()`が`Document`を丸ごと差し替えるため、展開ではなく`foldingModel.setFoldableRegions({})`で全クリアする方式にした** — 展開のままだと旧ファイルの行番号キーの折り畳み領域が新ファイルの無関係な行を隠す実害あるバグになると実装中に気づき、`findReplaceState`/`renderPipeline.setBookmarkedLines({})`と同じ「`openDocumentAt()`が内部でリセットしないものは呼び出し側でリセットする」既存パターンを踏襲した。アウトラインパネルからのジャンプとマウスクリックは着地点の性質上そもそも補正不要(前者は常にシンボル見出し行、後者は`hitTest()`自体が可視行しか歩かない構造)
+- **v1はキーボード操作のみとし、ガター+/-クリックでのトグルは次のサブフェーズへ据え置いた。** 折り畳みマーカ(▶/▼)自体はガターに常時描画するが、クリック判定(`hitTestFoldMarker()`、マウスディスパッチへの新規配線)は追加しない — Phase 4b8dが「タブ⇔スペース変換」をまずコマンドパレット経由のみで出荷した前例と同じ判断。新規コマンド`view.toggleFoldAtCursor`(「Fold/Unfold at Cursor」)をコマンドパレットに追加し、主カーソル行が折り畳み見出しならその領域をトグルする
+- **`applyMovementKey()`が内部リンケージ(`editor_input.cpp`の無名namespace内)でmain.cppから直接呼べないことが実装中に判明し、計画を修正した。** 当初計画は`applyMovementKey()`に直接`folding`引数を追加する想定だったが、実際の公開APIである`handleKeyDown()`(`editor_input.h`)側にデフォルト`nullptr`の`const core::FoldingModel*`引数を追加し、内部で`applyMovementKey()`へ伝播する方式に修正した(既存呼び出し・テストは無改修)
+- **ローカル検証中、Phase 7iの隠れた行スキップロジック追加により`RenderPipeline::drawVisibleLines()`が`readability-function-cognitive-complexity`(閾値25に対し実測31)でclang-tidyエラーになる新規違反を検出・修正した。** 折り畳みヘッダマーカー描画ロジックを含む1行分の描画処理全体を新規`drawTextLine()`private関数へ抽出し(`computeCaretDraws()`のPhase 4b7a抽出と同じ理由)、`drawVisibleLines()`自体は「可視行を数えながら歩き、可視行ごとに`drawTextLine()`を呼ぶ」骨格だけに単純化した
+- **実アプリ視覚確認は、起動時に自動生成されるガター折り畳みマーカー(▼)の表示のみに限定した。** 「Fold/Unfold at Cursor」コマンド自体はコマンドパレット(Ctrl+Shift+P)経由でのみ到達可能だが、Phase 7gで判明済みの「この自動化環境は修飾キーを伴う合成入力を受け付けない」制約によりコマンドパレット自体を開けないため、トグル操作そのものの対話的確認はできなかった。ネストしたC++ファイル(namespace > class > 2メソッド + 独立関数)を`--open`起動した直後のスクリーンショットで、全ての折り畳み可能な見出し行(namespace/class/関数3件)にのみ展開チェブロン(▼)が表示され、1行に収まるメンバ(`int m_value = 0;`等)には表示されないことを確認した。トグル後の実際の折り畳み表示(`{…}`マーカー・隠れた行のスキップ)は`tests/integration/render_text_smoke_test.cpp`の`FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines`(`setFoldRegions()`で直接`folded=true`を設定し`render()`成功+`hitTest()`が隠れた行を飛ばすことを確認)で代替した
 
 ---
 

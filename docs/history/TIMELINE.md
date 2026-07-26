@@ -1763,4 +1763,39 @@ Phase 7g完了直後、ユーザーから「継続して実行せよ」と指示
 
 **次回:** Phase 7hが完了した(コミット`853556b`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7i以降(残り21言語対応・真の増分再解析・折り畳み・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)の初期位置決めバグ修正が依然として残っている — ユーザーが起動していなければこのセッションで拾ってもよい。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 53 (2026-07-26): Phase 7i — 折り畳み コア基盤 (`core::FoldingModel`、キーボードトグルのみ)
+
+Phase 7h完了直後、ユーザーから「次のフェーズに進めPhase7はいつまで続くのか？これは当初の実装計画通りか？」と問われた。Phase 7の8機能スコープはmaster_roadmap.md v2.0で当初から固定されていたが、7a→7hのサブフェーズ分割自体は各セッションでAskUserQuestionを都度使って段階的に決めてきたもので事前計画ではなかった旨を回答した上で、4つの候補(折り畳み/3言語目追加/真の増分再解析/ミニマップ)をAskUserQuestionで提示し、**折り畳み(推奨案)**が選ばれた — roadmap §7.1のDoD「100万行対応」に直結する中核機能。
+
+**着手前調査で確定した設計方針:**
+- roadmap §7.10原案の「`Viewport`が表示行空間を管理し内部で論理行へ変換する」二重座標系は不採用にした。`document::LineNumber`をコードベース全体で論理行番号のまま維持し、`RenderPipeline`の描画(`drawVisibleLines()`)・`hitTest()`・移動キー補正(`editor_input.cpp`)の3消費箇所それぞれに「隠れた行をスキップするローカルなウォーク」を追加する方式にした。`core::Viewport`は自身のヘッダコメントが予言していた通り、`core::SelectionModel`も無改修のまま実現できた(CLAUDE.mdルール10、ベンチマーク根拠のない先行実装を回避)
+- 折り畳み対象領域はPhase 7f/7gの`syntax::OutlineNode`をそのまま流用し、`{}`ブレースマッチングによる任意ブロック折り畳みは別スコープとして外した
+- v1はキーボード操作(コマンドパレット「Fold/Unfold at Cursor」)のみとし、ガター+/-クリックでのトグルは次サブフェーズへ意図的に据え置いた — Phase 4b8dの「タブ⇔スペース変換をまずコマンドパレット経由のみで出荷」と同じ判断
+
+**実装:**
+- 新規`src/core/include/neomifes/core/folding_model.h` + `.cpp`: `FoldingModel`(`BookmarkManager`と同型のheadless設計、`setFoldableRegions()`はheaderLine一致で既存folded状態を引き継ぐ)
+- 新規`src/app/include/neomifes/app/fold_bridge.h`: `buildFoldRegions()`(`OutlineNode`ツリー平坦化、Phase 7fの`misc-no-recursion`教訓を踏まえ最初から明示スタックで反復実装)
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `FoldVisual`・`setFoldRegions()`・`isLineHidden()`・`drawFoldedHeaderMarker()`新設、`drawVisibleLines()`/`hitTest()`/`drawGutterOnLine()`更新
+- `src/app/include/neomifes/app/editor_input.h` + `.cpp`: `handleKeyDown()`に既定`nullptr`の`const core::FoldingModel*`引数追加、新規`snapPastHiddenLine()`
+- `src/app/main.cpp`: `FoldingModel foldingModel;`新設、`extractCurrentOutline()`ヘルパー抽出(outline/folding両方が同じパース結果を再利用)、`syncFoldingState()`新設、新規コマンド`view.toggleFoldAtCursor`、4ジャンプ経路への補正追加
+
+**発生した問題と修正:**
+- **`applyMovementKey()`が`editor_input.cpp`の無名namespace内で内部リンケージのため、main.cppから直接呼べないことが実装中に判明した。** 計画では直接この関数に`folding`引数を追加する想定だったが、実際の公開API`handleKeyDown()`側に既定`nullptr`の引数を追加し内部で伝播する方式に修正した(既存呼び出し・テストは無改修)
+- **別ファイルへのジャンプ(Grep結果・タグジャンプ)で`foldingModel`をクリアしないと、旧ファイルの折り畳み領域が新ファイルの無関係な行を隠す実害バグになると実装中に気づいた。** `openDocumentAt()`が`Document`を丸ごと差し替えるため、`findReplaceState`/`renderPipeline.setBookmarkedLines({})`と同じ「呼び出し側でリセット」パターンを踏襲し`foldingModel.setFoldableRegions({})`を追加した
+- **`app_fold_bridge_test.cpp`の初期テストが`TextRange.end`(排他的境界)を誤って解釈し1行ずれた期待値になっていた。** テスト側の`containingRange.end`値を修正(`buildFoldRegions()`自体にバグはなかった)
+- **ローカル検証で、隠れた行スキップロジック追加により`RenderPipeline::drawVisibleLines()`が`readability-function-cognitive-complexity`(閾値25に対し実測31)でclang-tidyエラーになった。** 1行分の描画処理全体(ハイライト・トークン・グリフ・キャレット・ガター・折り畳みマーカー)を新規`drawTextLine()`private関数へ抽出して解消した(`computeCaretDraws()`のPhase 4b7a抽出と同じ理由)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest実測697件全pass(新規追加: `core_folding_model_test.cpp`12件、`app_fold_bridge_test.cpp`4件、`app_editor_input_test.cpp`に3件、`render_text_smoke_test.cpp`に1件)
+- clang-tidy: `src/`配下新規警告0(`readability-function-cognitive-complexity`を検出・修正)、`tests/`配下は既存ポリシー(`src/.clang-tidy`が明記する「tests/はwarn-only」)により対象外
+- **実アプリでC++ファイル(namespace > class > 2メソッド + 独立関数)を`--open`起動し、起動直後のスクリーンショットで全ての折り畳み可能な見出し行にのみ展開チェブロン(▼)が表示され、1行に収まるメンバには表示されないことを確認した。** 「Fold/Unfold at Cursor」コマンド自体の対話的トグル確認は、コマンドパレット(Ctrl+Shift+P)がPhase 7g/7hで判明済みの修飾キー合成入力制約により開けないため実施できず、単体テスト+`FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines`統合テストで代替した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7i行を追加(7j〜が次候補)、§7.10に二重座標系不採用の確定を追記、§7に「実装後の確定事項/変更点(Phase 7i完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.11(折り畳みコア基盤実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.43(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7iが完了した(コミット`0b01376`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7j以降(残り21言語対応・真の増分再解析・ガター+/-クリック折り畳みトグル・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)の初期位置決めバグ修正が依然として残っている — ユーザーが起動していなければこのセッションで拾ってもよい。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

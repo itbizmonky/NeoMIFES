@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`)完了・未push**)
+> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・Phase 7i(折り畳みコア基盤、§3.43参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`/`0b01376`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -74,7 +74,8 @@
 | Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) | ✅ 完了 (**未push**、§3.40参照) |
 | Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 (**未push**、§3.41参照) |
 | Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) | ✅ 完了 (**未push**、§3.42参照) |
-| **次フェーズ選定 — Phase 7i以降(残り21言語/真の増分再解析/折り畳み/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) | ✅ 完了 (**未push**、§3.43参照) |
+| **次フェーズ選定 — Phase 7j以降(残り21言語/真の増分再解析/ガター+/-クリック折り畳みトグル/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1240,6 +1241,44 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 ---
 
+### 3.43 Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) 完了記録
+
+「次のフェーズに進め」との指示を受け、4候補(折り畳み/3言語目追加/真の増分再解析/ミニマップ)をAskUserQuestionで提示し、**折り畳み(推奨案)**が選ばれた — roadmap §7.1のDoD「100万行対応」に直結する中核機能。
+
+**着手前調査で確定した設計方針:**
+- roadmap §7.10原案の「`Viewport`が表示行空間を管理する二重座標系」は不採用。`document::LineNumber`を論理行番号のまま全レイヤーで維持し、`RenderPipeline`の描画/hitTestの2消費箇所だけに「隠れた行をスキップするローカルなウォーク」を追加する方式にした。`core::Viewport`/`core::SelectionModel`は無改修
+- 折り畳み対象はPhase 7f/7gの`OutlineNode`(関数/クラス/構造体/名前空間)をそのまま流用。`{}`ブレースマッチングによる任意ブロック折り畳みは別スコープ
+- v1はキーボード操作のみ(コマンドパレット「Fold/Unfold at Cursor」)、ガター+/-クリックでのトグルは次サブフェーズへ据え置き — Phase 4b8dの「タブ⇔スペース変換をまずコマンドパレット経由のみで出荷」と同じ判断
+
+**実装:**
+- `src/core/include/neomifes/core/folding_model.h` + `.cpp`: `FoldingModel`新設(`BookmarkManager`と同型の「編集追従なし」headless設計)
+- `src/app/include/neomifes/app/fold_bridge.h`: `buildFoldRegions()`新設(`OutlineNode`ツリー平坦化、明示スタックによる反復実装)
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `FoldVisual`・`setFoldRegions()`・`isLineHidden()`・`drawFoldedHeaderMarker()`新設、`drawVisibleLines()`/`hitTest()`/`drawGutterOnLine()`更新
+- `src/app/include/neomifes/app/editor_input.h` + `.cpp`: `handleKeyDown()`に`const core::FoldingModel* folding = nullptr`引数追加、新規`snapPastHiddenLine()`
+- `src/app/main.cpp`: `FoldingModel foldingModel;`新設、`extractCurrentOutline()`ヘルパー抽出、`syncFoldingState()`新設、新規コマンド`view.toggleFoldAtCursor`、4ジャンプ経路への補正追加
+
+**発生した問題と修正:**
+- **`applyMovementKey()`が`editor_input.cpp`の無名namespace内で内部リンケージのため、main.cppから直接呼べないことが実装中に判明。** 計画では直接この関数に`folding`引数を追加する想定だったが、実際の公開API`handleKeyDown()`側に既定`nullptr`の引数を追加し内部で伝播する方式に修正(既存呼び出し・テストは無改修)
+- **別ファイルへのジャンプ(Grep結果・タグジャンプ)で、`foldingModel`をクリアしないと旧ファイルの折り畳み領域が新ファイルの無関係な行を隠す実害バグになると実装中に気づいた。** `openDocumentAt()`が`Document`を丸ごと差し替えるため、`findReplaceState`/`renderPipeline.setBookmarkedLines({})`と同じ「呼び出し側でリセット」パターンを踏襲し`foldingModel.setFoldableRegions({})`を追加
+- **`app_fold_bridge_test.cpp`の初期テストが`TextRange.end`(排他的境界)を誤って解釈し1行ずれた期待値になっていた。** テスト側の`containingRange.end`値を修正(実装側`buildFoldRegions()`自体にはバグなし)
+- **ローカル検証で、隠れた行スキップロジック追加により`RenderPipeline::drawVisibleLines()`が`readability-function-cognitive-complexity`(閾値25に対し実測31)でclang-tidyエラーになった。** 1行分の描画処理全体(ハイライト・トークン・グリフ・キャレット・ガター・折り畳みマーカー)を新規`drawTextLine()`private関数へ抽出して解消(`computeCaretDraws()`のPhase 4b7a抽出と同じ理由)
+
+**テスト数:** ctest実測697件(新規: `core_folding_model_test.cpp`12件、`app_fold_bridge_test.cpp`4件、`app_editor_input_test.cpp`に3件追加、`render_text_smoke_test.cpp`に`FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines`1件追加)。ローカルDebug/Release/ubsan全green(各697件)、`src/`配下clang-tidy新規警告0(`tests/`配下の`misc-const-correctness`等は既存ポリシーにより警告扱いのまま、`src/.clang-tidy`のコメント参照)。
+
+**完了条件:**
+- [x] `FoldingModel`の折り畳み/展開・境界(`headerLine`自体は隠れない)・ネスト・`revealLine()`一括展開・`setFoldableRegions()`再呼び出し時の状態引き継ぎを単体テストで確認
+- [x] `buildFoldRegions()`が1行シンボルを除外し、ネスト木を正しく平坦化することを単体テストで確認
+- [x] 移動キー(Up/Down)が隠れた行への着地を境界へスナップすることを単体テストで確認(`app_editor_input_test.cpp`)
+- [x] `render_text_smoke_test.cpp`に折り畳み描画+hitTestのrender()成功ケースを追加
+- [x] ローカルDebug/Release/ubsan全697テストgreen(ctest実測)、`src/`配下clang-tidy新規警告0
+- [x] **実アプリでC++ファイル(namespace > class > 2メソッド + 独立関数)を`--open`起動し、起動直後のスクリーンショットで全ての折り畳み可能な見出し行にのみ展開チェブロン(▼)が表示されることを確認済み。** 「Fold/Unfold at Cursor」コマンド自体の対話的トグル確認は、コマンドパレット(Ctrl+Shift+P)が本セッションの合成キーボード入力の修飾キー制約(§3.41/§3.42参照)により開けないため実施できず、単体テスト+統合テスト(`FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines`)で代替した
+
+**スコープ外(意図的、後続サブフェーズへ):** ガター+/-クリックでのトグル、`{}`ブレースマッチングによる任意ブロック折り畳み、折り畳み状態の永続化・Undo/Redo連動、毎編集ごとの折り畳み領域再計算、複数カーソル対応の折り畳みトグル。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.11参照。
+
+**Phase 7iはコミット予定・未push。** 次フェーズはPhase 7j以降(残り21言語・真の増分再解析・ガター+/-クリック折り畳みトグル・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1290,9 +1329,10 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
 **Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
-Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)は
+Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・
+Phase 7i(折り畳みコア基盤、§3.43参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`)完了・未push。**
+`853556b`/`0b01376`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1314,9 +1354,12 @@ Ctrl+G/Ctrl+Up・Down/Shift+Alt+ドラッグ等、修飾キーを伴う操作は
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7i以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
-折り畳み・ミニマップ・Sticky scroll・Semantic highlighting)。**
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7hで確立したパターン(tree-sitterグラマー
+**次フェーズはPhase 7j以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+ガター+/-クリックでの折り畳みトグル・ミニマップ・Sticky scroll・Semantic highlighting)。**
+折り畳みのキーボード操作コア基盤(`core::FoldingModel`)はPhase 7iで完了済み(§3.43参照)——
+ガター+/-クリックでのトグル(`hitTestFoldMarker()`、マウスディスパッチへの新規配線)は
+Phase 7iで意図的に据え置いた次サブフェーズの筆頭候補。
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7iで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
 合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
@@ -1324,16 +1367,21 @@ detailed_design.md §10.6、Indent guidesはRenderPipelineへのdrawXxxOnLine追
 detailed_design.md §10.7、アウトライン抽出は独立した2回目パース+明示スタック走査・
 detailed_design.md §10.8、アウトラインUI統合はWM_NOTIFYベースのWC_TREEVIEW・
 detailed_design.md §10.9、BreadcrumbはkGutterWidthDips方式を縦方向にミラーした
-新規座標オフセット+OutlineNodeツリーの逆引き・detailed_design.md §10.10参照)を
+新規座標オフセット+OutlineNodeツリーの逆引き・detailed_design.md §10.10、
+折り畳みは二重座標系を避けて論理行のまま隠れた行をスキップするローカルウォーク・
+detailed_design.md §10.11参照)を
 踏襲しつつ、次のサブフェーズのスコープをPlan Modeで具体化してから着手すること
 (推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
 実出力を確認してからnamedLeafKindsForXテーブル/シンボルテーブルを構築すること — 記憶
 からの推測は厳禁(Phase 7fでC++/Pythonの`function_definition`同名ノードの構造差異を
-見落としたバグが実際に発生している、§3.40参照)。折り畳みに着手する場合、`core::Viewport`/
-`RenderPipeline`が論理行=表示行前提でハードコードされている(Phase 7f着手前調査で確認済み、
-master_roadmap.md §7.10参照)ことを踏まえ、Core+Rendering層を横断する変換の設計から
-始めること。**新規のRenderPipeline系機能で`src/`配下のコードに再帰関数を書く場合は、
+見落としたバグが実際に発生している、§3.40参照)。**ガター+/-クリックでの折り畳みトグルに
+着手する場合、`core::FoldingModel`/`render::FoldVisual`/`RenderPipeline::isLineHidden()`は
+Phase 7iで実装済み(§3.43・detailed_design.md §10.11参照)——`Viewport`は論理行=表示行前提の
+まま無改修で維持する設計が確定しているため、新たにCore+Rendering層を横断する座標変換を
+設計する必要はない。既存の`drawGutterOnLine()`が描く▶/▼マーカーの座標(`kGutterWidthDips`右端寄り)
+に対する`hitTest()`拡張(クリック位置→`headerLine`特定)とマウスディスパッチへの新規配線が
+残作業の中心になる。** **新規のRenderPipeline系機能で`src/`配下のコードに再帰関数を書く場合は、
 `src/.clang-tidy`が`WarningsAsErrors: '*'`のため`misc-no-recursion`が木の実際の深さに
 関わらず一律エラー化することをPhase 7hで再確認済み(§3.42参照)— 再帰で書いた場合は
 clang-tidy実行時に明示ループへの書き換えが必要になる前提で見積もること。**
@@ -1346,9 +1394,12 @@ clang-tidy実行時に明示ループへの書き換えが必要になる前提�
 残り4オーバーレイへ適用すればよい。ユーザーがこのタスクを起動していなければ、このセッションで
 拾って対応してもよい。
 
-着手前に本ファイル §3.19〜§3.42 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.43 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 修飾キーを伴わない操作(日本語IME確認含む)は引き続きユーザーに依頼する
 (5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7a・7fはヘッドレスのため視覚確認対象なし)。
+コマンドパレット経由のコマンド(Phase 4b8d/4b8f/7iの「Fold/Unfold at Cursor」等)の対話的
+トグル確認は、Ctrl+Shift+Pの合成入力制約により本セッションでは実施不可 — 単体/統合テストと
+コードレビューで代替する運用を継続する(§3.43参照)。
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**
