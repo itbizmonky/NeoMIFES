@@ -412,6 +412,7 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
             .selectionRange = TextRange{.start = std::min(cursor.position, cursor.anchor),
                                         .end     = std::max(cursor.position, cursor.anchor)},
             .virtualColumnOffset = cursor.isPrimary ? primaryVirtualColumnOffset : 0,
+            .isPrimary           = cursor.isPrimary,
         });
     }
     renderPipeline.setCursorVisuals(std::move(visuals));
@@ -1550,7 +1551,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // Same non-fatal treatment as findBar.create() above.
         createAndPositionOutlinePane(hwnd, hInstance, document, selectionModel, viewport, renderPipeline,
                                      outlinePane);
-        ::InvalidateRect(hwnd, nullptr, FALSE);
+        // Phase 7h: pushes the startup cursor state (position 0, isPrimary)
+        // into RenderPipeline before the first paint - without this,
+        // m_cursorVisuals stays empty (its default) until the user's first
+        // cursor-moving action, which left both the caret and (once added,
+        // Phase 7h) the Breadcrumb strip invisible on a freshly opened file.
+        // Supersedes the bare InvalidateRect() this replaced - this already
+        // invalidates internally.
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane](
                        HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {

@@ -11,6 +11,7 @@
 #include "neomifes/render/indent_guide_math.h"
 #include "neomifes/render/resize_math.h"
 #include "neomifes/render/viewport_math.h"
+#include "neomifes/util/wchar_cast.h"
 
 namespace neomifes::render {
 
@@ -35,6 +36,12 @@ constexpr float kMaxLayoutHeightDips = 65536.0F;
 // inherit DrawTextLayout()'s origin shift.
 constexpr float kGutterWidthDips  = 24.0F;
 constexpr float kBookmarkDotSizeDips = 8.0F;
+
+// Phase 7h: top-of-editor Breadcrumb strip height. Same "every y-coordinate
+// consumer in this file must agree on this offset" contract kGutterWidthDips
+// documents for the x-axis - see drawVisibleLines()'s `y` origin and
+// hitTest()'s `yDip` clamp below.
+constexpr float kBreadcrumbHeightDips = 24.0F;
 }  // namespace
 
 RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
@@ -145,6 +152,7 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_preprocessorBrush.Reset();
     m_indentGuideBrush.Reset();
     m_activeIndentGuideBrush.Reset();
+    m_breadcrumbBackgroundBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -163,6 +171,7 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
         m_hasCachedSnapshot = false;
         m_cachedSnapshot.reset();
         m_tokens.clear();
+        m_cachedOutline.clear();
         return {};
     }
     if (m_hasCachedSnapshot && m_document->version() == m_cachedDocumentVersion) {
@@ -190,6 +199,7 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     // deviation from roadmap sec.7.9's "keep showing old tokens" sketch
     // (which assumes true incremental parsing, not implemented yet).
     m_tokens.clear();
+    m_cachedOutline.clear();
     if (m_language.has_value()) {
         // Lazily started here (not setLanguage()) because that can be called
         // before RenderPipeline::attach() has set m_hwnd (main.cpp calls it
@@ -203,6 +213,20 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
             m_syntaxWorker.emplace(m_hwnd);
         }
         m_syntaxWorker->requestParse(m_cachedSnapshot, *m_language);
+        // Phase 7h (Breadcrumb): SYNCHRONOUS, unlike token coloring above -
+        // extractOutline() is already a deliberately independent, separate
+        // parse from token coloring (outline.h's header comment), so this
+        // does not share SyntaxWorker's background thread. Recomputing it
+        // asynchronously as well would need either a second background
+        // worker or extending SyntaxWorker to also produce outlines - a
+        // materially bigger scope increase with no benchmark yet showing the
+        // synchronous cost actually matters (CLAUDE.md rule 10). Same
+        // "ship synchronous first" order Phase 7b (sync tokens) took before
+        // Phase 7c (async) was justified by a measured stutter. Known,
+        // accepted limitation: on a very large file, Breadcrumb can lag one
+        // frame behind the edit that invalidated it.
+        m_cachedOutline = syntax::extractOutline(
+            m_cachedSnapshot->extract(TextRange{.start = 0, .end = m_cachedSnapshot->length()}), *m_language);
     }
     return {};
 }
@@ -430,6 +454,24 @@ RenderExpected<void> RenderPipeline::ensureIndentGuideBrushes(ID2D1DeviceContext
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureBreadcrumbBrush(ID2D1DeviceContext6& dc) noexcept {
+    // Phase 7h: VSCode Dark+-inspired editor breadcrumb background
+    // approximation, same "hardcoded, no Theme system yet" rationale as
+    // ensureTokenBrushes()/ensureIndentGuideBrushes() above - slightly
+    // lighter than the editor background (RGB 30,30,30) so the strip reads
+    // as distinct chrome.
+    if (m_breadcrumbBackgroundBrush) {
+        return {};
+    }
+    constexpr D2D1_COLOR_F kBreadcrumbBackgroundColor = {37.0F / 255.0F, 37.0F / 255.0F, 38.0F / 255.0F, 1.0F};
+    const HRESULT hr =
+        dc.CreateSolidColorBrush(kBreadcrumbBackgroundColor, m_breadcrumbBackgroundBrush.GetAddressOf());
+    if (FAILED(hr)) {
+        return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+    }
+    return {};
+}
+
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
@@ -443,7 +485,14 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
 
-    const std::uint32_t visibleCount = computeVisibleLineCount(m_height, m_dpiScale, m_lineHeightDips);
+    // Phase 7h: the Breadcrumb strip occupies the top kBreadcrumbHeightDips
+    // of the client area, so the effective height available to text lines is
+    // reduced by that many (DPI-scaled) pixels - mirrors kGutterWidthDips'
+    // effect on drawn width, just on the y-axis. computeVisibleLineCount()
+    // itself stays a general-purpose pure function unaware of Breadcrumb.
+    const auto breadcrumbHeightPx = static_cast<std::uint32_t>(kBreadcrumbHeightDips * m_dpiScale);
+    const std::uint32_t effectiveHeightPx = m_height > breadcrumbHeightPx ? m_height - breadcrumbHeightPx : 0;
+    const std::uint32_t visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
     if (visibleCount == 0) {
         return;
     }
@@ -462,7 +511,7 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     std::size_t tokenCursor = 0;  // Phase 7b: threaded forward across the line loop, see drawTokensOnLine()'s comment
 
     std::u16string_view remaining(text);
-    float                y         = 0.0F;
+    float                y         = kBreadcrumbHeightDips;  // Phase 7h: reserve the strip above
     TextPos              lineStart = startOffset;
     for (LineNumber line = startLine; line < endLineExclusive; ++line) {
         const auto newlinePos = remaining.find(u'\n');
@@ -712,6 +761,50 @@ void RenderPipeline::drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y,
     }
 }
 
+void RenderPipeline::drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept {
+    // No primary cursor to anchor the path on (e.g. no cursors set at all,
+    // as in a bare render-smoke test) - draw nothing, not even the
+    // background band, rather than show an empty strip with no meaning.
+    const auto primaryIt = std::ranges::find_if(
+        m_cursorVisuals, [](const CursorVisual& cursor) { return cursor.isPrimary; });
+    if (primaryIt == m_cursorVisuals.end() || !m_breadcrumbBackgroundBrush) {
+        return;
+    }
+
+    const float widthDips = static_cast<float>(m_width) / m_dpiScale;
+    dc.FillRectangle(D2D1::RectF(0.0F, 0.0F, widthDips, kBreadcrumbHeightDips),
+                      m_breadcrumbBackgroundBrush.Get());
+
+    const std::vector<const syntax::OutlineNode*> path =
+        syntax::findBreadcrumbPath(primaryIt->position, m_cachedOutline);
+    if (path.empty() || !m_dwriteFactory || !m_textFormat || !m_textBrush) {
+        return;  // background band alone still communicates "no symbol here"
+    }
+
+    std::u16string joined;
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        if (i != 0) {
+            joined += u" > ";
+        }
+        joined += path[i]->name;
+    }
+
+    // One-off layout, not TextLayoutCache (that cache is keyed by document
+    // line number and reused across frames for unchanged lines - this string
+    // is synthesized fresh from m_cachedOutline every frame and has no line
+    // number to key on; the cost of laying out one short line per frame is
+    // negligible next to drawVisibleLines()' per-visible-line work).
+    const std::wstring_view wJoined = util::toWstringView(joined);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    const HRESULT hr = m_dwriteFactory->CreateTextLayout(
+        wJoined.data(), static_cast<UINT32>(wJoined.size()), m_textFormat.Get(),
+        std::max(0.0F, widthDips - kGutterWidthDips), kBreadcrumbHeightDips, layout.GetAddressOf());
+    if (FAILED(hr) || !layout) {
+        return;
+    }
+    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, 0.0F), layout.Get(), m_textBrush.Get());
+}
+
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || !m_dwriteFactory ||
         m_dpiScale <= 0.0F) {
@@ -726,7 +819,10 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
     // no separate "toggle bookmark on gutter click" interaction exists yet
     // (Phase 4b8c, deliberately deferred).
     const float xDip = std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - kGutterWidthDips);
-    const float yDip = static_cast<float>(yPx) / m_dpiScale;
+    // Phase 7h: clicks within the Breadcrumb strip clamp to the first visible
+    // line's row offset - same "clamp to a sane default" convention as the
+    // gutter's xDip clamp above.
+    const float yDip = std::max(0.0F, (static_cast<float>(yPx) / m_dpiScale) - kBreadcrumbHeightDips);
 
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
@@ -830,12 +926,18 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return indentGuideBrushResult;
     }
+    auto breadcrumbBrushResult = ensureBreadcrumbBrush(*dc);
+    if (!breadcrumbBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return breadcrumbBrushResult;
+    }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the
     // GDI->D2D handoff (ADR-009) stays visually seamless as a background.
     constexpr D2D1_COLOR_F kBackgroundColor = {30.0F / 255.0F, 30.0F / 255.0F, 30.0F / 255.0F, 1.0F};
     dc->Clear(kBackgroundColor);
     drawVisibleLines(*dc);
+    drawBreadcrumb(*dc);
 
     return device.endFrame();
 }

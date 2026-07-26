@@ -247,9 +247,11 @@ TEST(RenderTextSmokeTest, HitTestReturnsPositionsWithinKnownLineBounds) {
     ASSERT_TRUE(lineEndHit.has_value());
     EXPECT_LE(*lineEndHit, 2U);
 
-    // A y coordinate one line height down should land on line 1 ("cd",
-    // offset 3-5), not line 0.
-    const auto secondLineHit = pipeline.hitTest(0, 20);
+    // A y coordinate past the Breadcrumb strip (Phase 7h: hitTest() now
+    // clamps/subtracts kBreadcrumbHeightDips before converting to a row -
+    // see hitTest()'s comment) plus one line height should land on line 1
+    // ("cd", offset 3-5), not line 0.
+    const auto secondLineHit = pipeline.hitTest(0, 50);
     ASSERT_TRUE(secondLineHit.has_value());
     EXPECT_GE(*secondLineHit, 3U);
 }
@@ -415,6 +417,42 @@ TEST(RenderTextSmokeTest, IndentGuidesRenderWithoutError) {
     const auto rendered = pipeline.render();
     ASSERT_TRUE(rendered.has_value())
         << "render() with indent guides failed: " << neomifes::render::describe(rendered.error());
+}
+
+// Phase 7h: exercises drawBreadcrumb() end-to-end - a nested namespace/class/
+// method C++ snippet, a primary cursor placed inside the innermost method
+// body (so refreshDocumentCacheIfStale()'s synchronous extractOutline() +
+// findBreadcrumbPath() actually resolve a non-empty 3-level path), confirming
+// the whole path renders without error. Same "render() succeeds, no pixel-
+// level assertion" scope as the rest of this file.
+TEST(RenderTextSmokeTest, BreadcrumbRendersWithoutError) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0,
+                    u"namespace outer {\n"
+                    u"    class Widget {\n"
+                    u"    public:\n"
+                    u"        int getValue() { return 0; }\n"
+                    u"    };\n"
+                    u"}\n");
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+    // Position inside getValue()'s body ("return 0") - deep enough to land
+    // inside all three nesting levels (outer/Widget/getValue).
+    pipeline.setCursorVisuals({CursorVisual{.position = 78, .isPrimary = true}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with Breadcrumb failed: " << neomifes::render::describe(rendered.error());
 }
 
 TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectly) {

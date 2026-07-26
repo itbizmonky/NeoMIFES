@@ -40,6 +40,9 @@
 // in this class's public method signatures. See src/render/CMakeLists.txt's
 // comment on why neomifes::syntax is linked PUBLIC despite that.
 #include "neomifes/syntax/syntax.h"
+// Phase 7h: m_cachedOutline below needs syntax::OutlineNode's complete type,
+// same reasoning as syntax.h above.
+#include "neomifes/syntax/outline.h"
 
 namespace neomifes::document {
 class Document;
@@ -63,6 +66,15 @@ struct CursorVisual {
     // main.cpp's freeCursorVirtualColumns); `position` itself always stays a
     // real, in-document offset.
     std::uint32_t virtualColumnOffset = 0;
+    // Phase 7h (Breadcrumb): mirrors core::Cursor::isPrimary - drawBreadcrumb()
+    // needs to know which single cursor's position to show a symbol path for
+    // when multiple cursors exist. Defaulted to false (not left unset) so
+    // every existing partial designated-initializer construction site (this
+    // codebase's established clang-cl "missing designated field initializer"
+    // avoidance, same treatment as virtualColumnOffset above) keeps compiling
+    // unchanged. main.cpp's syncRenderStateAndInvalidate() is the sole writer,
+    // same ownership contract as every other CursorVisual field.
+    bool isPrimary = false;
 
     friend constexpr bool operator==(const CursorVisual&, const CursorVisual&) = default;
 };
@@ -233,8 +245,17 @@ private:
     [[nodiscard]] RenderExpected<void> ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7e: two brushes (regular / active) for indent guide lines.
     [[nodiscard]] RenderExpected<void> ensureIndentGuideBrushes(ID2D1DeviceContext6& dc) noexcept;
+    // Phase 7h: background brush for the Breadcrumb strip.
+    [[nodiscard]] RenderExpected<void> ensureBreadcrumbBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
+    // Draws the top-of-editor Breadcrumb strip: a background band
+    // (kBreadcrumbHeightDips tall) plus the symbol path (outermost to
+    // innermost, joined with " > ") containing the primary cursor's position,
+    // looked up via syntax::findBreadcrumbPath() against m_cachedOutline. A
+    // no-op (background only) if no cursor is primary or the path is empty
+    // (Phase 7h). Called from renderOnce() after drawVisibleLines().
+    void drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept;
 
     // Precomputed line/column for one cursor's caret (Phase 4b1, N-cursor
     // generalization Phase 4b7a). A line outside the visible range simply
@@ -362,6 +383,11 @@ private:
     // that request completes (see both functions' comments).
     std::optional<syntax::Language>                    m_language;
     std::vector<syntax::Token>                         m_tokens;
+    // Phase 7h: symbol tree for Breadcrumb, recomputed alongside m_tokens
+    // inside refreshDocumentCacheIfStale() - SYNCHRONOUSLY (not via
+    // m_syntaxWorker), see that function's comment for why. Cleared whenever
+    // m_tokens is (document change or m_language reset to nullopt).
+    std::vector<syntax::OutlineNode>                   m_cachedOutline;
     // Phase 7c: lazily constructed inside refreshDocumentCacheIfStale() on
     // the first actual parse request (needs a valid m_hwnd - see that
     // function's comment for why it isn't constructed in setLanguage()
@@ -397,6 +423,9 @@ private:
     // as the brushes above. See ensureIndentGuideBrushes()/drawIndentGuidesOnLine().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_indentGuideBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_activeIndentGuideBrush;
+    // Phase 7h: Breadcrumb strip background, same device-bound reset
+    // lifecycle as the brushes above. See ensureBreadcrumbBrush()/drawBreadcrumb().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_breadcrumbBackgroundBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
     // Phase 4b8e: one fixed-pitch character's advance width, probed once
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()

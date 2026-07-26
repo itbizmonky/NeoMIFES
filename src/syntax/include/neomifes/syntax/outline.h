@@ -49,4 +49,20 @@ struct OutlineNode {
 // recognized rather than an error.
 [[nodiscard]] std::vector<OutlineNode> extractOutline(std::u16string_view text, Language language);
 
+// Returns the chain of symbols containing `pos`, outermost first, using the
+// tree already produced by extractOutline() (this is the "future Breadcrumb
+// reverse lookup" OutlineNode::containingRange's doc comment refers to).
+// containingRange is [start, end) - same half-open convention as
+// document::TextRange elsewhere. Empty result if `pos` falls outside every
+// top-level node. Iterative (a plain descend-one-level-at-a-time loop, not a
+// self-call) - this file's src/.clang-tidy sets WarningsAsErrors: '*', and
+// misc-no-recursion flags any self-recursive function regardless of provable
+// depth bounds, the same check that made outline.cpp's walkForOutline()
+// iterative in Phase 7f. The tree itself is still shallow (symbol-definition
+// nesting only, not raw tree-sitter AST depth), so this is a lint-driven
+// implementation choice, not evidence the recursive form would have been
+// unsafe.
+[[nodiscard]] std::vector<const OutlineNode*> findBreadcrumbPath(document::TextPos pos,
+                                                                  const std::vector<OutlineNode>& nodes);
+
 }  // namespace neomifes::syntax

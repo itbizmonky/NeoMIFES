@@ -242,6 +242,26 @@ struct ScanState {
 
 }  // namespace
 
+std::vector<const OutlineNode*> findBreadcrumbPath(document::TextPos pos, const std::vector<OutlineNode>& nodes) {
+    std::vector<const OutlineNode*> path;
+    const std::vector<OutlineNode>* level = &nodes;
+    while (level != nullptr) {
+        const OutlineNode* match = nullptr;
+        for (const auto& node : *level) {
+            if (pos >= node.containingRange.start && pos < node.containingRange.end) {
+                match = &node;
+                break;
+            }
+        }
+        if (match == nullptr) {
+            break;
+        }
+        path.push_back(match);
+        level = &match->children;
+    }
+    return path;
+}
+
 std::vector<OutlineNode> extractOutline(std::u16string_view text, Language language) {
     const TSLanguage*  tsLanguage = language == Language::Cpp ? tree_sitter_cpp() : tree_sitter_python();
     const SymbolTable& table      = language == Language::Cpp ? symbolTableForCpp() : symbolTableForPython();

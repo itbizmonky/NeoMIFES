@@ -3,11 +3,15 @@
 #include <string>
 #include <vector>
 
+#include "neomifes/document/text_pos.h"
 #include "neomifes/syntax/outline.h"
 
 namespace {
 
+using neomifes::document::TextPos;
+using neomifes::document::TextRange;
 using neomifes::syntax::extractOutline;
+using neomifes::syntax::findBreadcrumbPath;
 using neomifes::syntax::Language;
 using neomifes::syntax::OutlineNode;
 using neomifes::syntax::SymbolKind;
@@ -121,6 +125,93 @@ TEST(SyntaxOutlineTest, PythonNestedFunctionClosureNestsCorrectly) {
 TEST(SyntaxOutlineTest, PythonMalformedInputDoesNotCrash) {
     EXPECT_NO_FATAL_FAILURE(
         { [[maybe_unused]] auto result = extractOutline(u"def foo(:\n    ???\n", Language::Python); });
+}
+
+// Phase 7h (Breadcrumb): findBreadcrumbPath(). Fixtures use explicit
+// designated-initializer OutlineNode{} construction (every field specified)
+// per this codebase's clang-cl "missing designated field initializer"
+// convention.
+
+TEST(FindBreadcrumbPathTest, EmptyTreeProducesEmptyPath) {
+    EXPECT_TRUE(findBreadcrumbPath(0, {}).empty());
+}
+
+TEST(FindBreadcrumbPathTest, PosOutsideEveryNodeProducesEmptyPath) {
+    const std::vector<OutlineNode> tree{OutlineNode{
+        .name             = u"foo",
+        .pos              = 4,
+        .containingRange  = TextRange{.start = 0, .end = 10},
+        .symbolKind       = SymbolKind::Function,
+        .children         = {},
+    }};
+    EXPECT_TRUE(findBreadcrumbPath(20, tree).empty());
+}
+
+TEST(FindBreadcrumbPathTest, PosInsideSingleTopLevelNodeProducesOneElementPath) {
+    const std::vector<OutlineNode> tree{OutlineNode{
+        .name             = u"foo",
+        .pos              = 4,
+        .containingRange  = TextRange{.start = 0, .end = 10},
+        .symbolKind       = SymbolKind::Function,
+        .children         = {},
+    }};
+    const auto path = findBreadcrumbPath(5, tree);
+    ASSERT_EQ(path.size(), 1u);
+    EXPECT_EQ(path[0]->name, u"foo");
+}
+
+TEST(FindBreadcrumbPathTest, ContainingRangeStartIsInclusiveEndIsExclusive) {
+    const std::vector<OutlineNode> tree{OutlineNode{
+        .name             = u"foo",
+        .pos              = 4,
+        .containingRange  = TextRange{.start = 5, .end = 10},
+        .symbolKind       = SymbolKind::Function,
+        .children         = {},
+    }};
+    EXPECT_EQ(findBreadcrumbPath(5, tree).size(), 1u);   // start: inclusive
+    EXPECT_TRUE(findBreadcrumbPath(4, tree).empty());    // just before start
+    EXPECT_TRUE(findBreadcrumbPath(10, tree).empty());   // end: exclusive
+    EXPECT_EQ(findBreadcrumbPath(9, tree).size(), 1u);   // just before end
+}
+
+TEST(FindBreadcrumbPathTest, CorrectSiblingIsSelectedAmongMultiple) {
+    const std::vector<OutlineNode> tree{
+        OutlineNode{.name             = u"first",
+                    .pos              = 0,
+                    .containingRange  = TextRange{.start = 0, .end = 10},
+                    .symbolKind       = SymbolKind::Function,
+                    .children         = {}},
+        OutlineNode{.name             = u"second",
+                    .pos              = 10,
+                    .containingRange  = TextRange{.start = 10, .end = 20},
+                    .symbolKind       = SymbolKind::Function,
+                    .children         = {}},
+    };
+    const auto path = findBreadcrumbPath(15, tree);
+    ASSERT_EQ(path.size(), 1u);
+    EXPECT_EQ(path[0]->name, u"second");
+}
+
+TEST(FindBreadcrumbPathTest, ThreeLevelNestingReturnsOutermostFirst) {
+    // namespace outer { class Widget { int getValue() { return 0; } }; }
+    const std::vector<OutlineNode> outline = extractOutline(
+        u"namespace outer {\n"
+        u"    class Widget {\n"
+        u"    public:\n"
+        u"        int getValue() { return 0; }\n"
+        u"    };\n"
+        u"}\n",
+        Language::Cpp);
+    ASSERT_EQ(outline.size(), 1u);
+    ASSERT_EQ(outline[0].children.size(), 1u);
+    ASSERT_EQ(outline[0].children[0].children.size(), 1u);
+
+    const TextPos posInsideMethodBody = outline[0].children[0].children[0].containingRange.end - 2;
+    const auto path = findBreadcrumbPath(posInsideMethodBody, outline);
+    ASSERT_EQ(path.size(), 3u);
+    EXPECT_EQ(path[0]->name, u"outer");
+    EXPECT_EQ(path[1]->name, u"Widget");
+    EXPECT_EQ(path[2]->name, u"getValue");
 }
 
 }  // namespace
