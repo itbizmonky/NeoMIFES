@@ -4,6 +4,7 @@
 
 #include "neomifes/app/editor_input.h"
 #include "neomifes/core/command_dispatcher.h"
+#include "neomifes/core/folding_model.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/document.h"
@@ -21,6 +22,8 @@ using neomifes::app::handlePaste;
 using neomifes::app::handleTripleClick;
 using neomifes::app::textToCopy;
 using neomifes::core::CommandDispatcher;
+using neomifes::core::FoldingModel;
+using neomifes::core::FoldRegion;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
@@ -95,6 +98,52 @@ TEST(EditorInputTest, ShiftPageDownExtendsSelection) {
                  env.doc);
     EXPECT_EQ(env.selection.primaryCursor().anchor, 0U);
     EXPECT_TRUE(env.selection.primaryCursor().hasSelection());
+}
+
+TEST(EditorInputTest, DownArrowSnapsPastFoldedRegionToLineAfterIt) {
+    Env env;
+    env.doc.insertText(0, u"0\n1\n2\n3\n4\n5\n6\n7\n8\n9");  // 10 single-char lines
+    FoldingModel folding;
+    folding.setFoldableRegions({FoldRegion{.headerLine = 2, .endLineInclusive = 4, .folded = false}});
+    folding.toggleFold(2);  // hides lines 3-4
+    env.selection.moveAllTo(env.doc.lineToOffset(2));  // on the (visible) header line itself
+
+    const bool changed =
+        handleKeyDown(VK_DOWN, false, false, env.dispatcher, env.selection, env.viewport, env.doc,
+                     &folding);
+    EXPECT_TRUE(changed);
+    // Naive Down would land on line 3 (hidden) - corrected to land on line 5,
+    // the first visible line after the fold.
+    EXPECT_EQ(env.doc.offsetToLine(env.selection.primaryCursor().position), 5U);
+}
+
+TEST(EditorInputTest, UpArrowSnapsPastFoldedRegionToHeaderLine) {
+    Env env;
+    env.doc.insertText(0, u"0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
+    FoldingModel folding;
+    folding.setFoldableRegions({FoldRegion{.headerLine = 2, .endLineInclusive = 4, .folded = false}});
+    folding.toggleFold(2);  // hides lines 3-4
+    env.selection.moveAllTo(env.doc.lineToOffset(5));
+
+    const bool changed =
+        handleKeyDown(VK_UP, false, false, env.dispatcher, env.selection, env.viewport, env.doc, &folding);
+    EXPECT_TRUE(changed);
+    // Naive Up would land on line 4 (hidden) - corrected back to the fold's
+    // own header line (2), which stays visible while folded.
+    EXPECT_EQ(env.doc.offsetToLine(env.selection.primaryCursor().position), 2U);
+}
+
+TEST(EditorInputTest, MovementIntoUnfoldedRegionIsUnaffectedByFoldingModel) {
+    Env env;
+    env.doc.insertText(0, u"0\n1\n2\n3\n4");
+    FoldingModel folding;  // no regions at all
+    env.selection.moveAllTo(0);
+
+    const bool changed =
+        handleKeyDown(VK_DOWN, false, false, env.dispatcher, env.selection, env.viewport, env.doc,
+                     &folding);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.offsetToLine(env.selection.primaryCursor().position), 1U);
 }
 
 TEST(EditorInputTest, CtrlLeftAndCtrlRightMoveByWord) {

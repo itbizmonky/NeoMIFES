@@ -455,6 +455,42 @@ TEST(RenderTextSmokeTest, BreadcrumbRendersWithoutError) {
         << "render() with Breadcrumb failed: " << neomifes::render::describe(rendered.error());
 }
 
+// Phase 7i: exercises the drawVisibleLines()/hitTest() hidden-line-skipping
+// paths end-to-end with one folded region - confirms render() still succeeds
+// (including the folded-header "{...}" marker draw) and that hitTest() keeps
+// resolving to a line that was actually drawn (never a hidden one). Same
+// "render() succeeds, no pixel-level assertion" scope as the rest of this
+// file.
+TEST(RenderTextSmokeTest, FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4");
+    pipeline.setDocument(&doc);
+    // Folds lines 1-2 (header line 0 stays visible, endLineInclusive=2).
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 2, .folded = true}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with a folded region failed: " << neomifes::render::describe(rendered.error());
+
+    // A click below the header line's row must land on line3 (offset 18-23),
+    // never on the hidden line1/line2, since hitTest() only ever walks lines
+    // drawVisibleLines() actually drew.
+    const auto belowFold = pipeline.hitTest(0, 50);
+    ASSERT_TRUE(belowFold.has_value());
+    EXPECT_GE(*belowFold, 18U);
+}
+
 TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectly) {
     // Phase 7b: enabling then disabling must not leave the pipeline in a bad
     // state (m_tokens must actually clear, not just stop being consulted).

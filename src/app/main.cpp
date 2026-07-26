@@ -51,6 +51,7 @@
 
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/editor_input.h"
+#include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
 #include "neomifes/app/outline_bridge.h"
@@ -59,6 +60,7 @@
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
+#include "neomifes/core/folding_model.h"
 #include "neomifes/core/indentation_conversion.h"
 #include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/search_history.h"
@@ -98,6 +100,8 @@ using neomifes::core::BookmarkManager;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::computeIndentationConversionEdits;
 using neomifes::core::Cursor;
+using neomifes::core::FoldingModel;
+using neomifes::core::FoldRegion;
 using neomifes::core::IndentationConversionTarget;
 using neomifes::core::MovementKind;
 using neomifes::core::moveTextPos;
@@ -115,6 +119,7 @@ using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
 using neomifes::platform::resolveAppDataDir;
+using neomifes::render::FoldVisual;
 using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
 using neomifes::search::expandReplacementTemplate;
@@ -419,6 +424,25 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Pushes FoldingModel's current region list into RenderPipeline as
+// render::FoldVisual (Phase 7i) - the render:: mirror-type conversion every
+// core:: session-state setter (setBookmarkedLines(), setCursorVisuals())
+// already follows. Called after every FoldingModel mutation (toggle, or a
+// fresh region list from refreshOutlinePane()/refreshFoldingRegions()).
+void syncFoldingState(HWND hwnd, RenderPipeline& renderPipeline, const FoldingModel& foldingModel) {
+    std::vector<FoldVisual> visuals;
+    visuals.reserve(foldingModel.regions().size());
+    for (const FoldRegion& region : foldingModel.regions()) {
+        visuals.push_back(FoldVisual{
+            .headerLine       = region.headerLine,
+            .endLineInclusive = region.endLineInclusive,
+            .folded           = region.folded,
+        });
+    }
+    renderPipeline.setFoldRegions(std::move(visuals));
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 // Bundles the Find/Replace feature's session-lifetime state (Phase 5b3b) -
 // replaces 3 separate reference parameters (currentQuery didn't exist
 // before; currentMatches/currentMatchIndex were threaded individually) that
@@ -585,25 +609,37 @@ bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar)
     return false;
 }
 
-// Recomputes and displays the outline for the currently open document
-// (Phase 7g) - called from handleOutlineKey() below whenever the panel is
-// (re-)shown. No language detected (currentDocumentPath unset, or an
-// unrecognized extension) yields an empty panel rather than refusing to
-// open it - same "harmless empty result, no special-casing" convention as
-// buildGrepQueryFromInput() on an empty query.
-void refreshOutlinePane(const Document& document,
-                        const std::optional<std::filesystem::path>& currentDocumentPath,
-                        neomifes::ui::OutlinePane& outlinePane) {
-    std::vector<neomifes::ui::OutlineItem> items;
+// Parses the currently open document into an OutlineNode tree (empty if no
+// language detected - currentDocumentPath unset, or an unrecognized
+// extension). Factored out of refreshOutlinePane() (Phase 7i) so its result
+// can seed both the outline panel and core::FoldingModel's fold regions from
+// the exact same parse, rather than each computing (and re-parsing) its own.
+std::vector<neomifes::syntax::OutlineNode> extractCurrentOutline(
+    const Document& document, const std::optional<std::filesystem::path>& currentDocumentPath) {
     const auto language =
         currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath) : std::nullopt;
-    if (language) {
-        const auto            snapshot = document.snapshot();
-        const std::u16string  text = snapshot->extract(TextRange{.start = 0, .end = snapshot->length()});
-        const auto             nodes = neomifes::syntax::extractOutline(text, *language);
-        items                        = neomifes::app::buildOutlineItems(nodes);
+    if (!language) {
+        return {};
     }
-    outlinePane.showWith(std::move(items));
+    const auto            snapshot = document.snapshot();
+    const std::u16string  text = snapshot->extract(TextRange{.start = 0, .end = snapshot->length()});
+    return neomifes::syntax::extractOutline(text, *language);
+}
+
+// Recomputes and displays the outline for the currently open document
+// (Phase 7g) - called from handleOutlineKey() below whenever the panel is
+// (re-)shown. Same "harmless empty result, no special-casing" convention as
+// buildGrepQueryFromInput() on an empty query. Phase 7i: also refreshes
+// FoldingModel's foldable-region list from the same parse (see
+// extractCurrentOutline()'s comment) - existing folded state is preserved
+// by FoldingModel::setFoldableRegions() matching on headerLine, same
+// "stale after edit until next refresh" limitation as BookmarkManager.
+void refreshOutlinePane(const Document& document,
+                        const std::optional<std::filesystem::path>& currentDocumentPath,
+                        neomifes::ui::OutlinePane& outlinePane, FoldingModel& foldingModel) {
+    const auto nodes = extractCurrentOutline(document, currentDocumentPath);
+    outlinePane.showWith(neomifes::app::buildOutlineItems(nodes));
+    foldingModel.setFoldableRegions(neomifes::app::buildFoldRegions(nodes, document));
 }
 
 // Ctrl+Shift+O while the document editing area has focus (Phase 7g) -
@@ -612,16 +648,18 @@ void refreshOutlinePane(const Document& document,
 // view is a persistent navigation aid the user dismisses with the same key
 // they opened it with, not a one-shot search/command tool - see
 // outline_pane.h's class comment.
-bool handleOutlineKey(UINT vkCode, bool shiftDown, bool ctrlDown, const Document& document,
+bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, const Document& document,
                       const std::optional<std::filesystem::path>& currentDocumentPath,
-                      neomifes::ui::OutlinePane& outlinePane) {
+                      neomifes::ui::OutlinePane& outlinePane, FoldingModel& foldingModel,
+                      RenderPipeline& renderPipeline) {
     if (!ctrlDown || !shiftDown || vkCode != 'O') {
         return false;
     }
     if (outlinePane.isVisible()) {
         outlinePane.hide();
     } else {
-        refreshOutlinePane(document, currentDocumentPath, outlinePane);
+        refreshOutlinePane(document, currentDocumentPath, outlinePane, foldingModel);
+        syncFoldingState(hwnd, renderPipeline, foldingModel);
     }
     return true;
 }
@@ -661,7 +699,7 @@ bool handleGotoLineKey(UINT vkCode, bool ctrlDown, GotoLineBar& gotoLineBar) {
 // staying put.
 bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, BookmarkManager& bookmarks,
                        SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                       RenderPipeline& renderPipeline) {
+                       RenderPipeline& renderPipeline, FoldingModel& foldingModel) {
     if (vkCode != VK_F2) {
         return false;
     }
@@ -678,6 +716,11 @@ bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Bo
         const auto pos = document.lineToOffset(*target);
         selectionModel.moveAllTo(pos);
         viewport.ensureVisible(pos, document);
+        // Phase 7i: a bookmark can land inside content that's since been
+        // folded - reveal it rather than leaving the cursor on a hidden line.
+        if (foldingModel.revealLine(*target)) {
+            syncFoldingState(hwnd, renderPipeline, foldingModel);
+        }
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     }
     return true;
@@ -699,7 +742,7 @@ bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Bo
 bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatcher& dispatcher,
                       SelectionModel& selectionModel, Viewport& viewport, BookmarkManager& bookmarks,
                       RenderPipeline& renderPipeline, FindBar& findBar,
-                      FindReplaceState& findReplaceState,
+                      FindReplaceState& findReplaceState, FoldingModel& foldingModel,
                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
                       std::optional<neomifes::document::TextPos>& rectangularAnchor,
                       std::optional<std::uint32_t>& freeCursorVirtualColumns,
@@ -735,6 +778,11 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
     findBar.setMatchCount(0, 0);
     renderPipeline.setMatchVisuals({});
     renderPipeline.setBookmarkedLines({});
+    // Phase 7i: same "clear rather than remap" reasoning as jumpToGrepResult() -
+    // the replaced `document`'s fold regions would otherwise refer to
+    // whichever file was open before this jump.
+    foldingModel.setFoldableRegions({});
+    syncFoldingState(hwnd, renderPipeline, foldingModel);
     // Phase 7b/7d: track the newly-opened file so RenderPipeline knows which
     // language (if any) to color it as.
     currentDocumentPath = resolvedPath;
@@ -1020,7 +1068,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         FindBar& findBar, FindReplaceState& findReplaceState,
                         CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                         OutlinePane& outlinePane, BookmarkManager& bookmarks,
-                        bool freeCursorModeEnabled,
+                        FoldingModel& foldingModel, bool freeCursorModeEnabled,
                         std::optional<std::uint32_t>& freeCursorVirtualColumns,
                         std::optional<neomifes::document::TextPos>& altCursorAnchor,
                         std::optional<neomifes::document::TextPos>& rectangularAnchor,
@@ -1046,19 +1094,20 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar)) {
         return;
     }
-    if (handleOutlineKey(vkCode, shiftDown, ctrlDown, document, currentDocumentPath, outlinePane)) {
+    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, document, currentDocumentPath, outlinePane,
+                         foldingModel, renderPipeline)) {
         return;
     }
     if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
         return;
     }
     if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, bookmarks, selectionModel, viewport,
-                          document, renderPipeline)) {
+                          document, renderPipeline, foldingModel)) {
         return;
     }
     if (handleTagJumpKey(hwnd, vkCode, document, dispatcher, selectionModel, viewport, bookmarks,
-                         renderPipeline, findBar, findReplaceState, altCursorAnchor, rectangularAnchor,
-                         freeCursorVirtualColumns, currentDocumentPath)) {
+                         renderPipeline, findBar, findReplaceState, foldingModel, altCursorAnchor,
+                         rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
@@ -1074,7 +1123,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
         return;
     }
     const bool changed = neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, dispatcher,
-                                                      selectionModel, viewport, document);
+                                                      selectionModel, viewport, document, &foldingModel);
     if (changed) {
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     }
@@ -1226,7 +1275,7 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
 std::vector<CommandDescriptor> buildCommandRegistry(
     HWND hwnd, FindBar& findBar, CommandDispatcher& dispatcher, FindReplaceState& findReplaceState,
     SelectionModel& selectionModel, Viewport& viewport, Document& document,
-    RenderPipeline& renderPipeline, bool& freeCursorModeEnabled,
+    RenderPipeline& renderPipeline, FoldingModel& foldingModel, bool& freeCursorModeEnabled,
     std::optional<std::uint32_t>& freeCursorVirtualColumns) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{.id              = u"find.show",
@@ -1279,6 +1328,20 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                                        dispatcher, selectionModel);
         }});
     commands.push_back(CommandDescriptor{
+        .id = u"view.toggleFoldAtCursor", .title = u"Fold/Unfold at Cursor", .keybindingLabel = u"",
+        // Phase 7i: v1 requires the primary cursor to sit exactly on a fold
+        // header line - no-op otherwise (see the Phase 7i plan's Context
+        // point 6 for why gutter-click toggling is deferred to a later
+        // sub-phase; this command is the only way to toggle a fold for now).
+        .action = [hwnd, &document, &selectionModel, &renderPipeline, &foldingModel]() {
+            const auto line = document.offsetToLine(selectionModel.primaryCursor().position);
+            if (!foldingModel.isFoldHeader(line)) {
+                return;
+            }
+            foldingModel.toggleFold(line);
+            syncFoldingState(hwnd, renderPipeline, foldingModel);
+        }});
+    commands.push_back(CommandDescriptor{
         .id = u"edit.toggleFreeCursorMode", .title = u"Toggle Free Cursor Mode",
         .keybindingLabel = u"",
         .action = [hwnd, &renderPipeline, &selectionModel, &viewport, &freeCursorModeEnabled,
@@ -1306,7 +1369,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
 // length clamps to that line's end.
 void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, Document& document,
                       SelectionModel& selectionModel, Viewport& viewport,
-                      RenderPipeline& renderPipeline) {
+                      RenderPipeline& renderPipeline, FoldingModel& foldingModel) {
     const auto lastLine  = document.lineCount() > 0 ? document.lineCount() - 1 : 0;
     const auto line      = std::min(target.line - 1, lastLine);
     const auto lineStart = document.lineToOffset(line);
@@ -1317,6 +1380,12 @@ void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, Documen
 
     selectionModel.moveAllTo(pos);
     viewport.ensureVisible(pos, document);
+    // Phase 7i: Ctrl+G can target a line that's since been folded - reveal it
+    // (same document, so unlike the cross-file jumps this can genuinely
+    // still be a real, meaningful line to unfold rather than clear).
+    if (foldingModel.revealLine(line)) {
+        syncFoldingState(hwnd, renderPipeline, foldingModel);
+    }
     syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
 }
 
@@ -1324,13 +1393,14 @@ void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, Documen
 // rationale as buildFindBarConfig()/buildCommandRegistry() above.
 GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Document& document, SelectionModel& selectionModel,
                                          Viewport& viewport, RenderPipeline& renderPipeline,
-                                         GotoLineBar& gotoLineBar) {
+                                         GotoLineBar& gotoLineBar, FoldingModel& foldingModel) {
     GotoLineBarConfig config{};
-    config.onSubmit = [hwnd, &document, &selectionModel, &viewport, &renderPipeline,
+    config.onSubmit = [hwnd, &document, &selectionModel, &viewport, &renderPipeline, &foldingModel,
                        &gotoLineBar](std::u16string_view input) {
         const auto target = neomifes::ui::parseGotoLineInput(input);
         if (target) {
-            jumpToGotoTarget(*target, hwnd, document, selectionModel, viewport, renderPipeline);
+            jumpToGotoTarget(*target, hwnd, document, selectionModel, viewport, renderPipeline,
+                            foldingModel);
         }
         gotoLineBar.hide();
         ::SetFocus(hwnd);
@@ -1376,7 +1446,7 @@ void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText,
 void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, Document& document,
                       CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
                       BookmarkManager& bookmarks, RenderPipeline& renderPipeline, FindBar& findBar,
-                      FindReplaceState& findReplaceState,
+                      FindReplaceState& findReplaceState, FoldingModel& foldingModel,
                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
                       std::optional<neomifes::document::TextPos>& rectangularAnchor,
                       std::optional<std::uint32_t>& freeCursorVirtualColumns,
@@ -1404,6 +1474,14 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, 
     // called internally - this is RenderPipeline's own cached copy, pushed
     // earlier by handleBookmarkKey()'s setBookmarkedLines() call.
     renderPipeline.setBookmarkedLines({});
+    // Phase 7i: the just-replaced `document` invalidates every existing fold
+    // region's line numbers (they described the PREVIOUS file) - clearing
+    // rather than trying to remap them avoids folding the wrong lines in the
+    // new file. Repopulated the next time the outline panel is opened for
+    // this file (same accepted "no auto-refresh on file switch" limitation
+    // Phase 7g's OutlinePane already has).
+    foldingModel.setFoldableRegions({});
+    syncFoldingState(hwnd, renderPipeline, foldingModel);
     // Phase 7b/7d: track the newly-opened file so RenderPipeline knows which
     // language (if any) to color it as.
     currentDocumentPath = match.path;
@@ -1419,6 +1497,7 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
                                  BookmarkManager& bookmarks, RenderPipeline& renderPipeline,
                                  FindBar& findBar, FindReplaceState& findReplaceState, GrepBar& grepBar,
                                  GrepState& grepState, SearchHistory& searchHistory,
+                                 FoldingModel& foldingModel,
                                  std::optional<neomifes::document::TextPos>& altCursorAnchor,
                                  std::optional<neomifes::document::TextPos>& rectangularAnchor,
                                  std::optional<std::uint32_t>& freeCursorVirtualColumns,
@@ -1439,12 +1518,12 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
         }
     };
     config.onResultActivated = [hwnd, &grepState, &document, &dispatcher, &selectionModel, &viewport,
-                                &bookmarks, &renderPipeline, &findBar, &findReplaceState,
+                                &bookmarks, &renderPipeline, &findBar, &findReplaceState, &foldingModel,
                                 &altCursorAnchor, &rectangularAnchor, &freeCursorVirtualColumns,
                                 &currentDocumentPath](std::size_t resultIndex) {
         jumpToGrepResult(resultIndex, hwnd, grepState, document, dispatcher, selectionModel, viewport,
-                        bookmarks, renderPipeline, findBar, findReplaceState, altCursorAnchor,
-                        rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath);
+                        bookmarks, renderPipeline, findBar, findReplaceState, foldingModel,
+                        altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -1499,12 +1578,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
                     GotoLineBar& gotoLineBar, GrepBar& grepBar, GrepState& grepState,
                     SearchHistory& searchHistory, OutlinePane& outlinePane, BookmarkManager& bookmarks,
-                    bool& freeCursorModeEnabled,
+                    FoldingModel& foldingModel, bool& freeCursorModeEnabled,
                     std::optional<std::uint32_t>& freeCursorVirtualColumns,
                     std::optional<std::filesystem::path>& currentDocumentPath) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
-                          &grepBar, &grepState, &searchHistory, &outlinePane, &bookmarks,
+                          &grepBar, &grepState, &searchHistory, &outlinePane, &bookmarks, &foldingModel,
                           &altCursorAnchor, &rectangularAnchor, &freeCursorModeEnabled,
                           &freeCursorVirtualColumns, &currentDocumentPath](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
@@ -1529,14 +1608,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands = buildCommandRegistry(hwnd, findBar, dispatcher, findReplaceState, selectionModel,
-                                             viewport, document, renderPipeline, freeCursorModeEnabled,
-                                             freeCursorVirtualColumns);
+                                             viewport, document, renderPipeline, foldingModel,
+                                             freeCursorModeEnabled, freeCursorVirtualColumns);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
         // Same non-fatal treatment as findBar.create() above.
-        const GotoLineBarConfig gotoLineBarConfig =
-            buildGotoLineBarConfig(hwnd, document, selectionModel, viewport, renderPipeline, gotoLineBar);
+        const GotoLineBarConfig gotoLineBarConfig = buildGotoLineBarConfig(
+            hwnd, document, selectionModel, viewport, renderPipeline, gotoLineBar, foldingModel);
         [[maybe_unused]] const bool gotoLineBarCreated =
             gotoLineBar.create(hwnd, hInstance, gotoLineBarConfig);
 
@@ -1544,13 +1623,22 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         const GrepBarConfig grepBarConfig =
             buildGrepBarConfig(hwnd, document, dispatcher, selectionModel, viewport, bookmarks,
                               renderPipeline, findBar, findReplaceState, grepBar, grepState,
-                              searchHistory, altCursorAnchor, rectangularAnchor,
+                              searchHistory, foldingModel, altCursorAnchor, rectangularAnchor,
                               freeCursorVirtualColumns, currentDocumentPath);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
         createAndPositionOutlinePane(hwnd, hInstance, document, selectionModel, viewport, renderPipeline,
                                      outlinePane);
+        // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
+        // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
+        // "Fold/Unfold at Cursor" and the gutter markers work immediately,
+        // without requiring the user to first open the outline panel
+        // (refreshOutlinePane() re-seeds this later from the same parse
+        // pattern whenever the panel is opened - see that function's comment).
+        foldingModel.setFoldableRegions(
+            neomifes::app::buildFoldRegions(extractCurrentOutline(document, currentDocumentPath), document));
+        syncFoldingState(hwnd, renderPipeline, foldingModel);
         // Phase 7h: pushes the startup cursor state (position 0, isPrimary)
         // into RenderPipeline before the first paint - without this,
         // m_cursorVisuals stays empty (its default) until the user's first
@@ -1603,14 +1691,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
                      &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
-                     &bookmarks, &freeCursorModeEnabled, &freeCursorVirtualColumns, &altCursorAnchor,
-                     &rectangularAnchor,
+                     &bookmarks, &foldingModel, &freeCursorModeEnabled, &freeCursorVirtualColumns,
+                     &altCursorAnchor, &rectangularAnchor,
                      &currentDocumentPath](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
-                          gotoLineBar, grepBar, outlinePane, bookmarks, freeCursorModeEnabled,
-                          freeCursorVirtualColumns, altCursorAnchor, rectangularAnchor,
-                          currentDocumentPath);
+                          gotoLineBar, grepBar, outlinePane, bookmarks, foldingModel,
+                          freeCursorModeEnabled, freeCursorVirtualColumns, altCursorAnchor,
+                          rectangularAnchor, currentDocumentPath);
     };
     cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
                            HWND hwnd, UINT vkCode, bool shiftDown) {
@@ -1804,6 +1892,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // overlay of its own; RenderPipeline::setBookmarkedLines() is pushed
     // from handleBookmarkKey() whenever the set changes.
     BookmarkManager bookmarks;
+    // Foldable symbol regions (Phase 7i) - headless, same "no Win32 overlay
+    // of its own" shape as bookmarks above; RenderPipeline::setFoldRegions()
+    // is pushed from syncFoldingState() whenever the region list or a
+    // folded flag changes.
+    FoldingModel foldingModel;
     // Free cursor mode (Phase 4b8e, simplified - see approved plan). Both
     // are session-lifetime UI state, not document state: freeCursorModeEnabled
     // is toggled via the command palette ("Toggle Free Cursor Mode"), and
@@ -1840,7 +1933,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
                        commandPalette, gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
-                       bookmarks, freeCursorModeEnabled, freeCursorVirtualColumns, currentDocumentPath);
+                       bookmarks, foldingModel, freeCursorModeEnabled, freeCursorVirtualColumns,
+                       currentDocumentPath);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

@@ -3,6 +3,7 @@ add_library(neomifes_core STATIC
     src/command_dispatcher.cpp
     src/cumulative_shift_edit.cpp
     src/edit_commands.cpp
+    src/folding_model.cpp
     src/indentation_conversion.cpp
     src/replace_all_command.cpp
     src/search_history.cpp

@@ -22,6 +22,7 @@ add_executable(neomifes_unit_tests
     render_text_layout_cache_test.cpp
     core_selection_model_test.cpp
     core_bookmark_manager_test.cpp
+    core_folding_model_test.cpp
     core_edit_commands_test.cpp
     core_indentation_conversion_test.cpp
     core_replace_all_command_test.cpp
@@ -49,6 +50,7 @@ add_executable(neomifes_unit_tests
     syntax_outline_test.cpp
     app_syntax_language_test.cpp
     app_outline_bridge_test.cpp
+    app_fold_bridge_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

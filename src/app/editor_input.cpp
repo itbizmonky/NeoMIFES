@@ -11,6 +11,7 @@
 
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
+#include "neomifes/core/folding_model.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/buffer_snapshot.h"
@@ -89,12 +90,43 @@ std::vector<std::u16string_view> splitLines(std::u16string_view text) {
     }
 }
 
+// Phase 7i: if `pos` landed inside a currently-folded (hidden) region, snaps
+// it to that region's near boundary (its own line start) in the direction of
+// travel - headerLine when moving toward earlier lines (still visible even
+// while folded), or the line right after endLineInclusive when moving toward
+// later lines. Column is not preserved across the snap (lands at the
+// boundary line's start) - a deliberately simpler v1 behavior than ordinary
+// Up/Down's column-preserving move, which is unaffected when no fold is hit.
+// No-op (returns `pos` unchanged) if `pos` isn't actually hidden.
+[[nodiscard]] document::TextPos snapPastHiddenLine(document::TextPos pos, const Document& document,
+                                                   const core::FoldingModel& folding,
+                                                   bool movingForward) {
+    const document::LineNumber line = document.offsetToLine(pos);
+    if (!folding.isLineHidden(line)) {
+        return pos;
+    }
+    const auto region = folding.foldedRegionContaining(line);
+    if (!region) {
+        return pos;  // defensive - isLineHidden() true implies this should exist
+    }
+    const document::LineNumber lastLine =
+        document.lineCount() > 0 ? document.lineCount() - 1 : 0;
+    const document::LineNumber targetLine =
+        movingForward ? std::min(region->endLineInclusive + 1, lastLine) : region->headerLine;
+    return document.lineToOffset(targetLine);
+}
+
 // Arrow/Home/End/PageUp/PageDown navigation. Returns false for any vkCode
 // that isn't a movement key (caller then tries other interpretations).
 // `pageSize` (Phase 4b6a) is only consulted for PageUp/PageDown - callers
-// pass the viewport's visible line count.
+// pass the viewport's visible line count. `folding` (Phase 7i, may be
+// nullptr) is only consulted for the four vertical-movement kinds - see
+// snapPastHiddenLine() above and editor_input.h's handleKeyDown() doc
+// comment for why this correction lives here rather than in
+// core::SelectionModel.
 bool applyMovementKey(UINT vkCode, bool shiftDown, bool ctrlDown, SelectionModel& selection,
-                      const Document& document, document::LineNumber pageSize) {
+                      const Document& document, document::LineNumber pageSize,
+                      const core::FoldingModel* folding) {
     MovementKind kind{};
     switch (vkCode) {
         // Ctrl+Left/Right (Phase 4b6b) take priority over the plain
@@ -111,6 +143,24 @@ bool applyMovementKey(UINT vkCode, bool shiftDown, bool ctrlDown, SelectionModel
             return false;
     }
     selection.moveAll(kind, document, shiftDown, pageSize);
+    if (folding != nullptr &&
+        (kind == MovementKind::Up || kind == MovementKind::Down || kind == MovementKind::PageUp ||
+         kind == MovementKind::PageDown)) {
+        const bool movingForward = (kind == MovementKind::Down || kind == MovementKind::PageDown);
+        std::vector<Cursor> corrected(selection.cursors().begin(), selection.cursors().end());
+        bool                anyChanged = false;
+        for (Cursor& cursor : corrected) {
+            const document::TextPos snapped =
+                snapPastHiddenLine(cursor.position, document, *folding, movingForward);
+            if (snapped != cursor.position) {
+                cursor.position = snapped;
+                anyChanged        = true;
+            }
+        }
+        if (anyChanged) {
+            selection.setCursors(std::move(corrected));
+        }
+    }
     return true;
 }
 
@@ -153,7 +203,8 @@ bool applyDeleteKey(UINT vkCode, CommandDispatcher& dispatcher, const SelectionM
 }  // namespace
 
 bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown, CommandDispatcher& dispatcher,
-                   SelectionModel& selection, Viewport& viewport, const Document& document) {
+                   SelectionModel& selection, Viewport& viewport, const Document& document,
+                   const core::FoldingModel* folding) {
     bool changed = false;
     if (vkCode == VK_BACK || vkCode == VK_DELETE) {
         changed = applyDeleteKey(vkCode, dispatcher, selection, document);
@@ -164,7 +215,7 @@ bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown, CommandDispatcher
     } else {
         const auto visible = viewport.visibleLines();
         changed = applyMovementKey(vkCode, shiftDown, ctrlDown, selection, document,
-                                   visible.end - visible.start);
+                                   visible.end - visible.start, folding);
     }
     if (changed) {
         viewport.ensureVisible(selection.primaryCursor().position, document);

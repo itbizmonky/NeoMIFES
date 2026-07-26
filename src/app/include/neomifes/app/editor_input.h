@@ -28,6 +28,7 @@ namespace neomifes::core {
 class CommandDispatcher;
 class SelectionModel;
 class Viewport;
+class FoldingModel;
 }  // namespace neomifes::core
 
 namespace neomifes::app {
@@ -36,9 +37,19 @@ namespace neomifes::app {
 // document start/end), Backspace/Delete, Ctrl+Z/Ctrl+Y undo/redo. Returns
 // true if the document or selection changed (caller should sync
 // Viewport/RenderPipeline and invalidate).
+//
+// `folding` (Phase 7i, nullopt-like default nullptr - same "optional feature,
+// absent pointer = behave exactly as before" convention as
+// RenderPipeline::setDocument()'s nullptr) is only consulted for vertical
+// movement (Up/Down/PageUp/PageDown): if that movement lands a cursor inside
+// a currently-folded (hidden) region, it gets snapped to the region's near
+// boundary in the direction of travel - see this file's .cpp for why this
+// lives here rather than in core::SelectionModel (independent-engines
+// principle, same reasoning as core::Viewport's own header comment).
 bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown,
                    core::CommandDispatcher& dispatcher, core::SelectionModel& selection,
-                   core::Viewport& viewport, const document::Document& document);
+                   core::Viewport& viewport, const document::Document& document,
+                   const core::FoldingModel* folding = nullptr);
 
 // Handles WM_CHAR: printable characters and Enter/Tab are inserted (or
 // replace the active selection); other control characters are ignored

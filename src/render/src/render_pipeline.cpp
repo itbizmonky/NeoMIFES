@@ -97,6 +97,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .cursorVisuals   = m_cursorVisuals,
         .matchVisuals    = m_matchVisuals,
         .bookmarkedLines = m_bookmarkedLines,
+        .foldRegions     = m_foldRegions,
     };
 }
 
@@ -153,6 +154,7 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_indentGuideBrush.Reset();
     m_activeIndentGuideBrush.Reset();
     m_breadcrumbBackgroundBrush.Reset();
+    m_foldMarkerBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -362,6 +364,19 @@ RenderExpected<void> RenderPipeline::ensureBookmarkBrush(ID2D1DeviceContext6& dc
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureFoldMarkerBrush(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_foldMarkerBrush) {
+        // Neutral gray (RGB 150,150,150) - same "hardcoded, no Theme system
+        // yet" rationale as ensureIndentGuideBrushes()/ensureBreadcrumbBrush().
+        constexpr D2D1_COLOR_F kFoldMarkerColor = {150.0F / 255.0F, 150.0F / 255.0F, 150.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kFoldMarkerColor, m_foldMarkerBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 RenderExpected<void> RenderPipeline::ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept {
     // Phase 7b: VSCode Dark+-inspired palette, chosen for contrast against
     // this pipeline's existing kBackgroundColor (RGB 30,30,30, see
@@ -496,9 +511,19 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     if (visibleCount == 0) {
         return;
     }
-    const LineNumber endLineExclusive =
-        (startLine + visibleCount < totalLines) ? startLine + visibleCount
-                                                 : static_cast<LineNumber>(totalLines);
+    // Phase 7i: walk forward counting only VISIBLE (non-folded-hidden) lines,
+    // so a screen holding `visibleCount` rows can span more than
+    // `visibleCount` logical lines when folds are active. m_foldRegions
+    // empty (folding disabled/no folds yet) makes this identical to the
+    // pre-Phase-7i arithmetic (every logical line counts as visible).
+    LineNumber    endLineExclusive = startLine;
+    std::uint32_t visibleSeen      = 0;
+    while (endLineExclusive < totalLines && visibleSeen < visibleCount) {
+        if (!isLineHidden(endLineExclusive)) {
+            ++visibleSeen;
+        }
+        ++endLineExclusive;
+    }
 
     const TextPos startOffset = m_document->lineToOffset(startLine);
     const TextPos endOffset   = (endLineExclusive >= totalLines)
@@ -519,42 +544,88 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
             (newlinePos == std::u16string_view::npos) ? remaining : remaining.substr(0, newlinePos);
         const TextPos lineEnd = lineStart + lineSpan.size();
 
-        const auto layoutResult =
-            m_layoutCache.getOrCreate(line, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
-                                      kMaxLayoutWidthDips, kMaxLayoutHeightDips);
-        if (layoutResult.has_value()) {
-            // Drawn before DrawTextLayout so glyphs render on top of the
-            // highlight (Phase 4b2, N-cursor generalization Phase 4b7a).
-            // Matches drawn first (Phase 5b3a) so an active text selection
-            // layers visibly above match highlighting, both still behind
-            // the glyphs. Token colors (Phase 7b) are applied to the layout
-            // itself (not a background rect), so they must be set before
-            // DrawTextLayout - order relative to the two highlight calls
-            // above doesn't matter.
-            drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
-            drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
-            // Phase 7e: a background element like the two calls above, so it
-            // must run before DrawTextLayout too - see this method's
-            // declaration comment for the isActiveLine approximation.
-            const bool isActiveLine = std::ranges::any_of(
-                caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
-            drawIndentGuidesOnLine(dc, y, lineSpan, isActiveLine);
-            drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
-            dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, y), *layoutResult, m_textBrush.Get());
-            drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
-            drawGutterOnLine(dc, y, line);
+        // Phase 7i: hidden lines (inside a folded region, not its header)
+        // are walked (to advance lineStart/remaining correctly) but never
+        // drawn, and y does not advance for them - the next visible line
+        // simply lands where this one would have.
+        if (!isLineHidden(line)) {
+            drawTextLine(dc, line, y, lineSpan, lineStart, lineEnd, caretDraws, tokenCursor);
+            y += m_lineHeightDips;
         }
-        // A layout-creation failure for a single line is no worse than the
-        // pre-Phase-3c behavior of DrawText() silently failing per-call - it
-        // skips just that line, not the whole frame.
-
-        y += m_lineHeightDips;
         if (newlinePos == std::u16string_view::npos) {
             break;
         }
         lineStart = lineEnd + 1;  // +1 for the '\n' this line's span excluded
         remaining = remaining.substr(newlinePos + 1);
     }
+}
+
+void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, float y,
+                                  std::u16string_view lineSpan, TextPos lineStart, TextPos lineEnd,
+                                  const std::vector<CaretDraw>& caretDraws,
+                                  std::size_t& tokenCursor) noexcept {
+    const auto layoutResult =
+        m_layoutCache.getOrCreate(line, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
+                                  kMaxLayoutWidthDips, kMaxLayoutHeightDips);
+    // A layout-creation failure for a single line is no worse than the
+    // pre-Phase-3c behavior of DrawText() silently failing per-call - it
+    // skips just that line, not the whole frame.
+    if (!layoutResult.has_value()) {
+        return;
+    }
+    // Drawn before DrawTextLayout so glyphs render on top of the highlight
+    // (Phase 4b2, N-cursor generalization Phase 4b7a). Matches drawn first
+    // (Phase 5b3a) so an active text selection layers visibly above match
+    // highlighting, both still behind the glyphs. Token colors (Phase 7b)
+    // are applied to the layout itself (not a background rect), so they
+    // must be set before DrawTextLayout - order relative to the two
+    // highlight calls above doesn't matter.
+    drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
+    drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
+    // Phase 7e: a background element like the two calls above, so it must
+    // run before DrawTextLayout too - see this method's declaration comment
+    // for the isActiveLine approximation.
+    const bool isActiveLine = std::ranges::any_of(
+        caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
+    drawIndentGuidesOnLine(dc, y, lineSpan, isActiveLine);
+    drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
+    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, y), *layoutResult, m_textBrush.Get());
+    drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
+    drawGutterOnLine(dc, y, line);
+    // Phase 7i: a folded header shows its own text (drawn above) plus a
+    // short " {...}" marker past it, standing in for the hidden body.
+    const auto foldedHeader = std::ranges::find_if(
+        m_foldRegions, [line](const FoldVisual& r) { return r.folded && r.headerLine == line; });
+    if (foldedHeader != m_foldRegions.end()) {
+        DWRITE_TEXT_METRICS metrics{};
+        if (SUCCEEDED((*layoutResult)->GetMetrics(&metrics))) {
+            drawFoldedHeaderMarker(dc, kGutterWidthDips + metrics.width, y);
+        }
+    }
+}
+
+bool RenderPipeline::isLineHidden(document::LineNumber line) const noexcept {
+    return std::ranges::any_of(m_foldRegions, [line](const FoldVisual& region) {
+        return region.folded && line > region.headerLine && line <= region.endLineInclusive;
+    });
+}
+
+void RenderPipeline::drawFoldedHeaderMarker(ID2D1DeviceContext6& dc, float x, float y) noexcept {
+    if (!m_dwriteFactory || !m_textFormat || !m_textBrush) {
+        return;
+    }
+    // One-off layout, not TextLayoutCache - see drawBreadcrumb()'s identical
+    // rationale (this string is synthesized fresh, not keyed by line number).
+    constexpr std::u16string_view kMarker = u" {…}";
+    const std::wstring_view       wMarker = util::toWstringView(kMarker);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    const HRESULT hr = m_dwriteFactory->CreateTextLayout(
+        wMarker.data(), static_cast<UINT32>(wMarker.size()), m_textFormat.Get(), kMaxLayoutWidthDips,
+        kMaxLayoutHeightDips, layout.GetAddressOf());
+    if (FAILED(hr) || !layout) {
+        return;
+    }
+    dc.DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), m_textBrush.Get());
 }
 
 std::vector<RenderPipeline::CaretDraw> RenderPipeline::computeCaretDraws() const noexcept {
@@ -696,17 +767,44 @@ void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
 }
 
 void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumber line) noexcept {
-    if (!m_bookmarkBrush) {
+    if (m_bookmarkBrush && std::ranges::find(m_bookmarkedLines, line) != m_bookmarkedLines.end()) {
+        const float centerX = kGutterWidthDips / 2.0F;
+        const float centerY = y + (m_lineHeightDips / 2.0F);
+        const float radius  = kBookmarkDotSizeDips / 2.0F;
+        const D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(centerX, centerY), radius, radius);
+        dc.FillEllipse(dot, m_bookmarkBrush.Get());
+    }
+
+    // Phase 7i: a small chevron at the gutter's right edge for any fold
+    // header line (folded or not) - drawn with DrawLine() rather than a
+    // ID2D1PathGeometry so no COM geometry object is allocated per visible
+    // line per frame. ">" (pointing right) while folded, "v" (pointing
+    // down, disclosure-triangle convention) while expanded. Click handling
+    // is deliberately deferred to a later sub-phase (Phase 7i plan's
+    // Context point 6) - this is a visual-only indicator for now.
+    if (!m_foldMarkerBrush) {
         return;
     }
-    if (std::ranges::find(m_bookmarkedLines, line) == m_bookmarkedLines.end()) {
+    const auto headerRegion = std::ranges::find(m_foldRegions, line, &FoldVisual::headerLine);
+    if (headerRegion == m_foldRegions.end()) {
         return;
     }
-    const float centerX = kGutterWidthDips / 2.0F;
-    const float centerY = y + (m_lineHeightDips / 2.0F);
-    const float radius  = kBookmarkDotSizeDips / 2.0F;
-    const D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(centerX, centerY), radius, radius);
-    dc.FillEllipse(dot, m_bookmarkBrush.Get());
+    constexpr float kMarkerHalfSize = 3.5F;
+    const float     markerRight     = kGutterWidthDips - 4.0F;
+    const float     markerLeft      = markerRight - (kMarkerHalfSize * 2.0F);
+    const float     centerY         = y + (m_lineHeightDips / 2.0F);
+    if (headerRegion->folded) {
+        dc.DrawLine(D2D1::Point2F(markerLeft, centerY - kMarkerHalfSize), D2D1::Point2F(markerRight, centerY),
+                    m_foldMarkerBrush.Get(), 1.5F);
+        dc.DrawLine(D2D1::Point2F(markerRight, centerY), D2D1::Point2F(markerLeft, centerY + kMarkerHalfSize),
+                    m_foldMarkerBrush.Get(), 1.5F);
+    } else {
+        const float midX = (markerLeft + markerRight) / 2.0F;
+        dc.DrawLine(D2D1::Point2F(markerLeft, centerY - kMarkerHalfSize), D2D1::Point2F(midX, centerY),
+                    m_foldMarkerBrush.Get(), 1.5F);
+        dc.DrawLine(D2D1::Point2F(markerRight, centerY - kMarkerHalfSize), D2D1::Point2F(midX, centerY),
+                    m_foldMarkerBrush.Get(), 1.5F);
+    }
 }
 
 void RenderPipeline::drawTokensOnLine(IDWriteTextLayout& layout, TextPos lineStart, TextPos lineEnd,
@@ -828,9 +926,24 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
     const LineNumber rowOffset =
         yDip >= 0.0F ? static_cast<LineNumber>(yDip / m_lineHeightDips) : LineNumber{0};
-    LineNumber targetLine = startLine + rowOffset;
-    if (targetLine >= totalLines) {
-        targetLine = static_cast<LineNumber>(totalLines - 1);
+    // Phase 7i: walk forward from startLine counting only VISIBLE rows, so
+    // `rowOffset` (a drawn-row count) resolves to the same logical line
+    // drawVisibleLines() actually drew there - mirrors that method's own
+    // hidden-line-skipping walk, so a click always lands on a line that was
+    // genuinely visible on screen, never inside folded-hidden content.
+    LineNumber targetLine   = startLine;
+    LineNumber visibleSteps = 0;
+    for (;;) {
+        if (!isLineHidden(targetLine)) {
+            if (visibleSteps == rowOffset) {
+                break;
+            }
+            ++visibleSteps;
+        }
+        if (targetLine + 1 >= totalLines) {
+            break;
+        }
+        ++targetLine;
     }
 
     const TextPos lineStart = m_document->lineToOffset(targetLine);
@@ -930,6 +1043,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!breadcrumbBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return breadcrumbBrushResult;
+    }
+    auto foldMarkerBrushResult = ensureFoldMarkerBrush(*dc);
+    if (!foldMarkerBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return foldMarkerBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

@@ -91,6 +91,20 @@ struct MatchVisual {
     friend constexpr bool operator==(const MatchVisual&, const MatchVisual&) = default;
 };
 
+// One foldable symbol region (Phase 7i) - a render::-only mirror of
+// core::FoldRegion, same "independent, concurrently runnable engines"
+// reasoning as CursorVisual/MatchVisual above (RenderPipeline does not know
+// about core::FoldingModel; the app layer converts and pushes this in
+// whenever FoldingModel's state changes). headerLine stays visible whether
+// folded or not; (headerLine, endLineInclusive] is hidden while folded.
+struct FoldVisual {
+    document::LineNumber headerLine;
+    document::LineNumber endLineInclusive;
+    bool                  folded = false;
+
+    friend constexpr bool operator==(const FoldVisual&, const FoldVisual&) = default;
+};
+
 class RenderPipeline {
 public:
     // Queries the current client-area size and DPI itself (GetClientRect /
@@ -155,6 +169,17 @@ public:
     // engines" reasoning as CursorVisual/MatchVisual above).
     void setBookmarkedLines(std::vector<document::LineNumber> lines) noexcept {
         m_bookmarkedLines = std::move(lines);
+    }
+
+    // The full set of foldable regions and their current folded state
+    // (Phase 7i). Same non-owning, render::-typed-only shape as
+    // setBookmarkedLines() above - the app layer rebuilds and pushes the
+    // whole vector after every core::FoldingModel change (toggle, or a
+    // fresh region list from re-parsing the outline). Empty disables
+    // folding entirely (drawVisibleLines()/hitTest() then behave exactly as
+    // before Phase 7i).
+    void setFoldRegions(std::vector<FoldVisual> regions) noexcept {
+        m_foldRegions = std::move(regions);
     }
 
     // Enables/disables syntax-token coloring and selects which grammar to
@@ -228,6 +253,10 @@ private:
         // Same rationale, Phase 4b8c: a bookmark toggle alone (document/
         // topLine/size unchanged) must not be coarse-frame-skipped either.
         std::vector<document::LineNumber> bookmarkedLines;
+        // Same rationale, Phase 7i: a fold/unfold toggle alone (document/
+        // topLine/size unchanged) must not be coarse-frame-skipped either -
+        // it changes which lines are drawn.
+        std::vector<FoldVisual> foldRegions;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -240,6 +269,8 @@ private:
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept;
+    // Phase 7i: the fold-marker triangle's brush (drawGutterOnLine()).
+    [[nodiscard]] RenderExpected<void> ensureFoldMarkerBrush(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7b: one solid brush per colored TokenKind (Text/Variable/
     // Punctuation deliberately excluded - see tokenBrush()'s comment).
     [[nodiscard]] RenderExpected<void> ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept;
@@ -247,6 +278,11 @@ private:
     [[nodiscard]] RenderExpected<void> ensureIndentGuideBrushes(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7h: background brush for the Breadcrumb strip.
     [[nodiscard]] RenderExpected<void> ensureBreadcrumbBrush(ID2D1DeviceContext6& dc) noexcept;
+    // Phase 7i: true if `line` sits strictly inside a currently-folded
+    // m_foldRegions entry (never true for a region's own headerLine).
+    // Shared by drawVisibleLines()'s line walk and hitTest()'s yDip->line
+    // conversion so both agree on which lines are actually drawn/clickable.
+    [[nodiscard]] bool isLineHidden(document::LineNumber line) const noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
     // Draws the top-of-editor Breadcrumb strip: a background band
@@ -271,6 +307,18 @@ private:
     // down (Phase 4b7a; same rationale as main.cpp's dispatchMouseDown()/
     // handleClipboardKey() extractions).
     [[nodiscard]] std::vector<CaretDraw> computeCaretDraws() const noexcept;
+    // Fetches (or creates) `line`'s cached layout and draws its full visible
+    // content in order: match/selection highlights, indent guides, syntax
+    // tokens, glyphs, carets, gutter, and (Phase 7i) a folded-header marker
+    // if `line` is a folded region's header. A layout-cache miss for this
+    // line is a no-op (matches the pre-Phase-3c tolerance of a single line
+    // silently failing to draw). Pulled out of drawVisibleLines() to keep
+    // its cognitive complexity down (Phase 7i; same rationale as
+    // computeCaretDraws()'s extraction, Phase 4b7a) - called once per
+    // visible (non-folded-hidden) line.
+    void drawTextLine(ID2D1DeviceContext6& dc, document::LineNumber line, float y,
+                      std::u16string_view lineSpan, document::TextPos lineStart, document::TextPos lineEnd,
+                      const std::vector<CaretDraw>& caretDraws, std::size_t& tokenCursor) noexcept;
     // Draws whichever of `caretDraws` land on `line`, at vertical offset
     // `y` within `layout`. Called from drawVisibleLines() per visible line,
     // after DrawTextLayout so carets render on top of the glyphs.
@@ -357,6 +405,14 @@ private:
     // not have yet - see the Phase 7e plan's Context section).
     void drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y, std::u16string_view lineSpan,
                                 bool isActiveLine) noexcept;
+    // Draws a short " {...}" marker at (x, y) standing in for a folded
+    // region's hidden body (Phase 7i). One-off IDWriteTextLayout, same
+    // disposable-layout pattern drawBreadcrumb() uses for its short,
+    // per-frame-synthesized string (TextLayoutCache is keyed by line number
+    // for real document lines, not for this kind of synthesized fragment).
+    // Called from drawVisibleLines() right after a folded header line's own
+    // DrawTextLayout call, `x` positioned past that line's measured width.
+    void drawFoldedHeaderMarker(ID2D1DeviceContext6& dc, float x, float y) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -376,6 +432,7 @@ private:
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
+    std::vector<FoldVisual>                           m_foldRegions;      // empty: folding disabled (Phase 7i)
     // Phase 7b/7c/7d: gate + cache for syntax-token coloring.
     // refreshDocumentCacheIfStale() clears m_tokens and fires an async
     // SyntaxWorker::requestParse() when this has a value and the document
@@ -411,6 +468,9 @@ private:
     // Phase 4b8c: the bookmark gutter dot's brush, same device-bound reset
     // lifecycle as the brushes above.
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_bookmarkBrush;
+    // Phase 7i: fold-marker triangle brush, same device-bound reset
+    // lifecycle as the brushes above. See ensureFoldMarkerBrush()/drawGutterOnLine().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_foldMarkerBrush;
     // Phase 7b: one brush per colored TokenKind, same device-bound reset
     // lifecycle as the brushes above. See ensureTokenBrushes()/tokenBrush().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_keywordBrush;
