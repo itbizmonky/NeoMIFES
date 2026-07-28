@@ -2233,6 +2233,49 @@ enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json };  // sy
 
 ---
 
+### 10.17 Sticky scroll (Phase 7o実装)
+
+roadmap §7.6の実装。`Breadcrumb`(Phase 7h)のすぐ下に、現在の`topLine`が包含されている折り畳まれていないfold regionの見出し行を固定表示する。
+
+```cpp
+// src/render/src/render_pipeline.cpp (無名namespace内)
+constexpr float kStickyScrollHeightDips = 24.0F;  // Breadcrumbと同じ高さ
+
+// RenderPipeline (private)
+
+// m_foldRegionsのうち折り畳まれていないregionで、(headerLine,
+// endLineInclusive]がtopLineを含む最も内側(headerLineが最大)のものを
+// 返す。折り畳み済みregionは除外(本文が非表示のため「スクロールして
+// 本文に入り込む」状況が原理的に発生しない)。
+std::optional<FoldVisual> stickyScrollRegionAt(document::LineNumber topLine) const noexcept;
+
+// kBreadcrumbHeightDips + (stickyScrollRegionAt()があればkStickyScrollHeightDips)。
+// drawVisibleLines()のy起点・実効高さ計算、hitTest()/hitTestFoldMarker()の
+// yDipオフセットが共有する唯一の情報源(Phase 7i/7jのisLineHidden()/
+// visibleLineAtRow()と同じ「3箇所以上で使う小さな共有ヘルパー」パターン)。
+float reservedTopHeightDips() const noexcept;
+
+// m_cachedSnapshotから単一行の生テキストを抽出(末尾の'\n'を除く)。
+std::u16string extractLineText(document::LineNumber line) const noexcept;
+
+// Breadcrumbのすぐ下に帯を描画。該当regionが無ければ何も描画しない
+// (帯自体を出さない動的高さ)。プレーンテキスト、m_breadcrumbBackgroundBrush
+// を再利用。renderOnce()内でdrawBreadcrumb()の直後に呼ばれる。
+void drawStickyScroll(ID2D1DeviceContext6& dc) noexcept;
+```
+
+**設計上の要点:**
+- **依存基盤の全てが既存だった。** `m_foldRegions`(Phase 7i)は折り畳み中かどうかに関わらず全regionの`headerLine`/`endLineInclusive`を保持しており、`m_topLine`は`main.cpp`の`syncRenderStateAndInvalidate()`が既に毎フレーム更新していた(そのヘッダコメントが「まだ誰も呼んでいない」という古い記述のままだったため本フェーズで修正した)。`main.cpp`側の新規配線は不要
+- **帯は動的高さ(該当regionが無ければ描画しない)を採用した。** Breadcrumbの「常に固定高さの帯を描く」前例とは異なる判断 — enclosing scopeが無い場所(ファイル冒頭等)で常時空帯を表示し続けるのは視覚的ノイズになるため。この判断により、`kBreadcrumbHeightDips`を直接参照していた4箇所(`drawVisibleLines()`のy起点/実効高さ計算、`hitTest()`/`hitTestFoldMarker()`のyDipオフセット)を`reservedTopHeightDips()`へ一元化する必要が生じた
+- **Sticky scroll行はプレーンテキスト描画(シンタックスハイライト無し)にした。** `drawBreadcrumb()`が自身の合成パス文字列に対して同じ簡略化を行った前例に倣った判断。`TextLayoutCache`(行番号キー)ではなく毎フレーム使い捨ての`IDWriteTextLayout`を使う点もBreadcrumbと同じ
+- **背景ブラシは新規追加せず`m_breadcrumbBackgroundBrush`を再利用した。** Breadcrumbのすぐ下に連続して表示される同種の帯であり、新規ブラシ・新規デバイスロスト時リセット処理を増やさずに済んだ
+- **正しさの検証は`hitTest()`のyオフセットを介した間接検証で行った。** `stickyScrollRegionAt()`/`reservedTopHeightDips()`は非公開のため、統合テストは`setTopLine()`で状態を設定した上で`hitTest()`が返すオフセットが「帯の高さが正しく反映された位置」を指すことを確認する形にした(`HitTestReturnsPositionsWithinKnownLineBounds`がBreadcrumbの帯について既に使っていた技法の踏襲)
+- **実アプリでの視覚確認は、合成キーボード入力(矢印キー・PageDown)が今回反応せず断念した。** ウィンドウ所有プロセスIDの一致は確認済みで対象取り違えではなく、Phase 7l・7n1に続く3つ目の異なる失敗モード。統合テスト+プロセス生存確認で代替した
+
+**スコープ外(意図的、後続サブフェーズへ):** ネストした複数regionのスタック表示、Sticky scroll行のシンタックスハイライト、行クリックでのジャンプ機能。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

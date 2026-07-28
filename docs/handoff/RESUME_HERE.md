@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-28 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e〜7n1(Indent guides §3.39〜追加言語対応バッチ1 §3.48)はローカル検証・コミット完了・未push** (詳細は下表参照)
+> **最終更新:** 2026-07-28 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49)はローカル検証・コミット完了・未push** (詳細は下表参照)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -80,6 +80,7 @@
 | Phase 7l (真の増分再解析の SyntaxWorker 統合: edits蓄積キュー+RenderPipeline配線) | ✅ 完了 (**未push**、§3.46参照) |
 | Phase 7m (`ts_tree_get_changed_ranges()`によるトークン部分更新、増分再解析の性能対応) | ✅ 完了 (**未push**、§3.47参照) |
 | Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (**未push**、§3.48参照) |
+| Phase 7o (Sticky scroll) | ✅ 完了 (**未push**、§3.49参照) |
 | **次フェーズ選定 — 残り21言語/ミニマップ/sticky scroll/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
@@ -1447,7 +1448,37 @@ Phase 7m完了後、ユーザーから「次のPhaseへ進め」と指示され�
 
 **スコープ外(意図的、後続バッチへ):** TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML/SAP ABAP、新6言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.16参照。
 
-**Phase 7n1はコミット済み(`3cc7c49`)・未push。** 次フェーズは残り15言語対応(バッチ2)・ミニマップ/Sticky scroll・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。スクリーンショット自動化の不調は2回連続(Phase 7l・7n1)のため、次回は「再試行して不調なら即座に代替手段へ切り替える」判断を早めに行うこと。
+**Phase 7n1はコミット済み(`3cc7c49`)・未push。** この次アクション自体は§3.49のPhase 7o(Sticky scroll)着手により実行済み — 以降のセッションは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれかを、着手前にPlan Modeで詳細設計を起こすこと。
+
+---
+
+### 3.49 Phase 7o (Sticky scroll) 完了記録
+
+Phase 7n1完了後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(Sticky scroll/ミニマップ/残り15言語バッチ2/`IncrementalParser`差分返却化契約変更)をAskUserQuestionで提示し、**Sticky scroll(推奨案)**が選ばれた — roadmap §7.6が「実装は`FoldRange::headerLine`を利用」と明記しており、その依存基盤(`core::FoldingModel`/`FoldRegion`、Phase 7i/7j)と隣接する類似機能(`Breadcrumb`、Phase 7h)がどちらも完成済みだったため。
+
+**着手前調査で確定した設計方針:**
+- `m_foldRegions`(Phase 7i)は折り畳み中かどうかに関わらず全regionの`headerLine`/`endLineInclusive`を保持していることを確認し、`main.cpp`側の新規配線を一切不要にした
+- `RenderPipeline::setTopLine()`の「まだ誰も呼んでいない」という既存のヘッダコメントが、実際には`main.cpp`の`syncRenderStateAndInvalidate()`が毎フレーム`viewport.topLine()`を渡しているにもかかわらず古いまま(Phase 3b時代の記述)残っていたことを発見し、本フェーズで併せて修正した
+- `drawBreadcrumb()`(Phase 7h)をテンプレートに採用し、背景ブラシ(`m_breadcrumbBackgroundBrush`)を再利用、テキストはプレーン描画(シンタックスハイライト無し)に留めた
+- 帯は「該当regionが無ければ描画しない」動的高さを採用(Breadcrumbの「常時固定高さで描く」前例とは異なる判断)。この結果`kBreadcrumbHeightDips`を直接参照していた4箇所を新規共有ヘルパー`reservedTopHeightDips()`へ一元化する必要が生じた
+
+**実装:** `stickyScrollRegionAt()`(折り畳まれていない最も内側のregionを返す、折り畳み済みは除外)、`reservedTopHeightDips()`(Breadcrumb高さ+該当あればSticky scroll高さ)、`extractLineText()`(単一行の生テキスト抽出)、`drawStickyScroll()`(帯の描画)を`RenderPipeline`へ追加。
+
+**テスト:** `render_text_smoke_test.cpp`に4件追加(帯の表示/非表示/折り畳みregion除外/ネスト内側region選択)。`hitTest()`のオフセットを介した間接検証(Breadcrumbの帯について既に使っていた技法の踏襲)。1件、topLineが折り畳まれた領域の内側(実際には到達し得ない状態)というテストの想定が誤っており(`hitTest()`の隠れた行に対する既存のフォールバック挙動を見誤っていた)、アサーションを「render()が成功する」というクラッシュ安全性の確認へ弱める形で自己修正した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全777件pass。clang-tidy: `src/`配下新規警告0
+- **実アプリでの視覚確認は、ウィンドウ所有プロセスIDの一致を`GetWindowThreadProcessId()`で確認した上でスクリーンショット自体には成功した(3回連続の不調から回復)ものの、その状態で合成キーボード入力(矢印キー・PageDown、いずれも修飾キー無し)を送ってもカーソル・スクロール位置が一切変化しなかった。** Phase 7h/7jで「修飾キー無しの矢印キーは機能する」と記録されていた前例と食い違う新しい失敗モード(詳細は`reference_no_win32_gui_automation.md`)。`setTopLine()`を直接呼ぶ統合テスト4件+プロセス生存確認(`Responding=True`維持)で代替した
+
+**完了条件:**
+- [x] `stickyScrollRegionAt()`が折り畳まれていない最も内側のregionを正しく選ぶことを、ネスト・境界条件・折り畳み除外の3パターンでテストにより証明
+- [x] `reservedTopHeightDips()`の動的高さ(該当regionが無ければBreadcrumb分のみ)を`hitTest()`経由で間接検証
+- [x] ローカルDebug/Release/ubsan全777テストgreen、`src/`配下clang-tidy新規警告0
+- [ ] 実アプリでの視覚確認(合成キーボード入力が今回機能しなかったため未達成、統合テスト+プロセス生存確認で代替)
+
+**スコープ外(意図的、後続サブフェーズへ):** ネストした複数regionのスタック表示、Sticky scroll行のシンタックスハイライト、行クリックでのジャンプ機能。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.17参照。
+
+**Phase 7oはコミット済み(`2d6aa7e`)・未push。** 次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
 ---
 
@@ -1506,15 +1537,17 @@ Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタ�
 Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)・
 Phase 7l(真の増分再解析のSyntaxWorker統合、§3.46参照)・
 Phase 7m(`ts_tree_get_changed_ranges()`によるトークン部分更新、§3.47参照)・
-Phase 7n1(追加言語対応バッチ1: C/JavaScript/Java/Go/Rust/JSON、§3.48参照)は
+Phase 7n1(追加言語対応バッチ1: C/JavaScript/Java/Go/Rust/JSON、§3.48参照)・
+Phase 7o(Sticky scroll、§3.49参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
 `853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`/`f4f1a40`/`b85865b`/
-`3cc7c49`)完了・未push。**
+`3cc7c49`/`2d6aa7e`)完了・未push。**
 **Phase 7mでroadmap DoD「≤50ms」はまだ未達 — `IncrementalParser`の公開契約を
 「差分のみ返却」へ変更する大規模改修が必要と判明した(§3.47参照)、性能面の
 「漸近的改善」ではなく「定数倍改善」に留まったことをベンチマーク実測で確認済み。**
 **Phase 7n1で言語対応がroadmap §7.2必須23言語中8言語まで進んだ(§3.48参照)、
-残り15言語+SAP ABAPはバッチ2以降。**
+残り15言語+SAP ABAPはバッチ2以降。Phase 7oでSticky scrollが完了し(§3.49参照)、
+roadmap §7のv2.0差別化機能(ミニマップ以外)は出揃った。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1569,9 +1602,23 @@ Phase 7k(真の増分再解析コア基盤)も同様にヘッドレス(実アプ
 セッション環境ではスクリーンショット手法自体が信頼できないと判断し、視覚確認は毎回
 自動テスト+プロセス生存確認で代替する運用へ切り替えることを検討する。**
 
-**次フェーズは残り15言語対応(バッチ2、§3.48参照)・ミニマップ・Sticky scroll・
-Semantic highlighting、または`IncrementalParser`の公開契約を「差分のみ返却」へ
-変更する大規模改修(真のDoD達成に必要)のいずれか。**
+**(2026-07-28追加、Phase 7o確認、重要) 上記の慎重な検証(`GetWindowThreadProcessId`で
+撮影対象が本当に自分が起動したプロセスのものか確認)を実施したところ、スクリーンショット
+自体は今回正しくNeoMIFESのウィンドウ内容を撮影できた(3回連続の不調から回復)。しかし
+その状態で合成キーボード入力(`SendKeys`での`{PGDN}`・`{DOWN 90}`、いずれも修飾キー無し)
+を送っても、カーソルもスクロール位置も一切変化しなかった。** Phase 7h/7jで「修飾キー無しの
+矢印キーは機能する」と記録されていた前例と食い違う結果であり、`SetForegroundWindow`が
+true を返しウィンドウ所有プロセスIDも一致しているにもかかわらず、実際のキーボードフォーカス
+がこのセッションの合成入力の送信先と一致していない可能性が高い。**この自動化環境の
+入力合成は、スクリーンショットとは独立に、それ自体も信頼できない状態にあると考えられる。**
+次回セッションでは、まずキー入力単体の疎通確認(例えば単純な文字入力が実際にドキュメントへ
+挿入されるか)から素直に再試行し、それでも機能しない場合は視覚的な対話確認を諦めて
+`setTopLine()`等API直接呼び出し+統合テストで代替する判断を早めに行うこと(詳細は
+`reference_no_win32_gui_automation.md`)。
+
+**次フェーズは残り15言語対応(バッチ2、§3.48参照)・ミニマップ、または`IncrementalParser`
+の公開契約を「差分のみ返却」へ変更する大規模改修(真のDoD達成に必要)のいずれか。
+Sticky scrollはPhase 7oで完了した(§3.49参照)。**
 折り畳み機能(`core::FoldingModel`のキーボード操作コア基盤+ガター+/-クリックトグル)は
 Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析は Phase 7k(ヘッドレスコア)+
 Phase 7l(`SyntaxWorker`統合)+ Phase 7m(`ts_tree_get_changed_ranges()`によるトークン
@@ -1595,7 +1642,10 @@ detailed_design.md §10.9、BreadcrumbはkGutterWidthDips方式を縦方向に�
 折り畳みは二重座標系を避けて論理行のまま隠れた行をスキップするローカルウォーク・
 detailed_design.md §10.11、ガター+/-クリックトグルはガター全幅を対象とする寛容な
 ヒットテスト+`onKeyDown`等と同じ「ラムダは薄いラッパーのみ」パターンへのonMouseDown
-再構成・detailed_design.md §10.12参照)を
+再構成・detailed_design.md §10.12、Sticky scrollは既存の類似機能(Breadcrumb)を
+テンプレートに採用しブラシ・描画パターンを再利用しつつ、動的な帯の高さ変化を
+`kBreadcrumbHeightDips`直接参照4箇所の一元化用共有ヘルパーで吸収・detailed_design.md
+§10.17参照)を
 踏襲しつつ、次のサブフェーズのスコープをPlan Modeで具体化してから着手すること
 (推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの

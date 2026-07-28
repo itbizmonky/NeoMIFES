@@ -225,7 +225,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7l | 真の増分再解析の SyntaxWorker 統合 (edits蓄積キュー+RenderPipeline配線) | ✅ 完了 | §7 |
 | 7m | `ts_tree_get_changed_ranges()`によるトークン部分更新 (増分再解析の性能対応) | ✅ 完了 | §7 |
 | 7n1 | 追加言語対応 バッチ1 (C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 | §7 |
-| 7n2〜 | 残り15言語 + ミニマップ + sticky scroll + IncrementalParser差分返却化 | ⏭️ 次候補 | §7 |
+| 7o | Sticky scroll | ✅ 完了 | §7 |
+| 7p〜 | 残り15言語 + ミニマップ + IncrementalParser差分返却化 | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -968,6 +969,8 @@ public:
 - スクロールしても消えず、他の関数に入ると内容が変わる
 - 実装は `FoldRange::headerLine` を利用し、可視領域最上端で見切れた fold の header 行を通常テキストの上に半透明描画
 
+> **Phase 7o完了時点の確定:** 上記設計スケッチ通り`FoldRange::headerLine`(`render::FoldVisual`/`core::FoldingModel`、Phase 7i/7j)を再利用する形で実装した。Breadcrumb(Phase 7h)のすぐ下に、現在の`topLine`を包含する最も内側の折り畳まれていないfold regionの見出し行を固定表示する。**該当regionが無ければ帯自体を描画しない動的高さ**を採用した(Breadcrumbの「常に固定高さの帯を描く」前例とは異なる判断、詳細は`detailed_design.md` §10.17参照)。ネストした複数regionを積み上げるVSCode相当のスタック表示・シンタックスハイライト・クリックジャンプは意図的にスコープ外(v1は最も内側の1行のみ、プレーンテキスト)。
+
 ### 7.7 Indent guides (v2.0 新規)
 
 **設計:**
@@ -1187,6 +1190,18 @@ public:
 - **実アプリでの視覚確認は、スクリーンショット自動化がこのセッションでは無関係かつ不適切なウィンドウ内容を誤って撮影する不具合が発生し(即座に削除、他に保存・共有せず)、信頼できないと判断して中断した。** Phase 7lで記録した「ウィンドウは実在するが`CopyFromScreen`が別の画面を写す」という不調の再発に加え、今回は誤った内容を撮影する新しい失敗モードが確認された。代替として、新6言語のサンプルファイル(`.c`/`.js`/`.java`/`.go`/`.rs`/`.json`)を実際に開いてクラッシュしないこと・プロセスが`Responding=True`を維持することを確認し、正しさの証明は自動テスト(777件全green、6言語分の分類テスト・拡張子検出テスト・outline安全性テスト・Rust増分再解析テストを含む)に委ねた
 
 **スコープ外(意図的、後続バッチへ):** TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML/SAP ABAP、新6言語のoutlineシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.16参照。
+
+### 実装後の確定事項/変更点 (2026-07-28、Phase 7o完了)
+
+**roadmap §7.6のSticky scrollを実装した。依存基盤(`core::FoldingModel`/`FoldRegion`、Phase 7i/7j)と隣接する類似機能(`Breadcrumb`、Phase 7h)がどちらも完成済みだったため、4候補(Sticky scroll/ミニマップ/残り15言語バッチ2/`IncrementalParser`差分返却化契約変更)中もっとも具体的にスコープが固まっていた。**
+
+- **`m_foldRegions`(Phase 7i)は「折り畳み中かどうか」に関わらず全foldable regionの`headerLine`/`endLineInclusive`を保持していることを確認し、Sticky scrollに必要な「現在の`topLine`を包含する、折り畳まれていないregion」の判定を既存データ構造だけで実現した。** `main.cpp`側の新規配線は一切不要だった
+- **`RenderPipeline::setTopLine()`の「まだ誰も呼んでいない」という既存のヘッダコメントが、実際には`main.cpp`の`syncRenderStateAndInvalidate()`が毎フレーム`viewport.topLine()`を渡しているにもかかわらず古いまま(Phase 3b時代の記述)残っていたことを発見し、本フェーズで併せて修正した(CLAUDE.md §11のドキュメント鮮度チェック)**
+- **`drawBreadcrumb()`(Phase 7h)を直接のテンプレートとして採用し、背景ブラシ(`m_breadcrumbBackgroundBrush`)も新規追加せず再利用した。** Sticky scroll行のテキストはBreadcrumbと同様プレーンテキスト(シンタックスハイライト無し)とし、v1のスコープを意図的に絞った
+- **Sticky scrollの帯は「該当regionが無ければ高さ0(帯自体を描かない)」という動的な高さを採用した(Breadcrumbの「常に固定高さの帯を描く」前例とは異なる判断)。** この結果、`drawVisibleLines()`のy起点・実効高さ計算と`hitTest()`/`hitTestFoldMarker()`のyDipオフセットが従来ハードコードしていた`kBreadcrumbHeightDips`を、新規共有ヘルパー`reservedTopHeightDips()`(`isLineHidden()`/`visibleLineAtRow()`と同じ「3箇所以上で使う小さな共有ヘルパー」パターン、Phase 7i/7j踏襲)へ一元化した
+- **実アプリでの視覚確認は、対象ウィンドウへの合成キーボード入力(矢印キー・PageDown、いずれも修飾キー無し)が今回反応しなかったため断念した。** ウィンドウ所有プロセスIDの一致は`GetWindowThreadProcessId()`で確認済みで対象ウィンドウの取り違えではない — Phase 7l(スクリーンショットで何も見えない)・Phase 7n1(無関係なウィンドウを誤って撮影)に続き、今回は入力合成そのものが機能しないという3つ目の失敗モードが確認された。代替として、`setTopLine()`を直接呼ぶ統合テスト4件(帯の表示/非表示/折り畳みregion除外/ネスト内側region選択)とプロセス生存確認で検証した
+
+**スコープ外(意図的、後続サブフェーズへ):** ネストした複数regionのスタック表示(VSCode相当の「外側→内側を複数行積み上げる」表示)、Sticky scroll行のシンタックスハイライト、行クリックでのジャンプ機能、ミニマップ・残り15言語対応バッチ2・`IncrementalParser`差分返却化契約変更。詳細は`detailed_design.md` §10.17参照。
 
 ---
 

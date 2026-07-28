@@ -1959,4 +1959,29 @@ Phase 7m完了直後、ユーザーから「次のPhaseへ進め」と指示さ�
 
 **次回:** Phase 7n1が完了した(コミット`3cc7c49`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズは残り15言語対応(バッチ2)・ミニマップ/Sticky scroll・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。スクリーンショット自動化は2回連続(Phase 7l・7n1)で不調のため、次回は再試行しつつも早めに代替手段へ切り替える判断をすること。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。
 
+## Session 59 (2026-07-28): Phase 7o — Sticky scroll
+
+Phase 7n1完了後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(Sticky scroll/ミニマップ/残り15言語バッチ2/`IncrementalParser`差分返却化契約変更)をAskUserQuestionで提示し、**Sticky scroll(推奨案)**が選ばれた — roadmap §7.6が「実装は`FoldRange::headerLine`を利用」と明記しており、その依存基盤(`core::FoldingModel`/`FoldRegion`、Phase 7i/7j)と隣接する類似機能(`Breadcrumb`、Phase 7h)がどちらも完成済みだったため、4候補中もっとも具体的にスコープが固まっていた。
+
+**着手前調査で確定した設計方針(既存コードの直接読解で検証済み、Agent委任なし):**
+- `render::FoldVisual`(`m_foldRegions`、Phase 7i)は「折り畳み中かどうか」に関わらず全foldable regionの`headerLine`/`endLineInclusive`を保持していることを確認し、Sticky scrollに必要な「現在の`topLine`を包含する、折り畳まれていないregion」の判定を既存データ構造だけで実現できると判断した。`main.cpp`側の新規配線は一切不要だった
+- `RenderPipeline::setTopLine()`の「まだ誰も呼んでいない」という既存のヘッダコメントを`main.cpp`で直接確認したところ、実際には`syncRenderStateAndInvalidate()`が毎フレーム`viewport.topLine()`を渡しており、Phase 3b時代の記述のまま古くなっていたことを発見した。本フェーズで併せて修正した(CLAUDE.md §11のドキュメント鮮度チェック)
+- `drawBreadcrumb()`(Phase 7h)を直接のテンプレートとして採用し、背景ブラシ(`m_breadcrumbBackgroundBrush`)も新規追加せず再利用する設計にした。Sticky scroll行のテキストはBreadcrumbと同様プレーンテキスト(シンタックスハイライト無し)とし、v1のスコープを意図的に絞った
+- Sticky scrollの帯は「該当regionが無ければ高さ0(帯自体を描かない)」という動的な高さを採用した(Breadcrumbの「常に固定高さの帯を描く」前例とは異なる判断) — enclosing scopeが無い場所で常時空帯を表示し続けるのは視覚的ノイズになるため。この結果、`drawVisibleLines()`のy起点・実効高さ計算と`hitTest()`/`hitTestFoldMarker()`のyDipオフセットが従来ハードコードしていた`kBreadcrumbHeightDips`を、新規共有ヘルパー`reservedTopHeightDips()`(Phase 7i/7jの「3箇所以上で使う小さな共有ヘルパー」パターン踏襲)へ一元化する必要が生じた
+
+**実装:** `stickyScrollRegionAt()`(折り畳まれていない最も内側のregionを返す、`headerLine`が最大のものを選ぶことでネスト対応、折り畳み済みは除外)、`reservedTopHeightDips()`、`extractLineText()`(単一行の生テキスト抽出、`drawVisibleLines()`内の既存インラインロジックから汎用化して切り出し)、`drawStickyScroll()`を`RenderPipeline`へ追加。
+
+**テスト:** `render_text_smoke_test.cpp`に4件追加。1件、topLineが折り畳まれたregionの内側(実際には到達し得ない状態 — 折り畳まれたregionの本文は非表示のため、実際のスクロールでは絶対に到達しない)というテストケースで、`hitTest()`の隠れた行に対する挙動を「line0にフォールバックする」と誤って想定していたバグを自己発見した。実際には`visibleLineAtRow()`がヒットしたテストの隠れたtopLineから前方へ可視行を探し、見つからないままドキュメント末尾でクランプされるため、期待と全く違うオフセット(line0ではなくline4相当)が返っていた。原因を特定した上で、アサーションを「render()が成功する」というクラッシュ安全性の確認へ弱める形に修正した(実装のバグではなくテストの想定ミス、この種の切り分けは本セッションを通じて繰り返し発生している確立済みの診断パターン)。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全777件pass。clang-tidy: `src/`配下新規警告0
+- **実アプリでの視覚確認は、ウィンドウ所有プロセスIDの一致を`GetWindowThreadProcessId()`で毎回確認する慎重な手順を導入した結果、スクリーンショット自体は正しくNeoMIFESの内容を撮影できた(Phase 7l・7n1の2セッション連続不調から回復)。しかしその状態で合成キーボード入力(矢印キー・PageDown、いずれも修飾キー無し)を送っても、カーソル・スクロール位置が一切変化しなかった。** Phase 7h/7jで「修飾キー無しの矢印キーは機能する」と記録されていた前例と食い違う新しい失敗モードであり、スクリーンショット自体の不調とは独立に、この自動化環境の「入力を送る」経路そのものが今回信頼できない状態にあったと判断した。`setTopLine()`を直接呼ぶ統合テスト4件+プロセス生存確認で代替した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7o ✅完了」行を追加、次候補行を更新、§7.6に完了時点の確定を追記、§7に「実装後の確定事項/変更点(2026-07-28、Phase 7o完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.17(Sticky scroll実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.49(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新。今回発見したキーボード入力合成の不調も追記した
+
+**次回:** Phase 7oが完了した(コミット`2d6aa7e`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと — roadmap §7のv2.0差別化機能(ミニマップ以外: Breadcrumb/折り畳み/Indent guides/Sticky scroll)は全て完了した。この自動化環境の合成キーボード入力は今回信頼できなかったため、次回はまず簡単な疎通確認(単純な文字入力がドキュメントへ実際に反映されるか)から慎重に再試行すること。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。
+
 <!-- 次セッションはここに追記 -->
