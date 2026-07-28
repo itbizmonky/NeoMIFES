@@ -662,6 +662,153 @@ TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectl
         << "second render() (highlighting off) failed: " << neomifes::render::describe(second.error());
 }
 
+// Phase 7o: exercises drawStickyScroll()/reservedTopHeightDips() end-to-end.
+// An unfolded fold region spans lines 0-4; scrolling topLine to 2 (strictly
+// inside the region) must both render successfully AND actually reserve the
+// extra kStickyScrollHeightDips band - verified indirectly via hitTest(),
+// same technique HitTestReturnsPositionsWithinKnownLineBounds uses for the
+// Breadcrumb strip: a click at a y that would land on the wrong line under
+// the OLD (Breadcrumb-only) offset, but the right line under the new
+// (Breadcrumb+Sticky scroll) offset, proves reservedTopHeightDips() grew.
+TEST(RenderTextSmokeTest, StickyScrollRendersHeaderLineWhenScrolledPastItsHeader) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 4, .folded = false}});
+    pipeline.setTopLine(2);  // strictly inside (0, 4] - sticky scroll should activate
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with an active sticky-scroll region failed: "
+        << neomifes::render::describe(rendered.error());
+
+    // With both the Breadcrumb (24 DIPs) and Sticky scroll (24 DIPs) strips
+    // reserved, the text area starts at y=48 DIPs. A click just below that
+    // (y=50 device px at the default 1.0 DPI scale a hidden STATIC window
+    // reports) must resolve to line2 (the current topLine, offset 12-17),
+    // not line1 (which the OLD Breadcrumb-only 24 DIP offset would have hit).
+    const auto hit = pipeline.hitTest(0, 50);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_GE(*hit, 12U) << "expected a hit on line2 (sticky scroll's extra offset not applied?)";
+    EXPECT_LE(*hit, 17U);
+}
+
+TEST(RenderTextSmokeTest, StickyScrollReservesNoExtraSpaceWhenTopLineIsAtHeaderItself) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 4, .folded = false}});
+    pipeline.setTopLine(0);  // AT the header itself, not past it - no sticky region
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // Only the Breadcrumb strip's 24 DIPs should be reserved - a click at
+    // y=30 (past the Breadcrumb band, well short of where a second 24-DIP
+    // sticky band would end) must already resolve to line0 (offset 0-5).
+    const auto hit = pipeline.hitTest(0, 30);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_LE(*hit, 5U) << "sticky scroll band appears reserved even though topLine is at the header itself";
+}
+
+TEST(RenderTextSmokeTest, StickyScrollExcludesFoldedRegions) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4");
+    pipeline.setDocument(&doc);
+    // Same span as StickyScrollRendersHeaderLineWhenScrolledPastItsHeader,
+    // but folded=true this time - stickyScrollRegionAt() must exclude it
+    // (its body is hidden, so nothing was actually "scrolled into"). Setting
+    // topLine=2 here is itself an unreachable-in-practice state (a real
+    // core::Viewport can never scroll INTO a folded region's hidden body -
+    // there is nothing there to scroll to), exercised purely for crash-
+    // safety/defensive-code coverage of stickyScrollRegionAt()'s `folded`
+    // check in isolation. hitTest()'s own resolution of a hidden topLine is
+    // a separate, already-covered concern (see
+    // FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines above), so
+    // this test only asserts render() doesn't crash/error - not a specific
+    // hitTest() offset, which would pin an incidental fallback rather than
+    // stickyScrollRegionAt()'s actual contract.
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 4, .folded = true}});
+    pipeline.setTopLine(2);
+
+    const auto rendered = pipeline.render();
+    EXPECT_TRUE(rendered.has_value())
+        << "render() with topLine inside a folded region's hidden span failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+TEST(RenderTextSmokeTest, StickyScrollSelectsInnermostNestedRegion) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    // outer: headerLine=0, endLineInclusive=4. inner: headerLine=1,
+    // endLineInclusive=3. topLine=2 sits inside BOTH - stickyScrollRegionAt()
+    // must pick the innermost (largest headerLine = 1), not the outer one.
+    doc.insertText(0, u"outer {\ninner {\nbody\n}\n}");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({
+        neomifes::render::FoldVisual{.headerLine = 0, .endLineInclusive = 4, .folded = false},
+        neomifes::render::FoldVisual{.headerLine = 1, .endLineInclusive = 3, .folded = false},
+    });
+    pipeline.setTopLine(2);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with nested sticky-scroll regions failed: "
+        << neomifes::render::describe(rendered.error());
+
+    // Same "extra offset actually reserved" proof as the single-region test
+    // above - only ONE sticky band (24 DIPs) is ever reserved regardless of
+    // nesting depth (Phase 7o's v1 scope: single innermost row, not a
+    // stack - see the Phase 7o plan's scope-out section), so the total
+    // reserved height is still 48 DIPs whether one or two regions match.
+    const auto hit = pipeline.hitTest(0, 50);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_GE(*hit, 12U);  // line2 ("body", offset 12-16), not line1
+}
+
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();

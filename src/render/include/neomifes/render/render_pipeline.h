@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -136,11 +137,14 @@ public:
     // accumulated edits for the syntax worker.
     void setDocument(document::Document* doc) noexcept { m_document = doc; }
 
-    // No interactive scroll input exists yet (Editor Core/Viewport is Phase
-    // 4) - nothing in this codebase calls this besides tests today. Exists
-    // only as the documented Phase 4 hook (detailed_design.md sec.4.4 pt.3).
-    // Clamped against the document's line count at render() time, not here,
-    // since the document can mutate between calls.
+    // Driven every frame by main.cpp's syncRenderStateAndInvalidate()
+    // (renderPipeline.setTopLine(viewport.topLine())) once core::Viewport
+    // exists (Phase 4b1+) - mouse-wheel/keyboard scrolling moves this. (Older
+    // comment here claimed "nothing calls this besides tests" - stale since
+    // Phase 4b1; corrected Phase 7o while wiring Sticky scroll, which reads
+    // this value every frame via reservedTopHeightDips()/
+    // stickyScrollRegionAt().) Clamped against the document's line count at
+    // render() time, not here, since the document can mutate between calls.
     void setTopLine(document::LineNumber line) noexcept { m_topLine = line; }
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
 
@@ -321,6 +325,50 @@ private:
     // no-op (background only) if no cursor is primary or the path is empty
     // (Phase 7h). Called from renderOnce() after drawVisibleLines().
     void drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept;
+    // Draws a one-line "sticky" strip directly below the Breadcrumb band,
+    // showing the header line of whichever unfolded fold region currently
+    // contains topLine (i.e. we've scrolled past its header but not yet past
+    // its end) - roadmap sec.7.6. A true no-op (draws nothing, reserves no
+    // height - see reservedTopHeightDips()) if no such region exists, unlike
+    // drawBreadcrumb()'s "always draw the background band" choice - a
+    // permanently-reserved empty strip would be visual noise for a feature
+    // that's only meaningful while inside some scope (Phase 7o plan's design
+    // point 4). Plain text (m_textBrush only, no syntax-token coloring) -
+    // same simplification drawBreadcrumb() made for its own synthesized path
+    // string (Phase 7h precedent); syntax highlighting here is deliberately
+    // out of scope (Phase 7o plan's scope-out section). Called from
+    // renderOnce() right after drawBreadcrumb() so it visually layers on top
+    // of drawVisibleLines()'s scrolled-past text underneath it.
+    void drawStickyScroll(ID2D1DeviceContext6& dc) noexcept;
+    // Innermost (largest headerLine) UNFOLDED region in m_foldRegions whose
+    // (headerLine, endLineInclusive] span contains `topLine` - i.e. we've
+    // scrolled past its header line but not yet past its last line. nullopt
+    // if no such region (folding disabled, no folds, or topLine is at/above
+    // every region's own headerLine). Folded regions are excluded: their
+    // body lines are hidden (never drawn by drawVisibleLines()), so there is
+    // nothing to have "scrolled into". Shared by drawStickyScroll() (what to
+    // draw) and reservedTopHeightDips() (how much vertical space to reserve)
+    // so both agree every frame (Phase 7o).
+    [[nodiscard]] std::optional<FoldVisual> stickyScrollRegionAt(
+        document::LineNumber topLine) const noexcept;
+    // Total DIPs reserved at the top of the client area before the
+    // scrollable text area starts this frame: kBreadcrumbHeightDips, plus
+    // kStickyScrollHeightDips IF stickyScrollRegionAt() (at the current,
+    // clamped topLine) has a value. Centralizes what was, before Phase 7o,
+    // four separate hardcoded kBreadcrumbHeightDips references
+    // (drawVisibleLines()'s y-origin/effective-height calc, hitTest()'s and
+    // hitTestFoldMarker()'s yDip offset) - same "small shared helper used by
+    // 3+ call sites" pattern as isLineHidden()/visibleLineAtRow() (Phase
+    // 7i/7j).
+    [[nodiscard]] float reservedTopHeightDips() const noexcept;
+    // Raw text of logical line `line` (no trailing '\n'), extracted from
+    // m_cachedSnapshot. Caller must have already verified m_document/
+    // m_cachedSnapshot are non-null (same precondition convention as this
+    // class's other m_cachedSnapshot-reading helpers). Factored out of
+    // drawVisibleLines()'s inline per-line splitting loop (Phase 7o) so
+    // drawStickyScroll() can fetch a single arbitrary (usually off-screen)
+    // line's text without re-deriving that loop.
+    [[nodiscard]] std::u16string extractLineText(document::LineNumber line) const noexcept;
 
     // Precomputed line/column for one cursor's caret (Phase 4b1, N-cursor
     // generalization Phase 4b7a). A line outside the visible range simply

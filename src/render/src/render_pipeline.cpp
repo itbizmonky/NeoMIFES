@@ -39,9 +39,13 @@ constexpr float kBookmarkDotSizeDips = 8.0F;
 
 // Phase 7h: top-of-editor Breadcrumb strip height. Same "every y-coordinate
 // consumer in this file must agree on this offset" contract kGutterWidthDips
-// documents for the x-axis - see drawVisibleLines()'s `y` origin and
-// hitTest()'s `yDip` clamp below.
+// documents for the x-axis - see reservedTopHeightDips() below (Phase 7o
+// centralized the y-coordinate consumers that used to reference this
+// constant directly).
 constexpr float kBreadcrumbHeightDips = 24.0F;
+// Phase 7o: Sticky scroll strip height, directly below the Breadcrumb strip
+// when present - see reservedTopHeightDips()/drawStickyScroll().
+constexpr float kStickyScrollHeightDips = 24.0F;
 }  // namespace
 
 RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
@@ -519,13 +523,14 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
 
-    // Phase 7h: the Breadcrumb strip occupies the top kBreadcrumbHeightDips
-    // of the client area, so the effective height available to text lines is
+    // Phase 7h/7o: the Breadcrumb strip (and, when active, the Sticky scroll
+    // strip directly below it) occupies the top reservedTopHeightDips() of
+    // the client area, so the effective height available to text lines is
     // reduced by that many (DPI-scaled) pixels - mirrors kGutterWidthDips'
     // effect on drawn width, just on the y-axis. computeVisibleLineCount()
-    // itself stays a general-purpose pure function unaware of Breadcrumb.
-    const auto breadcrumbHeightPx = static_cast<std::uint32_t>(kBreadcrumbHeightDips * m_dpiScale);
-    const std::uint32_t effectiveHeightPx = m_height > breadcrumbHeightPx ? m_height - breadcrumbHeightPx : 0;
+    // itself stays a general-purpose pure function unaware of either strip.
+    const auto reservedTopPx = static_cast<std::uint32_t>(reservedTopHeightDips() * m_dpiScale);
+    const std::uint32_t effectiveHeightPx = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
     const std::uint32_t visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
     if (visibleCount == 0) {
         return;
@@ -555,7 +560,7 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     std::size_t tokenCursor = 0;  // Phase 7b: threaded forward across the line loop, see drawTokensOnLine()'s comment
 
     std::u16string_view remaining(text);
-    float                y         = kBreadcrumbHeightDips;  // Phase 7h: reserve the strip above
+    float                y         = reservedTopHeightDips();  // Phase 7h/7o: reserve the strip(s) above
     TextPos              lineStart = startOffset;
     for (LineNumber line = startLine; line < endLineExclusive; ++line) {
         const auto newlinePos = remaining.find(u'\n');
@@ -922,6 +927,87 @@ void RenderPipeline::drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept {
     dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, 0.0F), layout.Get(), m_textBrush.Get());
 }
 
+std::optional<FoldVisual> RenderPipeline::stickyScrollRegionAt(LineNumber topLine) const noexcept {
+    const FoldVisual* best = nullptr;
+    for (const auto& region : m_foldRegions) {
+        if (region.folded) {
+            continue;  // hidden body - nothing to have "scrolled into"
+        }
+        if (region.headerLine < topLine && region.endLineInclusive >= topLine &&
+            (best == nullptr || region.headerLine > best->headerLine)) {
+            best = &region;
+        }
+    }
+    return best != nullptr ? std::optional<FoldVisual>(*best) : std::nullopt;
+}
+
+float RenderPipeline::reservedTopHeightDips() const noexcept {
+    if (m_document == nullptr) {
+        return kBreadcrumbHeightDips;
+    }
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return kBreadcrumbHeightDips;
+    }
+    const LineNumber startLine =
+        m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
+    const bool hasSticky = stickyScrollRegionAt(startLine).has_value();
+    return kBreadcrumbHeightDips + (hasSticky ? kStickyScrollHeightDips : 0.0F);
+}
+
+std::u16string RenderPipeline::extractLineText(LineNumber line) const noexcept {
+    const std::uint64_t totalLines = m_document->lineCount();
+    const TextPos        lineStart = m_document->lineToOffset(line);
+    const LineNumber      nextLine  = line + 1;
+    const TextPos lineEnd =
+        (nextLine < totalLines) ? m_document->lineToOffset(nextLine) : m_cachedSnapshot->length();
+    std::u16string text = m_cachedSnapshot->extract(TextRange{.start = lineStart, .end = lineEnd});
+    if (!text.empty() && text.back() == u'\n') {
+        text.pop_back();
+    }
+    return text;
+}
+
+void RenderPipeline::drawStickyScroll(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || !m_breadcrumbBackgroundBrush) {
+        return;
+    }
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return;
+    }
+    const LineNumber startLine =
+        m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
+    const auto sticky = stickyScrollRegionAt(startLine);
+    if (!sticky) {
+        return;  // nothing enclosing the current scroll position - draw nothing, reserve no height
+    }
+
+    const float widthDips = static_cast<float>(m_width) / m_dpiScale;
+    dc.FillRectangle(D2D1::RectF(0.0F, kBreadcrumbHeightDips, widthDips,
+                                  kBreadcrumbHeightDips + kStickyScrollHeightDips),
+                      m_breadcrumbBackgroundBrush.Get());
+    if (!m_dwriteFactory || !m_textFormat || !m_textBrush) {
+        return;
+    }
+
+    // One-off layout, not TextLayoutCache - same rationale as
+    // drawBreadcrumb()'s synthesized-path layout above (this call is cheap
+    // relative to drawVisibleLines()' per-visible-line work, and keying a
+    // second cache by "whichever line happens to be sticky this frame" would
+    // add complexity without a measured need, CLAUDE.md rule 10).
+    const std::u16string lineText = extractLineText(sticky->headerLine);
+    const std::wstring_view wText = util::toWstringView(lineText);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    const HRESULT hr = m_dwriteFactory->CreateTextLayout(
+        wText.data(), static_cast<UINT32>(wText.size()), m_textFormat.Get(),
+        std::max(0.0F, widthDips - kGutterWidthDips), kStickyScrollHeightDips, layout.GetAddressOf());
+    if (FAILED(hr) || !layout) {
+        return;
+    }
+    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, kBreadcrumbHeightDips), layout.Get(), m_textBrush.Get());
+}
+
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || !m_dwriteFactory ||
         m_dpiScale <= 0.0F) {
@@ -936,10 +1022,10 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
     // no separate "toggle bookmark on gutter click" interaction exists yet
     // (Phase 4b8c, deliberately deferred).
     const float xDip = std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - kGutterWidthDips);
-    // Phase 7h: clicks within the Breadcrumb strip clamp to the first visible
-    // line's row offset - same "clamp to a sane default" convention as the
-    // gutter's xDip clamp above.
-    const float yDip = std::max(0.0F, (static_cast<float>(yPx) / m_dpiScale) - kBreadcrumbHeightDips);
+    // Phase 7h/7o: clicks within the Breadcrumb/Sticky scroll strip(s) clamp
+    // to the first visible line's row offset - same "clamp to a sane
+    // default" convention as the gutter's xDip clamp above.
+    const float yDip = std::max(0.0F, (static_cast<float>(yPx) / m_dpiScale) - reservedTopHeightDips());
 
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
@@ -1014,7 +1100,7 @@ std::optional<document::LineNumber> RenderPipeline::hitTestFoldMarker(std::int32
     if (totalLines == 0) {
         return std::nullopt;
     }
-    const float yDip = std::max(0.0F, (static_cast<float>(yPx) / m_dpiScale) - kBreadcrumbHeightDips);
+    const float yDip = std::max(0.0F, (static_cast<float>(yPx) / m_dpiScale) - reservedTopHeightDips());
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
     const auto        rowOffset  = static_cast<LineNumber>(yDip / m_lineHeightDips);
@@ -1104,6 +1190,7 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     dc->Clear(kBackgroundColor);
     drawVisibleLines(*dc);
     drawBreadcrumb(*dc);
+    drawStickyScroll(*dc);
 
     return device.endFrame();
 }
