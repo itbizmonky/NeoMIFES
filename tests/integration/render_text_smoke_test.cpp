@@ -491,6 +491,115 @@ TEST(RenderTextSmokeTest, FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLi
     EXPECT_GE(*belowFold, 18U);
 }
 
+// Phase 7j: exercises hitTestFoldMarker() end-to-end. Unlike hitTest(), a
+// click needs no pixel-precise x - the whole gutter width counts as the
+// clickable target for a foldable row (see hitTestFoldMarker()'s own
+// comment for why). folded=false is used here deliberately: the chevron
+// marker itself is drawn for a fold header regardless of folded state, so
+// the hit test must resolve the same way either way.
+TEST(RenderTextSmokeTest, HitTestFoldMarkerReturnsHeaderLineForGutterClickOnFoldableRow) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 2, .folded = false}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    const auto headerHit = pipeline.hitTestFoldMarker(5, 0);
+    ASSERT_TRUE(headerHit.has_value());
+    EXPECT_EQ(*headerHit, 0U);
+}
+
+TEST(RenderTextSmokeTest, HitTestFoldMarkerReturnsNulloptOutsideGutterXRange) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 2, .folded = false}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // x=100 is well past kGutterWidthDips - the click landed in the text
+    // area, not the gutter, so this must never resolve to a fold header.
+    EXPECT_FALSE(pipeline.hitTestFoldMarker(100, 0).has_value());
+}
+
+TEST(RenderTextSmokeTest, HitTestFoldMarkerReturnsNulloptOnNonFoldableRow) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+    // Only line0 is a fold header - line1's row must not resolve.
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 2, .folded = false}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // y=50 lands on line1's row (see HitTestReturnsPositionsWithinKnownLineBounds
+    // above for why this y value is past the header row).
+    EXPECT_FALSE(pipeline.hitTestFoldMarker(5, 50).has_value());
+}
+
+TEST(RenderTextSmokeTest, HitTestFoldMarkerReturnsNulloptWhenNoFoldRegionsSet) {
+    // Phase 7i-and-earlier behavior must be fully preserved when folding
+    // isn't in use: no setFoldRegions() call at all (stays empty).
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    EXPECT_FALSE(pipeline.hitTestFoldMarker(5, 0).has_value());
+}
+
 TEST(RenderTextSmokeTest, TogglingSyntaxHighlightingOffAgainStillRendersCorrectly) {
     // Phase 7b: enabling then disabling must not leave the pipeline in a bad
     // state (m_tokens must actually clear, not just stop being consulted).

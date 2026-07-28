@@ -880,6 +880,23 @@ void applyIndentationConversion(IndentationConversionTarget target, HWND hwnd, D
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Checks whether a WM_LBUTTONDOWN landed on a foldable gutter row and, if
+// so, toggles that region and repaints, returning true so the caller skips
+// its ordinary hitTest()/dispatchMouseDown() cursor-placement path entirely
+// (Phase 7j). Pulled out of wireNormalMode's onMouseDown lambda to keep
+// that function's cognitive complexity down, same rationale as
+// dispatchMouseDown() below.
+bool tryToggleFoldMarker(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeline& renderPipeline,
+                         FoldingModel& foldingModel) {
+    const auto foldHeaderLine = renderPipeline.hitTestFoldMarker(x, y);
+    if (!foldHeaderLine) {
+        return false;
+    }
+    foldingModel.toggleFold(*foldHeaderLine);
+    syncFoldingState(hwnd, renderPipeline, foldingModel);
+    return true;
+}
+
 // Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
 // applies it. Pulled out of wireNormalMode's onMouseDown lambda to keep that
 // function's cognitive complexity down (same rationale as
@@ -943,6 +960,36 @@ bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool alt
         return neomifes::app::handleDoubleClick(hit, selectionModel, viewport, document);
     }
     return neomifes::app::handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
+}
+
+// Handles WM_LBUTTONDOWN. Pulled out of wireNormalMode's onMouseDown lambda
+// for the same cognitive-complexity reason as handleKeyDownEvent() above -
+// Phase 7j's tryToggleFoldMarker() check pushed the inline version over
+// clang-tidy's threshold.
+void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
+                          int clickCount, SelectionModel& selectionModel, Viewport& viewport,
+                          const Document& document, RenderPipeline& renderPipeline,
+                          std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                          std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                          std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                          FoldingModel& foldingModel) {
+    if (tryToggleFoldMarker(hwnd, x, y, renderPipeline, foldingModel)) {
+        return;
+    }
+    const auto hit = renderPipeline.hitTest(x, y);
+    if (!hit) {
+        return;
+    }
+    // A click is always an "unrelated operation" for free-cursor virtual
+    // columns (Phase 4b8e is keyboard-only) - discard silently; the click
+    // itself always changes the selection, so the repaint below already
+    // clears any stale virtual-offset caret.
+    freeCursorVirtualColumns.reset();
+    const bool changed = dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel,
+                                          viewport, document, altCursorAnchor, rectangularAnchor);
+    if (changed) {
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    }
 }
 
 // Phase 4b8e (フリーカーソル簡略版): Right-arrow past the real end of the
@@ -1715,23 +1762,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor, &freeCursorVirtualColumns](
+                       &rectangularAnchor, &freeCursorVirtualColumns, &foldingModel](
                           HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
                           int clickCount) {
-        const auto hit = renderPipeline.hitTest(x, y);
-        if (!hit) {
-            return;
-        }
-        // A click is always an "unrelated operation" for free-cursor virtual
-        // columns (Phase 4b8e is keyboard-only) - discard silently; the
-        // click itself always changes the selection, so the repaint below
-        // already clears any stale virtual-offset caret.
-        freeCursorVirtualColumns.reset();
-        const bool changed = dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel,
-                                              viewport, document, altCursorAnchor, rectangularAnchor);
-        if (changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
-        }
+        handleMouseDownEvent(hwnd, x, y, shiftDown, altDown, clickCount, selectionModel, viewport,
+                             document, renderPipeline, altCursorAnchor, rectangularAnchor,
+                             freeCursorVirtualColumns, foldingModel);
     };
     cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
                        &rectangularAnchor, &freeCursorVirtualColumns](HWND hwnd, std::int32_t x,

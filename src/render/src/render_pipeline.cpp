@@ -926,25 +926,10 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
     const LineNumber rowOffset =
         yDip >= 0.0F ? static_cast<LineNumber>(yDip / m_lineHeightDips) : LineNumber{0};
-    // Phase 7i: walk forward from startLine counting only VISIBLE rows, so
-    // `rowOffset` (a drawn-row count) resolves to the same logical line
-    // drawVisibleLines() actually drew there - mirrors that method's own
-    // hidden-line-skipping walk, so a click always lands on a line that was
-    // genuinely visible on screen, never inside folded-hidden content.
-    LineNumber targetLine   = startLine;
-    LineNumber visibleSteps = 0;
-    for (;;) {
-        if (!isLineHidden(targetLine)) {
-            if (visibleSteps == rowOffset) {
-                break;
-            }
-            ++visibleSteps;
-        }
-        if (targetLine + 1 >= totalLines) {
-            break;
-        }
-        ++targetLine;
-    }
+    // Phase 7i/7j: resolves `rowOffset` (a drawn-row count) to the same
+    // logical line drawVisibleLines() actually drew there, skipping
+    // folded-hidden lines - see visibleLineAtRow()'s comment.
+    const LineNumber targetLine = visibleLineAtRow(startLine, rowOffset);
 
     const TextPos lineStart = m_document->lineToOffset(targetLine);
     const TextPos lineEndExclusive = (targetLine + 1 >= totalLines)
@@ -975,6 +960,50 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
     const std::uint32_t column =
         isTrailingHit ? (metrics.textPosition + metrics.length) : metrics.textPosition;
     return lineStart + column;
+}
+
+document::LineNumber RenderPipeline::visibleLineAtRow(LineNumber startLine,
+                                                       LineNumber visibleRowOffset) const noexcept {
+    const std::uint64_t totalLines = m_document->lineCount();
+    LineNumber          targetLine   = startLine;
+    LineNumber          visibleSteps = 0;
+    for (;;) {
+        if (!isLineHidden(targetLine)) {
+            if (visibleSteps == visibleRowOffset) {
+                break;
+            }
+            ++visibleSteps;
+        }
+        if (targetLine + 1 >= totalLines) {
+            break;
+        }
+        ++targetLine;
+    }
+    return targetLine;
+}
+
+std::optional<document::LineNumber> RenderPipeline::hitTestFoldMarker(std::int32_t xPx,
+                                                                       std::int32_t yPx) noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || m_dpiScale <= 0.0F) {
+        return std::nullopt;
+    }
+    const float xDip = static_cast<float>(xPx) / m_dpiScale;
+    if (xDip < 0.0F || xDip >= kGutterWidthDips) {
+        return std::nullopt;  // click landed outside the gutter strip entirely
+    }
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return std::nullopt;
+    }
+    const float yDip = std::max(0.0F, (static_cast<float>(yPx) / m_dpiScale) - kBreadcrumbHeightDips);
+    const LineNumber startLine =
+        m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
+    const auto        rowOffset  = static_cast<LineNumber>(yDip / m_lineHeightDips);
+    const LineNumber   targetLine = visibleLineAtRow(startLine, rowOffset);
+    if (std::ranges::find(m_foldRegions, targetLine, &FoldVisual::headerLine) == m_foldRegions.end()) {
+        return std::nullopt;
+    }
+    return targetLine;
 }
 
 RenderExpected<void> RenderPipeline::renderOnce() noexcept {

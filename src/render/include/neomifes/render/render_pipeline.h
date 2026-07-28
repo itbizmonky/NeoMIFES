@@ -222,6 +222,21 @@ public:
     [[nodiscard]] std::optional<document::TextPos> hitTest(std::int32_t xPx,
                                                             std::int32_t yPx) noexcept;
 
+    // Hit-tests a client-area point against the gutter's fold-marker column
+    // (Phase 7j). Returns the header line of a currently-drawn foldable
+    // region if `xPx` falls anywhere within the gutter strip
+    // ([0, kGutterWidthDips)) and `yPx` resolves (via the same visible-line
+    // walk hitTest() uses) to a line that is a fold header - nullopt
+    // otherwise (click outside the gutter, or on a gutter row that isn't
+    // foldable). Deliberately hit-tests the WHOLE gutter width for a
+    // foldable row, not just the drawn chevron's ~7dip span (see
+    // drawGutterOnLine()'s marker geometry for what's actually drawn) - a
+    // more forgiving click target is intentional. Callers (main.cpp) check
+    // this BEFORE calling hitTest(), so a fold-header gutter click never
+    // also falls through to ordinary cursor placement.
+    [[nodiscard]] std::optional<document::LineNumber> hitTestFoldMarker(std::int32_t xPx,
+                                                                        std::int32_t yPx) noexcept;
+
     // Exposed for the --measure-frame harness and integration tests to
     // observe caching behavior (Phase 3c, ADR-011) - not merely test-only,
     // the frame harness reports these numbers in its JSON output.
@@ -283,6 +298,13 @@ private:
     // Shared by drawVisibleLines()'s line walk and hitTest()'s yDip->line
     // conversion so both agree on which lines are actually drawn/clickable.
     [[nodiscard]] bool isLineHidden(document::LineNumber line) const noexcept;
+    // Walks forward from `startLine`, skipping folded-hidden lines, until
+    // the `visibleRowOffset`-th VISIBLE line is reached (or the document
+    // ends). Extracted from hitTest() (Phase 7j) so hitTestFoldMarker() can
+    // resolve a screen row to the same logical line drawVisibleLines()
+    // actually drew there, without duplicating the walk a third time.
+    [[nodiscard]] document::LineNumber visibleLineAtRow(
+        document::LineNumber startLine, document::LineNumber visibleRowOffset) const noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
     // Draws the top-of-editor Breadcrumb strip: a background band
