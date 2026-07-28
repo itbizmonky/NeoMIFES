@@ -90,12 +90,18 @@ public:
     }
 
     // --- Line queries -------------------------------------------------------
-    // The Document caches a LineIndex and rebuilds it lazily on the next query
-    // after any mutation. This is intentionally coarse for Phase 2a; Phase 2b
-    // maintains the index incrementally. Logically const (callers only ever
-    // observe query results, never the cache itself) - m_lineIndex/
-    // m_lineIndexDirty are `mutable` so RenderPipeline can query through a
-    // `const Document*` (ADR-010).
+    // The Document keeps a LineIndex consistent incrementally: every
+    // mutating method below applies the edit to it directly (LineIndex::
+    // applyInsert()/applyErase(), Phase 7p) rather than marking it dirty for
+    // a lazy full rebuild - see docs/issues/line_index_o_log_n.md ("案C") for
+    // why a lazy rebuild-on-next-query design (Phase 2a-7o) became an O(document
+    // length) cost on every single edit once EditDelta computation (Phase 7k)
+    // started querying offsetToLine()/lineToOffset() from inside insertText()
+    // itself. m_lineIndexDirty now only matters for the very first query
+    // after construction. Logically const (callers only ever observe query
+    // results, never the cache itself) - m_lineIndex/m_lineIndexDirty are
+    // `mutable` so RenderPipeline can query through a `const Document*`
+    // (ADR-010).
     [[nodiscard]] LineNumber offsetToLine(TextPos pos) const;
     [[nodiscard]] TextPos    lineToOffset(LineNumber line) const;
 

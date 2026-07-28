@@ -12,13 +12,17 @@ Document::Document(std::shared_ptr<const OriginalBuffer> original)
 
 void Document::insertText(TextPos pos, std::u16string_view text) {
     // Old side captured BEFORE mutating (pre-edit line structure) - erasing
-    // nothing means oldEnd == start. New side captured AFTER (post-edit),
-    // forcing the LineIndex rebuild that would happen on the next query
-    // anyway (see EditDelta's header comment).
+    // nothing means oldEnd == start. New side captured AFTER (post-edit).
+    // m_lineIndex.applyInsert() keeps the index consistent in O(lines at or
+    // after pos + newlines in text) instead of marking it dirty for a full
+    // O(document length) rebuild on the very next line below - Phase 7p fix
+    // for the O(document length) cost this incurred on EVERY call (see
+    // docs/issues/line_index_o_log_n.md and CI run 30367272798, which timed
+    // out after 6h on BM_UndoStack_PushOneMillion's 1M sequential inserts).
     const LineNumber startLine   = offsetToLine(pos);
     const auto       startColumn = static_cast<std::uint32_t>(pos - lineToOffset(startLine));
     m_pieceTable.insert(pos, text);
-    m_lineIndexDirty = true;
+    m_lineIndex.applyInsert(pos, text);
     ++m_version;
     const TextPos    newEnd       = pos + text.size();
     const LineNumber newEndLine   = offsetToLine(newEnd);
@@ -40,7 +44,7 @@ void Document::eraseRange(TextRange range) {
     const LineNumber oldEndLine   = offsetToLine(range.end);
     const auto       oldEndColumn = static_cast<std::uint32_t>(range.end - lineToOffset(oldEndLine));
     m_pieceTable.erase(range);
-    m_lineIndexDirty = true;
+    m_lineIndex.applyErase(range);  // Phase 7p: see insertText()'s comment above
     ++m_version;
     // Nothing is inserted, so the new end equals the (now post-edit) start.
     m_pendingEdits.push_back(EditDelta{.startPos     = range.start,
@@ -60,7 +64,11 @@ void Document::replaceRange(TextRange range, std::u16string_view text) {
     const LineNumber oldEndLine   = offsetToLine(range.end);
     const auto       oldEndColumn = static_cast<std::uint32_t>(range.end - lineToOffset(oldEndLine));
     m_pieceTable.replace(range, text);
-    m_lineIndexDirty = true;
+    // Phase 7p: mirrors replace()'s own "erase then insert" semantics so
+    // the index ends up consistent with the post-replace buffer - see
+    // insertText()'s comment above for why this matters.
+    m_lineIndex.applyErase(range);
+    m_lineIndex.applyInsert(range.start, text);
     ++m_version;
     const TextPos    newEnd       = range.start + text.size();
     const LineNumber newEndLine   = offsetToLine(newEnd);
