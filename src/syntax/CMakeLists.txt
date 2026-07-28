@@ -1,6 +1,7 @@
 add_library(neomifes_syntax STATIC
     src/syntax.cpp
     src/outline.cpp
+    src/incremental_parser.cpp
 )
 add_library(neomifes::syntax ALIAS neomifes_syntax)
 

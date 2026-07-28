@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "neomifes/document/line_index.h"
 #include "neomifes/document/piece_table.h"
@@ -17,6 +19,29 @@ namespace neomifes::document {
 
 class BufferSnapshot;
 class OriginalBuffer;
+
+// One mutation's before/after position info (Phase 7k), in a shape
+// tree-sitter's TSInputEdit can be built from directly by callers in
+// neomifes::syntax (byte offset = code-unit offset * 2, kept out of this
+// header since syntax:: owns tree-sitter types, not document::).
+// startLine/startColumn are the SAME in both the old and new coordinate
+// space (the edit starts there and nothing before it moves); oldEndLine/
+// oldEndColumn are computed against the PRE-edit line structure,
+// newEndLine/newEndColumn against the POST-edit one - Document captures
+// both at the right moment inside each mutating method (see document.cpp),
+// since PieceTable mutates in place and there is no per-version snapshot
+// to query "the old line structure" from afterward.
+struct EditDelta {
+    TextPos       startPos;
+    LineNumber    startLine;
+    std::uint32_t startColumn = 0;
+    TextPos       oldEndPos;
+    LineNumber    oldEndLine;
+    std::uint32_t oldEndColumn = 0;
+    TextPos       newEndPos;
+    LineNumber    newEndLine;
+    std::uint32_t newEndColumn = 0;
+};
 
 class Document {
 public:
@@ -53,6 +78,17 @@ public:
     // Convenience read of the whole document.
     [[nodiscard]] std::u16string toU16String() const;
 
+    // Drains and returns every EditDelta recorded since the last call to
+    // this method (or since construction) - Phase 7k. insertText()/
+    // eraseRange()/replaceRange() each append exactly one entry, in call
+    // order; UndoStack's commands go through those same three methods (see
+    // edit_commands.cpp), so undo/redo need no separate tracking path.
+    // Single UI thread only (ADR-009, same as version()) - no
+    // synchronization needed.
+    [[nodiscard]] std::vector<EditDelta> takePendingEdits() noexcept {
+        return std::exchange(m_pendingEdits, {});
+    }
+
     // --- Line queries -------------------------------------------------------
     // The Document caches a LineIndex and rebuilds it lazily on the next query
     // after any mutation. This is intentionally coarse for Phase 2a; Phase 2b
@@ -70,6 +106,9 @@ private:
     mutable LineIndex     m_lineIndex;
     mutable bool          m_lineIndexDirty = true;
     std::uint64_t         m_version        = 0;
+    // Phase 7k: accumulated by insertText()/eraseRange()/replaceRange(),
+    // drained by takePendingEdits().
+    std::vector<EditDelta> m_pendingEdits;
 };
 
 }  // namespace neomifes::document

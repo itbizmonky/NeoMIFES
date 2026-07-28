@@ -48,6 +48,7 @@ add_executable(neomifes_unit_tests
     encoding_encoding_test.cpp
     syntax_syntax_test.cpp
     syntax_outline_test.cpp
+    syntax_incremental_parser_test.cpp
     app_syntax_language_test.cpp
     app_outline_bridge_test.cpp
     app_fold_bridge_test.cpp
