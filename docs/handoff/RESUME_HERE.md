@@ -78,7 +78,8 @@
 | Phase 7j (折り畳み ガター+/-クリックトグル: `hitTestFoldMarker()`) | ✅ 完了 (**未push**、§3.44参照) |
 | Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 (**未push**、§3.45参照) |
 | Phase 7l (真の増分再解析の SyntaxWorker 統合: edits蓄積キュー+RenderPipeline配線) | ✅ 完了 (**未push**、§3.46参照) |
-| **次フェーズ選定 — 残り21言語/ミニマップ/sticky scroll/`ts_tree_get_changed_ranges()`対応等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7m (`ts_tree_get_changed_ranges()`によるトークン部分更新、増分再解析の性能対応) | ✅ 完了 (**未push**、§3.47参照) |
+| **次フェーズ選定 — 残り21言語/ミニマップ/sticky scroll/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1379,6 +1380,41 @@ Phase 7k完了後、ユーザーから「次Phaseへ進め」と指示された�
 
 **Phase 7lはコミット済み(`437ac8d`)・未push。** roadmap上の「真の増分再解析」ラインはPhase 7k+7lで完結した(性能面のDoDは`ts_tree_get_changed_ranges()`対応待ち)。次フェーズは残り21言語対応・ミニマップ・Sticky scroll等の詳細をPlan Modeで設計してから着手。
 
+### 3.47 Phase 7m (`ts_tree_get_changed_ranges()` によるトークン部分更新、増分再解析の性能対応) 完了記録
+
+Phase 7l完了後、ユーザーから「次フェーズ着手せよ」と指示された。roadmap §7の残り候補(性能対応/残り21言語対応/ミニマップ・Sticky scroll)をAskUserQuestionで提示し、**性能対応(推奨案)**が選ばれた — Phase 7k・7lの両方で繰り返し「DoD『≤50ms』未達」と記録され、原因も対応方針も既に特定済みだった候補。
+
+**着手前調査で確定した設計方針:**
+- tree-sitter公式ヘッダ(`tree_sitter/api.h`)を直接読み、`ts_tree_get_changed_ranges(old_tree, new_tree, &length)`が`malloc`確保の`TSRange*`配列を返し、「範囲の外側は新旧木で祖先ノードが完全同一」という保証を持つことを確認
+- `IncrementalParser::reparse()`の公開契約(「全文書再解析と完全一致する完全なトークン列を返す」)を変更せず、内部実装だけを差し替える設計にした — `render::SyntaxWorker`/`RenderPipeline`/`main.cpp`への変更を避け、ブラスト半径を`IncrementalParser`単体に抑えるため
+- 前回呼び出し時の完全なトークン列を`IncrementalParser::Impl`に新規保持(`lastTokens`)し、既存`walkTree()`を拡張した単一パスの`walkTreeIncremental()`(変更のあった部分木だけ降りて新規分類、それ以外は位置シフト済みの`lastTokens`から再利用)を設計
+
+**実装・デバッグで発見した2つの誤算(いずれも実測で発見、事前の推測を修正):**
+- **`ts_tree_get_changed_ranges()`単体では不十分だった。** 数字の直後に数字を挿入してリーフが伸びるだけ(構造自体は不変)の編集で空配列を返すことを、失敗するテストのデバッグ出力で発見。各editの文字通りの範囲も無条件に「変更範囲」として扱う`computeDirtyRangesInFinalCoordinates()`(`ts_range_edit()`でバッチ内の後続editを通じて座標を前方伝播)を追加して解消
+- **範囲重なり判定を「接触も重なりとみなす」包含的な判定に変更する必要があった。** 純粋な削除(ゼロ幅の変更範囲)がノード境界を検出できない失敗が実測で見つかったため
+- テスト作成中に2件、自分が書いたテスト自体のオフセット計算ミス(実装ではなくテスト側の誤り)を自己発見・修正した
+
+**ベンチマーク実測(CLAUDE.mdルール10、最重要の発見):**
+- 5万行合成C++ソースで、増分再解析は約148ms/call(全文書再解析1243ms比で約8.4倍、Phase 7kの旧実装321ms比で約2.2倍) — 確かな改善
+- **50万行(10倍)版の追加ベンチマークで約1419ms/call(ほぼ10倍)となり、着手前に期待していた「文書サイズに依存しない一定コスト」(漸近的改善)は実測で明確に否定された。** `reparse()`が依然として「呼び出しのたびに文書全体サイズのトークン列を確保・返却する」設計のままであることが根本原因 — `walkTreeIncremental()`自体は変更範囲だけを効率よく再抽出できているが、`shiftTokensForEdits()`(前回のトークン列を位置シフトする処理)が保持トークン列全体を毎回舐める設計であるため、達成できたのは定数倍の高速化(tree-sitterのAPI呼び出しを安価な配列操作へ置き換えたこと)であり、計算量クラス自体の変更ではなかった
+- roadmap §7.11のDoD「≤50ms」は5万行の最良ケースでも未達のまま。真にO(編集サイズ)を達成するには`IncrementalParser`の公開契約自体を「差分のみ返却」へ変更する必要があると判明(Phase 7kが当初のroadmapスケッチから意図的に外した設計そのもの) — 次にDoD達成を目指すならこの契約変更が必要
+
+**テスト:** `tests/unit/syntax_incremental_parser_test.cpp`を7件→14件へ拡張(境界条件・未終端コメントによる変更範囲拡大・複数editバッチ・4回連続の増分再解析・Python)。全て既存の「増分再解析結果 == 全文書再解析結果」というテストオラクルで検証
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全720件pass。clang-tidy: `src/`配下新規警告0(`unique_ptr<TSRange[], ...>`への`cppcoreguidelines-avoid-c-arrays`誤検知1件をNOLINT+理由コメントで対処)
+- ヘッドレス変更(`IncrementalParser`の内部実装のみ、公開契約・呼び出し側とも無変更)のため実アプリ視覚確認は対象外
+
+**完了条件:**
+- [x] 増分再解析結果が全文書再解析結果と完全一致することを14件の単体テストで証明
+- [x] ベンチマーク実測を取得し、「漸近的改善ではなく定数倍改善だった」という期待と異なる結果を隠さず正直に記録
+- [x] ローカルDebug/Release/ubsan全720テストgreen、`src/`配下clang-tidy新規警告0
+- [ ] roadmap §7.11のDoD「≤50ms」は未達のまま(`IncrementalParser`の契約変更が必要、次サブフェーズ以降の課題として明記)
+
+**スコープ外(意図的、後続サブフェーズへ):** `IncrementalParser`の公開契約を「差分のみ返却」へ変更する設計(真のO(編集サイズ)達成に必要、`SyntaxWorker`/`RenderPipeline`側のマージロジック新設を伴う大規模変更)、残り21言語対応、ミニマップ、Sticky scroll。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.15参照。
+
+**Phase 7mはコミット済み(`f4f1a40`)・未push。** roadmap DoDはまだ未達だが、着手前の楽観的な想定を実測で検証し正直に修正できたことは、次にこの課題へ着手する際の設計判断(差分返却化が必須)を明確にした点で価値があった。次フェーズは残り21言語対応・ミニマップ・Sticky scroll、または`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -1434,9 +1470,13 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・
 Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・
 Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)・
-Phase 7l(真の増分再解析のSyntaxWorker統合、§3.46参照)は
+Phase 7l(真の増分再解析のSyntaxWorker統合、§3.46参照)・
+Phase 7m(`ts_tree_get_changed_ranges()`によるトークン部分更新、§3.47参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`)完了・未push。**
+`853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`/`f4f1a40`)完了・未push。**
+**Phase 7mでroadmap DoD「≤50ms」はまだ未達 — `IncrementalParser`の公開契約を
+「差分のみ返却」へ変更する大規模改修が必要と判明した(§3.47参照)、性能面の
+「漸近的改善」ではなく「定数倍改善」に留まったことをベンチマーク実測で確認済み。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。

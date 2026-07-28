@@ -2155,6 +2155,47 @@ private:
 
 ---
 
+### 10.15 増分再解析のトークン部分更新 (Phase 7m実装)
+
+Phase 7l/7kが据え置いてきた性能課題(`reparse()`が呼び出しのたびにトークン列全体を`walkTree()`で再構築する)に着手した。`ts_tree_get_changed_ranges()`を使った内部最適化により定数倍の高速化は得られたが、期待していた漸近的改善は実測で否定された。
+
+```cpp
+// src/syntax/src/incremental_parser.cpp (無名namespace内、非公開)
+
+// tree-sitterのバイト範囲同士が重なる/接触するかを判定する。TextRangeの
+// 半開区間の慣習とは異なり、意図的に接触も重なりとみなす(数字直後への
+// 数字挿入によるリーフ伸長・純粋削除によるゼロ幅変更範囲、いずれも接触型
+// の境界ケースであり、両方とも実測で失敗するテストから発見した)。
+bool rangesOverlap(uint32_t aStart, uint32_t aEnd, uint32_t bStart, uint32_t bEnd) noexcept;
+
+// 各editの文字通りの範囲を、バッチ内の後続editを通じてts_range_edit()で
+// 最終座標系へ前方伝播する。ts_tree_get_changed_ranges()単体では検出でき
+// ない境界接触型の変更(構造は変わらずリーフの長さだけ変わる等)を捕捉する
+// ための、木の構造差分とは独立した第2の「変更範囲」情報源。
+std::vector<TSRange> computeDirtyRangesInFinalCoordinates(std::span<const ReparseEdit> edits);
+
+// walkTree()の枝刈り版。ノードの範囲がchangedRanges(ts_tree_get_changed_
+// ranges()の出力 + 上記dirty range)のどれとも重ならなければ、その部分木
+// 全体を降りずにスキップし、位置シフト済みのoldTokensから該当区間のトーク
+// ンをそのまま採用する。重なるノードは通常通り降りてappendLeafToken()で
+// 新規分類する。
+std::vector<Token> walkTreeIncremental(TSNode newRoot, const LeafKindTable& namedKinds,
+                                        std::span<const Token> oldTokens,
+                                        std::span<const TSRange> changedRanges);
+```
+
+**設計上の要点:**
+- **`IncrementalParser`の公開契約は一切変更しなかった。** `reparse()`は引き続き「全文書再解析と完全一致する完全なトークン列を返す」契約のまま、内部実装だけを差し替えた。`render::SyntaxWorker`/`RenderPipeline`/`main.cpp`への変更は不要だった
+- **`ts_tree_get_changed_ranges()`単体では不十分と実測で判明した。** 同APIは「新旧木で構文構造(祖先ノード)が変化した範囲」のみを報告し、数字の直後に数字を挿入して1つのリーフが伸びるだけ(構造自体は変わらない)といった境界接触型の変更では空配列を返す。対策として各editの文字通りの範囲(`computeDirtyRangesInFinalCoordinates()`)も無条件に「変更範囲」として扱う設計にした
+- **範囲重なり判定(`rangesOverlap()`)は「接触も重なりとみなす」包含的な判定にした。** 純粋な削除(ゼロ幅の変更範囲)がノード境界を正しく検出できない失敗が実測で見つかったため
+- **正しさは既存の「増分再解析結果 == 全文書再解析結果」というテストオラクルで証明した。** 境界条件(文書先頭/末尾)・未終端コメント挿入による構造カスケード・複数editバッチ・4回連続の増分再解析・Pythonを含む7件の新規テストを追加。テスト作成中に2件、テスト自体のオフセット計算ミス(実装ではなくテスト側)を自己発見・修正した
+- **ベンチマーク実測(CLAUDE.mdルール10):** 5万行合成C++ソースで、単一文字編集を挟んだ増分再解析は約148ms/call(全文書再解析1243ms比で約8.4倍、Phase 7kの旧実装321ms比で約2.2倍)。**ただし50万行(10倍)版の同一ベンチマークが約1419ms/call(ほぼ10倍)となり、期待していた「文書サイズに依存しない一定コスト」は実測で否定された。** `reparse()`が依然として呼び出しのたびに文書全体サイズのトークン列を確保・返却する設計であり、`shiftTokensForEdits()`が保持トークン列全体を毎回舐める設計であることが根本原因と判明した。達成できたのはtree-sitterのAPI呼び出し(木のトラバース・型判定・ハッシュマップ検索)を安価な配列操作へ置き換えたことによる**定数倍**の高速化であり、計算量クラス自体の変更ではない。roadmap §7.11のDoD「≤50ms」は5万行の最良ケースでも未達のまま
+- **真にO(編集サイズ)を達成するには、`IncrementalParser`の公開契約自体を「完全なトークン列」から「変更分の差分」を返す設計へ転換する必要があると判明した。** 呼び出し側(`SyntaxWorker`/`RenderPipeline`)が差分を永続化済みのトークン列へマージする責務を負うことになり、これはPhase 7kが当初のroadmapスケッチから意図的に外した設計そのもの。本フェーズはブラスト半径を`IncrementalParser`単体に抑えるためにこれを避けたが、次にDoD達成を目指すならこの契約変更が必要
+
+**スコープ外(意図的、後続サブフェーズへ):** `IncrementalParser`の公開契約を「差分のみ返却」へ変更する設計(真のO(編集サイズ)達成に必要、`SyntaxWorker`/`RenderPipeline`側のマージロジック新設を伴う大規模変更)、残り21言語対応、ミニマップ、Sticky scroll。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ
