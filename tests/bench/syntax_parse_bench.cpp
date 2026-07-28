@@ -28,7 +28,12 @@ using neomifes::syntax::ReparseEdit;
 
 namespace {
 
-constexpr int kLineCount = 50'000;
+constexpr int kLineCount      = 50'000;
+// Phase 7m: 10x kLineCount, used only by BM_IncrementalReparse_SingleCharEdit_
+// LargeDocument to demonstrate that the ts_tree_get_changed_ranges()-based
+// token splice costs roughly the same regardless of document size (an
+// asymptotic win, not just a constant-factor one) - see that benchmark.
+constexpr int kLargeLineCount = 500'000;
 
 void appendNumber(std::u16string& out, int value) {
     const std::string digits = std::to_string(value);
@@ -42,10 +47,10 @@ void appendNumber(std::u16string& out, int value) {
 // verbatim, so the benchmark exercises a representative mix of the leaf
 // classification paths in syntax.cpp (named leaves, anonymous keywords,
 // punctuation, string/char literals, preprocessor directives).
-std::u16string makeSyntheticCppSource() {
+std::u16string makeSyntheticCppSource(int lineCount) {
     std::u16string content;
-    content.reserve(static_cast<std::size_t>(kLineCount) * 40);
-    for (int i = 0; i < kLineCount; ++i) {
+    content.reserve(static_cast<std::size_t>(lineCount) * 40);
+    for (int i = 0; i < lineCount; ++i) {
         content += u"class Widget";
         appendNumber(content, i);
         content += u" {\n public:\n  int value = ";
@@ -62,7 +67,7 @@ std::u16string makeSyntheticCppSource() {
 }  // namespace
 
 static void BM_ParseCpp_Synthetic(benchmark::State& state) {
-    const std::u16string source = makeSyntheticCppSource();
+    const std::u16string source = makeSyntheticCppSource(kLineCount);
 
     for (auto _ : state) {
         benchmark::DoNotOptimize(parseCpp(source));
@@ -105,9 +110,11 @@ namespace {
 // IncrementalParser can be reused indefinitely without the document ever
 // drifting in size or needing a per-iteration reset (which would defeat
 // the point: reparse() only takes the fast incremental path when a tree is
-// already retained from a previous call).
-static void BM_IncrementalReparse_SingleCharEdit(benchmark::State& state) {
-    const std::u16string source = makeSyntheticCppSource();
+// already retained from a previous call). Shared by both benchmarks below
+// (Phase 7m) - `lineCount` is the only difference between them, and that
+// difference is the entire point of the large-document variant.
+static void runIncrementalReparseSingleCharEditBenchmark(benchmark::State& state, int lineCount) {
+    const std::u16string source = makeSyntheticCppSource(lineCount);
     IncrementalParser    parser(Language::Cpp);
     benchmark::DoNotOptimize(parser.reparse(source, {}));  // seed the baseline tree, not timed
 
@@ -142,4 +149,26 @@ static void BM_IncrementalReparse_SingleCharEdit(benchmark::State& state) {
     state.counters["source_KiB"] =
         static_cast<double>(source.size() * sizeof(char16_t)) / 1024.0;
 }
+
+static void BM_IncrementalReparse_SingleCharEdit(benchmark::State& state) {
+    runIncrementalReparseSingleCharEditBenchmark(state, kLineCount);
+}
 BENCHMARK(BM_IncrementalReparse_SingleCharEdit)->Unit(benchmark::kMillisecond)->Iterations(20);
+
+// Phase 7m: same edit shape as above but on a 10x larger document
+// (kLargeLineCount) - originally added hoping to show a roughly CONSTANT
+// cost regardless of document size (an asymptotic win). The actual measured
+// result: this costs roughly 10x the 50,000-line benchmark above, i.e.
+// genuinely proportional to document size, not flat. See
+// incremental_parser.h's header comment for why (reparse() still allocates
+// and shifts a token vector sized to the whole document on every call) -
+// the win Phase 7m actually delivers is a substantial constant-factor
+// speedup (avoiding tree-sitter API calls for unaffected regions), not the
+// hoped-for asymptotic one. Kept as a benchmark specifically BECAUSE it
+// disproved that optimistic assumption with a real measurement rather than
+// leaving it unverified (CLAUDE.md rule 10) - removing it would hide this
+// finding, not just the code that produced it.
+static void BM_IncrementalReparse_SingleCharEdit_LargeDocument(benchmark::State& state) {
+    runIncrementalReparseSingleCharEditBenchmark(state, kLargeLineCount);
+}
+BENCHMARK(BM_IncrementalReparse_SingleCharEdit_LargeDocument)->Unit(benchmark::kMillisecond)->Iterations(20);

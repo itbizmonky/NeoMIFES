@@ -8,14 +8,42 @@
 // through ts_tree_edit() before reparsing, letting tree-sitter reuse
 // unaffected subtrees instead of re-walking the whole document.
 //
-// Headless only (Phase 7k) - not wired into RenderPipeline/SyntaxWorker yet.
-// SyntaxWorker's "discard superseded, keep only the latest request" queueing
-// model is incompatible with incremental correctness (skipping even one
-// edit permanently desyncs the retained tree's byte offsets from the real
-// document), so that integration is deferred to a later sub-phase; see
-// master_roadmap.md sec.7.9's "実装後の確定事項" for the Phase 7k/7l split
-// rationale. NOT thread-safe for concurrent calls - single-writer use only,
-// same assumption as document::Document.
+// Wired into RenderPipeline via render::SyntaxWorker (Phase 7l) - one
+// instance lives on SyntaxWorker's background thread, reconstructed
+// wholesale whenever the active language changes or the caller signals a
+// document switch (see SyntaxWorker::requestParse()'s resetIncrementalState).
+// NOT thread-safe for concurrent calls - single-writer use only, same
+// assumption as document::Document.
+//
+// Phase 7k's own token EXTRACTION (walkTree() over the whole resulting
+// tree, every reparse() call) was, once benchmarked, the dominant cost even
+// though tree-sitter's internal reparse was already properly incremental -
+// see master_roadmap.md sec.7's Phase 7k completion note. Phase 7m narrowed
+// that gap: reparse() now also uses ts_tree_get_changed_ranges() to only
+// re-walk the subtrees that actually changed, splicing position-shifted
+// tokens from the previous call into everywhere else - an internal
+// optimization only, this class's public contract (reparse()'s output is
+// always byte-identical to a full parse() of the resulting text) is
+// unchanged and still what every caller/test relies on.
+//
+// IMPORTANT, benchmark-grounded (CLAUDE.md rule 10): this is a substantial
+// CONSTANT-FACTOR win (~8x over a full parse for a single-character edit,
+// measured on a 50,000-line file), not an asymptotic one - reparse() still
+// costs roughly O(document size), not O(edit size), because it still
+// returns (and therefore still allocates/copies) a token vector sized to
+// the WHOLE document on every call, and shifting the retained token list to
+// account for an edit (shiftTokensForEdits(), incremental_parser.cpp) walks
+// that entire vector once per edit even when nothing in most of it changed.
+// Confirmed empirically, not assumed: a 500,000-line variant of the same
+// single-character-edit benchmark costs roughly 10x the 50,000-line one,
+// i.e. genuinely proportional to document size
+// (BM_IncrementalReparse_SingleCharEdit_LargeDocument, syntax_parse_bench.cpp).
+// Reaching true O(edit size) would require changing this class's contract
+// to return only a DELTA of changed tokens instead of the full list, with
+// the caller (SyntaxWorker/RenderPipeline) responsible for merging that
+// delta into a persisted token list - deliberately out of scope for Phase
+// 7m to keep its blast radius to this class alone; see master_roadmap.md
+// sec.7's Phase 7m completion note for the full analysis.
 //
 // tree-sitter types (TSNode/TSTree/TSParser) never appear in this header -
 // they are an implementation detail confined to incremental_parser.cpp/
