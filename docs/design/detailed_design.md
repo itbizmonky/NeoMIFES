@@ -2196,6 +2196,43 @@ std::vector<Token> walkTreeIncremental(TSNode newRoot, const LeafKindTable& name
 
 ---
 
+### 10.16 追加言語対応 バッチ1 (Phase 7n1実装)
+
+`neomifes::syntax::Language`にC/JavaScript/Java/Go/Rust/Jsonを追加し(roadmap §7.2必須23言語のうち計8言語が完了)、`Language`→`TSLanguage*`の対応を1箇所に一元化した。
+
+```cpp
+// src/syntax/src/syntax_internal.h (detail名前空間、非公開)
+
+enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json };  // syntax.h
+
+// syntax.cpp/incremental_parser.cpp/outline.cppの3ファイルが共有する
+// 唯一のLanguage->TSLanguage*対応。Phase 7n1以前はincremental_parser.cpp
+// のみが自前switchを持ち、outline.cppは2値の三項演算子で代用していた
+// (Cpp以外は無言でPython文法へ誤って流し込まれる潜在バグだった - 8言語化
+// で顕在化)。
+[[nodiscard]] const TSLanguage* tsLanguageFor(Language language) noexcept;
+
+// 真の葉(child_count()==0)、または「子を持つがLeafKindTableに直接
+// エントリを持つ名前付きノード」ならtrue - 後者はtree-sitter-rustの
+// line_comment/block_commentが非葉ノード(区切り文字"//"/"/*"/"*/"だけを
+// 子に持ち、コメント本文はどの子にも属さない)であることが実機probeで
+// 判明したための一般化。walkTree()/walkTreeIncremental()の両方で
+// child_count()==0による葉判定をこれに置き換えた。
+[[nodiscard]] bool isAtomicNode(TSNode node, const LeafKindTable& namedKinds);
+```
+
+**設計上の要点:**
+- **6言語の選定基準は「tree-sitter公式organization配下で最新リリースタグをGitHub APIで直接確認できたこと」に絞った(CLAUDE.mdルール3)。** C(v0.24.2)・JavaScript(v0.25.0)・Java(v0.23.5)・Go(v0.25.0)・Rust(v0.24.2)・JSON(v0.24.8)。各文法がscanner.c(外部スキャナ)を要するかも`contents/src`のAPI応答で確認した(C/Java/Go/JSONはparser.cのみ、JavaScript/Rustは既存Python/Cppと同じ2ファイル構成)
+- **`namedLeafKindsForX()`テーブルは全て実機probe(一時的なスタンドアロンプログラムでtree-sitterに実際にサンプルコードをパースさせ、`ts_node_type()`の出力をダンプ)で検証してから記入した。** probeプログラム自体はコミットしない(Phase 7a/7d/7fの前例通り)
+- **`outline.cpp`の`extractOutline()`が持っていた2値の三項演算子(`language == Cpp ? tree_sitter_cpp() : tree_sitter_python()`)は、`Language`が2種類だった間は正しかったが8種類に増えた今、Cpp以外の全言語を無言でPython文法として誤ってパースする潜在バグだった。** `detail::tsLanguageFor()`への一元化でこれを修正。新6言語のシンボルテーブル(`symbolTableFor()`)は空の`SymbolTable`を返す(安全な劣化 — outline抽出ロジック本体は次バッチへ据え置き)
+- **`isAtomicNode()`の一般化は、当初Rust対応のためだけに導入したが、Pythonの既知のギャップ(文字列エスケープを含む`string_content`が非葉ノードのため平文部分が無彩色になっていた、Phase 7dで「KNOWN, ACCEPTED gap」として文書化済み)も意図せず解消した。** 既存テストをこの改善された挙動に合わせて更新し、コメントで偶発的な副産物であることを明記した
+- **`classifyAnonymousLeaf()`にバックティック(`` ` ``)を引用符として追加した。** GoのRaw文字列リテラルとJavaScriptのテンプレート文字列がどちらもバックティックの無名リーフを区切り文字に使うため(実機probeで確認)、既存の`"`/`'`と同じString扱いにした
+- **`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更は不要だった。** Phase 7dで確立済みの「`Language`引数を受け取るだけの汎用ディスパッチ」がそのまま新6言語でも機能する
+
+**スコープ外(意図的、後続バッチへ):** TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML/SAP ABAP、新6言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

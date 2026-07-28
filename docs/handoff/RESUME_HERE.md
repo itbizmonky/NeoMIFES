@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・Phase 7k(真の増分再解析コア基盤、§3.45参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`/`0b01376`/`bf6c8cd`/`312a64c`)完了・未push**)
+> **最終更新:** 2026-07-28 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e〜7n1(Indent guides §3.39〜追加言語対応バッチ1 §3.48)はローカル検証・コミット完了・未push** (詳細は下表参照)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -79,6 +79,7 @@
 | Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 (**未push**、§3.45参照) |
 | Phase 7l (真の増分再解析の SyntaxWorker 統合: edits蓄積キュー+RenderPipeline配線) | ✅ 完了 (**未push**、§3.46参照) |
 | Phase 7m (`ts_tree_get_changed_ranges()`によるトークン部分更新、増分再解析の性能対応) | ✅ 完了 (**未push**、§3.47参照) |
+| Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (**未push**、§3.48参照) |
 | **次フェーズ選定 — 残り21言語/ミニマップ/sticky scroll/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
@@ -1413,7 +1414,40 @@ Phase 7l完了後、ユーザーから「次フェーズ着手せよ」と指示
 
 **スコープ外(意図的、後続サブフェーズへ):** `IncrementalParser`の公開契約を「差分のみ返却」へ変更する設計(真のO(編集サイズ)達成に必要、`SyntaxWorker`/`RenderPipeline`側のマージロジック新設を伴う大規模変更)、残り21言語対応、ミニマップ、Sticky scroll。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.15参照。
 
-**Phase 7mはコミット済み(`f4f1a40`)・未push。** roadmap DoDはまだ未達だが、着手前の楽観的な想定を実測で検証し正直に修正できたことは、次にこの課題へ着手する際の設計判断(差分返却化が必須)を明確にした点で価値があった。次フェーズは残り21言語対応・ミニマップ・Sticky scroll、または`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+**Phase 7mはコミット済み(`f4f1a40`+docs `b85865b`)・未push。** roadmap DoDはまだ未達だが、着手前の楽観的な想定を実測で検証し正直に修正できたことは、次にこの課題へ着手する際の設計判断(差分返却化が必須)を明確にした点で価値があった。**この次アクション自体は§3.48のPhase 7n1着手により実行済み** — 以降のセッションは残り15言語・ミニマップ/Sticky scroll・`IncrementalParser`契約変更のいずれかを、着手前にPlan Modeで詳細設計を起こすこと(§3.48末尾参照)。
+
+---
+
+### 3.48 Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) 完了記録
+
+Phase 7m完了後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り21言語対応/ミニマップ・Sticky scroll/`IncrementalParser`差分返却化契約変更)をAskUserQuestionで提示し、**残り21言語対応(推奨案)**が選ばれた — roadmap §7.2の必須23言語のうちC++/Pythonの2言語しか対応していない状態だった。
+
+**着手前調査で確定した設計方針:**
+- 21言語を1PRで一括対応するのは非現実的と判断し、GitHub APIで最新リリースタグを直接確認できた6言語(tree-sitter公式organization配下、C・JavaScript・Java・Go・Rust・JSON)をバッチ1に限定した。各文法がscanner.c(外部スキャナ)を要するかも`contents/src`のAPI応答で確認(C/Java/Go/JSONはparser.cのみ、JavaScript/Rustは既存Python/Cppと同じ2ファイル構成)
+- `Language`→`TSLanguage*`の対応を`syntax_internal.h`の`detail::tsLanguageFor()`へ一元化した。`outline.cpp`の`extractOutline()`が持っていた2値の三項演算子は、`Language`が8種類に増えた今、Cpp以外を無言でPython文法として誤ってパースする潜在バグだったため(実装中に発見、既存コードの直接読解で確認)
+- outline抽出は「正しい文法選択+安全な空結果」のみ今回対応し、シンボル抽出ロジック本体は次バッチへ意図的に据え置いた(空`SymbolTable`は`outline.h`が元々文書化している契約の範囲内)
+
+**実装中に実機probe(一時的なスタンドアロンプログラム、コミットせず)で発見した2つの誤算:**
+- **tree-sitter-rustの`line_comment`/`block_comment`が非葉ノードだった。** 子として区切り文字(`//`/`/*`/`*/`)だけを持ち、コメント本文はどの子にも属さない — 既存の`walkTree()`(`child_count()==0`が葉という前提)ではこの区切り文字だけがPunctuationとして誤分類され、本文が丸ごとトークンストリームから欠落する。`isAtomicNode()`(真の葉、またはLeafKindTableに直接エントリを持つ名前付きノードなら降りない)への一般化で解消、`walkTree()`/`walkTreeIncremental()`両方に適用
+- **この一般化の副作用で、Phase 7dから「KNOWN, ACCEPTED gap」として文書化されていたPythonの既知のギャップ(文字列エスケープ内の平文部分が無彩色)が意図せず解消された。** 退行ではなく改善だが、既存テストの期待値を新しい正しい挙動に更新する必要があった(範囲は変わったが個数は変わらず、単純なEXPECT_EQの値更新で対処)
+- Go/JavaScriptの生文字列/テンプレート文字列の区切り文字(バックティック)がPunctuation扱いになっていた(`"`/`'`のみ引用符扱いだった既存の`classifyAnonymousLeaf()`の見落とし)ことも実機probeで発見、バックティックを引用符扱いに追加して解消
+
+**テスト:** `syntax_syntax_test.cpp`に6言語分の分類テスト、`app_syntax_language_test.cpp`に拡張子検出テスト、`syntax_outline_test.cpp`にoutline安全性テスト、`syntax_incremental_parser_test.cpp`にRust増分再解析テスト(`isAtomicNode()`の増分パスでの正しさを証明)を追加。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全777件pass。clang-tidy: `src/`配下新規警告0(.hファイルを直接渡すとcompile_commands.json不整合で誤検知することを確認、`.cpp`/テストファイル経由でheader-filter越しに検証する方式に切替)
+- **実アプリでの視覚確認は、スクリーンショット自動化が今回は無関係かつ不適切なウィンドウ内容を誤って撮影する不具合が発生し(即座に削除、他に保存・共有せず)、信頼できないと判断して中断した。** Phase 7lで記録した不調の再発に加え、今回は誤った内容を撮影する新しい失敗モードが確認された — 恒久的な退行の疑いが強まったため、次回セッションでの再検証は慎重に行うこと。代替として、新6言語のサンプルファイルを実際に開きクラッシュしないこと・`Responding=True`を維持することを確認した
+
+**完了条件:**
+- [x] 6言語分の`parseX()`が全て実装され、既存の「分類結果」テストオラクルで正しさを証明
+- [x] `outline.cpp`の潜在バグ(Cpp以外をPython文法で誤パース)を修正し、新6言語が安全に空結果を返すことをテストで確認
+- [x] Rust特有の非葉コメントノードを正しく扱う`isAtomicNode()`一般化を実装し、全文書再解析パス・増分再解析パスの両方で検証
+- [x] ローカルDebug/Release/ubsan全777テストgreen、`src/`配下clang-tidy新規警告0
+- [ ] 実アプリでの視覚確認(スクリーンショット自動化が不調のため未達成、プロセス生存確認で代替)
+
+**スコープ外(意図的、後続バッチへ):** TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML/SAP ABAP、新6言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.16参照。
+
+**Phase 7n1はコミット済み(`3cc7c49`)・未push。** 次フェーズは残り15言語対応(バッチ2)・ミニマップ/Sticky scroll・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。スクリーンショット自動化の不調は2回連続(Phase 7l・7n1)のため、次回は「再試行して不調なら即座に代替手段へ切り替える」判断を早めに行うこと。
 
 ---
 
@@ -1471,12 +1505,16 @@ Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.
 Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・
 Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)・
 Phase 7l(真の増分再解析のSyntaxWorker統合、§3.46参照)・
-Phase 7m(`ts_tree_get_changed_ranges()`によるトークン部分更新、§3.47参照)は
+Phase 7m(`ts_tree_get_changed_ranges()`によるトークン部分更新、§3.47参照)・
+Phase 7n1(追加言語対応バッチ1: C/JavaScript/Java/Go/Rust/JSON、§3.48参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`/`f4f1a40`)完了・未push。**
+`853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`/`f4f1a40`/`b85865b`/
+`3cc7c49`)完了・未push。**
 **Phase 7mでroadmap DoD「≤50ms」はまだ未達 — `IncrementalParser`の公開契約を
 「差分のみ返却」へ変更する大規模改修が必要と判明した(§3.47参照)、性能面の
 「漸近的改善」ではなく「定数倍改善」に留まったことをベンチマーク実測で確認済み。**
+**Phase 7n1で言語対応がroadmap §7.2必須23言語中8言語まで進んだ(§3.48参照)、
+残り15言語+SAP ABAPはバッチ2以降。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1519,17 +1557,32 @@ Phase 7k(真の増分再解析コア基盤)も同様にヘッドレス(実アプ
 統合テスト、pump-and-wait方式で実スレッド/実メッセージ配送を検証)+プロセス生存確認
 (`Responding=True`を約2分間維持)で代替した。
 
-**次フェーズは残り21言語対応・ミニマップ・Sticky scroll・Semantic highlighting、
-または`ts_tree_get_changed_ranges()`によるトークン部分更新(下記参照)。**
+**(2026-07-28追加、Phase 7n1確認、重要) 上記「素直に再試行すること」を実行したところ、
+`GetWindowRect`/`CopyFromScreen`自体は成功する(エラー無し、妥当なサイズのビットマップを
+返す)ようになったが、`CopyFromScreen`が撮影した画像がNeoMIFESのウィンドウ内容ではなく、
+全く無関係な別のウィンドウ(ブラウザ)の内容だった。** 誤って撮影した画像は不適切な内容を
+含んでいたため即座に削除し、他に保存・共有していない。これはPhase 7lの「デスクトップが
+写り込む」不調とは異なる新しい失敗モードで、2回連続の不調(Phase 7l・7n1)であるため
+恒久的な退行の可能性が高まった。**次回セッションでは、まず`MainWindowHandle`ではなく
+何らかの方法でウィンドウが実際にどのプロセス/セッションに属しているか(`GetWindowThreadProcessId`
+等)を確認してから撮影する等、より慎重な検証を行うこと。それでも改善しない場合は、この
+セッション環境ではスクリーンショット手法自体が信頼できないと判断し、視覚確認は毎回
+自動テスト+プロセス生存確認で代替する運用へ切り替えることを検討する。**
+
+**次フェーズは残り15言語対応(バッチ2、§3.48参照)・ミニマップ・Sticky scroll・
+Semantic highlighting、または`IncrementalParser`の公開契約を「差分のみ返却」へ
+変更する大規模改修(真のDoD達成に必要)のいずれか。**
 折り畳み機能(`core::FoldingModel`のキーボード操作コア基盤+ガター+/-クリックトグル)は
-Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析は Phase 7k(ヘッドレスコア:
-`document::EditDelta` + `syntax::IncrementalParser`)+ Phase 7l(`SyntaxWorker`統合:
-edits蓄積キュー+`RenderPipeline`配線)で完結し、実際に使われる機能になった(§3.45・
-§3.46参照)。**ただし性能面のDoD(roadmap §7.11「≤50ms」)はまだ未達のまま** —
-`IncrementalParser::reparse()`が呼び出しのたびにトークン列全体を`walkTree()`で再構築する
-ボトルネック(Phase 7k実測、約321ms/call)が残っており、次に着手するなら
-`ts_tree_get_changed_ranges()`(tree-sitterが変更範囲だけを返すAPI)で変更範囲限定の
-トークン再抽出+`RenderPipeline`側の既存`m_tokens`へのマージへ転換する設計が必要になる。
+Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析は Phase 7k(ヘッドレスコア)+
+Phase 7l(`SyntaxWorker`統合)+ Phase 7m(`ts_tree_get_changed_ranges()`によるトークン
+部分更新)で完結し、実際に使われる機能になった(§3.45・§3.46・§3.47参照)。**ただし
+性能面のDoD(roadmap §7.11「≤50ms」)はPhase 7mを経てもまだ未達のまま** —
+`reparse()`が呼び出しのたびに文書全体サイズのトークン列を確保・返却する設計のままで、
+Phase 7mの実測(50万行で約10倍のコスト、文書サイズにほぼ比例)により「定数倍改善に
+留まり漸近的改善ではない」ことが判明した。次にDoD達成を目指すなら`IncrementalParser`
+の契約自体を「差分のみ返却」へ変更する必要がある(§3.47参照)。
+言語対応はPhase 7dでC++/Python、Phase 7n1でC/JavaScript/Java/Go/Rust/JSON(バッチ1)が
+完了し、roadmap §7.2必須23言語中8言語まで進んだ(§3.48参照、残り15言語+SAP ABAP)。
 Phase 7自体がroadmap最大級のフェーズのため、7a〜7jで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット

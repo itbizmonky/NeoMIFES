@@ -224,7 +224,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7k | 真の増分再解析 コア基盤 (`document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 | §7 |
 | 7l | 真の増分再解析の SyntaxWorker 統合 (edits蓄積キュー+RenderPipeline配線) | ✅ 完了 | §7 |
 | 7m | `ts_tree_get_changed_ranges()`によるトークン部分更新 (増分再解析の性能対応) | ✅ 完了 | §7 |
-| 7n〜 | 残り21言語 + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
+| 7n1 | 追加言語対応 バッチ1 (C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 | §7 |
+| 7n2〜 | 残り15言語 + ミニマップ + sticky scroll + IncrementalParser差分返却化 | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -883,6 +884,8 @@ v2.0 大幅拡張: **ミニマップ、Breadcrumb、Sticky scroll、Indent guide
 ### 7.2 対応言語 (Phase 7 の一次スコープ、要件定義書 §6 対応)
 必須: C / C++ / TypeScript / JavaScript / Python / Java / Go / Rust / PHP / HTML / CSS / JSON / XML / YAML / SQL / Markdown / PowerShell / VB / VBS / BAT / Shell / INI / TOML / **SAP ABAP** (P1 対応)
 
+> **実装状況 (2026-07-28、Phase 7n1完了時点):** ✅ 完了8言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)。残り15言語(TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML)+SAP ABAP(P1)は未着手、Phase 7n2以降で継続。
+
 ### 7.3 データ構造・アルゴリズム
 
 **シンタックス定義エンジン選定 (Phase 7a で決定 → ADR-014、下記「実装後の確定事項」参照):**
@@ -1170,6 +1173,20 @@ public:
 - **真にO(編集サイズ)を達成するには、`IncrementalParser`の公開契約自体を変更し、完全なトークン列ではなく変更分だけの差分を返す設計への転換が必要と判明した。** 呼び出し側(`SyntaxWorker`/`RenderPipeline`)がその差分を永続化済みのトークン列へマージする責務を負うことになり、これはPhase 7kが当初のroadmapスケッチから意図的に外した設計(本フェーズの設計方針2参照)そのものである。本フェーズはブラスト半径を`IncrementalParser`単体に抑えるために意図的にこれを避けたが、次にDoD達成を目指すなら、この契約変更に正面から取り組む必要がある
 
 **スコープ外(意図的、後続サブフェーズへ):** `IncrementalParser`の公開契約を「差分のみ返却」へ変更する設計(真のO(編集サイズ)達成に必要、`SyntaxWorker`/`RenderPipeline`側のマージロジック新設を伴う大規模変更)、残り21言語対応、ミニマップ、Sticky scroll。詳細は`detailed_design.md` §10.15参照。
+
+### 実装後の確定事項/変更点 (2026-07-28、Phase 7n1完了)
+
+**Phase 7mで「残り21言語対応」が次候補として浮上したのに続き、実際に着手した。§7.2の必須23言語のうちC++/Pythonの2言語のみ対応だった状態から、tree-sitter公式organization配下で最新リリースタグが確認できた6言語(C・JavaScript・Java・Go・Rust・JSON)をバッチ1として追加した。**
+
+- **21言語を1PRで一括対応せず、信頼度の高い6言語のバッチへ意図的に絞った。** 各言語の文法追加は「FetchContent追加+ビルド確認+実機probeでのnamedLeafKindsForX()テーブル検証+parseX()実装+テスト」という機械的だが検証コストの高い作業(Phase 7a/7dで確立した規律)であり、21言語分を無検証で一括投入することはCLAUDE.mdルール3(推測実装をしない)に反すると判断した。TypeScript(1リポジトリに2文法が同居し別のCMake取り扱いが要る)、PHP/HTML/CSS/XML/YAML/SQL/Markdown(外部スキャナや複雑な文法が多い)、PowerShell/VB/VBS/BAT/Shell/INI/TOML(コミュニティ文法で事前検証コストが高い)、SAP ABAP(roadmap上もP1)は次バッチ(7n2以降)へ据え置いた
+- **`Language`→`TSLanguage*`の対応を`syntax_internal.h`の`detail::tsLanguageFor()`へ一元化した。** 2言語時代は`syntax.cpp`/`incremental_parser.cpp`それぞれが独自の対応switchを持っていても問題なかったが、8言語化にあたり`outline.cpp`の`extractOutline()`が持っていた**2値の三項演算子(`language == Cpp ? tree_sitter_cpp() : tree_sitter_python()`)が、Cpp以外の全ての言語を無言でPython文法として誤ってパースする潜在バグ**だったことが判明した(コンパイルは通ってしまうため、実際に新言語のファイルを開いて初めて症状が出る類のバグ)。一元化により3ファイルの重複switchを1箇所に統合し、この種の同期漏れを構造的に防いだ
+- **outline抽出は「正しい文法選択+安全な空結果」のみ今回対応し、シンボル抽出ロジック本体(関数/クラス/構造体の実際の認識)は次バッチへ据え置いた。** `symbolTableFor()`が新6言語には空の`SymbolTable`を返すため、これらの言語を開いてもBreadcrumb/アウトラインペインは空のまま(クラッシュや誤った言語での誤パースはしない) — `outline.h`が元々文書化している「認識できる定義が無ければ空ベクタを返す」契約の範囲内の、安全側の劣化
+- **実機probe中に、tree-sitter-rustの`line_comment`/`block_comment`が非葉ノードであることを発見した(記憶からの推測ではなく実際のパーサ出力で確認、CLAUDE.mdルール3)。** 子として`//`/`/*`/`*/`の区切り文字だけを持ち、コメント本文はどの子ノードにも属さない — 既存の`walkTree()`(Phase 7aから「`child_count()==0`が葉」という前提)ではこの区切り文字だけがPunctuationとして誤分類され、本文が無彩色のままトークンストリームから丸ごと欠落する。対策として`isAtomicNode()`(「真の葉、またはLeafKindTableに直接エントリを持つ名前付きノードなら子を持っていても降りない」)へ一般化し、`walkTree()`(全文書再解析)と`walkTreeIncremental()`(Phase 7m増分再解析パス)の両方に適用した
+- **この一般化の副作用として、Pythonの文字列エスケープ内の平文部分が無彩色になっていた既知のギャップ(Phase 7dで「KNOWN, ACCEPTED gap」として文書化済み)が意図せず解消された。** `string_content`ノードが`escape_sequence`子を持つ非葉ケースで、`isAtomicNode()`が同ノードを(既にテーブルに登録済みのため)atomicと判定し、平文+エスケープシーケンスを1つのStringトークンとして丸ごと着色するようになった。既存の`syntax_syntax_test.cpp`のテストがこの新しい(改善された)挙動に合わせて更新された — 意図した設計目標ではなく偶発的な副産物だが、退行ではなく改善であるためテストのコメントに明記した
+- **バックティック(`` ` ``)を`classifyAnonymousLeaf()`の引用符扱いに追加した。** Go の生文字列リテラルとJavaScriptのテンプレート文字列がどちらも区切り文字にバックティックの無名リーフを使うことを実機probeで確認し、`"`/`'`と同じくString着色対象へ加えた(既存の`"`/`'`の扱いと一貫)
+- **実アプリでの視覚確認は、スクリーンショット自動化がこのセッションでは無関係かつ不適切なウィンドウ内容を誤って撮影する不具合が発生し(即座に削除、他に保存・共有せず)、信頼できないと判断して中断した。** Phase 7lで記録した「ウィンドウは実在するが`CopyFromScreen`が別の画面を写す」という不調の再発に加え、今回は誤った内容を撮影する新しい失敗モードが確認された。代替として、新6言語のサンプルファイル(`.c`/`.js`/`.java`/`.go`/`.rs`/`.json`)を実際に開いてクラッシュしないこと・プロセスが`Responding=True`を維持することを確認し、正しさの証明は自動テスト(777件全green、6言語分の分類テスト・拡張子検出テスト・outline安全性テスト・Rust増分再解析テストを含む)に委ねた
+
+**スコープ外(意図的、後続バッチへ):** TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML/SAP ABAP、新6言語のoutlineシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.16参照。
 
 ---
 

@@ -1930,4 +1930,33 @@ Phase 7l完了直後、ユーザーから「次フェーズ着手せよ」と指
 
 **次回:** Phase 7mが完了した(コミット`f4f1a40`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。roadmap §7.11のDoD「≤50ms」はPhase 7k/7l/7mを経てもまだ未達 — 次にこれを目指すなら`IncrementalParser`の公開契約を「差分のみ返却」へ変更する大規模改修(`SyntaxWorker`/`RenderPipeline`側のマージロジック新設を伴う)が必要になる。次フェーズは残り21言語対応・ミニマップ・Sticky scroll、またはこの契約変更のいずれか、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 58 (2026-07-28): Phase 7n1 — 追加言語対応 バッチ1 (C/JavaScript/Java/Go/Rust/JSON)
+
+Phase 7m完了直後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り21言語対応/ミニマップ・Sticky scroll/`IncrementalParser`差分返却化契約変更)をAskUserQuestionで提示し、**残り21言語対応(推奨案)**が選ばれた — roadmap §7.2の必須23言語のうちC++/Pythonの2言語しか対応していない状態だった。
+
+**着手前調査で確定した設計方針(既存コードの直接読解+GitHub API直接確認で検証済み、Agent委任なし):**
+- 21言語を1PRで一括対応するのは非現実的と判断し、tree-sitter公式organization配下でGitHub APIから最新リリースタグを直接確認できた6言語(C v0.24.2・JavaScript v0.25.0・Java v0.23.5・Go v0.25.0・Rust v0.24.2・JSON v0.24.8)をバッチ1に限定した。TypeScript(1リポジトリに2文法が同居)、PHP/HTML/CSS/XML/YAML/SQL/Markdown(外部スキャナや複雑な文法)、PowerShell/VB/VBS/BAT/Shell/INI/TOML(コミュニティ文法)、SAP ABAP(roadmap上もP1)は次バッチへ据え置いた
+- 各文法がscanner.c(外部スキャナ)を要するかも`contents/src`のGitHub API応答で確認した(C/Java/Go/JSONはparser.cのみ、JavaScript/Rustは既存Python/Cppと同じ2ファイル構成) — 記憶からの推測ではなく実際のリポジトリ構造を見て判断した
+- `Language`→`TSLanguage*`の対応を`syntax_internal.h`の`detail::tsLanguageFor()`へ一元化する設計に変更した。既存コードを読んでいる最中に、`outline.cpp`の`extractOutline()`が持っていた2値の三項演算子(`language == Cpp ? tree_sitter_cpp() : tree_sitter_python()`)が、`Language`が8種類に増えた今、Cpp以外の全言語を無言でPython文法として誤ってパースする潜在バグだったことを発見した — コンパイルは通ってしまうため、実際に新言語のファイルを開いて`extractOutline()`が呼ばれるまで症状が出ない類の欠陥だった
+- outline抽出は「正しい文法選択+安全な空結果」のみ今回対応し、シンボル抽出ロジック本体(関数/クラス/構造体の実際の認識)は次バッチへ意図的に据え置いた。空`SymbolTable`は`outline.h`が元々文書化している「認識できる定義が無ければ空ベクタを返す」契約の範囲内であり、嘘をつかない安全な劣化だと判断した
+
+**実装中に実機probe(一時的なスタンドアロンプログラムを書き、実際にtree-sitterへサンプルコードをパースさせてノード型をダンプ、コミットせず削除)で発見した2つの誤算(いずれも記憶からの推測ではなく実測、CLAUDE.mdルール3):**
+- **tree-sitter-rustの`line_comment`/`block_comment`が非葉ノードだった。** 子として区切り文字(`//`/`/*`/`*/`)だけを持ち、コメント本文はどの子ノードにも属さない(probeで`(anon) [//] "//" (children=0)`のみが子として出力され、本文がどこにも現れないことを確認)。既存の`walkTree()`(Phase 7aから「`child_count()==0`が葉」という前提)ではこの区切り文字だけがPunctuationとして誤分類され、本文が丸ごとトークンストリームから欠落する。`isAtomicNode()`(真の葉、またはLeafKindTableに直接エントリを持つ名前付きノードなら子を持っていても降りない)への一般化で解消し、`walkTree()`(全文書再解析)と`walkTreeIncremental()`(Phase 7m増分再解析パス)の両方に適用した
+- **この一般化の副作用として、Pythonの文字列エスケープ内の平文部分が無彩色になっていた既知のギャップ(Phase 7dで「KNOWN, ACCEPTED gap」として文書化済み)が意図せず解消された。** `string_content`ノードが`escape_sequence`子を持つ非葉ケースで、`isAtomicNode()`が同ノードをatomicと判定し、平文+エスケープシーケンスを1つのStringトークンとして丸ごと着色するようになった。既存の`syntax_syntax_test.cpp`のテストが1件失敗したため、これが退行ではなく改善であることを確認した上で期待値を新しい正しい挙動に更新した — 意図した設計目標ではなく偶発的な副産物だが、隠さずテストのコメントに明記した
+- Go/JavaScriptの生文字列/テンプレート文字列の区切り文字(バックティック)がPunctuation扱いになっていたこと(既存の`classifyAnonymousLeaf()`が`"`/`'`のみ引用符扱いしていた見落とし)も実機probeで発見し、バックティックを引用符扱いに追加して解消した。テスト作成中に自分で書いたGoテストのアサーション誤り(全トークンをString扱いすると誤って想定していた)も発見・修正した
+
+**テスト:** `syntax_syntax_test.cpp`に6言語分の分類テスト(Empty/Comment/String/Number/型識別子/キーワード定数/Malformed耐性/日本語コメントUTF-16範囲/トークン順序整合性)、`app_syntax_language_test.cpp`に拡張子検出テスト、`syntax_outline_test.cpp`に新6言語のoutline安全性テスト(空結果・誤パースしないことの確認)、`syntax_incremental_parser_test.cpp`にRust増分再解析テスト(`isAtomicNode()`が増分パスでも正しく機能することの証明)を追加。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全777件pass
+- clang-tidy: `.h`ファイルを直接渡すとcompile_commands.jsonに対応するエントリが無く`std::optional`等の標準ライブラリが解決できないという誤検知(exit 1、20件のエラー)に遭遇した。原因を調査し、`.cpp`/テストファイル経由(`HeaderFilterRegex`がヘッダを自動的に含める)で検証する方式に切り替えたところ、`src/`配下新規警告0を確認できた — この発見は今後のセッションでも再利用できる知見のため`reference_windows_cpp_ci_gotchas.md`への追記を検討
+- **実アプリでの視覚確認は、スクリーンショット自動化が今回は無関係かつ不適切なウィンドウ内容を誤って撮影する不具合が発生し、信頼できないと判断して中断した。** `GetWindowRect`/`CopyFromScreen`自体はエラー無く成功し妥当なサイズの画像を返したが、実際に保存された画像はNeoMIFESとは全く無関係な別ウィンドウ(ブラウザ)の内容だった。不適切な内容を含んでいたため即座に削除し、他に保存・共有していない。Phase 7lで記録した「デスクトップが写り込む」不調とは異なる新しい失敗モードで、2回連続の不調のため恒久的な退行の疑いが強い。代替として、新6言語のサンプルファイル(`.c`/`.js`/`.java`/`.go`/`.rs`/`.json`)を実際に開いてクラッシュしないこと・プロセスが`Responding=True`を維持することを確認した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表の「7n〜」行を「7n1 ✅完了」+新規「7n2〜」次候補行へ更新、§7.2に実装状況(8/23言語)を追記、§7に「実装後の確定事項/変更点(2026-07-28、Phase 7n1完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.16(追加言語対応バッチ1実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.48(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新。§6の「次フェーズは...」という古い次アクション記述(既にPhase 7mで対応済みの内容を含んでいた)を現状に合わせて書き換えた
+
+**次回:** Phase 7n1が完了した(コミット`3cc7c49`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズは残り15言語対応(バッチ2)・ミニマップ/Sticky scroll・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。スクリーンショット自動化は2回連続(Phase 7l・7n1)で不調のため、次回は再試行しつつも早めに代替手段へ切り替える判断をすること。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。
+
 <!-- 次セッションはここに追記 -->
