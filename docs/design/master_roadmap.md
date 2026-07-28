@@ -220,7 +220,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7g | アウトラインUI統合 (OutlinePane、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 | §7 |
 | 7h | Breadcrumb (カーソル位置のシンボルパス表示) | ✅ 完了 | §7 |
 | 7i | 折り畳み コア基盤 (FoldingModel、キーボードトグルのみ、ガタークリックは次候補) | ✅ 完了 | §7 |
-| 7j〜 | 残り21言語 + 真の増分再解析 + ガター+/-クリック折り畳みトグル + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
+| 7j | 折り畳み ガター+/-クリックトグル (`hitTestFoldMarker()`) | ✅ 完了 | §7 |
+| 7k〜 | 残り21言語 + 真の増分再解析 + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1106,6 +1107,19 @@ public:
 - **`applyMovementKey()`が内部リンケージ(`editor_input.cpp`の無名namespace内)でmain.cppから直接呼べないことが実装中に判明し、計画を修正した。** 当初計画は`applyMovementKey()`に直接`folding`引数を追加する想定だったが、実際の公開APIである`handleKeyDown()`(`editor_input.h`)側にデフォルト`nullptr`の`const core::FoldingModel*`引数を追加し、内部で`applyMovementKey()`へ伝播する方式に修正した(既存呼び出し・テストは無改修)
 - **ローカル検証中、Phase 7iの隠れた行スキップロジック追加により`RenderPipeline::drawVisibleLines()`が`readability-function-cognitive-complexity`(閾値25に対し実測31)でclang-tidyエラーになる新規違反を検出・修正した。** 折り畳みヘッダマーカー描画ロジックを含む1行分の描画処理全体を新規`drawTextLine()`private関数へ抽出し(`computeCaretDraws()`のPhase 4b7a抽出と同じ理由)、`drawVisibleLines()`自体は「可視行を数えながら歩き、可視行ごとに`drawTextLine()`を呼ぶ」骨格だけに単純化した
 - **実アプリ視覚確認は、起動時に自動生成されるガター折り畳みマーカー(▼)の表示のみに限定した。** 「Fold/Unfold at Cursor」コマンド自体はコマンドパレット(Ctrl+Shift+P)経由でのみ到達可能だが、Phase 7gで判明済みの「この自動化環境は修飾キーを伴う合成入力を受け付けない」制約によりコマンドパレット自体を開けないため、トグル操作そのものの対話的確認はできなかった。ネストしたC++ファイル(namespace > class > 2メソッド + 独立関数)を`--open`起動した直後のスクリーンショットで、全ての折り畳み可能な見出し行(namespace/class/関数3件)にのみ展開チェブロン(▼)が表示され、1行に収まるメンバ(`int m_value = 0;`等)には表示されないことを確認した。トグル後の実際の折り畳み表示(`{…}`マーカー・隠れた行のスキップ)は`tests/integration/render_text_smoke_test.cpp`の`FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines`(`setFoldRegions()`で直接`folded=true`を設定し`render()`成功+`hitTest()`が隠れた行を飛ばすことを確認)で代替した
+
+### 実装後の確定事項/変更点 (2026-07-26、Phase 7j完了)
+
+**Phase 7iが意図的に据え置いた唯一の残課題、ガター+/-クリックでの折り畳みトグルを実装した。これによりroadmap上の「折り畳み」機能が名実ともに完結した。**
+
+- **`RenderPipeline::hitTestFoldMarker(xPx, yPx)`はマーカー自体の描画幅(▶/▼、約7dips)ではなく、ガター全幅(`[0, kGutterWidthDips)`)×フォールド見出し行をクリック可能領域とした。** VSCode等の折り畳み矢印も比較的寛容なヒット領域を持つ一般的慣習に合わせ、小さすぎるターゲットへの精密クリックをユーザーに要求しない判断
+- **`hitTest()`内にインライン実装されていた「可視行をrowOffset分歩いて対象論理行を求める」ウォークを、新規private関数`visibleLineAtRow()`へ抽出し`hitTest()`/`hitTestFoldMarker()`の両方から共有した。** 抽出しなければ`drawVisibleLines()`のendLineExclusive計算と合わせて同種のロジックが3箇所に重複する状態になっていた
+- **`main.cpp`の`cfg.onMouseDown`の先頭で`hitTestFoldMarker()`をチェックし、値があれば`foldingModel.toggleFold()` → `syncFoldingState()` → 即returnして通常の`hitTest()`/`dispatchMouseDown()`経路を完全にバイパスする設計にした。** クリック回数(`clickCount`)は無視し、シングル/ダブル/トリプルクリックいずれもフォールド見出し行のガタークリックなら常にトグルする(トグルボタン的UIの一般的挙動)
+- **実装中、この1個の`if`チェックの追加だけで`wireNormalMode`のcognitive complexityが26(閾値25)を超過した。** `tryToggleFoldMarker()`という別関数へ処理自体を切り出しても、呼び出し元の`if (...) return;`という分岐がラムダ内に残っている限り複雑度は下がらないと判明し、`onKeyDown`/`onChar`/`onSysKeyDown`で既に確立していた「ラムダは薄いラッパーのみ、本体は`handleXEvent()`という独立関数に完全移譲する」パターンへ、`onMouseDown`ハンドラ全体(`dispatchMouseDown()`呼び出しを含む既存ロジックごと)を初めて合わせて解消した(新規`handleMouseDownEvent()`)
+- **実アプリでのマウスクリック合成(`SetCursorPos`+`mouse_event(MOUSEEVENTF_LEFTDOWN|LEFTUP)`)により、ガター上のフォールドマーカークリックでの折り畳み/展開の往復トグルを実際にスクリーンショットで確認できた。** Phase 7g/7hで判明していた「Ctrl/Shift等の修飾キーを伴う合成キーボード入力は受け付けない」制約は、マウスクリック自体(修飾キー無し)には適用されないことが実証された — 折り畳みコマンド(コマンドパレット限定、Phase 7i)とは異なり、ガタークリックはキーボードショートカットを一切経由しないため、この自動化環境から完全に対話的検証ができた最初の折り畳みUI操作になった
+- **視覚確認中、本機能とは無関係な環境ノイズ(フォーカスウィンドウへの迷子キー入力とみられるIME変換候補の混入)を観測したが、原因調査の結果`tryToggleFoldMarker()`はキーボード/IME処理に一切触れずreturnするコードであることを確認し、無関係な外部要因と判断した。** 折り畳みトグル自体の正しさ(マーカー反転・`{…}`表示・隠れた行のスキップ・展開への復元)は複数回の独立した実行で再現性を持って確認できている
+
+**スコープ外(意図的、後続サブフェーズへ):** マウスドラッグでの複数行一括トグル、フォールドマーカーのホバー時ビジュアルフィードバック、フォールドマーカークリック直後のドラッグ時のアンカー整合性改善(既知の軽微なエッジケースとして許容)。詳細は`detailed_design.md` §10.12参照。
 
 ---
 

@@ -1798,4 +1798,33 @@ Phase 7h完了直後、ユーザーから「次のフェーズに進めPhase7は
 
 **次回:** Phase 7iが完了した(コミット`0b01376`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7j以降(残り21言語対応・真の増分再解析・ガター+/-クリック折り畳みトグル・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)の初期位置決めバグ修正が依然として残っている — ユーザーが起動していなければこのセッションで拾ってもよい。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 54 (2026-07-26): Phase 7j — 折り畳み ガター+/-クリックトグル (`RenderPipeline::hitTestFoldMarker()`)
+
+Phase 7i完了・push・CI green確認(4ジョブ全success)後、ユーザーから「継続実施せよ」と指示された。roadmap §7の残りサブフェーズ(ガター+/-クリック折り畳みトグル/残り21言語対応/真の増分再解析/ミニマップ・Sticky scroll)を4候補としてAskUserQuestionで提示し、**ガター+/-クリック折り畳みトグル(推奨案)**が選ばれた — Phase 7iが意図的に据え置いた唯一の未完了スコープであり、これを完成させることでroadmap上の「折り畳み」機能そのものが名実ともに完結する。
+
+**着手前調査で確定した設計方針:**
+- `drawGutterOnLine()`が既に描画している▶/▼マーカー(約7dips幅)への精密クリックではなく、ガター全幅(`[0, kGutterWidthDips)`)×フォールド見出し行をクリック可能領域とする(VSCode等の一般的慣習)
+- `hitTest()`内にインラインだった「可視行をrowOffset分歩いて対象論理行を求める」ウォークを新規`visibleLineAtRow()`へ抽出し、`hitTest()`/新規`hitTestFoldMarker()`の両方から共有する(3箇所目の重複を避ける)
+- クリック回数は無視し、フォールド見出し行のガタークリックは常にトグルする(トグルボタン的UIの一般的挙動)
+
+**実装:**
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `hitTestFoldMarker()`新設、`visibleLineAtRow()`(`hitTest()`から抽出)
+- `src/app/main.cpp`: `cfg.onMouseDown`の先頭で`hitTestFoldMarker()`をチェックし即トグル+repaint
+
+**発生した問題と修正:**
+- **この1個の`if`チェックの追加だけで`wireNormalMode`のcognitive complexityが26(閾値25)を超過した。** 別関数`tryToggleFoldMarker()`へ処理自体を切り出しても、呼び出し元の`if (...) return;`という分岐がラムダ内に残っている限り複雑度は下がらないと実装中に判明した。`onKeyDown`/`onChar`/`onSysKeyDown`で既に確立していた「ラムダは薄いラッパーのみ、本体は独立関数`handleXEvent()`に完全移譲する」パターンへ、`onMouseDown`ハンドラ全体(既存の`hitTest()`/`dispatchMouseDown()`ロジックごと)を初めて合わせて解消した(新規`handleMouseDownEvent()`)
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest実測697件全pass(新規: `render_text_smoke_test.cpp`に`HitTestFoldMarkerReturnsHeaderLineForGutterClickOnFoldableRow`等4件)
+- clang-tidy: `src/`配下新規警告0(`hicpp-use-auto`/`readability-function-cognitive-complexity`を検出・修正)
+- **実アプリでのマウスクリック合成(`SetCursorPos`+`mouse_event(MOUSEEVENTF_LEFTDOWN|LEFTUP)`)により、ガター上のフォールドマーカークリックでの折り畳み/展開の往復トグルを実際にスクリーンショットで確認できた。** Phase 7g/7hで判明していた「Ctrl/Shift等の修飾キーを伴う合成キーボード入力は受け付けない」制約は、マウスクリック自体(修飾キー無し)には適用されないことがPhase 7jで初めて実証された — この自動化環境から完全に対話的検証ができた最初の折り畳みUI操作になった。視覚確認中、本機能とは無関係な環境ノイズ(フォーカスウィンドウへの迷子キー入力とみられるIME変換候補の混入)を観測したが、`tryToggleFoldMarker()`がキーボード/IME処理に一切触れずreturnするコードであることをコードレビューで確認し、無関係な外部要因と判断した。折り畳みトグル自体の正しさ(マーカー反転・`{…}`表示・隠れた行のスキップ・展開への復元)は独立した複数回の実行で再現性を持って確認できている
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7j行を追加(7k〜が次候補)、§7に「実装後の確定事項/変更点(Phase 7j完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.12(ガター+/-クリックトグル実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.44(完了記録)、§1状態表・§6推奨プロンプト(マウスクリック合成が機能するという新知見を追記)・冒頭メタデータを更新
+- メモリ(`project_neomifes_state.md`/`MEMORY.md`)更新
+
+**次回:** Phase 7jが完了した(コミット`bf6c8cd`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。Phase 7i+7jによりroadmap上の「折り畳み」機能は完結した。次フェーズはPhase 7k以降(残り21言語対応・真の増分再解析・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)の初期位置決めバグ修正が依然として残っている — ユーザーが起動していなければこのセッションで拾ってもよい。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。**修飾キー無しのマウスクリック合成が実アプリ視覚確認に使えることが判明したため、今後は視覚確認の可否を判断する前に必ず試すこと。**
+
 <!-- 次セッションはここに追記 -->

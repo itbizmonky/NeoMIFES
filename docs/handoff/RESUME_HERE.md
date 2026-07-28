@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・Phase 7i(折り畳みコア基盤、§3.43参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`/`0b01376`)完了・未push**)
+> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`/`0b01376`/`bf6c8cd`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -75,7 +75,8 @@
 | Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 (**未push**、§3.41参照) |
 | Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) | ✅ 完了 (**未push**、§3.42参照) |
 | Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) | ✅ 完了 (**未push**、§3.43参照) |
-| **次フェーズ選定 — Phase 7j以降(残り21言語/真の増分再解析/ガター+/-クリック折り畳みトグル/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7j (折り畳み ガター+/-クリックトグル: `hitTestFoldMarker()`) | ✅ 完了 (**未push**、§3.44参照) |
+| **次フェーズ選定 — Phase 7k以降(残り21言語/真の増分再解析/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1275,7 +1276,36 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** ガター+/-クリックでのトグル、`{}`ブレースマッチングによる任意ブロック折り畳み、折り畳み状態の永続化・Undo/Redo連動、毎編集ごとの折り畳み領域再計算、複数カーソル対応の折り畳みトグル。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.11参照。
 
-**Phase 7iはコミット予定・未push。** 次フェーズはPhase 7j以降(残り21言語・真の増分再解析・ガター+/-クリック折り畳みトグル・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+**Phase 7iはコミット済み(`0b01376`)・未push。**
+
+---
+
+### 3.44 Phase 7j (折り畳み ガター+/-クリックトグル: `RenderPipeline::hitTestFoldMarker()`) 完了記録
+
+Phase 7i完了・push・CI green確認後、ユーザーから「継続実施せよ」と指示された。roadmap §7の残りサブフェーズ(ガター+/-クリック折り畳みトグル/残り21言語対応/真の増分再解析/ミニマップ・Sticky scroll)を4候補としてAskUserQuestionで提示し、**ガター+/-クリック折り畳みトグル(推奨案)**が選ばれた — Phase 7iが意図的に据え置いた唯一の未完了スコープ。
+
+**着手前調査で確定した設計方針:**
+- `hitTestFoldMarker()`はマーカーの描画幅(~7dips)ではなく、ガター全幅×フォールド見出し行をクリック可能領域とする(VSCode等の一般的慣習)
+- `hitTest()`内の可視行ウォークを`visibleLineAtRow()`へ抽出し両者で共有(3箇所目の重複を避ける)
+- クリック回数は無視し、フォールド見出し行のガタークリックは常にトグルする
+
+**実装:**
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `hitTestFoldMarker()`・`visibleLineAtRow()`新設(後者は`hitTest()`から抽出)
+- `src/app/main.cpp`: `cfg.onMouseDown`の先頭で`hitTestFoldMarker()`をチェックし即トグル+return
+
+**発生した問題と修正:**
+- **この1個の`if`チェックの追加だけで`wireNormalMode`のcognitive complexityが26(閾値25)を超過した。** 別関数`tryToggleFoldMarker()`へ処理を切り出しても、呼び出し元の`if (...) return;`という分岐がラムダ内に残っている限り複雑度は下がらないと判明。`onKeyDown`/`onChar`/`onSysKeyDown`で既に確立していた「ラムダは薄いラッパーのみ」パターンへ、`onMouseDown`ハンドラ全体(既存の`hitTest()`/`dispatchMouseDown()`ロジックごと)を初めて合わせて解消した(新規`handleMouseDownEvent()`)
+
+**テスト数:** ctest実測697件(新規: `render_text_smoke_test.cpp`に`HitTestFoldMarkerReturnsHeaderLineForGutterClickOnFoldableRow`等4件追加)。ローカルDebug/Release/ubsan全green、`src/`配下clang-tidy新規警告0。
+
+**完了条件:**
+- [x] `hitTestFoldMarker()`がガター内クリック/ガター外クリック/非フォールド行/フォールド未設定の4パターンを正しく処理することを統合テストで確認
+- [x] ローカルDebug/Release/ubsan全697テストgreen、`src/`配下clang-tidy新規警告0
+- [x] **実アプリでのマウスクリック合成(`SetCursorPos`+`mouse_event`)により、ガター上のフォールドマーカークリックでの折り畳み/展開の往復トグルを実際にスクリーンショットで確認した。** Phase 7g/7hの「修飾キーを伴う合成キーボード入力は受け付けない」制約はマウスクリック自体には適用されないことが実証され、この自動化環境から完全に対話的検証ができた最初の折り畳みUI操作になった(視覚確認中に観測した無関係な環境ノイズ — フォーカスウィンドウへの迷子キー入力とみられるIME変換候補混入 — は、`tryToggleFoldMarker()`がキーボード/IME処理に一切触れずreturnするコードであることを確認した上で無関係な外部要因と判断した)
+
+**スコープ外(意図的、後続サブフェーズへ):** マウスドラッグでの複数行一括トグル、フォールドマーカーのホバー時ビジュアルフィードバック、フォールドマーカークリック直後のドラッグ時のアンカー整合性改善。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.12参照。
+
+**Phase 7jはコミット済み(`bf6c8cd`)・未push。** これによりroadmap上の「折り畳み」機能(Phase 7i+7j)が名実ともに完結した。次フェーズはPhase 7k以降(残り21言語・真の増分再解析・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1330,9 +1360,9 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
 **Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
 Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・
-Phase 7i(折り畳みコア基盤、§3.43参照)は
+Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`/`0b01376`)完了・未push。**
+`853556b`/`0b01376`/`bf6c8cd`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1352,14 +1382,21 @@ Ctrl+G/Ctrl+Up・Down/Shift+Alt+ドラッグ等、修飾キーを伴う操作は
 検証はユーザー自身の実機確認に委ねる運用に切り替えること — 「SendKeysで再現できる見込み」
 という以前の記述(2026-07-24時点)は誤りだったので今後参照しないこと。**
 
+**(2026-07-26追加、Phase 7j確認) 上記の制約は合成キーボード入力(修飾キー)に限定される —
+マウスクリック自体(`SetCursorPos`+`mouse_event(MOUSEEVENTF_LEFTDOWN|LEFTUP)`)は修飾キー
+無しであれば正常に機能し、`ClientToScreen`でクライアント座標→スクリーン座標を変換した上で
+狙った位置(ガターのフォールドマーカー等)への実クリックを合成でき、その結果をスクリーン
+ショットで確認できることをPhase 7jで実証した(§3.44参照)。修飾キー無しのマウス操作(クリック・
+ドラッグ)が必要な機能の視覚確認では、まずこの手法を試すこと — キーボードショートカット
+経由でしか到達できない機能(コマンドパレット内のコマンド等)は引き続き対話的確認不可のまま。**
+
 Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
 
-**次フェーズはPhase 7j以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
-ガター+/-クリックでの折り畳みトグル・ミニマップ・Sticky scroll・Semantic highlighting)。**
-折り畳みのキーボード操作コア基盤(`core::FoldingModel`)はPhase 7iで完了済み(§3.43参照)——
-ガター+/-クリックでのトグル(`hitTestFoldMarker()`、マウスディスパッチへの新規配線)は
-Phase 7iで意図的に据え置いた次サブフェーズの筆頭候補。
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7iで確立したパターン(tree-sitterグラマー
+**次フェーズはPhase 7k以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+ミニマップ・Sticky scroll・Semantic highlighting)。**
+折り畳み機能(`core::FoldingModel`のキーボード操作コア基盤+ガター+/-クリックトグル)は
+Phase 7i/7jで完結済み(§3.43・§3.44参照)。
+Phase 7自体がroadmap最大級のフェーズのため、7a〜7jで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
 合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
@@ -1369,19 +1406,15 @@ detailed_design.md §10.8、アウトラインUI統合はWM_NOTIFYベースのWC
 detailed_design.md §10.9、BreadcrumbはkGutterWidthDips方式を縦方向にミラーした
 新規座標オフセット+OutlineNodeツリーの逆引き・detailed_design.md §10.10、
 折り畳みは二重座標系を避けて論理行のまま隠れた行をスキップするローカルウォーク・
-detailed_design.md §10.11参照)を
+detailed_design.md §10.11、ガター+/-クリックトグルはガター全幅を対象とする寛容な
+ヒットテスト+`onKeyDown`等と同じ「ラムダは薄いラッパーのみ」パターンへのonMouseDown
+再構成・detailed_design.md §10.12参照)を
 踏襲しつつ、次のサブフェーズのスコープをPlan Modeで具体化してから着手すること
 (推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
 実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
 実出力を確認してからnamedLeafKindsForXテーブル/シンボルテーブルを構築すること — 記憶
 からの推測は厳禁(Phase 7fでC++/Pythonの`function_definition`同名ノードの構造差異を
-見落としたバグが実際に発生している、§3.40参照)。**ガター+/-クリックでの折り畳みトグルに
-着手する場合、`core::FoldingModel`/`render::FoldVisual`/`RenderPipeline::isLineHidden()`は
-Phase 7iで実装済み(§3.43・detailed_design.md §10.11参照)——`Viewport`は論理行=表示行前提の
-まま無改修で維持する設計が確定しているため、新たにCore+Rendering層を横断する座標変換を
-設計する必要はない。既存の`drawGutterOnLine()`が描く▶/▼マーカーの座標(`kGutterWidthDips`右端寄り)
-に対する`hitTest()`拡張(クリック位置→`headerLine`特定)とマウスディスパッチへの新規配線が
-残作業の中心になる。** **新規のRenderPipeline系機能で`src/`配下のコードに再帰関数を書く場合は、
+見落としたバグが実際に発生している、§3.40参照)。**新規のRenderPipeline系機能で`src/`配下のコードに再帰関数を書く場合は、
 `src/.clang-tidy`が`WarningsAsErrors: '*'`のため`misc-no-recursion`が木の実際の深さに
 関わらず一律エラー化することをPhase 7hで再確認済み(§3.42参照)— 再帰で書いた場合は
 clang-tidy実行時に明示ループへの書き換えが必要になる前提で見積もること。**
@@ -1394,12 +1427,14 @@ clang-tidy実行時に明示ループへの書き換えが必要になる前提�
 残り4オーバーレイへ適用すればよい。ユーザーがこのタスクを起動していなければ、このセッションで
 拾って対応してもよい。
 
-着手前に本ファイル §3.19〜§3.43 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
+着手前に本ファイル §3.19〜§3.44 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
 修飾キーを伴わない操作(日本語IME確認含む)は引き続きユーザーに依頼する
 (5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7a・7fはヘッドレスのため視覚確認対象なし)。
 コマンドパレット経由のコマンド(Phase 4b8d/4b8f/7iの「Fold/Unfold at Cursor」等)の対話的
 トグル確認は、Ctrl+Shift+Pの合成入力制約により本セッションでは実施不可 — 単体/統合テストと
-コードレビューで代替する運用を継続する(§3.43参照)。
+コードレビューで代替する運用を継続する(§3.43参照)。**修飾キー無しのマウス操作(クリック・
+ドラッグ)は合成可能なので、視覚確認が必要な場面ではまずマウス操作だけで完結する経路が
+無いか検討すること(§3.44参照)。**
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

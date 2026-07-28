@@ -2021,6 +2021,34 @@ bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown, core::CommandDisp
 
 ---
 
+### 10.12 折り畳み ガター+/-クリックトグル (Phase 7j実装)
+
+Phase 7iが意図的に据え置いたガター+/-クリックでのトグルを実装し、roadmap上の「折り畳み」機能を完結させた。
+
+```cpp
+// src/render/include/neomifes/render/render_pipeline.h
+// ガター全幅×フォールド見出し行を対象とする(マーカーの描画幅~7dipsへの精密
+// クリックは要求しない)。hitTest()と同じ可視行ウォーク(visibleLineAtRow())
+// を共有する。
+[[nodiscard]] std::optional<document::LineNumber> hitTestFoldMarker(
+    std::int32_t xPx, std::int32_t yPx) noexcept;
+
+// hitTest()から抽出した共有ヘルパー。
+[[nodiscard]] document::LineNumber visibleLineAtRow(
+    document::LineNumber startLine, document::LineNumber visibleRowOffset) const noexcept;
+```
+
+**設計上の要点:**
+- **`hitTestFoldMarker()`はガター全幅(`[0, kGutterWidthDips)`)×該当行をクリック可能領域とする。** `drawGutterOnLine()`が実際に描画する▶/▼マーカーの幅は約7dipsしかないが、精密クリックを要求せずVSCode等の一般的な折り畳みUIと同じ「寛容なヒット領域」にした
+- **`hitTest()`内にインラインだった「可視行をrowOffset分歩いて対象論理行を求める」ウォークを`visibleLineAtRow()`へ抽出し、`hitTest()`/`hitTestFoldMarker()`の両方から呼ぶ。** 抽出しなければ`drawVisibleLines()`のendLineExclusive計算と合わせて同種ロジックが3箇所目の重複になっていた
+- **`main.cpp`の`cfg.onMouseDown`は`hitTestFoldMarker()`を`hitTest()`より先にチェックし、値があれば`foldingModel.toggleFold()` → `syncFoldingState()` → 即returnして通常のカーソル配置経路を完全にバイパスする。** クリック回数は無視し、フォールド見出し行のガタークリックは常にトグルする
+- **`onMouseDown`ハンドラ全体を、`onKeyDown`/`onChar`/`onSysKeyDown`で既に確立していた「ラムダは薄いラッパーのみ、本体は独立関数`handleXEvent()`に完全移譲する」パターンへ合わせて再構成した。** `tryToggleFoldMarker()`という別関数へ分岐ロジックを切り出しても、呼び出し元の`if (...) return;`という1個の分岐がラムダ内に残っている限り`wireNormalMode`のcognitive complexityが下がらないと判明したため(閾値25に対し実測26)、新規`handleMouseDownEvent()`(`tryToggleFoldMarker()`チェック+既存`hitTest()`/`dispatchMouseDown()`ロジック全体を包含)へ完全移譲する形にした
+- **実アプリでのマウスクリック合成(`SetCursorPos`+`mouse_event`)により、ガター上のフォールドマーカークリックでの折り畳み/展開の往復トグルを実際にスクリーンショットで確認できた。** Phase 7g/7hの「修飾キーを伴う合成キーボード入力は受け付けない」制約はマウスクリック自体には適用されず、この自動化環境から完全に対話的検証ができた最初の折り畳みUI操作になった
+
+**意図的にスコープ外とした項目:** マウスドラッグでの複数行一括トグル、フォールドマーカーのホバー時ビジュアルフィードバック、フォールドマーカークリック直後のドラッグ時のアンカー整合性改善(既知の軽微なエッジケースとして許容)。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ
