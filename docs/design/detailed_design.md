@@ -2049,6 +2049,72 @@ Phase 7iが意図的に据え置いたガター+/-クリックでのトグルを
 
 ---
 
+### 10.13 真の増分再解析 コア基盤 (Phase 7k実装)
+
+`syntax_worker.h`/roadmap §7.9が繰り返し記録してきた技術的負債(「Documentに編集範囲追跡が無い」「非同期化はしたが全文書再解析のまま」)に着手した。**本フェーズはヘッドレスな正しさの証明までに限定し、`SyntaxWorker`統合・`RenderPipeline`配線は次サブフェーズ(Phase 7l)へ据え置いた。**
+
+```cpp
+// src/document/include/neomifes/document/document.h
+// startLine/startColumnは新旧座標系で共通(編集はそこから始まる)。
+// oldEndLine/oldEndColumnは変更前の行構造に対して、newEndLine/newEndColumn
+// は変更後の行構造に対して計算する - Documentはその場でPieceTableを書き換
+// えるため(バージョンごとのスナップショットは無い)、旧側は変更前に、新側
+// は変更後に、それぞれのタイミングで計算しておく必要がある。
+struct EditDelta {
+    TextPos       startPos;
+    LineNumber    startLine;
+    std::uint32_t startColumn = 0;
+    TextPos       oldEndPos;
+    LineNumber    oldEndLine;
+    std::uint32_t oldEndColumn = 0;
+    TextPos       newEndPos;
+    LineNumber    newEndLine;
+    std::uint32_t newEndColumn = 0;
+};
+
+// 前回呼び出し以降に蓄積した編集差分を排出する。UIスレッド専用(version()と
+// 同じくADR-009のシングルライタ前提、同期不要)。
+[[nodiscard]] std::vector<EditDelta> takePendingEdits() noexcept;
+```
+
+```cpp
+// src/syntax/include/neomifes/syntax/incremental_parser.h
+// tree-sitterのTSInputEditを、tree-sitter型を公開せず表現したもの
+// (syntax.hの「TSNode/TSTreeは.cppに閉じ込める」規約と同じ)。バイト
+// オフセットはUTF-16コードユニットオフセット×2 (syntax.cppの
+// appendLeafToken()と同じ規約)。
+struct ReparseEdit {
+    std::uint32_t startByte = 0, oldEndByte = 0, newEndByte = 0;
+    std::uint32_t startRow = 0, startColumn = 0;
+    std::uint32_t oldEndRow = 0, oldEndColumn = 0;
+    std::uint32_t newEndRow = 0, newEndColumn = 0;
+};
+
+// ステートフルな単一言語増分パーサ。前回のTSTreeを保持し、ts_tree_edit()
+// で更新してから再解析することでtree-sitterのサブツリー再利用を活かす。
+// スレッド非対応(Phase 7l未配線) - 構築/破棄/reparse()は全て同一スレッド
+// で行うこと(Documentと同じシングルライタ前提)。
+class IncrementalParser {
+public:
+    explicit IncrementalParser(Language language);
+    [[nodiscard]] std::vector<Token> reparse(std::u16string_view text,
+                                              std::span<const ReparseEdit> edits);
+    // ... (move-only、詳細はヘッダ参照)
+};
+```
+
+**設計上の要点:**
+- **`EditDelta`の新旧位置情報は、`insertText()`/`eraseRange()`/`replaceRange()`各メソッド内で`PieceTable`変更の前後に分けて計算する。** 旧側(`oldEnd*`)は変更前の`offsetToLine()`/`lineToOffset()`呼び出しで、新側(`newEnd*`)は変更後の呼び出しで求める。`edit_commands.cpp`の全コマンド(execute/undo双方)はこの3メソッドを直接呼ぶため、Undo/Redoは新規の分岐無しに自動的にカバーされた
+- **`LineIndex::build()`のO(N)フルスキャンは新規コストではないと判断した。** `Document::ensureLineIndex()`は既存の「次の問い合わせ時に1回だけ再構築」設計(`docs/issues/line_index_o_log_n.md`で意図的に許容済み)を持ち、`RenderPipeline`は既に毎フレームこれを呼ぶため、`EditDelta`計算で`offsetToLine()`を呼んでも既に発生する再構築を1箇所前倒しするだけで新たな漸近コストは生まれない
+- **`syntax.cpp`の匿名namespace内にあった`walkTree()`・leaf分類テーブル(`namedLeafKindsForCpp()`等)を新規`src/syntax/src/syntax_internal.h`(header-only、`namespace neomifes::syntax::detail`)へ切り出し、`syntax.cpp`(既存の単発フルパース)と新規`incremental_parser.cpp`の両方から共有する。** 本コードベース初の「`src/*/src/`直下に置く非公開ヘッダ」(`include/`ではない) — header-onlyのためCMakeのソースリスト追加が不要という最小限の選択
+- **`IncrementalParser::reparse()`は、保持木があれば`edits`の各要素を`ts_tree_edit()`で順に適用してから`ts_parser_parse_string_encoding()`(第2引数に保持木を渡す点のみ既存`parseWithLanguage()`と異なる)を呼び、結果全体を`detail::walkTree()`で再度トークン列化して保持木を差し替える。**
+- **正しさは「増分再解析結果が同じ最終テキストへの全文書再解析結果と完全一致する」ことを単体テストで直接証明した。** 単一文字挿入/削除・複数行にまたがる置換・改行挿入(行構造そのものが変わる編集)・3回連続の編集・Pythonでも確認済み。テスト作成中に「改行挿入」のテストケース自体の`oldEndPos`計算が誤っていた(スペースを`\n`で置換する編集を、スペースを保持したまま`\n`を挿入する編集として誤記述していた)バグを自己発見・修正 — 実装ではなくテスト記述側の誤りだった
+- **ベンチマーク実測(roadmap §7.11のDoD「1文字入力後の増分解析: ≤ 50ms」に対する評価、CLAUDE.mdルール10):** 5万行の合成C++ソースに対し、全文書再解析(`BM_ParseCpp_Synthetic`)が約1306ms/callであるのに対し、単一文字の置換編集を挟んだ増分再解析(`BM_IncrementalReparse_SingleCharEdit`)は約321ms/call(約4倍高速化)。**DoDの≤50msには未達。** 編集位置を文書の中央/末尾近くに変えてもほぼ同じ実測値(326ms/341ms/321ms)になったことから、`reparse()`が呼び出しのたびに行う`walkTree()`でのトークン列**全体**の再構築(O(文書サイズ)、tree-sitter内部の増分解析自体とは無関係に発生)が支配的コストだと判明した。次サブフェーズ(Phase 7l)では`ts_tree_get_changed_ranges()`で変更範囲だけを抽出し`RenderPipeline`側の既存トークン列へマージする設計へ転換する必要がある
+
+**意図的にスコープ外とした項目:** `SyntaxWorker`統合(「破棄して最新のみ残す」キューモデルの置き換え)、`RenderPipeline::refreshDocumentCacheIfStale()`の書き換え、`ts_tree_get_changed_ranges()`を使った変更範囲限定トークン抽出、アウトライン抽出の増分化。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

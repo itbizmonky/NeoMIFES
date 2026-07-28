@@ -1827,4 +1827,39 @@ Phase 7i完了・push・CI green確認(4ジョブ全success)後、ユーザー�
 
 **次回:** Phase 7jが完了した(コミット`bf6c8cd`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。Phase 7i+7jによりroadmap上の「折り畳み」機能は完結した。次フェーズはPhase 7k以降(残り21言語対応・真の増分再解析・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイ(FindBar/CommandPalette/GotoLineBar/GrepBar)の初期位置決めバグ修正が依然として残っている — ユーザーが起動していなければこのセッションで拾ってもよい。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。**修飾キー無しのマウスクリック合成が実アプリ視覚確認に使えることが判明したため、今後は視覚確認の可否を判断する前に必ず試すこと。**
 
+## Session 55 (2026-07-28): Phase 7k — 真の増分再解析 コア基盤 (`document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス)
+
+セッション冒頭、前回の「日本語で回答せよ」の念押しに続き、ユーザーから「次に進め」と指示された。Phase 7jが完了・push・CI green確認済みの状態から、roadmap §7の残り候補(残り21言語対応/真の増分再解析/ミニマップ・Sticky scroll)を3候補としてAskUserQuestionで提示し、**真の増分再解析(推奨案)**が選ばれた — `syntax_worker.h`/roadmap §7.9が繰り返し「Documentに編集範囲追跡が無い」「非同期化はしたが全文書再解析のまま」と記録してきた技術的負債であり、roadmap §7.11のDoD「1文字入力後の増分解析: ≤ 50ms」に直結する。
+
+**着手前調査で確定した設計方針:**
+- `document::Document`には編集範囲を追跡する仕組みが一切無いことをコード直読で確認した。`insertText()`/`eraseRange()`/`replaceRange()`は`PieceTable`を変更し`m_version`をインクリメントするだけで、tree-sitterの`ts_tree_edit()`が要求する`TSInputEdit`を構築する材料が存在しなかった
+- `LineIndex::build()`のO(N)フルスキャンは`RenderPipeline`が既に毎フレーム強制している既知の制約(`line_index_o_log_n.md`で意図的に許容済み)であり、`EditDelta`の位置計算のために`offsetToLine()`を呼んでも既に発生する再構築を1箇所前倒しするだけで新たな漸近コストは生まれないと判断した
+- `neomifes::syntax`が完全にステートレス(呼び出しごとに新規`TSParser`+`TSTree`を作りすぐ破棄)であることを確認し、前回の木を保持し`ts_tree_edit()`で更新する新規ステートフルクラスが必要と判断した
+- **スコープを意図的に2段階へ分割した。** 本フェーズ(7k)は「`Document`の編集差分追跡」+「`syntax::IncrementalParser`(ヘッドレス)」に限定し、**`SyntaxWorker`への配線・`RenderPipeline`統合は次サブフェーズ(Phase 7l)へ据え置いた。** 理由: 現行`SyntaxWorker`(Phase 7c実装)は「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」キューモデルだが、真の増分再解析では1つでも編集を取りこぼすと木のバイトオフセットが永久に狂う致命的な整合性問題があり、このキューモデルの置き換えは増分再解析ロジック自体の正しさとは独立した別種のリスクを持つ変更であるため、まずヘッドレスに正しさを証明してからスレッド統合に進む方が安全と判断した(Phase 5a→5b・6a→6d・7a→7b・7f→7g・7i→7jで踏襲してきた「ヘッドレス核を先に固める」パターンと同じ)
+
+**実装:**
+- `src/document/include/neomifes/document/document.h` + `src/document/src/document.cpp`: `EditDelta`構造体(startPos/Line/Column、oldEnd、newEnd) + `takePendingEdits()`新設。`insertText()`/`eraseRange()`/`replaceRange()`を、旧側の位置情報を`PieceTable`変更前に・新側を変更後に計算する形へ書き換え。`edit_commands.cpp`の全コマンド(execute/undo双方)がこの3メソッドを直接呼ぶため、Undo/Redoは新規の分岐無しに自動的にカバーされた
+- `src/syntax/src/syntax_internal.h`(新規、本コードベース初の`src/*/src/`直下の非公開ヘッダ): `syntax.cpp`の匿名namespace内にあった`walkTree()`・leaf分類テーブル(`namedLeafKindsForCpp()`等)をheader-only・`namespace neomifes::syntax::detail`で切り出し、`syntax.cpp`(既存の単発フルパース)と新規`incremental_parser.cpp`の両方から共有する形にリファクタした
+- `src/syntax/include/neomifes/syntax/incremental_parser.h` + `src/syntax/src/incremental_parser.cpp`(新規): `ReparseEdit`構造体(tree-sitterの`TSInputEdit`をtree-sitter型を公開せず表現) + `IncrementalParser`クラス(前回の`TSTree`を保持し`ts_tree_edit()`で各編集を適用してから`ts_parser_parse_string_encoding()`で再解析、結果を`detail::walkTree()`で再度トークン列化)
+- `src/syntax/CMakeLists.txt`/`tests/unit/CMakeLists.txt`: 新規ソース登録
+
+**発生した問題と修正:**
+- `std::span<const ReparseEdit>`は単一要素の波括弧初期化`{edit}`を直接受け付けないと判明(spanに`initializer_list`コンストラクタが無い) — `std::array{edit}`(暗黙変換でspanになる)へ置換
+- `hicpp-use-auto`/`modernize-use-auto`違反を`document.cpp`内で6箇所検出・修正(`const T x = static_cast<T>(expr);`はTが完全一致する場合`const auto x = ...;`と書く必要がある、このセッション内で(Phase 7jの`render_pipeline.cpp`分と合わせて)3回目の再発パターン)
+- テスト`InsertingNewlineMatchesFullReparse`の**テスト記述自体**に誤りがあった。スペース1文字を`\n`で置換する編集を、スペースを保持したまま`\n`を挿入する編集として誤記述しており、実測11トークン対期待10トークンで失敗した。実装ではなくテスト側の誤りだったことを自己診断で確認し、`buildEdit()`の引数を修正した — 「どちら側にバグがあるか決めつけず検証する」という本セッションで繰り返し踏襲してきた姿勢の再確認
+
+**ベンチマーク実測(CLAUDE.mdルール10):** 5万行合成C++ソースで全文書再解析(`BM_ParseCpp_Synthetic`)約1306ms/callに対し、単一文字置換編集を挟んだ増分再解析(`BM_IncrementalReparse_SingleCharEdit`)は約321ms/call(約4倍高速化、tree-sitterのサブツリー再利用自体は機能している)。**roadmap §7.11のDoD「≤ 50ms」には未達。** 編集位置を文書中央/末尾近くに変えて比較する実験(326ms/341ms/321ms、ほぼ同一)を行い、位置に依存しないコストが支配的だと確認 — `reparse()`が呼び出しのたびに行うトークン列**全体**の`walkTree()`再構築(O(文書サイズ)、tree-sitter内部の増分解析自体とは無関係に発生)がボトルネックだと判明した。次サブフェーズ(Phase 7l)では`ts_tree_get_changed_ranges()`で変更範囲だけを抽出し`RenderPipeline`側の既存トークン列へマージする設計への転換が必要になる、という具体的な推奨を添えて正直に記録した(隠さない・過剰修正もしない)。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、新規`tests/unit/syntax_incremental_parser_test.cpp`(7件、C++/Python両方で「増分再解析結果 == 全文書再解析結果」を直接比較検証) + `document_document_test.cpp`に`DocumentEditDeltaTest`スイート7件追加
+- clang-tidy: `src/`配下新規警告0(`hicpp-use-auto`/`modernize-use-auto`を検出・修正)
+- 本フェーズは`main.cpp`/UIを一切変更しないヘッドレス変更のため実アプリ視覚確認は対象外。正しさの証明は上記の単体テストで代替した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に7k行を追加(7l〜が次候補)、§7.9に完了時点の確定を追記、§7に「実装後の確定事項/変更点(2026-07-28、Phase 7k完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.13(真の増分再解析コア基盤実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.45(完了記録)、§1状態表・§6推奨プロンプト・冒頭メタデータを更新
+
+**次回:** Phase 7kが完了した(コミット`312a64c`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7l(`SyntaxWorker`統合+`RenderPipeline`配線)以降(残り21言語対応・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。Phase 7lでは現行`SyntaxWorker`の「破棄して最新のみ残す」キューモデルを「全編集を順序通り適用するキュー」へ置き換える設計が必須になる点、および上記ベンチマーク考察による`ts_tree_get_changed_ranges()`ベースのトークン部分更新への転換が新規スコープとして加わる点を、着手前のPlan Modeで踏まえること。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
+
 <!-- 次セッションはここに追記 -->

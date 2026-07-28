@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`/`0b01376`/`bf6c8cd`)完了・未push**)
+> **最終更新:** 2026-07-26 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・Phase 7k(真の増分再解析コア基盤、§3.45参照)はローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/`853556b`/`0b01376`/`bf6c8cd`/`312a64c`)完了・未push**)
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -76,7 +76,8 @@
 | Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) | ✅ 完了 (**未push**、§3.42参照) |
 | Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) | ✅ 完了 (**未push**、§3.43参照) |
 | Phase 7j (折り畳み ガター+/-クリックトグル: `hitTestFoldMarker()`) | ✅ 完了 (**未push**、§3.44参照) |
-| **次フェーズ選定 — Phase 7k以降(残り21言語/真の増分再解析/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 (**未push**、§3.45参照) |
+| **次フェーズ選定 — Phase 7l(SyntaxWorker統合)以降(残り21言語/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1307,6 +1308,39 @@ Phase 7i完了・push・CI green確認後、ユーザーから「継続実施せ
 
 **Phase 7jはコミット済み(`bf6c8cd`)・未push。** これによりroadmap上の「折り畳み」機能(Phase 7i+7j)が名実ともに完結した。次フェーズはPhase 7k以降(残り21言語・真の増分再解析・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
 
+### 3.45 Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) 完了記録
+
+Phase 7j完了後、ユーザーから「次に進め」と指示された。roadmap §7の残りサブフェーズ4候補(ガター+/-クリック折り畳みトグル/残り21言語対応/真の増分再解析/ミニマップ・Sticky scroll)のうちガター+/-クリック折り畳みトグルは既にPhase 7jで完了済みのため、残り3候補から**真の増分再解析(推奨案)**が選ばれた — `syntax_worker.h`/roadmap §7.9が繰り返し「Documentに編集範囲追跡が無い」「非同期化はしたが全文書再解析のまま」と記録してきた技術的負債であり、roadmap §7.11のDoD「1文字入力後の増分解析: ≤ 50ms」に直結する。
+
+**着手前調査で確定した設計方針:**
+- `document::Document`には編集範囲を追跡する仕組みが一切無いことをコード直読で確認(`insertText()`等は`PieceTable`を変更し`m_version`をインクリメントするだけ)。tree-sitterの`ts_tree_edit()`が要求する`TSInputEdit`を構築するにはDocument自身に追跡機構を追加する必要がある
+- `LineIndex::build()`のO(N)再構築コストは`RenderPipeline`が既に毎フレーム強制している既知の制約(`line_index_o_log_n.md`)であり、`EditDelta`のための位置計算はこの既存コストを1箇所前倒しするだけで新規コストではないと判断
+- スコープを意図的に2段階へ分割: 本フェーズ(7k)は「ヘッドレスな正しさの証明」に限定し、`SyntaxWorker`統合・`RenderPipeline`配線は次サブフェーズ(Phase 7l)へ据え置いた — `SyntaxWorker`の「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」設計は、1つでも編集を取りこぼすと真の増分再解析の前提(木のバイトオフセット整合性)が壊れるため、キューモデルの置き換えという別種のリスクを持つ変更を後回しにした
+
+**実装:**
+- `src/document/include/neomifes/document/document.h` + `src/document/src/document.cpp`: `EditDelta`構造体 + `takePendingEdits()`新設。`insertText()`/`eraseRange()`/`replaceRange()`を、旧側の位置情報を変更前に・新側を変更後に計算する形へ書き換え
+- `src/syntax/src/syntax_internal.h`(新規、本コードベース初の`src/*/src/`直下の非公開ヘッダ): `syntax.cpp`の匿名namespace内にあった`walkTree()`・leaf分類テーブル等をheader-onlyで切り出し、`syntax.cpp`と新規`incremental_parser.cpp`の両方から共有
+- `src/syntax/include/neomifes/syntax/incremental_parser.h` + `src/syntax/src/incremental_parser.cpp`(新規): `ReparseEdit`構造体(tree-sitterの`TSInputEdit`をtree-sitter型を公開せず表現) + `IncrementalParser`クラス(前回`TSTree`を保持し`ts_tree_edit()`→`ts_parser_parse_string_encoding()`で再解析)
+
+**発生した問題と修正:**
+- `std::span<const ReparseEdit>`は単一要素の波括弧初期化`{edit}`を直接受け付けない(`initializer_list`コンストラクタが無い) — `std::array{edit}`(暗黙変換でspanになる)へ置換
+- `hicpp-use-auto`/`modernize-use-auto`違反を`document.cpp`内で6箇所検出・修正(`const T x = static_cast<T>(expr);`はTが完全一致する場合`const auto x = ...;`と書く必要がある、このセッション内で3回目の再発)
+- テスト`InsertingNewlineMatchesFullReparse`のテスト記述自体に誤りがあった(スペースを`\n`で置換する編集を、スペースを保持したまま`\n`を挿入する編集として誤記述) — 自己発見・修正、実装ではなくテスト側の不備だったことを確認
+
+**ベンチマーク実測(CLAUDE.mdルール10):** 5万行合成C++ソースで全文書再解析(`BM_ParseCpp_Synthetic`)約1306ms/callに対し、単一文字置換編集を挟んだ増分再解析(`BM_IncrementalReparse_SingleCharEdit`)は約321ms/call(約4倍高速化)。**roadmap §7.11のDoD「≤ 50ms」には未達。** 編集位置を文書中央/末尾近くに変えてもほぼ同じ値(326ms/341ms/321ms)になる位置非依存性から、`reparse()`が毎回行うトークン列**全体**の`walkTree()`再構築(O(文書サイズ))が支配的コストと判明 — tree-sitter内部の増分解析自体とは別の問題。次フェーズ(Phase 7l)で`ts_tree_get_changed_ranges()`による変更範囲限定抽出への転換が必要。
+
+**テスト数:** 新規`tests/unit/syntax_incremental_parser_test.cpp`(7件、C++/Python両方で「増分再解析結果 == 全文書再解析結果」を直接比較検証) + `document_document_test.cpp`に`DocumentEditDeltaTest`スイート7件追加。ローカルDebug/Release/ubsan全green、`src/`配下clang-tidy新規警告0。
+
+**完了条件:**
+- [x] 増分再解析結果が全文書再解析結果と完全一致することを単体テストで証明(単一文字挿入/削除・複数行置換・改行挿入・3回連続編集・Python、計7パターン)
+- [x] ベンチマーク実測を取得し、DoD未達を隠さず正直に記録(上記参照)
+- [x] ローカルDebug/Release/ubsan全green、`src/`配下clang-tidy新規警告0
+- [ ] `SyntaxWorker`統合・`RenderPipeline`配線は意図的に未実施(Phase 7lへ) — 本フェーズは実アプリの見た目には一切影響しないヘッドレス変更のため視覚確認は対象外
+
+**スコープ外(意図的、Phase 7lへ):** `SyntaxWorker`への統合(キューモデルの置き換え)、`RenderPipeline::refreshDocumentCacheIfStale()`の書き換え、`ts_tree_get_changed_ranges()`を使った変更範囲限定トークン抽出、アウトライン抽出の増分化。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.13参照。
+
+**Phase 7kはコミット済み(`312a64c`)・未push。** 次フェーズはPhase 7l(SyntaxWorker統合)以降(残り21言語対応・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -1360,9 +1394,10 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 (2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
 **Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
 Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・
-Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)は
+Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・
+Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`/`0b01376`/`bf6c8cd`)完了・未push。**
+`853556b`/`0b01376`/`bf6c8cd`/`312a64c`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1391,11 +1426,18 @@ Ctrl+G/Ctrl+Up・Down/Shift+Alt+ドラッグ等、修飾キーを伴う操作は
 経由でしか到達できない機能(コマンドパレット内のコマンド等)は引き続き対話的確認不可のまま。**
 
 Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
+Phase 7k(真の増分再解析コア基盤)も同様にヘッドレス(実アプリの見た目に一切影響しない変更)
+のため視覚確認対象は無い(§3.45参照)。
 
-**次フェーズはPhase 7k以降(残り21言語対応・真の増分再解析(ts_tree_edit)・
+**次フェーズはPhase 7l以降(真の増分再解析のSyntaxWorker統合・残り21言語対応・
 ミニマップ・Sticky scroll・Semantic highlighting)。**
 折り畳み機能(`core::FoldingModel`のキーボード操作コア基盤+ガター+/-クリックトグル)は
-Phase 7i/7jで完結済み(§3.43・§3.44参照)。
+Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析のヘッドレスコア
+(`document::EditDelta` + `syntax::IncrementalParser`)はPhase 7kで完結済みだが、
+`SyntaxWorker`統合・`RenderPipeline`配線は未着手のままPhase 7lへ持ち越し(§3.45参照) —
+現行`SyntaxWorker`の「最新の1件のみ保持し古いものは破棄する」キューモデルは、1つでも
+編集を取りこぼすと増分再解析の木のバイトオフセット整合性が壊れるため、真の増分再解析とは
+原理的に両立せず、キューモデル自体の置き換えが必要になる。
 Phase 7自体がroadmap最大級のフェーズのため、7a〜7jで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット

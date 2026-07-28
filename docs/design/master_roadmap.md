@@ -221,7 +221,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7h | Breadcrumb (カーソル位置のシンボルパス表示) | ✅ 完了 | §7 |
 | 7i | 折り畳み コア基盤 (FoldingModel、キーボードトグルのみ、ガタークリックは次候補) | ✅ 完了 | §7 |
 | 7j | 折り畳み ガター+/-クリックトグル (`hitTestFoldMarker()`) | ✅ 完了 | §7 |
-| 7k〜 | 残り21言語 + 真の増分再解析 + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
+| 7k | 真の増分再解析 コア基盤 (`document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 | §7 |
+| 7l〜 | 真の増分再解析のSyntaxWorker統合 + 残り21言語 + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -980,6 +981,8 @@ public:
 - 解析中は古いトークンを描画に使い続ける (60fps 死守)
 - 解析完了後 `PostMessageW(WM_APP+SYNTAX_READY, ...)` で UI スレッドへ通知、`invalidate(range)`
 
+> **Phase 7k完了時点の確定:** 「変更範囲を含む解析単位だけ再解析」を実現する下層(`document::EditDelta`による編集範囲追跡 + `syntax::IncrementalParser`による`ts_tree_edit()`ベースの真の増分再解析)をヘッドレスに実装した。**ただし本節が前提とする「Syntax Worker Thread」への統合はまだ行っていない** — 現行の`SyntaxWorker`(Phase 7c実装)は「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」キューモデルであり、1つでも編集を取りこぼすと増分再解析の木のバイトオフセットが永久に破綻するため、真の増分再解析とは原理的に両立しない。このキューモデルの置き換え + `RenderPipeline`配線は次サブフェーズ(Phase 7l)へ据え置いた。詳細・ベンチマーク実測値は本ファイル §7 の「実装後の確定事項/変更点 (2026-07-28、Phase 7k完了)」を参照。
+
 ### 7.10 折り畳み / アウトライン
 - `FoldingModel` (新規 `src/core/folding_model.{h,cpp}`) がドキュメント論理行 → 表示行の対応表
 - `Viewport` が表示行で管理、`Rendering` は表示行で描画、内部で論理行に変換
@@ -1120,6 +1123,19 @@ public:
 - **視覚確認中、本機能とは無関係な環境ノイズ(フォーカスウィンドウへの迷子キー入力とみられるIME変換候補の混入)を観測したが、原因調査の結果`tryToggleFoldMarker()`はキーボード/IME処理に一切触れずreturnするコードであることを確認し、無関係な外部要因と判断した。** 折り畳みトグル自体の正しさ(マーカー反転・`{…}`表示・隠れた行のスキップ・展開への復元)は複数回の独立した実行で再現性を持って確認できている
 
 **スコープ外(意図的、後続サブフェーズへ):** マウスドラッグでの複数行一括トグル、フォールドマーカーのホバー時ビジュアルフィードバック、フォールドマーカークリック直後のドラッグ時のアンカー整合性改善(既知の軽微なエッジケースとして許容)。詳細は`detailed_design.md` §10.12参照。
+
+### 実装後の確定事項/変更点 (2026-07-28、Phase 7k完了)
+
+**§7.9「非同期増分解析」が繰り返し「Documentに編集範囲追跡が無い」と記録してきた技術的負債に着手し、`document::EditDelta`(編集差分追跡)+`syntax::IncrementalParser`(tree-sitterの`ts_tree_edit()`を使った真の増分再解析)をヘッドレスに実装した。SyntaxWorker統合・RenderPipeline配線は次サブフェーズ(Phase 7l)へ意図的に据え置いた。**
+
+- **`document::Document`に`EditDelta`(開始位置・旧終端位置・新終端位置、それぞれ論理行番号+桁位置つき)+`takePendingEdits()`(蓄積した差分を排出)を追加した。** `insertText()`/`eraseRange()`/`replaceRange()`の3メソッド全てが、旧側の位置情報を`PieceTable`変更前に、新側を変更後に計算する(`Document`は編集をその場で行うため、変更後に旧い行構造を問い合わせる手段が無いため)。`edit_commands.cpp`の全コマンド(execute/undo双方)はこの3メソッドを直接呼ぶため、Undo/Redoは新規の分岐無しに自動的にカバーされた
+- **`LineIndex::build()`のO(N)フルスキャンは新規コストではないと判断した。** `Document::ensureLineIndex()`は既存の「次の問い合わせ時に1回だけ再構築」設計(`docs/issues/line_index_o_log_n.md`で意図的に許容済みの制約)を持ち、`RenderPipeline`は既に毎フレームこれらを呼ぶため、`EditDelta`計算のために`offsetToLine()`を呼んでも、既に発生する再構築を1箇所前倒しするだけで新たな漸近コストは生まれない
+- **`neomifes::syntax::IncrementalParser`(新規)は前回の`TSTree`を保持し、`ts_tree_edit()`で各編集を順に適用してから`ts_parser_parse_string_encoding()`に渡すことでtree-sitterのサブツリー再利用を活かす。** 既存の`walkTree()`/leaf分類テーブル(`namedLeafKindsForCpp()`等)は`syntax.cpp`の匿名namespaceから新規`syntax_internal.h`(`src/`内の非公開ヘッダ、`include/`ではない)へ切り出し、`syntax.cpp`(既存の単発フルパース)と`incremental_parser.cpp`の両方から共有する形にリファクタした
+- **正しさは「増分再解析結果が同じ最終テキストへの全文書再解析結果と完全一致する」ことを単体テストで直接証明した。** 単一文字挿入/削除・複数行にまたがる置換・改行挿入(行構造そのものが変わる編集)・3回連続の編集・Pythonでも確認 — tree-sitterの`TSInputEdit`(バイトオフセット+行/桁の3点×2)を正しく構築できているかは、この種の直接比較でしか実質的に検証できない
+- **ベンチマーク実測(roadmap本節のDoD「1文字入力後の増分解析: ≤ 50ms」に対する評価、CLAUDE.mdルール10):** 5万行の合成C++ソース(既存`BM_ParseCpp_Synthetic`と同一)に対し、全文書再解析(`parseCpp()`)が**約1.3秒**であるのに対し、単一文字の置換編集を挟んだ増分再解析は**約320ms**(約4倍高速化、tree-sitterのサブツリー再利用自体は機能している)。**ただしDoDの≤50msには未達。** 編集位置を文書の中央/末尾近くに変えても測定値がほぼ変わらないことから(326ms/341ms/321ms)、`IncrementalParser::reparse()`が呼び出しのたびに`walkTree()`で結果の`TokenKind`列**全体**を再構築するO(文書サイズ)のコストが支配的だと判明した — tree-sitterの内部再解析自体が真に増分的であっても、その後の「トークン列全体を作り直す」後処理がボトルネックを作っている。**次サブフェーズ(Phase 7l)での対応方針として、tree-sitterの`ts_tree_get_changed_ranges()`(変更のあった範囲だけを返すAPI)を使い、変更範囲のトークンだけを再抽出して`RenderPipeline`側の既存`m_tokens`へマージする設計が必要になる**(トークン列を毎回丸ごと差し替える現行の`applyAsyncSyntaxTokens()`方式からの転換)
+- **スコープを意図的に2段階へ分割した判断は妥当だったと確認できた。** `SyntaxWorker`の「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」設計は、1つでも編集を取りこぼすと`ts_tree_edit()`の前提が崩れ木のバイトオフセットが永久に狂うため、真の増分再解析とは原理的に両立しない。この整合性問題とスレッド安全性の設計は、ヘッドレスな正しさの証明(本フェーズ)とは独立した検討が必要であり、分離して正解だった
+
+**スコープ外(意図的、Phase 7lへ):** `SyntaxWorker`への統合(「破棄して最新のみ残す」キューモデルを「全編集を順序通り適用するキュー」へ置き換える設計)、`RenderPipeline::refreshDocumentCacheIfStale()`の書き換え、`ts_tree_get_changed_ranges()`を使った変更範囲限定トークン抽出+`m_tokens`へのマージ(上記ベンチマーク考察で判明した新規スコープ)、アウトライン抽出の増分化。詳細は`detailed_design.md` §10.13参照。
 
 ---
 
