@@ -363,6 +363,40 @@ TEST(RenderTextSmokeTest, SyntaxHighlightingEnabledRendersWithoutError) {
         << neomifes::render::describe(rendered.error());
 }
 
+// Phase 7l: exercises refreshDocumentCacheIfStale()'s new
+// takePendingEdits() -> SyntaxWorker::requestParse() wiring end-to-end after
+// a REAL edit (not just the initial full parse the test above covers) -
+// same "render() succeeds, no pixel-level assertion, no waiting for the
+// async result" scope as the rest of this file. Correctness of the
+// delivered tokens themselves (accumulation, reset-on-document-switch) is
+// covered by render_syntax_worker_test.cpp's deeper, pumped tests; this one
+// only proves the render()-driven path doesn't crash or return an error.
+TEST(RenderTextSmokeTest, SyntaxHighlightingRendersWithoutErrorAfterAnEdit) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"int x = 1;\n");
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    const auto firstRender = pipeline.render();
+    ASSERT_TRUE(firstRender.has_value())
+        << "initial render() failed: " << neomifes::render::describe(firstRender.error());
+
+    doc.insertText(doc.length(), u"int y = 2;\n");
+    const auto secondRender = pipeline.render();
+    ASSERT_TRUE(secondRender.has_value())
+        << "render() after an edit failed: " << neomifes::render::describe(secondRender.error());
+}
+
 // Phase 7d: same shape as the C++ case above, confirming setLanguage()'s
 // generalized parameter actually reaches Python parsing/coloring end-to-end
 // (not just that it compiles) - render_syntax_worker_test.cpp already covers

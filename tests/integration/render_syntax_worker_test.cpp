@@ -20,6 +20,7 @@ using neomifes::document::Document;
 using neomifes::render::kMsgSyntaxTokensReady;
 using neomifes::render::SyntaxWorker;
 using neomifes::syntax::Language;
+using neomifes::syntax::parseCpp;
 using neomifes::syntax::Token;
 
 // Same hidden-window pattern as render_text_smoke_test.cpp - a plain
@@ -84,7 +85,8 @@ TEST(SyntaxWorkerTest, RequestParseDeliversTokensViaWindowMessage) {
     doc.insertText(0, u"int x = 42;");
 
     SyntaxWorker worker(window.get());
-    worker.requestParse(doc.snapshot(), Language::Cpp);
+    worker.requestParse(doc.snapshot(), Language::Cpp, doc.takePendingEdits(),
+                        /*resetIncrementalState=*/true);
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
@@ -108,7 +110,8 @@ TEST(SyntaxWorkerTest, RequestParseWithPythonLanguageParsesAsPython) {
     doc.insertText(0, u"x = 42");
 
     SyntaxWorker worker(window.get());
-    worker.requestParse(doc.snapshot(), Language::Python);
+    worker.requestParse(doc.snapshot(), Language::Python, doc.takePendingEdits(),
+                        /*resetIncrementalState=*/true);
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
@@ -122,31 +125,74 @@ TEST(SyntaxWorkerTest, RequestParseWithPythonLanguageParsesAsPython) {
     EXPECT_EQ((*tokens)[2].kind, neomifes::syntax::TokenKind::Number);
 }
 
-TEST(SyntaxWorkerTest, RapidRequestsCoalesceToOnlyTheLatest) {
+// Phase 7l: replaces the Phase 7c-era "silently discard whatever request
+// hadn't been picked up yet" behavior this test used to pin down - true
+// incremental reparsing (Phase 7k's IncrementalParser) requires every
+// recorded edit to survive even when multiple requestParse() calls race
+// ahead of the worker picking any of them up, or the retained tree's byte
+// offsets silently desync from the real document (see requestParse()'s doc
+// comment). This test forces exactly that race - two calls fired back-to-
+// back with no pump in between, the same technique the old version used -
+// but now on a SINGLE evolving document via two real edits, and checks that
+// no matter how many of the two requests the worker actually processes
+// separately, the FINAL delivered tokens exactly match an independent full
+// reparse of the FINAL text: proof that no edit was silently dropped.
+TEST(SyntaxWorkerTest, RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
 
-    Document firstDoc;
-    firstDoc.insertText(0, u"int x = 1;");  // 5 tokens
-
-    Document lastDoc;
-    lastDoc.insertText(0, u"int x = 1; int y = 2;");  // 10 tokens
+    Document doc;
+    doc.insertText(0, u"int x = 1;");
 
     SyntaxWorker worker(window.get());
-    // Fired back-to-back with no pump in between - whichever of these the
-    // worker hasn't already started must be silently superseded (see
-    // syntax_worker.h's class comment on why there is no queue).
-    worker.requestParse(firstDoc.snapshot(), Language::Cpp);
-    worker.requestParse(lastDoc.snapshot(), Language::Cpp);
+    worker.requestParse(doc.snapshot(), Language::Cpp, doc.takePendingEdits(),
+                        /*resetIncrementalState=*/true);
+
+    // Fired immediately after the first, no pump in between - forces the
+    // same race the old coalescing test exercised, but this time as a real
+    // edit chain on one document rather than two unrelated documents.
+    doc.insertText(doc.length(), u" int y = 2;");
+    worker.requestParse(doc.snapshot(), Language::Cpp, doc.takePendingEdits(),
+                        /*resetIncrementalState=*/false);
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
-    // The worker may have already started `firstDoc`'s parse before
-    // `lastDoc`'s request replaced the pending slot (an intermediate 5-
-    // token result is a legal, harmless artifact - see this file's
-    // pumpForLatestTokens() comment) - but the FINAL result observed must
-    // reflect the last request, never get stuck on the superseded one.
-    EXPECT_EQ(tokens->size(), 10u);
+    const auto expected = parseCpp(doc.toU16String());
+    EXPECT_EQ(*tokens, expected);
+}
+
+// Phase 7l: resetIncrementalState=true must ACTUALLY discard whatever
+// incremental-parse tree the worker retained for an earlier, unrelated
+// document - passing edits=empty alone is NOT sufficient, since tree-sitter
+// would otherwise still receive the stale tree as its reparse hint and may
+// incorrectly reuse subtrees against completely unrelated text (see
+// IncrementalParser::reparse()'s behavior when a tree is retained). Uses the
+// SAME language (Cpp) for both documents deliberately, to isolate this
+// flag's own effect from the worker's separate internal language-mismatch
+// safety net (which a same-language document switch never triggers) - a
+// realistic stand-in for e.g. an F12 tag jump or Grep result jump landing on
+// a different .cpp file.
+TEST(SyntaxWorkerTest, ResetIncrementalStateDiscardsStaleTreeAcrossUnrelatedDocument) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    SyntaxWorker worker(window.get());
+
+    Document firstDoc;
+    firstDoc.insertText(0, u"int x = 1;");
+    worker.requestParse(firstDoc.snapshot(), Language::Cpp, firstDoc.takePendingEdits(),
+                        /*resetIncrementalState=*/true);
+    ASSERT_NE(pumpForLatestTokens(5000), nullptr) << "first parse never completed";
+
+    Document secondDoc;
+    secondDoc.insertText(0, u"double pi = 3.14;\nbool ready = true;\n");
+    worker.requestParse(secondDoc.snapshot(), Language::Cpp, secondDoc.takePendingEdits(),
+                        /*resetIncrementalState=*/true);
+
+    const auto tokens = pumpForLatestTokens(5000);
+    ASSERT_NE(tokens, nullptr) << "second parse never completed";
+    const auto expected = parseCpp(secondDoc.toU16String());
+    EXPECT_EQ(*tokens, expected);
 }
 
 }  // namespace

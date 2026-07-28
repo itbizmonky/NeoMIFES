@@ -129,8 +129,12 @@ public:
     // stays set here, and must call setDocument(nullptr) (or destroy this
     // RenderPipeline) before destroying the Document. nullptr detaches -
     // render() then just clears the background, matching Phase 3a's visual.
-    // Safe to call before or after attach().
-    void setDocument(const document::Document* doc) noexcept { m_document = doc; }
+    // Safe to call before or after attach(). Non-const pointer (Phase 7l,
+    // was `const document::Document*` through Phase 7k) - still purely
+    // non-owning/observational in spirit, but refreshDocumentCacheIfStale()
+    // now needs to call the non-const Document::takePendingEdits() to drain
+    // accumulated edits for the syntax worker.
+    void setDocument(document::Document* doc) noexcept { m_document = doc; }
 
     // No interactive scroll input exists yet (Editor Core/Viewport is Phase
     // 4) - nothing in this codebase calls this besides tests today. Exists
@@ -193,7 +197,10 @@ public:
     // re-parse, rather than relying on Document::version() having moved - a
     // freshly-loaded Document (e.g. after openDocumentAt()) starts its own
     // independent version counter, so trusting version() alone here risks a
-    // same-value coincidence across two different documents.
+    // same-value coincidence across two different documents. This is also
+    // (Phase 7l) how the syntax worker learns to discard whatever
+    // incremental-parse tree it retained for whichever document it saw
+    // before - see refreshDocumentCacheIfStale()'s forceFullReparse.
     void setLanguage(std::optional<syntax::Language> language) noexcept {
         m_language          = language;
         m_hasCachedSnapshot = false;
@@ -446,7 +453,7 @@ private:
     // sec.4.3/4.4): snapshot() is only called from refreshDocumentCacheIfStale()
     // when m_document->version() has moved past m_cachedDocumentVersion, never
     // once per frame unconditionally.
-    const document::Document*                        m_document              = nullptr;
+    document::Document*                               m_document              = nullptr;
     bool                                              m_hasCachedSnapshot     = false;
     std::uint64_t                                     m_cachedDocumentVersion = 0;
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;

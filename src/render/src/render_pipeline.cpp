@@ -179,6 +179,17 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     if (m_hasCachedSnapshot && m_document->version() == m_cachedDocumentVersion) {
         return {};
     }
+    // Phase 7l: captured BEFORE m_hasCachedSnapshot is set true below.
+    // false here means either the very first refresh ever, or a forced
+    // reset via setLanguage() (a new document/language is now attached,
+    // e.g. after openDocumentAt() - see setLanguage()'s own comment on
+    // forcing m_hasCachedSnapshot false). In both cases, any accumulated
+    // EditDelta's on m_document are meaningless to a syntax worker that (if
+    // it exists at all) last retained an incremental-parse tree for a
+    // DIFFERENT document's text - that tree must be discarded rather than
+    // reused, which is exactly what passing this through to
+    // SyntaxWorker::requestParse()'s resetIncrementalState does.
+    const bool forceFullReparse = !m_hasCachedSnapshot;
     // The one and only Document::snapshot() call site in the render layer -
     // gated on version() having moved, per detailed_design.md sec.4.3's
     // "don't call snapshot() every frame" guardrail (ADR-010).
@@ -191,17 +202,25 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     // range information.
     m_layoutCache.clear();
     // Phase 7c: clear immediately, re-tokenize off the UI thread. m_tokens
-    // is cleared (not left showing the previous parse) because this is
-    // still a full-document re-parse, not true tree-sitter incremental
-    // diffing (see syntax_worker.h) - after ANY edit, every existing
-    // token's offset can be wrong, so drawing them would risk coloring the
+    // is cleared (not left showing the previous parse) - even with Phase
+    // 7l's true incremental re-PARSING, this class does not synchronously
+    // shift existing m_tokens' offsets by the edit's size, so after ANY
+    // edit every existing token's stored range can be wrong until the
+    // async result arrives; drawing them meanwhile would risk coloring the
     // wrong characters. applyAsyncSyntaxTokens() repopulates m_tokens once
     // SyntaxWorker's background parse completes; until then the text falls
     // back to the default (uncolored) brush, a deliberate, documented
     // deviation from roadmap sec.7.9's "keep showing old tokens" sketch
-    // (which assumes true incremental parsing, not implemented yet).
+    // (which would need synchronous position-shifting, not implemented -
+    // see master_roadmap.md sec.7's Phase 7l completion note).
     m_tokens.clear();
     m_cachedOutline.clear();
+    // Phase 7k: drains every EditDelta recorded since the last drain,
+    // unconditionally (even if m_language is nullopt below) - Document
+    // accumulates these regardless of whether syntax highlighting is
+    // enabled, and leaving them undrained here would grow m_document's
+    // internal vector without bound.
+    std::vector<document::EditDelta> pendingEdits = m_document->takePendingEdits();
     if (m_language.has_value()) {
         // Lazily started here (not setLanguage()) because that can be called
         // before RenderPipeline::attach() has set m_hwnd (main.cpp calls it
@@ -214,7 +233,7 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
         if (!m_syntaxWorker.has_value()) {
             m_syntaxWorker.emplace(m_hwnd);
         }
-        m_syntaxWorker->requestParse(m_cachedSnapshot, *m_language);
+        m_syntaxWorker->requestParse(m_cachedSnapshot, *m_language, std::move(pendingEdits), forceFullReparse);
         // Phase 7h (Breadcrumb): SYNCHRONOUS, unlike token coloring above -
         // extractOutline() is already a deliberately independent, separate
         // parse from token coloring (outline.h's header comment), so this

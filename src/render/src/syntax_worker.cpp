@@ -1,14 +1,31 @@
 #include "neomifes/render/syntax_worker.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "neomifes/document/text_pos.h"
+#include "neomifes/syntax/incremental_parser.h"
 #include "neomifes/syntax/syntax.h"
 
 namespace neomifes::render {
+
+syntax::ReparseEdit toReparseEdit(const document::EditDelta& delta) noexcept {
+    return syntax::ReparseEdit{
+        .startByte    = static_cast<std::uint32_t>(delta.startPos * 2),
+        .oldEndByte   = static_cast<std::uint32_t>(delta.oldEndPos * 2),
+        .newEndByte   = static_cast<std::uint32_t>(delta.newEndPos * 2),
+        .startRow     = static_cast<std::uint32_t>(delta.startLine),
+        .startColumn  = delta.startColumn * 2,
+        .oldEndRow    = static_cast<std::uint32_t>(delta.oldEndLine),
+        .oldEndColumn = delta.oldEndColumn * 2,
+        .newEndRow    = static_cast<std::uint32_t>(delta.newEndLine),
+        .newEndColumn = delta.newEndColumn * 2,
+    };
+}
 
 SyntaxWorker::SyntaxWorker(HWND targetHwnd)
     : m_targetHwnd(targetHwnd), m_thread(&SyntaxWorker::workerLoop, this) {}
@@ -23,18 +40,30 @@ SyntaxWorker::~SyntaxWorker() {
 }
 
 void SyntaxWorker::requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
-                                syntax::Language                               language) noexcept {
+                                syntax::Language                               language,
+                                std::vector<document::EditDelta>               edits,
+                                bool                                            resetIncrementalState) noexcept {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        // Silently supersedes whatever request hadn't been picked up yet -
-        // see this class's header comment on why there is no queue.
-        m_pending         = std::move(snapshot);
+        m_pendingSnapshot = std::move(snapshot);
+        m_pendingEdits.insert(m_pendingEdits.end(), std::make_move_iterator(edits.begin()),
+                              std::make_move_iterator(edits.end()));
         m_pendingLanguage = language;
+        m_pendingReset    = m_pendingReset || resetIncrementalState;
     }
     m_cv.notify_one();
 }
 
 void SyntaxWorker::workerLoop() {
+    // Retained across loop iterations (Phase 7l) - reconstructed wholesale
+    // (never a partial reset() on the existing instance) whenever a picked-
+    // up batch demands it, since a freshly-constructed IncrementalParser has
+    // no retained tree yet, which is exactly what "start over with a full
+    // parse" needs (see reparse()'s "edits empty, no tree retained" full-
+    // parse path).
+    std::optional<syntax::IncrementalParser> parser;
+    syntax::Language                          parserLanguage = syntax::Language::Cpp;
+
     // False-positive leak diagnostic anchors here: ownership of the heap-
     // allocated token vector below is transferred across the
     // PostMessageW/kMsgSyntaxTokensReady boundary to main.cpp's
@@ -45,26 +74,44 @@ void SyntaxWorker::workerLoop() {
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     while (true) {
         std::shared_ptr<const document::BufferSnapshot> snapshot;
+        std::vector<document::EditDelta>                edits;
         syntax::Language                                 language = syntax::Language::Cpp;
+        bool                                              reset    = false;
         {
             std::unique_lock<std::mutex> lock(m_mutex);
-            m_cv.wait(lock, [this] { return m_pending != nullptr || m_shuttingDown; });
+            m_cv.wait(lock, [this] { return m_pendingSnapshot != nullptr || m_shuttingDown; });
             if (m_shuttingDown) {
                 return;
             }
-            snapshot = std::exchange(m_pending, nullptr);
+            snapshot = std::exchange(m_pendingSnapshot, nullptr);
+            edits    = std::exchange(m_pendingEdits, {});
             language = m_pendingLanguage;
+            reset    = std::exchange(m_pendingReset, false);
         }
 
-        // Full-document re-parse (no true tree-sitter incremental diffing
-        // yet - see this class's header comment). Neither extract() nor
-        // syntax::parse() is noexcept; a genuine std::bad_alloc is allowed to
-        // propagate and terminate the process rather than being swallowed
-        // here, matching BufferSnapshot::pieceView()'s own documented
-        // stance on this (CLAUDE.md forbids unconditional catch(...)).
+        // A fresh parser is also required (regardless of `reset`) the very
+        // first time through, and whenever the active language changes - a
+        // retained tree from a different grammar is meaningless to
+        // ts_tree_edit()/ts_parser_parse_string_encoding() for the new one.
+        if (reset || !parser.has_value() || parserLanguage != language) {
+            parser.emplace(language);
+            parserLanguage = language;
+        }
+
+        // Neither extract() nor IncrementalParser::reparse() is noexcept; a
+        // genuine std::bad_alloc is allowed to propagate and terminate the
+        // process rather than being swallowed here, matching
+        // BufferSnapshot::pieceView()'s own documented stance on this
+        // (CLAUDE.md forbids unconditional catch(...)).
         const std::u16string text =
             snapshot->extract(document::TextRange{.start = 0, .end = snapshot->length()});
-        auto tokens = std::make_unique<std::vector<syntax::Token>>(syntax::parse(text, language));
+
+        std::vector<syntax::ReparseEdit> reparseEdits;
+        reparseEdits.reserve(edits.size());
+        for (const document::EditDelta& delta : edits) {
+            reparseEdits.push_back(toReparseEdit(delta));
+        }
+        auto tokens = std::make_unique<std::vector<syntax::Token>>(parser->reparse(text, reparseEdits));
 
         // Ownership transferred to whichever code handles kMsgSyntaxTokensReady
         // (main.cpp's onAppMessage hook) - it must reconstruct a unique_ptr
