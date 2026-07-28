@@ -1862,4 +1862,39 @@ Phase 7i完了・push・CI green確認(4ジョブ全success)後、ユーザー�
 
 **次回:** Phase 7kが完了した(コミット`312a64c`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズはPhase 7l(`SyntaxWorker`統合+`RenderPipeline`配線)以降(残り21言語対応・ミニマップ・Sticky scroll等)、着手前にPlan Modeで詳細設計を起こすこと。Phase 7lでは現行`SyntaxWorker`の「破棄して最新のみ残す」キューモデルを「全編集を順序通り適用するキュー」へ置き換える設計が必須になる点、および上記ベンチマーク考察による`ts_tree_get_changed_ranges()`ベースのトークン部分更新への転換が新規スコープとして加わる点を、着手前のPlan Modeで踏まえること。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。
 
+## Session 56 (2026-07-28): Phase 7l — 真の増分再解析の SyntaxWorker 統合
+
+Phase 7k完了直後、ユーザーから「次Phaseへ進め」と指示された。roadmap §7の残り候補(SyntaxWorker統合/残り21言語対応/ミニマップ・Sticky scroll)をAskUserQuestionで提示し、**SyntaxWorker統合(推奨案)**が選ばれた — Phase 7kが意図的に据え置いた唯一の未完了スコープであり、これを完成させて初めて`syntax::IncrementalParser`が実際に使われる機能になる。
+
+**着手前調査で確定した設計方針(既存コードの直接読解で検証済み、Agent委任なし):**
+- `SyntaxWorker`(Phase 7c実装)の現行キューモデルは「保留中のリクエストは最新の1件のみ保持し古いものは黙って上書き」。真の増分再解析では1つでも編集を取りこぼすと`ts_tree_edit()`が前提とする木のバイトオフセット整合性が永久に壊れるため、このモデルのままでは安全に統合できないと判断した
+- `RenderPipeline::refreshDocumentCacheIfStale()`が唯一の「`Document::version()`変化を検知して次のアクションを起こす」箇所であることを確認したが、`RenderPipeline::m_document`が`const document::Document*`であり、`Document::takePendingEdits()`が非constメソッドのためそのままでは呼べないと判明。既存の全呼び出し箇所(`version()`/`snapshot()`/`lineCount()`等)がconstメソッドのみだったため`document::Document*`(非const)への変更を最小の対処と判断した
+- `syntax::IncrementalParser::reparse()`の実装を読み込み、`edits`が空でも保持木が非nullなら無条件にtree-sitterの再解析ヒントとして渡してしまうハザードを実装前に発見した。F12タグジャンプ/Grep結果ジャンプ等で無関係な別ファイルへ切り替わった直後に空`edits`だけを渡すと、無関係な保持木を使った誤った再解析結果になりうるため、`SyntaxWorker`側に明示的な「保持木を破棄して新規`IncrementalParser`を作り直す」リセット信号(`resetIncrementalState`)が必要と判断した
+- 「ドキュメントが切り替わった」の既存シグナルとして`RenderPipeline::setLanguage()`(既に`m_hasCachedSnapshot = false`を立てる)をそのまま再利用する設計に確定した。`main.cpp`内`setLanguage()`の呼び出し箇所は3箇所のみ(起動時・F12タグジャンプ後・Grep結果ジャンプ後)で、いずれも直前に`openDocumentAt()`を伴うことを確認済みだったため、新規フラグを追加する必要が無かった
+
+**実装:**
+- `src/render/include/neomifes/render/syntax_worker.h` + `.cpp`: キューモデルを「最新の1件のみ保持し古いものは破棄」から「`edits`を蓄積(追記、上書きしない)し取りこぼさない」へ刷新。`requestParse()`に`std::vector<document::EditDelta> edits`+`bool resetIncrementalState`(OR-latch)を追加。新規`toReparseEdit()`(純粋関数、`document::EditDelta` → `syntax::ReparseEdit`変換)。`workerLoop()`が`std::optional<syntax::IncrementalParser>`をループのローカル変数として保持し、リセット要求または言語不一致(初回呼び出し含む)時のみ新規構築で丸ごと差し替える(`IncrementalParser`自体に`reset()`メソッドは追加不要 — 新規構築すれば保持木は自動的に`nullptr`から始まる)
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `setDocument()`/`m_document`を`document::Document*`(非const)へ変更。`refreshDocumentCacheIfStale()`で`m_hasCachedSnapshot`更新前に`const bool forceFullReparse = !m_hasCachedSnapshot;`を捕捉、`m_document->takePendingEdits()`を無条件排出(highlighting無効時もDocument側の蓄積を防ぐ)、`requestParse()`の新シグネチャへ配線
+
+**発生した問題と修正:**
+- 着手前調査でハザードを事前に洗い出せていたため、実装自体はビルド・テスト共に大きな手戻り無く進んだ
+- clang-tidyで`render_syntax_worker_test.cpp`に追加した`using neomifes::syntax::parsePython;`が未使用と検出(実際のテストでは`parseCpp`のみ使用) — 削除して解消
+
+**テスト:**
+- `render_syntax_worker_test.cpp`: 既存3件を新シグネチャへ更新。**「無関係な2つのDocumentを連続要求→古い方は破棄される」という、Phase 7lで意図的に廃止する挙動そのものをピン留めしていた旧`RapidRequestsCoalesceToOnlyTheLatest`を、同一Documentへの連続編集が取りこぼされないことを検証する`RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced`へ書き直した**(ワーカーが2回のリクエストを1回にまとめて処理しても、最終トークンが最終テキストの全文書再解析と完全一致することを確認)。新規`ResetIncrementalStateDiscardsStaleTreeAcrossUnrelatedDocument`(同一言語のまま無関係な別ドキュメントへ切り替えても保持木が正しく破棄されることの検証)を追加
+- 新規`tests/unit/render_reparse_edit_conversion_test.cpp`: `toReparseEdit()`の単体テスト2件(単一行/複数行にまたがる変換の独立性)
+- `render_text_smoke_test.cpp`: 初期`render()`成功後に実際の編集(`insertText()`)を行い再度`render()`が成功することを確認する回帰テスト1件追加
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全713件pass。clang-tidy: `src/`配下新規警告0
+- **実アプリでの視覚確認は本セッションでは実施できなかった。** Phase 7g〜7jで確立していたはずの`CopyFromScreen`スクリーンショット手法を複数の変種(ウィンドウ矩形直接キャプチャ・全画面(2モニタ分)キャプチャ・ウィンドウ中心座標への実クリックによるフォーカス奪取)で試したが、いずれも対象ウィンドウの内容が画面上に見えなかった。`GetWindowRect`/`IsWindowVisible`はウィンドウの実在を正常値で返し、タスクバーにもボタンが存在したが、`GetForegroundWindow()`はクリック後も一貫して変化せず、これはこのセッションの自動化から実際に見えている画面にウィンドウが合成されていないことの一貫した証拠と判断した。恒久的な環境退行と断定せず次回セッションで再検証する前提を`reference_no_win32_gui_automation.md`に記録し、代替として自動テスト(非同期ワーカーの統合テスト、pump-and-wait方式で実スレッド・実メッセージ配送を検証)+プロセス生存確認(ファイルを開いた状態で約2分間`Responding=True`を維持、新規ミューテックス/条件変数ロジックがデッドロックしていないことの間接証拠)で代替した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表の「7l」行を完了へ更新、「7m〜」を次候補として新設、§7.9に完了時点の確定を追記、§7に「実装後の確定事項/変更点(2026-07-28、Phase 7l完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.14(SyntaxWorker統合実装リファレンス)を追加
+- `docs/handoff/RESUME_HERE.md`に新規§3.46(完了記録)、§1状態表・§6推奨プロンプト(スクリーンショット手法不調の記録込み)・冒頭メタデータを更新
+- メモリ(`reference_no_win32_gui_automation.md`)に本セッションのスクリーンショット手法不調を追記
+
+**次回:** Phase 7lが完了した(コミット`437ac8d`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。roadmap上の「真の増分再解析」ラインはPhase 7k+7lで完結したが、性能面のDoD(roadmap §7.11「≤50ms」)はまだ未達のまま(`walkTree()`全件再構築が支配的コスト)。次フェーズは残り21言語対応・ミニマップ・Sticky scroll、または`ts_tree_get_changed_ranges()`によるトークン部分更新のいずれか、着手前にPlan Modeで詳細設計を起こすこと。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。5c3/5c4/5c5の実アプリ視覚確認は依然未実施のまま。**次回セッションでも、まずスクリーンショット手法(`CopyFromScreen`)を素直に試すこと** — 今回不調だったのが恒久的な環境退行か一時的なセッション状態かはまだ判別できていない。
+
 <!-- 次セッションはここに追記 -->

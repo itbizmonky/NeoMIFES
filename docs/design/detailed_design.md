@@ -2115,6 +2115,46 @@ public:
 
 ---
 
+### 10.14 真の増分再解析の SyntaxWorker 統合 (Phase 7l実装)
+
+Phase 7kが意図的に据え置いた「`SyntaxWorker`統合」に着手し、`syntax::IncrementalParser`が実際に使われる機能になった。
+
+```cpp
+// src/render/include/neomifes/render/syntax_worker.h
+// document::EditDelta -> syntax::ReparseEditの純粋変換(単体テスト可能)。
+[[nodiscard]] syntax::ReparseEdit toReparseEdit(const document::EditDelta& delta) noexcept;
+
+class SyntaxWorker {
+public:
+    // edits: 前回requestParse()以降に記録された全EditDelta(発生順)。
+    // 未pickupのリクエストがあれば追記(上書きしない) - 取りこぼし厳禁。
+    // resetIncrementalState: trueならワーカーが保持中のIncrementalParser
+    // インスタンスを新規構築で丸ごと差し替える(保持木を破棄)。
+    void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                      syntax::Language language,
+                      std::vector<document::EditDelta> edits,
+                      bool resetIncrementalState) noexcept;
+private:
+    // m_pendingSnapshot: 最新のみ保持(上書き)。
+    // m_pendingEdits: 蓄積(追記、上書きしない)。
+    // m_pendingReset: OR-latch(一度trueになったら排出まで維持)。
+};
+```
+
+**設計上の要点:**
+- **`SyntaxWorker`のキューモデルを「最新の1件のみ保持し古いものは破棄」から「`edits`を蓄積し取りこぼさない」へ刷新した。** `m_pendingSnapshot`/`m_pendingLanguage`は最新のもので上書き(最終テキスト/言語だけが意味を持つため)だが、`m_pendingEdits`は`requestParse()`が呼ばれるたびに`insert(end(), ...)`で追記する。ワーカーの`workerLoop()`はpickup時に蓄積分をまとめて`toReparseEdit()`で変換し、1回の`IncrementalParser::reparse()`呼び出しに渡す
+- **`workerLoop()`は`std::optional<syntax::IncrementalParser>`をループのローカル変数として保持し、`resetIncrementalState`が真、または保持中のパーサの言語が今回のリクエストと食い違う場合(初回呼び出しも含む)、新規インスタンスで丸ごと差し替える。** `IncrementalParser`自体に`reset()`メソッドは追加していない — 新規構築すれば保持木は自動的に`nullptr`から始まり、`reparse()`の「`edits`が空、かつ保持木が無ければ全文書再解析」パスへ自然に入る
+- **`edits`が空でも保持木が非nullなら`IncrementalParser::reparse()`が無条件にtree-sitterの再解析ヒントとして渡してしまうハザードを実装前に発見した。** F12タグジャンプ/Grep結果ジャンプ等で無関係な別ファイルへ切り替わった直後に空`edits`だけを渡すと、無関係な保持木を使った誤った再解析結果になりうるため、明示的な`resetIncrementalState`引数が必要と判断した
+- **「ドキュメントが切り替わった」の検出は既存の`RenderPipeline::setLanguage()`(`m_hasCachedSnapshot = false`を立てる)をそのまま再利用した。** `refreshDocumentCacheIfStale()`内で`m_hasCachedSnapshot`を`true`に更新する前に`const bool forceFullReparse = !m_hasCachedSnapshot;`を捕捉するだけで、初回呼び出しとドキュメント切り替えの両方を検出できた
+- **`RenderPipeline::m_document`を`const document::Document*`から`document::Document*`へ変更した。** `Document::takePendingEdits()`が非constメソッドのため。既存の全呼び出し箇所はconstメソッドのみを呼んでいたため後方互換
+- **`render_syntax_worker_test.cpp`の既存「無関係な2つのDocumentを連続要求→古い方は破棄される」テストは、Phase 7lで廃止する挙動そのものをピン留めしていたため書き直した。** 新版`RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced`は同一Documentへの連続編集を間を置かず2回要求し、ワーカーが2回を1回にまとめて処理しても最終トークンが最終テキストの全文書再解析と完全一致することを確認する。加えて`ResetIncrementalStateDiscardsStaleTreeAcrossUnrelatedDocument`(同一言語のまま無関係な別ドキュメントへ切り替えても保持木が正しく破棄されることの検証)を新設した
+- **性能: 本フェーズは「取りこぼさないスレッド統合」という正しさの軸のみを達成し、`IncrementalParser::reparse()`自体が抱える「呼び出しのたびにトークン列全体を`walkTree()`で再構築する」ボトルネック(Phase 7k実測、約321ms/call)は未解消のまま。** roadmap §7.11のDoD「≤50ms」達成には次サブフェーズでの`ts_tree_get_changed_ranges()`対応が必要
+- **実アプリでの視覚確認は本セッションでは実施できなかった。** 確立していたはずのスクリーンショット手法(`CopyFromScreen`)が機能せず(`GetWindowRect`/`IsWindowVisible`は正常値を返すがウィンドウ領域を撮るとデスクトップが写り込む、ウィンドウ中心への実クリックでもフォーカスが移らない)、これはこのセッションの自動化から実際に見えている画面にウィンドウが合成されていないことの一貫した証拠と判断した。代替として自動テスト(非同期ワーカー統合テスト4件、実スレッド・実メッセージ配送で検証)+プロセス生存確認(ファイルを開いた状態で約2分間`Responding=True`維持)で代替した。恒久的な環境退行と断定せず次回再検証する前提を`reference_no_win32_gui_automation.md`に記録した
+
+**スコープ外(意図的、後続サブフェーズへ):** `ts_tree_get_changed_ranges()`による変更範囲限定トークン抽出(`walkTree()`全件再構築の解消、DoD達成に必要)、アウトライン抽出の増分化、複数言語を同時に保持するワーカー設計。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

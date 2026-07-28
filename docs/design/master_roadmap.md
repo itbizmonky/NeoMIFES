@@ -222,7 +222,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7i | 折り畳み コア基盤 (FoldingModel、キーボードトグルのみ、ガタークリックは次候補) | ✅ 完了 | §7 |
 | 7j | 折り畳み ガター+/-クリックトグル (`hitTestFoldMarker()`) | ✅ 完了 | §7 |
 | 7k | 真の増分再解析 コア基盤 (`document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 | §7 |
-| 7l〜 | 真の増分再解析のSyntaxWorker統合 + 残り21言語 + ミニマップ + sticky scroll | ⏭️ 次候補 | §7 |
+| 7l | 真の増分再解析の SyntaxWorker 統合 (edits蓄積キュー+RenderPipeline配線) | ✅ 完了 | §7 |
+| 7m〜 | 残り21言語 + ミニマップ + sticky scroll + `ts_tree_get_changed_ranges()`によるトークン部分更新 | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -981,7 +982,9 @@ public:
 - 解析中は古いトークンを描画に使い続ける (60fps 死守)
 - 解析完了後 `PostMessageW(WM_APP+SYNTAX_READY, ...)` で UI スレッドへ通知、`invalidate(range)`
 
-> **Phase 7k完了時点の確定:** 「変更範囲を含む解析単位だけ再解析」を実現する下層(`document::EditDelta`による編集範囲追跡 + `syntax::IncrementalParser`による`ts_tree_edit()`ベースの真の増分再解析)をヘッドレスに実装した。**ただし本節が前提とする「Syntax Worker Thread」への統合はまだ行っていない** — 現行の`SyntaxWorker`(Phase 7c実装)は「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」キューモデルであり、1つでも編集を取りこぼすと増分再解析の木のバイトオフセットが永久に破綻するため、真の増分再解析とは原理的に両立しない。このキューモデルの置き換え + `RenderPipeline`配線は次サブフェーズ(Phase 7l)へ据え置いた。詳細・ベンチマーク実測値は本ファイル §7 の「実装後の確定事項/変更点 (2026-07-28、Phase 7k完了)」を参照。
+> **Phase 7k完了時点の確定:** 「変更範囲を含む解析単位だけ再解析」を実現する下層(`document::EditDelta`による編集範囲追跡 + `syntax::IncrementalParser`による`ts_tree_edit()`ベースの真の増分再解析)をヘッドレスに実装した。詳細・ベンチマーク実測値は本ファイル §7 の「実装後の確定事項/変更点 (2026-07-28、Phase 7k完了)」を参照。
+>
+> **Phase 7l完了時点の確定:** 上記の「Syntax Worker Thread」への統合を完了した。`SyntaxWorker`(Phase 7c実装)の「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」キューモデルを、「`edits`を蓄積し1件も取りこぼさない」モデルへ置き換え、実際に`syntax::IncrementalParser`を使って再解析するようになった。**ただし本節が本来目指す「変更範囲だけ再解析」による性能向上は、`reparse()`が呼び出しのたびにトークン列全体を`walkTree()`で再構築する既知のボトルネック(Phase 7k実測: 約321ms/call、DoD「≤50ms」未達)によりまだ実現できていない** — スレッド統合という別軸の正しさ(取りこぼし無し)は達成したが、体感速度の改善は`ts_tree_get_changed_ranges()`による変更範囲限定トークン抽出(次サブフェーズ)を待つ。詳細は本ファイル §7 の「実装後の確定事項/変更点 (2026-07-28、Phase 7l完了)」を参照。
 
 ### 7.10 折り畳み / アウトライン
 - `FoldingModel` (新規 `src/core/folding_model.{h,cpp}`) がドキュメント論理行 → 表示行の対応表
@@ -1136,6 +1139,20 @@ public:
 - **スコープを意図的に2段階へ分割した判断は妥当だったと確認できた。** `SyntaxWorker`の「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」設計は、1つでも編集を取りこぼすと`ts_tree_edit()`の前提が崩れ木のバイトオフセットが永久に狂うため、真の増分再解析とは原理的に両立しない。この整合性問題とスレッド安全性の設計は、ヘッドレスな正しさの証明(本フェーズ)とは独立した検討が必要であり、分離して正解だった
 
 **スコープ外(意図的、Phase 7lへ):** `SyntaxWorker`への統合(「破棄して最新のみ残す」キューモデルを「全編集を順序通り適用するキュー」へ置き換える設計)、`RenderPipeline::refreshDocumentCacheIfStale()`の書き換え、`ts_tree_get_changed_ranges()`を使った変更範囲限定トークン抽出+`m_tokens`へのマージ(上記ベンチマーク考察で判明した新規スコープ)、アウトライン抽出の増分化。詳細は`detailed_design.md` §10.13参照。
+
+### 実装後の確定事項/変更点 (2026-07-28、Phase 7l完了)
+
+**Phase 7kが意図的に据え置いた「`SyntaxWorker`への統合」に着手し、`syntax::IncrementalParser`が実際に使われる機能になった。** roadmap §7の「真の増分再解析」ラインはこれで完結したが、性能面のDoD(≤50ms)はまだ別のボトルネック(下記参照)により未達のまま。
+
+- **`SyntaxWorker`のキューモデルを「保留中のリクエストは最新の1件のみ保持し古いものは破棄する」から「`edits`を蓄積(追記、上書きしない)し1件も取りこぼさない」へ刷新した。** `snapshot`/`language`/リセットフラグは最新のもので上書きするが、`document::EditDelta`の蓄積ベクタだけは`requestParse()`が呼ばれるたびに追記されワーカーがpickupするまで消えない。ワーカーがpickupするまでに複数回`requestParse()`が呼ばれても、蓄積された全編集を1回の`IncrementalParser::reparse()`呼び出し(`std::span`で複数編集を順に`ts_tree_edit()`適用できる、Phase 7k実装済み)にまとめて渡す設計にした
+- **ドキュメント切り替え時の別ハザードを実装前に発見した。** `IncrementalParser::reparse()`は`edits`が空でも、保持木が非nullなら無条件にtree-sitterの再解析ヒントとして渡してしまう(`ts_tree_edit()`で明示的に伝えない限り「何も変わっていない」とtree-sitterが仮定してしまう)。F12タグジャンプ/Grep結果ジャンプ等で無関係な別ファイルへ切り替わった直後に空`edits`だけを渡すと、無関係な保持木を使った誤った再解析結果になりうる。対策として`SyntaxWorker::requestParse()`に明示的な`resetIncrementalState`引数を追加し、真のときはワーカーが保持中の`IncrementalParser`インスタンスを新規構築で丸ごと差し替える(新規インスタンスは保持木が`nullptr`から始まるため、`reset()`のような専用メソッドは不要)
+- **「ドキュメントが切り替わった」の既存シグナルとして`RenderPipeline::setLanguage()`をそのまま再利用した。** `setLanguage()`は既に`m_hasCachedSnapshot = false`を立てる設計だったため、`refreshDocumentCacheIfStale()`内で更新前の値を`const bool forceFullReparse = !m_hasCachedSnapshot;`として捕捉するだけで「初回呼び出し」と「ドキュメント切り替え」の両方を検出でき、新規フラグを追加する必要がなかった
+- **`RenderPipeline::m_document`を`const document::Document*`から`document::Document*`へ変更した。** `Document::takePendingEdits()`が非const(蓄積ベクタを`std::exchange`で排出する)メソッドのため。既存の全呼び出し箇所(`version()`/`snapshot()`/`lineCount()`/`offsetToLine()`/`lineToOffset()`)はいずれもconstメソッドのみを呼んでいたため後方互換で、`setDocument()`の唯一の実引数(`main.cpp`の非const`Document`)とも問題なく整合した
+- **既存の`render_syntax_worker_test.cpp`の「無関係な2つのDocumentを連続要求→古い方は破棄される」テストは、Phase 7lで意図的に廃止する挙動そのものをピン留めしていたため書き直した。** 新版は同一Documentへの連続編集を間を置かず2回要求し、ワーカーが2回を1回にまとめて処理しても最終トークンが最終テキストの全文書再解析と完全一致することを確認する形にし、「取りこぼしが無い」という新しい契約自体を検証するテストへ転換した。加えて`resetIncrementalState`単体の効果(同一言語のまま無関係な別ドキュメントへ切り替えても保持木が正しく破棄されること)を検証する新規テストを追加した
+- **性能面: 本フェーズは「取りこぼさないスレッド統合」という正しさの軸のみを達成し、体感速度の改善はまだ実現していない。** `IncrementalParser::reparse()`自体がPhase 7kで既に判明していた「呼び出しのたびにトークン列全体を`walkTree()`で再構築する」ボトルネック(約321ms/call、50,000行合成ソース)を抱えたままのため、本フェーズの変更だけでは実測値は変わらない。次サブフェーズで`ts_tree_get_changed_ranges()`による変更範囲限定抽出へ転換して初めて、roadmap §7.11のDoD「≤50ms」に近づける見込み
+- **実アプリでの視覚確認は、この自動化環境のスクリーンショット手法(Phase 7b以来確立していたはず)が本セッションでは機能しなかった。** `GetWindowRect`/`IsWindowVisible`は正常値を返しウィンドウは実在するが、その領域を`CopyFromScreen`で撮ると常にデスクトップが写り込み、ウィンドウ中心への実クリックでもフォーカスが移らないことまで確認した(=このセッションの自動化からは実際に見えている画面にウィンドウが合成されていないことの一貫した証拠)。恒久的な退行と断定はせず次回再検証する前提で、今回は自動テスト(`render_syntax_worker_test.cpp`の非同期ワーカー統合テスト4件、全てpump-and-wait方式で実スレッド・実メッセージ配送を検証)+プロセス生存確認(ファイルを開いた状態で約2分間`Responding=True`を維持、新規ミューテックス/条件変数ロジックがデッドロックしていないことの間接証拠)で代替した
+
+**スコープ外(意図的、後続サブフェーズへ):** `ts_tree_get_changed_ranges()`による変更範囲限定トークン抽出(`walkTree()`全件再構築の解消、DoD達成に必要)、アウトライン抽出(`extractOutline()`)の増分化、複数言語を同時に保持するワーカー設計。詳細は`detailed_design.md` §10.14参照。
 
 ---
 

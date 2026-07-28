@@ -77,7 +77,8 @@
 | Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) | ✅ 完了 (**未push**、§3.43参照) |
 | Phase 7j (折り畳み ガター+/-クリックトグル: `hitTestFoldMarker()`) | ✅ 完了 (**未push**、§3.44参照) |
 | Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 (**未push**、§3.45参照) |
-| **次フェーズ選定 — Phase 7l(SyntaxWorker統合)以降(残り21言語/ミニマップ/sticky scroll等)着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7l (真の増分再解析の SyntaxWorker 統合: edits蓄積キュー+RenderPipeline配線) | ✅ 完了 (**未push**、§3.46参照) |
+| **次フェーズ選定 — 残り21言語/ミニマップ/sticky scroll/`ts_tree_get_changed_ranges()`対応等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1339,7 +1340,44 @@ Phase 7j完了後、ユーザーから「次に進め」と指示された。roa
 
 **スコープ外(意図的、Phase 7lへ):** `SyntaxWorker`への統合(キューモデルの置き換え)、`RenderPipeline::refreshDocumentCacheIfStale()`の書き換え、`ts_tree_get_changed_ranges()`を使った変更範囲限定トークン抽出、アウトライン抽出の増分化。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.13参照。
 
-**Phase 7kはコミット済み(`312a64c`)・未push。** 次フェーズはPhase 7l(SyntaxWorker統合)以降(残り21言語対応・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+**Phase 7kはコミット済み(`312a64c`/`3eaf7ab`)・未push。** 次フェーズはPhase 7l(SyntaxWorker統合)以降(残り21言語対応・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+
+### 3.46 Phase 7l (真の増分再解析の SyntaxWorker 統合) 完了記録
+
+Phase 7k完了後、ユーザーから「次Phaseへ進め」と指示された。roadmap §7の残り候補(SyntaxWorker統合/残り21言語対応/ミニマップ・Sticky scroll)をAskUserQuestionで提示し、**SyntaxWorker統合(推奨案)**が選ばれた — Phase 7kが意図的に据え置いた唯一の未完了スコープであり、これを完成させて初めて`syntax::IncrementalParser`が実際に使われる機能になる。
+
+**着手前調査で確定した設計方針:**
+- `SyntaxWorker`(Phase 7c実装)の現行キューモデルは「保留中のリクエストは最新の1件のみ保持し古いものは黙って上書き」。真の増分再解析では1つでも編集を取りこぼすと`ts_tree_edit()`が前提とする木のバイトオフセット整合性が永久に壊れるため、このモデルのままでは安全に統合できないと判断
+- `RenderPipeline::m_document`が`const document::Document*`であるため、非constメソッドの`Document::takePendingEdits()`をそのままでは呼べないことを発見。既存の全呼び出し箇所がconstメソッドのみだったため`document::Document*`への変更を最小の対処と判断
+- `IncrementalParser::reparse()`の実装を読み、`edits`が空でも保持木が非nullなら無条件にtree-sitterの再解析ヒントとして渡してしまうハザードを発見(ドキュメント切り替え時に無関係な保持木を誤用するリスク) — 明示的な`resetIncrementalState`引数が必要と判断
+- 「ドキュメントが切り替わった」の既存シグナルとして`RenderPipeline::setLanguage()`(既に`m_hasCachedSnapshot = false`を立てる)を再利用する設計に確定、新規フラグ追加は不要と判断
+
+**実装:**
+- `src/render/include/neomifes/render/syntax_worker.h` + `.cpp`: `requestParse()`に`edits`(蓄積、追記)+`resetIncrementalState`(OR-latch)を追加。`toReparseEdit()`(`document::EditDelta` → `syntax::ReparseEdit`変換)新設。`workerLoop()`が`std::optional<syntax::IncrementalParser>`を保持し、リセット要求または言語不一致時のみ新規構築で差し替え
+- `src/render/include/neomifes/render/render_pipeline.h` + `.cpp`: `setDocument()`/`m_document`を非const化。`refreshDocumentCacheIfStale()`で`forceFullReparse`捕捉+`takePendingEdits()`排出+`requestParse()`新シグネチャ呼び出し
+
+**発生した問題と修正:**
+- 実装自体はビルド・テスト共に一発green(このフェーズは事前調査(Plan Mode)でハザードを実装前に洗い出せていたため、実装中の手戻りが無かった)
+- clang-tidyで新規に追加した`using neomifes::syntax::parsePython;`が未使用と検出・削除(実際のテストでは`parseCpp`のみ使用)
+
+**テスト:**
+- `render_syntax_worker_test.cpp`: 既存3件を新シグネチャへ更新。「無関係な2つのDocumentを連続要求→古い方は破棄される」という**Phase 7lで廃止する挙動そのもの**をピン留めしていた旧`RapidRequestsCoalesceToOnlyTheLatest`を、同一Documentへの連続編集が取りこぼされないことを検証する`RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced`へ書き直し。新規`ResetIncrementalStateDiscardsStaleTreeAcrossUnrelatedDocument`追加
+- 新規`tests/unit/render_reparse_edit_conversion_test.cpp`: `toReparseEdit()`の単体テスト2件
+- `render_text_smoke_test.cpp`: 編集後`render()`が引き続き成功することを確認する回帰テスト1件追加
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全713件pass(新規/更新: 上記4ファイル)。clang-tidy: `src/`配下新規警告0
+- **実アプリでの視覚確認は本セッションでは実施できなかった。** `GetWindowRect`/`IsWindowVisible`は正常値を返しウィンドウは実在するが、`CopyFromScreen`で撮ると常にデスクトップが写り込み、ウィンドウ中心への実クリックでもフォーカスが移らないことまで確認した — Phase 7g〜7jで確立していたはずのスクリーンショット手法がこのセッションでは機能しなかった(恒久的な退行と断定せず次回再検証すること、詳細は`reference_no_win32_gui_automation.md`)。代替として自動テスト(非同期ワーカー統合テスト、実スレッド・実メッセージ配送で検証)+プロセス生存確認(ファイルを開いた状態で約2分間`Responding=True`維持、新規ミューテックス/条件変数ロジックがデッドロックしていないことの間接証拠)で代替した
+
+**完了条件:**
+- [x] `SyntaxWorker`が編集を1件も取りこぼさないことを単体/統合テストで証明
+- [x] `resetIncrementalState`がドキュメント切り替え時に保持木を正しく破棄することを単体/統合テストで証明
+- [x] ローカルDebug/Release/ubsan全713テストgreen、`src/`配下clang-tidy新規警告0
+- [ ] 実アプリでの視覚確認は環境要因により未実施(上記参照、テストスイート+プロセス生存確認で代替)
+
+**スコープ外(意図的、後続サブフェーズへ):** `ts_tree_get_changed_ranges()`による変更範囲限定トークン抽出(`walkTree()`全件再構築の解消、roadmap §7.11のDoD「≤50ms」達成に必要)、アウトライン抽出の増分化、複数言語を同時に保持するワーカー設計。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.14参照。
+
+**Phase 7lはコミット済み(`437ac8d`)・未push。** roadmap上の「真の増分再解析」ラインはPhase 7k+7lで完結した(性能面のDoDは`ts_tree_get_changed_ranges()`対応待ち)。次フェーズは残り21言語対応・ミニマップ・Sticky scroll等の詳細をPlan Modeで設計してから着手。
 
 ---
 
@@ -1395,9 +1433,10 @@ RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a
 **Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
 Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・
 Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・
-Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)は
+Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)・
+Phase 7l(真の増分再解析のSyntaxWorker統合、§3.46参照)は
 ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`/`0b01376`/`bf6c8cd`/`312a64c`)完了・未push。**
+`853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`)完了・未push。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
@@ -1429,15 +1468,28 @@ Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合な�
 Phase 7k(真の増分再解析コア基盤)も同様にヘッドレス(実アプリの見た目に一切影響しない変更)
 のため視覚確認対象は無い(§3.45参照)。
 
-**次フェーズはPhase 7l以降(真の増分再解析のSyntaxWorker統合・残り21言語対応・
-ミニマップ・Sticky scroll・Semantic highlighting)。**
+**(2026-07-28追加、重要) Phase 7lの視覚確認で、上記のマウスクリック合成・スクリーンショット
+手法が本セッションでは機能しなかった。** `GetWindowRect`/`IsWindowVisible`はウィンドウの実在を
+正常値で返すが、その領域を`CopyFromScreen`で撮ると常にデスクトップが写り込み、ウィンドウ中心
+座標への実クリック(`SetCursorPos`+`mouse_event`)を送っても`GetForegroundWindow()`が変化しな
+かった(=クリックが実際にそのウィンドウへ届いていないことの証拠)。全画面(2モニタ分)を
+キャプチャしても対象ウィンドウはどこにも見えなかった。**恒久的な退行と決めつけず、次回セッション
+でもまず素直にこの手順を試すこと** — 一時的なセッション状態に起因する可能性がある
+(詳細は`reference_no_win32_gui_automation.md`)。今回はテストスイート(非同期ワーカーの
+統合テスト、pump-and-wait方式で実スレッド/実メッセージ配送を検証)+プロセス生存確認
+(`Responding=True`を約2分間維持)で代替した。
+
+**次フェーズは残り21言語対応・ミニマップ・Sticky scroll・Semantic highlighting、
+または`ts_tree_get_changed_ranges()`によるトークン部分更新(下記参照)。**
 折り畳み機能(`core::FoldingModel`のキーボード操作コア基盤+ガター+/-クリックトグル)は
-Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析のヘッドレスコア
-(`document::EditDelta` + `syntax::IncrementalParser`)はPhase 7kで完結済みだが、
-`SyntaxWorker`統合・`RenderPipeline`配線は未着手のままPhase 7lへ持ち越し(§3.45参照) —
-現行`SyntaxWorker`の「最新の1件のみ保持し古いものは破棄する」キューモデルは、1つでも
-編集を取りこぼすと増分再解析の木のバイトオフセット整合性が壊れるため、真の増分再解析とは
-原理的に両立せず、キューモデル自体の置き換えが必要になる。
+Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析は Phase 7k(ヘッドレスコア:
+`document::EditDelta` + `syntax::IncrementalParser`)+ Phase 7l(`SyntaxWorker`統合:
+edits蓄積キュー+`RenderPipeline`配線)で完結し、実際に使われる機能になった(§3.45・
+§3.46参照)。**ただし性能面のDoD(roadmap §7.11「≤50ms」)はまだ未達のまま** —
+`IncrementalParser::reparse()`が呼び出しのたびにトークン列全体を`walkTree()`で再構築する
+ボトルネック(Phase 7k実測、約321ms/call)が残っており、次に着手するなら
+`ts_tree_get_changed_ranges()`(tree-sitterが変更範囲だけを返すAPI)で変更範囲限定の
+トークン再抽出+`RenderPipeline`側の既存`m_tokens`へのマージへ転換する設計が必要になる。
 Phase 7自体がroadmap最大級のフェーズのため、7a〜7jで確立したパターン(tree-sitterグラマー
 追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
 毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
