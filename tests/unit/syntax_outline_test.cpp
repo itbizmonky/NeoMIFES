@@ -214,4 +214,23 @@ TEST(FindBreadcrumbPathTest, ThreeLevelNestingReturnsOutermostFirst) {
     EXPECT_EQ(path[2]->name, u"getValue");
 }
 
+// Phase 7n1: C/JavaScript/Java/Go/Rust/Json get an empty SymbolTable (no
+// symbol-extraction logic implemented yet, see outline.cpp's
+// emptySymbolTable() comment) - these pin down the SAFE side of that
+// decision: extractOutline() must not crash, and must not route these
+// languages' source through Cpp's or Python's grammar/table (the bug this
+// batch's tsLanguageFor()/symbolTableFor() centralization fixed - see
+// outline.cpp's extractOutline() comment). Definition-bearing source is
+// used deliberately (not empty text) so an accidental fall-through to
+// Cpp/Python's tables, which happen to share some node-type names like
+// "identifier", would be caught here rather than passing vacuously.
+TEST(SyntaxOutlineTest, NewPhase7n1LanguagesProduceNoNodesWithoutCrashingOrMisroutingGrammar) {
+    EXPECT_TRUE(extractOutline(u"int foo(int x) { return x; }\n", Language::C).empty());
+    EXPECT_TRUE(extractOutline(u"function foo(x) { return x; }\n", Language::JavaScript).empty());
+    EXPECT_TRUE(extractOutline(u"class Foo { int bar() { return 1; } }\n", Language::Java).empty());
+    EXPECT_TRUE(extractOutline(u"package main\nfunc foo() int { return 1 }\n", Language::Go).empty());
+    EXPECT_TRUE(extractOutline(u"fn foo() -> i32 { 1 }\n", Language::Rust).empty());
+    EXPECT_TRUE(extractOutline(u"{\"a\": 1}", Language::Json).empty());
+}
+
 }  // namespace

@@ -18,6 +18,12 @@ target_link_libraries(neomifes_syntax
         tree-sitter
         tree-sitter-cpp-grammar
         tree-sitter-python-grammar
+        tree-sitter-c-grammar
+        tree-sitter-javascript-grammar
+        tree-sitter-java-grammar
+        tree-sitter-go-grammar
+        tree-sitter-rust-grammar
+        tree-sitter-json-grammar
 )
 
 set_target_properties(neomifes_syntax PROPERTIES

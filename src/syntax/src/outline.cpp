@@ -8,16 +8,13 @@
 #include <unordered_map>
 #include <utility>
 
+#include "syntax_internal.h"
+
 namespace neomifes::syntax {
 
 namespace {
 
-// Same C ABI declarations as syntax.cpp (that file's comment on why they
-// aren't included via the grammar repos' own headers applies here too).
-// NOLINTNEXTLINE(readability-identifier-naming)
-extern "C" const TSLanguage* tree_sitter_cpp(void);
-// NOLINTNEXTLINE(readability-identifier-naming)
-extern "C" const TSLanguage* tree_sitter_python(void);
+using detail::tsLanguageFor;
 
 using TSParserPtr = std::unique_ptr<TSParser, decltype(&ts_parser_delete)>;
 using TSTreePtr   = std::unique_ptr<TSTree, decltype(&ts_tree_delete)>;
@@ -60,6 +57,45 @@ const SymbolTable& symbolTableForPython() {
         {"class_definition", SymbolKind::Class},
     };
     return table;
+}
+
+// Phase 7n1: C/JavaScript/Java/Go/Rust/Json get an empty table (no symbol
+// definitions recognized) rather than symbol-extraction logic of their own -
+// deliberately deferred (see Phase 7n1 plan's Context section: outline
+// extraction needs its own per-language declarator/name-resolution probing,
+// same order of effort as symbolTableForCpp()'s resolveFunctionDefinitionName()
+// unwrap chain, and doubling this batch's scope wasn't justified without a
+// concrete need yet). An empty table is a SAFE degradation, not a silent
+// one: extractOutline()'s own header comment already documents "text
+// containing no recognized definitions yields an empty vector" as a normal,
+// expected outcome - this just means every input currently falls into that
+// case for these 6 languages. What this table intentionally does NOT do is
+// route these languages through Cpp's or Python's table (which would invent
+// fake symbols by matching an unrelated language's node-type names).
+const SymbolTable& emptySymbolTable() {
+    static const SymbolTable table{};
+    return table;
+}
+
+// Centralizes Language -> SymbolTable the same way syntax_internal.h's
+// tsLanguageFor() centralizes Language -> TSLanguage* (Phase 7n1) - see this
+// file's extractOutline() for why a 2-way ternary was unsafe once Language
+// grew past 2 enumerators.
+const SymbolTable& symbolTableFor(Language language) {
+    switch (language) {
+        case Language::Cpp:
+            return symbolTableForCpp();
+        case Language::Python:
+            return symbolTableForPython();
+        case Language::C:
+        case Language::JavaScript:
+        case Language::Java:
+        case Language::Go:
+        case Language::Rust:
+        case Language::Json:
+            return emptySymbolTable();
+    }
+    return symbolTableForCpp();  // unreachable (all enumerators handled above)
 }
 
 [[nodiscard]] std::u16string textOf(TSNode node, std::u16string_view text) {
@@ -263,8 +299,14 @@ std::vector<const OutlineNode*> findBreadcrumbPath(document::TextPos pos, const 
 }
 
 std::vector<OutlineNode> extractOutline(std::u16string_view text, Language language) {
-    const TSLanguage*  tsLanguage = language == Language::Cpp ? tree_sitter_cpp() : tree_sitter_python();
-    const SymbolTable& table      = language == Language::Cpp ? symbolTableForCpp() : symbolTableForPython();
+    // Phase 7n1: was a 2-way ternary (Cpp ? tree_sitter_cpp() :
+    // tree_sitter_python()) that silently routed every OTHER language
+    // through Python's grammar once Language grew past 2 enumerators - a
+    // real correctness bug (opening a .rs file would extractOutline() its
+    // Rust source AS Python), not just a missing-feature gap. Fixed by
+    // sharing the same tsLanguageFor() syntax.cpp/incremental_parser.cpp use.
+    const TSLanguage*  tsLanguage = tsLanguageFor(language);
+    const SymbolTable& table      = symbolTableFor(language);
 
     const TSParserPtr parser = makeParser(tsLanguage);
     const auto*        bytes  = reinterpret_cast<const char*>(text.data());

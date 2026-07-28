@@ -151,6 +151,117 @@ add_library(tree-sitter-python-grammar STATIC
 target_include_directories(tree-sitter-python-grammar PRIVATE "${tree-sitter-python_SOURCE_DIR}/src")
 target_link_libraries(tree-sitter-python-grammar PRIVATE tree-sitter)
 
+# ---- tree-sitter-c grammar (Phase 7n1) -------------------------------------
+# Same SOURCE_SUBDIR workaround as tree-sitter-cpp/tree-sitter-python above.
+# Unlike those two, tree-sitter-c's src/ has no scanner.c (confirmed via the
+# GitHub API before writing this block, not guessed - CLAUDE.md rule 3): C's
+# grammar needs no external-scanner state machine, so only parser.c is
+# compiled.
+FetchContent_Declare(
+    tree-sitter-c
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-c.git
+    GIT_TAG        v0.24.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-c)
+
+add_library(tree-sitter-c-grammar STATIC
+    "${tree-sitter-c_SOURCE_DIR}/src/parser.c"
+)
+target_include_directories(tree-sitter-c-grammar PRIVATE "${tree-sitter-c_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-c-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-javascript grammar (Phase 7n1) ----------------------------
+# Same SOURCE_SUBDIR workaround. Has scanner.c (confirmed via GitHub API,
+# same 2-file shape as tree-sitter-python/tree-sitter-cpp above).
+FetchContent_Declare(
+    tree-sitter-javascript
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-javascript.git
+    GIT_TAG        v0.25.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-javascript)
+
+add_library(tree-sitter-javascript-grammar STATIC
+    "${tree-sitter-javascript_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-javascript_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-javascript-grammar PRIVATE "${tree-sitter-javascript_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-javascript-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-java grammar (Phase 7n1) ----------------------------------
+# Same SOURCE_SUBDIR workaround. No scanner.c (confirmed via GitHub API).
+FetchContent_Declare(
+    tree-sitter-java
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-java.git
+    GIT_TAG        v0.23.5
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-java)
+
+add_library(tree-sitter-java-grammar STATIC
+    "${tree-sitter-java_SOURCE_DIR}/src/parser.c"
+)
+target_include_directories(tree-sitter-java-grammar PRIVATE "${tree-sitter-java_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-java-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-go grammar (Phase 7n1) ------------------------------------
+# Same SOURCE_SUBDIR workaround. No scanner.c (confirmed via GitHub API).
+FetchContent_Declare(
+    tree-sitter-go
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-go.git
+    GIT_TAG        v0.25.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-go)
+
+add_library(tree-sitter-go-grammar STATIC
+    "${tree-sitter-go_SOURCE_DIR}/src/parser.c"
+)
+target_include_directories(tree-sitter-go-grammar PRIVATE "${tree-sitter-go_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-go-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-rust grammar (Phase 7n1) ----------------------------------
+# Same SOURCE_SUBDIR workaround. Has scanner.c (confirmed via GitHub API,
+# same 2-file shape as tree-sitter-python/tree-sitter-cpp/tree-sitter-javascript).
+FetchContent_Declare(
+    tree-sitter-rust
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-rust.git
+    GIT_TAG        v0.24.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-rust)
+
+add_library(tree-sitter-rust-grammar STATIC
+    "${tree-sitter-rust_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-rust_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-rust-grammar PRIVATE "${tree-sitter-rust_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-rust-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-json grammar (Phase 7n1) ----------------------------------
+# Same SOURCE_SUBDIR workaround. No scanner.c (confirmed via GitHub API) -
+# JSON's grammar is simple enough to need no external-scanner state machine.
+FetchContent_Declare(
+    tree-sitter-json
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-json.git
+    GIT_TAG        v0.24.8
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-json)
+
+add_library(tree-sitter-json-grammar STATIC
+    "${tree-sitter-json_SOURCE_DIR}/src/parser.c"
+)
+target_include_directories(tree-sitter-json-grammar PRIVATE "${tree-sitter-json_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-json-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -174,8 +285,11 @@ target_link_libraries(tree-sitter-python-grammar PRIVATE tree-sitter)
 # tree-sitter-cpp-grammar are plain C static libs (Phase 7a, ADR-014) added
 # to the same loop rather than duplicating these property-setting calls.
 # tree-sitter-python-grammar (Phase 7d) is the same kind of target.
+# tree-sitter-{c,javascript,java,go,rust,json}-grammar (Phase 7n1) are too.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
-foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar)
+foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar
+        tree-sitter-c-grammar tree-sitter-javascript-grammar tree-sitter-java-grammar tree-sitter-go-grammar
+        tree-sitter-rust-grammar tree-sitter-json-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

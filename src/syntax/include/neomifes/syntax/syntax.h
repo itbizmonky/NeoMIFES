@@ -48,14 +48,21 @@ struct Token {
     friend constexpr bool operator==(const Token&, const Token&) = default;
 };
 
-// Phase 7d (multi-language dispatch generalization): only the two languages
-// with an actual tree-sitter grammar wired into cmake/Dependencies.cmake are
-// listed here, matching the same "don't put unimplemented enumerators in a
-// public API" rule cited for TokenKind above. A 3rd language repeats the
-// same pattern (grammar FetchContent block + namedLeafKindsForX() table in
-// syntax.cpp) rather than requiring a new abstraction - see master_roadmap.md
-// sec.7 "実装後の確定事項" for the Phase 7d rationale.
-enum class Language { Cpp, Python };
+// Phase 7d (multi-language dispatch generalization): only languages with an
+// actual tree-sitter grammar wired into cmake/Dependencies.cmake are listed
+// here, matching the same "don't put unimplemented enumerators in a public
+// API" rule cited for TokenKind above. Adding a language repeats the same
+// pattern (grammar FetchContent block + namedLeafKindsForX() table in
+// syntax_internal.h + parseX() below) rather than requiring a new
+// abstraction - see master_roadmap.md sec.7 "実装後の確定事項" for the
+// Phase 7d rationale. Phase 7n1 added C/JavaScript/Java/Go/Rust/Json (the
+// first batch of roadmap sec.7.2's remaining required languages); the
+// Language -> TSLanguage* mapping itself was centralized into
+// syntax_internal.h's detail::tsLanguageFor() at the same time so syntax.cpp/
+// incremental_parser.cpp/outline.cpp share one switch instead of each
+// maintaining their own (see outline.cpp's Phase 7n1 comment for why that
+// mattered).
+enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json };
 
 // Parses `text` as C++ and returns a flat, left-to-right, non-overlapping
 // token stream covering every leaf of the syntax tree (whitespace and
@@ -72,7 +79,26 @@ enum class Language { Cpp, Python };
 // Same contract as parseCpp(), for Python (tree-sitter-python v0.25.0).
 [[nodiscard]] std::vector<Token> parsePython(std::u16string_view text);
 
-// Thin dispatcher over parseCpp()/parsePython(). Kept alongside the two
+// Same contract as parseCpp(), for C (tree-sitter-c v0.24.2).
+[[nodiscard]] std::vector<Token> parseC(std::u16string_view text);
+
+// Same contract as parseCpp(), for JavaScript (tree-sitter-javascript v0.25.0).
+[[nodiscard]] std::vector<Token> parseJavaScript(std::u16string_view text);
+
+// Same contract as parseCpp(), for Java (tree-sitter-java v0.23.5).
+[[nodiscard]] std::vector<Token> parseJava(std::u16string_view text);
+
+// Same contract as parseCpp(), for Go (tree-sitter-go v0.25.0).
+[[nodiscard]] std::vector<Token> parseGo(std::u16string_view text);
+
+// Same contract as parseCpp(), for Rust (tree-sitter-rust v0.24.2).
+[[nodiscard]] std::vector<Token> parseRust(std::u16string_view text);
+
+// Same contract as parseCpp(), for JSON (tree-sitter-json v0.24.8).
+[[nodiscard]] std::vector<Token> parseJson(std::u16string_view text);
+
+// Thin dispatcher over parseCpp()/parsePython()/parseC()/parseJavaScript()/
+// parseJava()/parseGo()/parseRust()/parseJson(). Kept alongside the
 // individual functions (rather than replacing them) so existing callers/
 // tests that only care about one language can keep calling it directly, and
 // so per-language expected-output tests stay easy to write (Phase 7b/7c

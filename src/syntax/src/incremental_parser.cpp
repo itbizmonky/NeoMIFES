@@ -17,15 +17,11 @@ namespace neomifes::syntax {
 
 namespace {
 
-[[nodiscard]] const TSLanguage* tsLanguageFor(Language language) {
-    switch (language) {
-        case Language::Cpp:
-            return detail::tree_sitter_cpp();
-        case Language::Python:
-            return detail::tree_sitter_python();
-    }
-    return detail::tree_sitter_cpp();  // unreachable (all enumerators handled above)
-}
+// Phase 7n1: Language -> TSLanguage* now lives in syntax_internal.h's
+// detail::tsLanguageFor(), shared with syntax.cpp/outline.cpp - this file's
+// own private copy (Phase 7k/7d era) was removed to avoid a 3rd place that
+// needed updating whenever a language is added.
+using detail::tsLanguageFor;
 
 [[nodiscard]] const detail::LeafKindTable& namedKindsFor(Language language) {
     switch (language) {
@@ -33,6 +29,18 @@ namespace {
             return detail::namedLeafKindsForCpp();
         case Language::Python:
             return detail::namedLeafKindsForPython();
+        case Language::C:
+            return detail::namedLeafKindsForC();
+        case Language::JavaScript:
+            return detail::namedLeafKindsForJavaScript();
+        case Language::Java:
+            return detail::namedLeafKindsForJava();
+        case Language::Go:
+            return detail::namedLeafKindsForGo();
+        case Language::Rust:
+            return detail::namedLeafKindsForRust();
+        case Language::Json:
+            return detail::namedLeafKindsForJson();
     }
     return detail::namedLeafKindsForCpp();  // unreachable (all enumerators handled above)
 }
@@ -197,7 +205,7 @@ namespace {
                 appendOldTokensInSpan(static_cast<document::TextPos>(nodeStartByte / 2),
                                       static_cast<document::TextPos>(nodeEndByte / 2));
                 descending = false;
-            } else if (ts_node_child_count(node) == 0) {
+            } else if (detail::isAtomicNode(node, namedKinds)) {
                 detail::appendLeafToken(tokens, node, namedKinds);
                 descending = false;
             } else if (!ts_tree_cursor_goto_first_child(&cursor)) {

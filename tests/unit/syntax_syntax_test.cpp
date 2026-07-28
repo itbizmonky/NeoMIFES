@@ -11,8 +11,14 @@ namespace {
 
 using neomifes::syntax::Language;
 using neomifes::syntax::parse;
+using neomifes::syntax::parseC;
 using neomifes::syntax::parseCpp;
+using neomifes::syntax::parseGo;
+using neomifes::syntax::parseJava;
+using neomifes::syntax::parseJavaScript;
+using neomifes::syntax::parseJson;
 using neomifes::syntax::parsePython;
+using neomifes::syntax::parseRust;
 using neomifes::syntax::Token;
 using neomifes::syntax::TokenKind;
 
@@ -171,17 +177,21 @@ TEST(SyntaxParsePythonTest, ClassifiesSimpleAssignment) {
     EXPECT_EQ(tokens[2].range.end, 6u);
 }
 
-TEST(SyntaxParsePythonTest, ClassifiesStringWithEscapeSequenceLeavesPlainRunUncolored) {
-    // s = "hi\n" - a KNOWN, ACCEPTED gap (probed and confirmed via a full-
-    // tree dump, not guessed): when string_content contains an
-    // escape_sequence child, tree-sitter-python does NOT emit a separate
-    // leaf for the plain-text run sharing that string_content span ("hi"
-    // here) - only the escape_sequence itself is a leaf. This walker only
-    // ever visits leaves (child_count()==0), so "hi" gets no token at all
-    // (falls back to the default/uncolored brush) while the quotes and the
-    // escape sequence still color correctly. Plain strings with NO escape
-    // sequence are unaffected (string_content itself is the leaf there -
-    // see ClassifiesFStringInterpolation's "hi " below).
+TEST(SyntaxParsePythonTest, ClassifiesStringWithEscapeSequenceAsOneMergedToken) {
+    // s = "hi\n" - until Phase 7n1 this was a KNOWN, ACCEPTED gap: when
+    // string_content contains an escape_sequence child, tree-sitter-python
+    // does NOT emit a separate leaf for the plain-text run sharing that
+    // string_content span ("hi" here) - only the escape_sequence itself is
+    // a leaf, so the original child_count()==0-only walk left "hi"
+    // uncolored. Phase 7n1's isAtomicNode() generalization (added for
+    // tree-sitter-rust's non-leaf line_comment/block_comment - see
+    // namedLeafKindsForRust()'s comment) treats ANY named node whose type
+    // has a LeafKindTable entry as atomic, and "string_content" already had
+    // one (for the no-escape-sequence case below) - so this non-leaf
+    // string_content now also stops descent and colors its WHOLE span
+    // ("hi\n", escape sequence included) as one String token instead of
+    // leaving a gap. An accidental but genuine improvement, not a deliberate
+    // Phase 7n1 goal - documented here so it isn't mistaken for a regression.
     const std::vector<Token> tokens = parsePython(u"s = \"hi\\n\"\n");
     ASSERT_EQ(tokens.size(), 5u);
     EXPECT_EQ(tokens[0].kind, TokenKind::Variable);   // s
@@ -189,8 +199,8 @@ TEST(SyntaxParsePythonTest, ClassifiesStringWithEscapeSequenceLeavesPlainRunUnco
     EXPECT_EQ(tokens[2].kind, TokenKind::String);    // opening quote (string_start)
     EXPECT_EQ(tokens[2].range.start, 4u);
     EXPECT_EQ(tokens[2].range.end, 5u);
-    EXPECT_EQ(tokens[3].kind, TokenKind::String);    // \n (escape_sequence)
-    EXPECT_EQ(tokens[3].range.start, 7u);
+    EXPECT_EQ(tokens[3].kind, TokenKind::String);    // "hi\n" (string_content, now merged whole)
+    EXPECT_EQ(tokens[3].range.start, 5u);
     EXPECT_EQ(tokens[3].range.end, 9u);
     EXPECT_EQ(tokens[4].kind, TokenKind::String);    // closing quote (string_end)
 }
@@ -292,6 +302,341 @@ TEST(SyntaxParsePythonTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
     }
 }
 
+// Phase 7n1 (batch 1: C/JavaScript/Java/Go/Rust/Json). Every expectation
+// below was cross-checked against real tree-sitter output for that grammar
+// via a standalone probe before being written (CLAUDE.md rule 3), same
+// methodology as Phase 7a/7d above.
+
+TEST(SyntaxParseCTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseC(u"").empty());
+}
+
+TEST(SyntaxParseCTest, ClassifiesTypeIdentifierNumberAndPunctuation) {
+    // C shares tree-sitter-cpp's primitive_type/identifier/number_literal
+    // node names for this shape (verified via probe) - same token sequence
+    // as SyntaxParseCppTest.ClassifiesTypeIdentifierNumberAndPunctuation.
+    const std::vector<Token> tokens = parseC(u"int x = 42;");
+    ASSERT_EQ(tokens.size(), 5u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Type);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Variable);
+    EXPECT_EQ(tokens[2].kind, TokenKind::Punctuation);
+    EXPECT_EQ(tokens[3].kind, TokenKind::Number);
+    EXPECT_EQ(tokens[4].kind, TokenKind::Punctuation);
+}
+
+TEST(SyntaxParseCTest, ClassifiesLineAndBlockComment) {
+    EXPECT_EQ(parseC(u"// hello\n").size(), 1u);
+    EXPECT_EQ(parseC(u"// hello\n")[0].kind, TokenKind::Comment);
+    const std::vector<Token> block = parseC(u"/* a\nb */");
+    ASSERT_EQ(block.size(), 1u);
+    EXPECT_EQ(block[0].kind, TokenKind::Comment);
+}
+
+TEST(SyntaxParseCTest, ClassifiesPreprocessorInclude) {
+    const std::vector<Token> tokens = parseC(u"#include <stdio.h>\n");
+    ASSERT_EQ(tokens.size(), 2u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Preprocessor);  // "#include" anonymous token
+    EXPECT_EQ(tokens[1].kind, TokenKind::String);         // system_lib_string
+}
+
+TEST(SyntaxParseCTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseC(u"int main( {{{ ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseCTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseC(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);  // excludes trailing \n
+}
+
+TEST(SyntaxParseCTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::vector<Token> tokens = parseC(u"int main(void) { return 0; }");
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseJavaScriptTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseJavaScript(u"").empty());
+}
+
+TEST(SyntaxParseJavaScriptTest, ClassifiesLineAndBlockComment) {
+    EXPECT_EQ(parseJavaScript(u"// hello\n")[0].kind, TokenKind::Comment);
+    EXPECT_EQ(parseJavaScript(u"/* a\nb */")[0].kind, TokenKind::Comment);
+}
+
+TEST(SyntaxParseJavaScriptTest, ClassifiesStringWithEscapeSequence) {
+    // "hi\n" -> string(open) string_fragment(hi) escape_sequence(\n) string(close)
+    const std::vector<Token> tokens = parseJavaScript(u"\"hi\\n\"");
+    ASSERT_EQ(tokens.size(), 4u);
+    for (const Token& token : tokens) {
+        EXPECT_EQ(token.kind, TokenKind::String);
+    }
+}
+
+TEST(SyntaxParseJavaScriptTest, ClassifiesNumberAndIdentifier) {
+    const std::vector<Token> tokens = parseJavaScript(u"let n = 42.5;");
+    // let(Keyword, anonymous+alpha) n(Variable) =(Punctuation) 42.5(Number) ;(Punctuation)
+    ASSERT_EQ(tokens.size(), 5u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Keyword);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Variable);
+    EXPECT_EQ(tokens[3].kind, TokenKind::Number);
+}
+
+TEST(SyntaxParseJavaScriptTest, ClassifiesTrueFalseNullUndefinedThisAsKeyword) {
+    // Named leaf nodes (not anonymous), unlike most other keywords in this
+    // grammar - verified via probe (see namedLeafKindsForJavaScript()).
+    const std::vector<Token> t = parseJavaScript(u"true;false;null;undefined;this;");
+    ASSERT_EQ(t.size(), 10u);
+    EXPECT_EQ(t[0].kind, TokenKind::Keyword);
+    EXPECT_EQ(t[2].kind, TokenKind::Keyword);
+    EXPECT_EQ(t[4].kind, TokenKind::Keyword);
+    EXPECT_EQ(t[6].kind, TokenKind::Keyword);
+    EXPECT_EQ(t[8].kind, TokenKind::Keyword);
+}
+
+TEST(SyntaxParseJavaScriptTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseJavaScript(u"function( {{{ ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseJavaScriptTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseJavaScript(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);
+}
+
+TEST(SyntaxParseJavaScriptTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::vector<Token> tokens = parseJavaScript(u"function f(a) { return a + 1; }");
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseJavaTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseJava(u"").empty());
+}
+
+TEST(SyntaxParseJavaTest, ClassifiesLineAndBlockCommentAsDistinctNodeTypes) {
+    // Unlike Cpp/C/JavaScript/Go's single shared "comment" node type, Java's
+    // grammar splits line/block comments into two distinct named leaf types
+    // (verified via probe) - both still map to TokenKind::Comment.
+    EXPECT_EQ(parseJava(u"// hello\n")[0].kind, TokenKind::Comment);
+    EXPECT_EQ(parseJava(u"/* a\nb */")[0].kind, TokenKind::Comment);
+}
+
+TEST(SyntaxParseJavaTest, ClassifiesStringCharAndIntLiteral) {
+    const std::vector<Token> str = parseJava(u"\"hi\\n\"");
+    ASSERT_EQ(str.size(), 4u);  // open quote, string_fragment, escape_sequence, close quote
+    for (const Token& token : str) {
+        EXPECT_EQ(token.kind, TokenKind::String);
+    }
+    // Java's character_literal is ONE leaf (unlike C/C++'s quote+char+quote
+    // decomposition) - verified via probe.
+    const std::vector<Token> ch = parseJava(u"'x'");
+    ASSERT_EQ(ch.size(), 1u);
+    EXPECT_EQ(ch[0].kind, TokenKind::String);
+}
+
+TEST(SyntaxParseJavaTest, ClassifiesTypeIdentifierTrueFalseNullThis) {
+    const std::vector<Token> tokens = parseJava(u"String s = null; boolean b = true; Object o = this;");
+    const auto typeIt = std::ranges::find(tokens, TokenKind::Type, &Token::kind);
+    ASSERT_NE(typeIt, tokens.end());
+    const auto keywordCount =
+        std::ranges::count(tokens, TokenKind::Keyword, &Token::kind);
+    EXPECT_GE(keywordCount, 3);  // at least null/true/this
+}
+
+TEST(SyntaxParseJavaTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseJava(u"class Foo { void bar( {{{ ??? }");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseJavaTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseJava(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);
+}
+
+TEST(SyntaxParseJavaTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::vector<Token> tokens = parseJava(u"public class Foo { int x = 1; }");
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseGoTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseGo(u"").empty());
+}
+
+TEST(SyntaxParseGoTest, ClassifiesComment) {
+    EXPECT_EQ(parseGo(u"// hello\n")[0].kind, TokenKind::Comment);
+    EXPECT_EQ(parseGo(u"/* a\nb */")[0].kind, TokenKind::Comment);
+}
+
+TEST(SyntaxParseGoTest, ClassifiesInterpretedAndRawStringLiterals) {
+    const std::vector<Token> interpreted = parseGo(u"\"hi\\n\"");
+    ASSERT_EQ(interpreted.size(), 4u);  // open quote, content, escape_sequence, close quote
+    for (const Token& token : interpreted) {
+        EXPECT_EQ(token.kind, TokenKind::String);
+    }
+    const std::vector<Token> raw = parseGo(u"`raw`");
+    ASSERT_EQ(raw.size(), 3u);  // open backtick, raw_string_literal_content, close backtick
+    for (const Token& token : raw) {
+        EXPECT_EQ(token.kind, TokenKind::String);
+    }
+}
+
+TEST(SyntaxParseGoTest, ClassifiesPackageAndTypeIdentifierAsType) {
+    const std::vector<Token> tokens = parseGo(u"package main\ntype Point struct { X int }\n");
+    ASSERT_GE(tokens.size(), 2u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Type);  // package_identifier "main"
+    const auto typeIt = std::ranges::find(tokens, TokenKind::Type, &Token::kind);
+    ASSERT_NE(typeIt, tokens.end());
+}
+
+TEST(SyntaxParseGoTest, ClassifiesTrueFalseNilAsKeyword) {
+    const std::vector<Token> tokens = parseGo(u"package main\nvar x = true\nvar y = false\nvar z = nil\n");
+    const auto keywordCount = std::ranges::count(tokens, TokenKind::Keyword, &Token::kind);
+    EXPECT_GE(keywordCount, 3);
+}
+
+TEST(SyntaxParseGoTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseGo(u"func main( {{{ ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseGoTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseGo(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);
+}
+
+TEST(SyntaxParseGoTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::vector<Token> tokens = parseGo(u"package main\nfunc main() { x := 1 }\n");
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseRustTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseRust(u"").empty());
+}
+
+TEST(SyntaxParseRustTest, ClassifiesLineAndBlockCommentAsOneAtomicTokenEach) {
+    // The critical regression test for this batch (see
+    // namedLeafKindsForRust()'s and isAtomicNode()'s comments): tree-sitter-
+    // rust's line_comment/block_comment are NOT leaf nodes (they wrap
+    // anonymous "//"/"/*"+"*/"" delimiter children with the body text
+    // uncaptured by any child) - without the isAtomicNode() generalization,
+    // this would produce a stray Punctuation token for just the delimiter
+    // and silently drop the comment body from the token stream entirely.
+    const std::vector<Token> line = parseRust(u"// hello\n");
+    ASSERT_EQ(line.size(), 1u);
+    EXPECT_EQ(line[0].kind, TokenKind::Comment);
+    EXPECT_EQ(line[0].range.start, 0u);
+    EXPECT_EQ(line[0].range.end, 8u);  // covers the WHOLE "// hello", not just "//"
+
+    const std::vector<Token> block = parseRust(u"/* a\nb */");
+    ASSERT_EQ(block.size(), 1u);
+    EXPECT_EQ(block[0].kind, TokenKind::Comment);
+    EXPECT_EQ(block[0].range.start, 0u);
+    EXPECT_EQ(block[0].range.end, 9u);  // covers the WHOLE "/* a\nb */"
+}
+
+TEST(SyntaxParseRustTest, ClassifiesStringCharAndNumberLiterals) {
+    const std::vector<Token> str = parseRust(u"\"hi\\n\"");
+    ASSERT_EQ(str.size(), 4u);  // open quote, string_content, escape_sequence, close quote
+    for (const Token& token : str) {
+        EXPECT_EQ(token.kind, TokenKind::String);
+    }
+    const std::vector<Token> ch = parseRust(u"'x'");
+    ASSERT_EQ(ch.size(), 1u);  // char_literal is a single leaf (verified via probe)
+    EXPECT_EQ(ch[0].kind, TokenKind::String);
+    const std::vector<Token> num = parseRust(u"let n: i32 = 42;");
+    const auto numberIt = std::ranges::find(num, TokenKind::Number, &Token::kind);
+    ASSERT_NE(numberIt, num.end());
+    const auto typeIt = std::ranges::find(num, TokenKind::Type, &Token::kind);
+    ASSERT_NE(typeIt, num.end());  // i32 (primitive_type)
+}
+
+TEST(SyntaxParseRustTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseRust(u"fn main( {{{ ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseRustTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseRust(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    // The atomic-comment-node span includes the trailing \n here since
+    // line_comment's own node range (unlike C++/Python's leaf `comment`)
+    // extends to just before the newline the same way - confirmed via probe
+    // that this matches the other languages' "excludes trailing \n" shape.
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);
+}
+
+TEST(SyntaxParseRustTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::vector<Token> tokens = parseRust(u"// leading comment\nfn main() { let x = 1; }\n");
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start)
+            << "token " << i - 1 << " overlaps token " << i;
+    }
+}
+
+TEST(SyntaxParseJsonTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseJson(u"").empty());
+}
+
+TEST(SyntaxParseJsonTest, ClassifiesStringNumberAndLiterals) {
+    const std::vector<Token> tokens =
+        parseJson(u"{\"a\": \"b\", \"n\": 42, \"ok\": true, \"bad\": false, \"z\": null}");
+    const auto stringIt = std::ranges::find(tokens, TokenKind::String, &Token::kind);
+    ASSERT_NE(stringIt, tokens.end());
+    const auto numberIt = std::ranges::find(tokens, TokenKind::Number, &Token::kind);
+    ASSERT_NE(numberIt, tokens.end());
+    const auto keywordCount = std::ranges::count(tokens, TokenKind::Keyword, &Token::kind);
+    EXPECT_EQ(keywordCount, 3);  // true, false, null
+}
+
+TEST(SyntaxParseJsonTest, ClassifiesNestedArrayAndObject) {
+    const std::vector<Token> tokens = parseJson(u"{\"list\": [1, 2, {\"n\": 3}]}");
+    const auto numberCount = std::ranges::count(tokens, TokenKind::Number, &Token::kind);
+    EXPECT_EQ(numberCount, 3);  // 1, 2, 3
+}
+
+TEST(SyntaxParseJsonTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseJson(u"{\"a\": ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseJsonTest, HandlesJapaneseStringContentWithCorrectUtf16Ranges) {
+    // JSON has no comments - exercise the same UTF-16 range correctness
+    // concern via a string value instead.
+    const std::u16string source = u"{\"s\": \"日本語\"}";
+    const std::vector<Token> tokens = parseJson(source);
+    const auto stringIt = std::ranges::find_if(
+        tokens, [&](const Token& t) { return t.kind == TokenKind::String && t.range.end - t.range.start == 3; });
+    ASSERT_NE(stringIt, tokens.end());
+}
+
+TEST(SyntaxParseJsonTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::vector<Token> tokens = parseJson(u"{\"a\": [1, 2], \"b\": {\"c\": true}}");
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
 TEST(SyntaxParseDispatcherTest, ParseWithCppLanguageMatchesParseCpp) {
     const std::u16string source = u"int x = 42; // comment\n";
     EXPECT_EQ(parse(source, Language::Cpp), parseCpp(source));
@@ -300,6 +645,36 @@ TEST(SyntaxParseDispatcherTest, ParseWithCppLanguageMatchesParseCpp) {
 TEST(SyntaxParseDispatcherTest, ParseWithPythonLanguageMatchesParsePython) {
     const std::u16string source = u"def foo(): return 42\n";
     EXPECT_EQ(parse(source, Language::Python), parsePython(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithCLanguageMatchesParseC) {
+    const std::u16string source = u"int x = 42; // comment\n";
+    EXPECT_EQ(parse(source, Language::C), parseC(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithJavaScriptLanguageMatchesParseJavaScript) {
+    const std::u16string source = u"function f() { return 42; }\n";
+    EXPECT_EQ(parse(source, Language::JavaScript), parseJavaScript(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithJavaLanguageMatchesParseJava) {
+    const std::u16string source = u"class Foo { int x = 42; }\n";
+    EXPECT_EQ(parse(source, Language::Java), parseJava(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithGoLanguageMatchesParseGo) {
+    const std::u16string source = u"package main\nfunc main() {}\n";
+    EXPECT_EQ(parse(source, Language::Go), parseGo(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithRustLanguageMatchesParseRust) {
+    const std::u16string source = u"fn main() { let x = 42; }\n";
+    EXPECT_EQ(parse(source, Language::Rust), parseRust(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithJsonLanguageMatchesParseJson) {
+    const std::u16string source = u"{\"a\": 42}";
+    EXPECT_EQ(parse(source, Language::Json), parseJson(source));
 }
 
 }  // namespace

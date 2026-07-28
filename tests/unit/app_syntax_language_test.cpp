@@ -55,4 +55,41 @@ TEST(DetectLanguageTest, RejectsEmptyPath) {
     EXPECT_EQ(detectLanguage(std::filesystem::path()), std::nullopt);
 }
 
+// Phase 7n1.
+
+TEST(DetectLanguageTest, RecognizesC) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.c")), Language::C);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.C")), Language::C);
+}
+
+TEST(DetectLanguageTest, RecognizesAllJavaScriptExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.js")), Language::JavaScript);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.mjs")), Language::JavaScript);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.cjs")), Language::JavaScript);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.JS")), Language::JavaScript);
+}
+
+TEST(DetectLanguageTest, RecognizesJava) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"Foo.java")), Language::Java);
+}
+
+TEST(DetectLanguageTest, RecognizesGo) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.go")), Language::Go);
+}
+
+TEST(DetectLanguageTest, RecognizesRust) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.rs")), Language::Rust);
+}
+
+TEST(DetectLanguageTest, RecognizesJson) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.json")), Language::Json);
+}
+
+TEST(DetectLanguageTest, HeaderExtensionStillMapsToCppNotC) {
+    // Deliberate, documented ambiguity (see detectLanguage()'s header
+    // comment) - .h stays Cpp even though C projects use it too, preserving
+    // the Phase 7d behavior rather than splitting it out to C.
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.h")), Language::Cpp);
+}
+
 }  // namespace

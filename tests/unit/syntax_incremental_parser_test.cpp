@@ -296,4 +296,32 @@ TEST(SyntaxIncrementalParserTest, PythonEditInMiddleOfLargerDocumentReusesSurrou
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parsePython(newText));
 }
 
+// Phase 7n1: proves the incremental path is genuinely generic across
+// languages added in this batch, not just Cpp/Python - Rust specifically
+// exercises isAtomicNode()'s new branch (line_comment is a non-leaf atomic
+// node, see namedLeafKindsForRust()'s comment) inside walkTreeIncremental(),
+// which is a SEPARATE code path from walkTree()'s full-parse walk that
+// syntax_syntax_test.cpp's Rust comment test already covers - both needed
+// the same fix, but only a test that exercises reparse() with edits proves
+// the incremental one actually got it too.
+TEST(SyntaxIncrementalParserTest, RustEditNearACommentReusesSurroundingTokensAndKeepsCommentAtomic) {
+    using neomifes::syntax::parseRust;
+    IncrementalParser parser(Language::Rust);
+    const std::u16string oldText =
+        u"// leading comment\n"
+        u"fn main() {\n"
+        u"    let x = 1;\n"
+        u"}\n";
+    (void)parser.reparse(oldText, {});
+
+    const std::u16string newText =
+        u"// leading comment\n"
+        u"fn main() {\n"
+        u"    let x = 100;\n"
+        u"}\n";
+    const std::size_t startPos = oldText.find(u"1;");
+    const ReparseEdit edit     = buildEdit(oldText, newText, startPos, startPos + 1, startPos + 3);
+    EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseRust(newText));
+}
+
 }  // namespace
