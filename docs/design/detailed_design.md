@@ -2274,6 +2274,31 @@ void drawStickyScroll(ID2D1DeviceContext6& dc) noexcept;
 
 **スコープ外(意図的、後続サブフェーズへ):** ネストした複数regionのスタック表示、Sticky scroll行のシンタックスハイライト、行クリックでのジャンプ機能。詳細は`master_roadmap.md` §7参照。
 
+### 10.18 LineIndex インクリメンタル更新 (Phase 7p実装、性能リグレッション修正)
+
+Phase 7j〜7oの12コミットをまとめてpushした直後のCI (`gh run` 30367272798) が、`Build & Test (debug)`/`(release)`両ジョブとも`neomifes_core_bench.exe`実行中に停止したまま進まなくなり、6時間のジョブ上限でキャンセルされた。原因はPhase 7k (`document::EditDelta`導入) が`Document::insertText()`/`eraseRange()`/`replaceRange()`の中で編集の都度`offsetToLine()`を呼ぶようになったことで、`m_lineIndexDirty = true`をセットした直後にこれを呼ぶため**1回の編集ごとに必ず1回`LineIndex::build()`のO(文書長)フルスキャンが発生**するようになっていた。`BM_UndoStack_PushOneMillion`(100万回の逐次`insertText()`)はこれによりΣi (i=1..1,000,000) ≈ 5×10¹¹相当のO(N²)となり実質ハングしていた。詳細な経緯・実測値は[`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md)の追記セクション参照。
+
+```cpp
+// line_index.h — 新設 (「案C」、issue docの既存提案を採用)
+
+// O(pos以降の行数 + textの改行数) - build()と違い文書全体を再走査しない。
+// 文書末尾への挿入(タイピング・逐次追記の典型パターン)では実質O(1)。
+void applyInsert(TextPos pos, std::u16string_view text);
+
+// 同上の増分更新版erase。(range.start, range.end]内のline-startを削除し、
+// range.end以降をrange.length()分左シフトする。
+void applyErase(TextRange range);
+```
+
+`Document::insertText()`/`eraseRange()`/`replaceRange()`は`m_lineIndexDirty = true`をセットする代わりにこれらを直接呼ぶよう書き換えた(`replaceRange()`は`applyErase()`→`applyInsert()`の2段適用、`PieceTable::replace()`自身の「eraseしてからinsert」という意味論に合わせた)。結果、`m_lineIndexDirty`は構築直後の初回クエリでのみ意味を持ち、以降は`offsetToLine()`/`lineToOffset()`が常にO(log n)の二分探索で完結する。
+
+**実測値 (Release、ローカル):** `BM_UndoStack_PushOneMillion` 412.5ms (修正前: CI 6時間タイムアウトで未完走)、`BM_UndoStack_UndoOneMillion` 267.1ms。要件定義書§5「Undo: 100万回以上」の定量的な裏付けにもなった(CLAUDE.mdルール10)。
+
+**設計上の要点:**
+- **Documentの公開契約(`offsetToLine`/`lineToOffset`/`EditDelta`の値)は一切変更していない。** 既存の`DocumentEditDeltaTest`群がそのままオラクルとして機能し、全件無変更でパスすることを確認した
+- **`LineIndex`自体の`offsetToLine`/`lineToOffset`はO(log n)のまま変わらない。** 変わったのは「インデックスを最新に保つコスト」のみ。issue doc本来のスコープ(PieceTreeのツリー集約化によるオフセット↔行変換自体のO(log n)化、案A/B)は引き続き未着手
+- **正しさの検証は`build()`相当の期待値との手計算突合で行った。** `LineIndex`はDocument経由でしか外部から触れないため、`document_line_index_test.cpp`に境界条件(先頭/末尾/既存行頭ちょうど/複数改行の挿入、削除範囲が複数行頭をまたぐ/ちょうど行頭で終わる)を狙った12件を追加し、末尾への逐次1文字挿入という実際にハングを起こしたシナリオそのものも回帰テストとして固定した
+
 ---
 
 ## 11. ログ解析モード 詳細

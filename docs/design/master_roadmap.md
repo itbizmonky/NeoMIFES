@@ -226,7 +226,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7m | `ts_tree_get_changed_ranges()`によるトークン部分更新 (増分再解析の性能対応) | ✅ 完了 | §7 |
 | 7n1 | 追加言語対応 バッチ1 (C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 | §7 |
 | 7o | Sticky scroll | ✅ 完了 | §7 |
-| 7p〜 | 残り15言語 + ミニマップ + IncrementalParser差分返却化 | ⏭️ 次候補 | §7 |
+| 7p | LineIndexインクリメンタル更新 (`applyInsert`/`applyErase`、Phase 7k性能リグレッション修正) | ✅ 完了 | §7 |
+| 7q〜 | 残り15言語 + ミニマップ + IncrementalParser差分返却化 | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1202,6 +1203,20 @@ public:
 - **実アプリでの視覚確認は、対象ウィンドウへの合成キーボード入力(矢印キー・PageDown、いずれも修飾キー無し)が今回反応しなかったため断念した。** ウィンドウ所有プロセスIDの一致は`GetWindowThreadProcessId()`で確認済みで対象ウィンドウの取り違えではない — Phase 7l(スクリーンショットで何も見えない)・Phase 7n1(無関係なウィンドウを誤って撮影)に続き、今回は入力合成そのものが機能しないという3つ目の失敗モードが確認された。代替として、`setTopLine()`を直接呼ぶ統合テスト4件(帯の表示/非表示/折り畳みregion除外/ネスト内側region選択)とプロセス生存確認で検証した
 
 **スコープ外(意図的、後続サブフェーズへ):** ネストした複数regionのスタック表示(VSCode相当の「外側→内側を複数行積み上げる」表示)、Sticky scroll行のシンタックスハイライト、行クリックでのジャンプ機能、ミニマップ・残り15言語対応バッチ2・`IncrementalParser`差分返却化契約変更。詳細は`detailed_design.md` §10.17参照。
+
+### 実装後の確定事項/変更点 (2026-07-29、Phase 7p完了 — 性能リグレッション緊急修正)
+
+**新機能追加ではなく、Phase 7j〜7oの12コミットをまとめてpushした直後のCI失敗を受けた緊急のバグ修正。「次のPhaseへ進め」ではなくユーザーの「確認せよ」指示でCI状況を調べた結果、`Build & Test`両ジョブが6時間のジョブ上限でキャンセルされていたことが発端。**
+
+- **原因はPhase 7k (`document::EditDelta`導入) が持ち込んだ性能リグレッションだった。** `Document::insertText()`等が編集の都度`offsetToLine()`を呼ぶようになったことで、`m_lineIndexDirty = true`セット直後の呼び出しが毎回`LineIndex::build()`のO(文書長)フルスキャンを誘発していた。当時の設計判断(「RenderPipelineが毎フレーム払っていたコストの前倒しに過ぎない」)は、Document自身が高頻度に自己呼び出しする経路の存在を見落としていた
+- **`neomifes_core_bench.exe`の`BM_UndoStack_PushOneMillion`(既存、Phase 4完了時にADR-012の根拠として追加されたベンチ)がこの回帰を検出する形になった。** 100万回の逐次1文字挿入がΣi(i=1..1,000,000)≈5×10¹¹相当のO(N²)となり、CI上で実質ハングしていた
+- **[`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md)が2026-07-15時点で既に示唆していた「案C」(build()を全rebuildでなく変更範囲のみの差分更新にする)を採用した。** `LineIndex::applyInsert()`/`applyErase()`を新設し、`Document`の3変更メソッドが`m_lineIndexDirty`を立てる代わりにこれらを直接呼ぶよう書き換え、インデックスを常時クリーンに保つ設計にした。`Document`の公開契約(`offsetToLine`/`lineToOffset`/`EditDelta`の値)は一切変更していない
+- **実測値(Release、ローカル):** `BM_UndoStack_PushOneMillion` 412.5ms(修正前: CI 6時間タイムアウトで未完走)、`BM_UndoStack_UndoOneMillion` 267.1ms。CLAUDE.mdルール10(性能改善はベンチマーク根拠)・要件定義書§5「Undo: 100万回以上」の実測裏付けとなった
+- **Phase 7k〜7o時点のローカル検証(Debug/Release/ubsan/clang-tidy、各フェーズのセッションで実施済み)がこの回帰を捉えられなかった理由:** `core_undo_stack_bench.cpp`はCIの「ベンチマークスモーク実行」ステップでのみ実行され、`ctest`本体には含まれない(google-benchmark実行ファイルは`ctest`のテストケースとして登録されていない)。各フェーズのローカル検証では`ctest`を実行していたが、ベンチマークスモーク実行そのものは明示的に呼ばなければ走らないため、この回帰はローカルで再現されずCIで初めて顕在化した
+
+**教訓・再発防止:** 高頻度に呼ばれる可能性のあるコアAPI(`Document`の変更メソッド等)に新しい計算を追加する際は、「他のどこかで既に払われているコストの前倒し」という主張は、その計算の**呼び出し元自身が高頻度ループの内側にいないか**を必ず確認する。CIのベンチマークスモーク実行は`ctest`とは独立したステップであるため、性能に関わる変更をレビューする際は明示的にベンチマーク実行ファイルをローカルで走らせて確認する。
+
+**スコープ外(意図的):** `offsetToLine`/`lineToOffset`自体のO(log n)化(issue doc本来のスコープ、PieceTreeのツリー集約化=案A/B)は引き続き未着手。詳細は`detailed_design.md` §10.18参照。
 
 ---
 

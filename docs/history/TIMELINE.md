@@ -1984,4 +1984,34 @@ Phase 7n1完了後、ユーザーから「次のPhaseへ進め」と指示され
 
 **次回:** Phase 7oが完了した(コミット`2d6aa7e`、未push)。セッション冒頭でユーザーにpush指示を仰ぐこと。次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと — roadmap §7のv2.0差別化機能(ミニマップ以外: Breadcrumb/折り畳み/Indent guides/Sticky scroll)は全て完了した。この自動化環境の合成キーボード入力は今回信頼できなかったため、次回はまず簡単な疎通確認(単純な文字入力がドキュメントへ実際に反映されるか)から慎重に再試行すること。別タスク(spawn_task済み、task_e3df1519)として既存4オーバーレイの初期位置決めバグ修正が依然として残っている。
 
+## Session 60 (2026-07-29): pushせよ → CI失敗 → Phase 7p — LineIndexインクリメンタル更新(性能リグレッション緊急修正)
+
+前セッション(Session 59、Phase 7o完了)の続き。ユーザーから「pushせよ」と指示され、`git fetch`+`git log origin/main..HEAD`で確認したところPhase 7j〜7o(12コミット)が未pushだったため`git push`を実行、成功しCIトリガーを確認した(run 30367272798、queued)。続けて「確認せよ」と指示され、`gh run view`でCI状態を確認したところ、`Build & Test (debug)`/`(release)`両ジョブとも6時間のジョブ上限を超過してキャンセルされていた。
+
+**調査:** `gh run view --job=<id> --log`でログの末尾を確認したところ、`Benchmark smoke run`ステップの`neomifes_core_bench.exe`起動直後(`***WARNING*** Library was built as DEBUG`のログを最後に)、6時間後のキャンセルまで一切出力が無いことを発見した — `neomifes_core_bench.exe`のハングが原因と特定。中身(`core_undo_stack_bench.cpp`)を確認したところ、`BM_UndoStack_PushOneMillion`が`doc.insertText(doc.length(), "x")`を100万回ループする内容だった。
+
+`Document::insertText()`(Phase 7k、`document::EditDelta`導入)を読み返し、`m_pieceTable.insert()`直後に`m_lineIndexDirty = true`をセットし、その直後に`offsetToLine(newEnd)`を呼んでいることを発見した。`LineIndex::offsetToLine()`は`ensureLineIndex()`経由で、dirtyなら`LineIndex::build()`(全piece走査によるO(文書長)のフルスキャン)を実行する — つまり**編集の都度、必ず1回文書全体の行インデックス再構築が走る**設計になっていた。100万回の逐次1文字挿入でΣi(i=1..1,000,000)≈5×10¹¹相当のO(N²)となり、これがCIでのハングの原因と断定した。
+
+ユーザーに状況を報告し(AskUserQuestion)、修正の承認を得てから着手した。
+
+**設計・実装:** [`docs/issues/line_index_o_log_n.md`](../issues/line_index_o_log_n.md)(2026-07-15起票)が既に「案C: build()を全rebuildでなく変更範囲のみの差分更新にする」を将来の解決策として示唆していたことを確認し、これを採用した。`LineIndex::applyInsert(pos, text)`/`applyErase(range)`を新設 — `upper_bound`で影響範囲の分割点を求め、それ以降の`m_lineStarts`要素をシフトし、新規/削除された改行位置だけを挿入/削除する、O(pos以降の行数+編集サイズ)の増分更新。`Document::insertText()`/`eraseRange()`/`replaceRange()`は`m_lineIndexDirty = true`の代わりにこれらを直接呼ぶよう書き換え、`replaceRange()`は`applyErase()`→`applyInsert()`の2段適用とした(`PieceTable::replace()`自身の「eraseしてからinsert」という意味論に合わせた)。`Document`の公開契約(`offsetToLine`/`lineToOffset`/`EditDelta`の値)は一切変更していない。
+
+一度、`applyInsert`/`applyErase`が正しく動いても「次のinsertTextの`startLine`計算がdirtyフラグにより再度フルリビルドを誘発するのでは」と疑い設計を再検討したが、実際には`m_lineIndexDirty`を一切trueにセットしない(常時クリーンに保つ)設計にしたため、この懸念は該当しないことをコード読解で確認した。
+
+**テスト:** `document_line_index_test.cpp`に12件追加(末尾への逐次挿入=実際にハングを起こしたパターンそのもの、先頭挿入、既存行頭ちょうどへの挿入、複数改行の挿入、削除範囲が複数行頭をまたぐ/ちょうど行頭で終わる、replaceの複合適用)。各期待値は手計算で文字列を1文字ずつ数えて検証し、うち1箇所(コメントの記述ミス、「offset8は文字'b'」→正しくは文書末尾)を自己修正した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全784件pass(新規12件含む)
+- **実測: `BM_UndoStack_PushOneMillion` 412.5ms、`BM_UndoStack_UndoOneMillion` 267.1ms(Release、ローカル)。** 修正前はCI 6時間タイムアウトで未完走だったため、定性的にも定量的にも劇的な改善
+- clang-tidy: 実装ファイル(`line_index.cpp`/`document.cpp`)新規警告0。テストファイルの`hicpp-uppercase-literal-suffix`警告(`0u`等の小文字サフィックス)は、既に変更していない`document_document_test.cpp`でも46件出ることを確認し、既存コードベース全体に共通する既知パターンであって新規指摘ではないと判断した
+- 「ローカル検証(Debug/Release/ubsan/clang-tidy)がなぜPhase 7k〜7oの各セッションでこの回帰を捉えられなかったか」を`tests/bench/CMakeLists.txt`で確認したところ、`core_undo_stack_bench`は`add_executable`のみで`add_test`が無く、`ctest`には登録されていないと判明した。CIの「ベンチマークスモーク実行」ステップ(PowerShellで`--benchmark_min_time=0.01s`により明示的に実行)のみがこれを走らせており、`ctest`単体では検出できない設計だったことを確認した
+
+**ドキュメント同期:**
+- `docs/issues/line_index_o_log_n.md`に経緯・実測値・「案C適用済み、案A/Bは引き続き未着手」を追記
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7p ✅完了」行(次候補は7qへ繰り下げ)、§7に「実装後の確定事項/変更点(2026-07-29、Phase 7p完了)」小節を新設(教訓・再発防止を含む)
+- `docs/design/detailed_design.md`に新規§10.18を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表(Phase 7e〜7oを「未push」→「push済み」に一括修正、Phase 7p行を追加)、§3.39〜3.49の各完了記録末尾の「未push」表記をpush済みへ更新、新規§3.50(完了記録)、§6推奨プロンプトを現状に合わせて全面更新(「まずPhase 7pをpushしてCI greenを確認すること」を最優先アクションとして明記)
+
+**次回:** Phase 7pはコミット済み・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(残り15言語対応バッチ2・ミニマップ・`IncrementalParser`契約変更)に着手しないこと。今回の教訓(高頻度呼び出しループの内側に新しい計算を追加する際は「他で既に払われているコストの前倒し」という主張の妥当性を必ず疑うこと、CIのベンチマークスモーク実行は`ctest`と独立していること)は`reference_windows_cpp_ci_gotchas.md`にも追記する。
+
 <!-- 次セッションはここに追記 -->

@@ -1,6 +1,7 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-28 (Phase 5b3a〜Phase 5c5・Phase 6a〜6d・Phase 7a〜7d(構文解析エンジン選定+tree-sitter導入+C++単一言語ヘッドレスPoC §3.35、C++シンタックスハイライトのRenderPipeline統合 §3.36、非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応: Python追加+言語ディスパッチ機構の一般化 §3.38)は全てpush済み・CI green確認済み(run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess、1h23m17s)。**Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49)はローカル検証・コミット完了・未push** (詳細は下表参照)
+> **最終更新:** 2026-07-29 (Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49)は`git push`実行済み(コミット`bf6c8cd`〜`4651842`、12コミット一括)だが、直後のCI (run [30367272798](https://github.com/itbizmonky/NeoMIFES/actions/runs/30367272798)) が`Build & Test (debug)`/`(release)`両ジョブとも6時間のジョブ上限でキャンセルされた。原因調査の結果Phase 7k (`document::EditDelta`) が持ち込んだ性能リグレッション(編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまう)と判明し、Phase 7pとして緊急修正(詳細は§3.50)。**Phase 7pはローカル検証・コミット完了・未push、pushしたらCI再確認が必須**)
+> ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
 > **本ファイルは毎セッション終了時に全文点検し、完了済み手順や重複する次アクションを削除・更新すること** (CLAUDE.md §11 セッション終了時チェックリスト参照)。
@@ -70,18 +71,19 @@
 | Phase 7b (C++シンタックスハイライトのRenderPipeline統合、実際に色付け表示) | ✅ 完了 (push済み、§3.36参照) |
 | Phase 7c (非同期シンタックス再解析: `render::SyntaxWorker`、本プロジェクト初のstd::thread) | ✅ 完了 (push済み、§3.37参照) |
 | Phase 7d (シンタックス多言語対応: Python追加 + 言語ディスパッチ機構の一般化) | ✅ 完了 (push済み、§3.38参照) |
-| Phase 7e (Indent guides、インデントガイド) | ✅ 完了 (**未push**、§3.39参照) |
-| Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) | ✅ 完了 (**未push**、§3.40参照) |
-| Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 (**未push**、§3.41参照) |
-| Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) | ✅ 完了 (**未push**、§3.42参照) |
-| Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) | ✅ 完了 (**未push**、§3.43参照) |
-| Phase 7j (折り畳み ガター+/-クリックトグル: `hitTestFoldMarker()`) | ✅ 完了 (**未push**、§3.44参照) |
-| Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 (**未push**、§3.45参照) |
-| Phase 7l (真の増分再解析の SyntaxWorker 統合: edits蓄積キュー+RenderPipeline配線) | ✅ 完了 (**未push**、§3.46参照) |
-| Phase 7m (`ts_tree_get_changed_ranges()`によるトークン部分更新、増分再解析の性能対応) | ✅ 完了 (**未push**、§3.47参照) |
-| Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (**未push**、§3.48参照) |
-| Phase 7o (Sticky scroll) | ✅ 完了 (**未push**、§3.49参照) |
-| **次フェーズ選定 — 残り21言語/ミニマップ/sticky scroll/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7e (Indent guides、インデントガイド) | ✅ 完了 (push済み、§3.39参照) |
+| Phase 7f (アウトライン抽出: `syntax::extractOutline()`、ヘッドレス) | ✅ 完了 (push済み、§3.40参照) |
+| Phase 7g (アウトラインUI統合: `ui::OutlinePane`、WC_TREEVIEW、Ctrl+Shift+O) | ✅ 完了 (push済み、§3.41参照) |
+| Phase 7h (Breadcrumb: カーソル位置のシンボルパス表示) | ✅ 完了 (push済み、§3.42参照) |
+| Phase 7i (折り畳み コア基盤: `core::FoldingModel`、キーボードトグルのみ) | ✅ 完了 (push済み、§3.43参照) |
+| Phase 7j (折り畳み ガター+/-クリックトグル: `hitTestFoldMarker()`) | ✅ 完了 (push済み、§3.44参照) |
+| Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) | ✅ 完了 (push済み、§3.45参照) |
+| Phase 7l (真の増分再解析の SyntaxWorker 統合: edits蓄積キュー+RenderPipeline配線) | ✅ 完了 (push済み、§3.46参照) |
+| Phase 7m (`ts_tree_get_changed_ranges()`によるトークン部分更新、増分再解析の性能対応) | ✅ 完了 (push済み、§3.47参照) |
+| Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (push済み、§3.48参照) |
+| Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
+| Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (**未push**、§3.50参照) |
+| **次フェーズ選定 — 残り15言語/ミニマップ/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1137,7 +1139,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** アクティブガイドのスコープ全体ハイライト(`FoldingModel`実装後に再検討)、空行のガイド継承、タブ幅のユーザー設定UI、真の増分再解析・残り21言語・アウトライン/折り畳み・ミニマップ・Breadcrumb・Sticky scroll・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.7参照。
 
-**Phase 7eはコミット済み(`29e4473`/`dcfb6f1`)・未push。**
+**Phase 7eはコミット済み(`29e4473`/`dcfb6f1`)・push済み(2026-07-29、他11コミットと一括)。**
 
 ---
 
@@ -1175,7 +1177,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** `outline_pane`(WC_TREEVIEW UI)・`main.cpp`配線、Breadcrumb、折り畳み(`FoldingModel`)、テンプレート特殊化・ラムダ式・演算子オーバーロード等の複雑なC++宣言構文からの名前抽出、真の増分再解析・残り21言語・ミニマップ・Sticky scroll・Semantic highlighting。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.8参照。
 
-**Phase 7fはコミット済み(`0f54c73`/`7135b83`)・未push。**
+**Phase 7fはコミット済み(`0f54c73`/`7135b83`)・push済み(2026-07-29、他11コミットと一括)。**
 
 ---
 
@@ -1243,7 +1245,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** Breadcrumbクリックでのジャンプ・ドロップダウン、アウトライン抽出の非同期化、非対応言語ファイルでの代替表示。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.10参照。
 
-**Phase 7hはコミット済み(`853556b`)・未push。** 次フェーズはPhase 7i以降(残り21言語・真の増分再解析・折り畳み・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+**Phase 7hはコミット済み(`853556b`)・push済み(2026-07-29、他11コミットと一括)。**
 
 ---
 
@@ -1281,7 +1283,7 @@ Phase 6b1・6c1・6c2・6b2のpush・CI green確認後、ユーザーから「Ph
 
 **スコープ外(意図的、後続サブフェーズへ):** ガター+/-クリックでのトグル、`{}`ブレースマッチングによる任意ブロック折り畳み、折り畳み状態の永続化・Undo/Redo連動、毎編集ごとの折り畳み領域再計算、複数カーソル対応の折り畳みトグル。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.11参照。
 
-**Phase 7iはコミット済み(`0b01376`)・未push。**
+**Phase 7iはコミット済み(`0b01376`)・push済み(2026-07-29、他11コミットと一括)。**
 
 ---
 
@@ -1310,7 +1312,7 @@ Phase 7i完了・push・CI green確認後、ユーザーから「継続実施せ
 
 **スコープ外(意図的、後続サブフェーズへ):** マウスドラッグでの複数行一括トグル、フォールドマーカーのホバー時ビジュアルフィードバック、フォールドマーカークリック直後のドラッグ時のアンカー整合性改善。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.12参照。
 
-**Phase 7jはコミット済み(`bf6c8cd`)・未push。** これによりroadmap上の「折り畳み」機能(Phase 7i+7j)が名実ともに完結した。次フェーズはPhase 7k以降(残り21言語・真の増分再解析・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+**Phase 7jはコミット済み(`bf6c8cd`)・push済み(2026-07-29、他11コミットと一括)。** これによりroadmap上の「折り畳み」機能(Phase 7i+7j)が名実ともに完結した。
 
 ### 3.45 Phase 7k (真の増分再解析 コア基盤: `document::EditDelta` + `syntax::IncrementalParser`、ヘッドレス) 完了記録
 
@@ -1343,7 +1345,7 @@ Phase 7j完了後、ユーザーから「次に進め」と指示された。roa
 
 **スコープ外(意図的、Phase 7lへ):** `SyntaxWorker`への統合(キューモデルの置き換え)、`RenderPipeline::refreshDocumentCacheIfStale()`の書き換え、`ts_tree_get_changed_ranges()`を使った変更範囲限定トークン抽出、アウトライン抽出の増分化。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.13参照。
 
-**Phase 7kはコミット済み(`312a64c`/`3eaf7ab`)・未push。** 次フェーズはPhase 7l(SyntaxWorker統合)以降(残り21言語対応・ミニマップ・sticky scroll等)の詳細をPlan Modeで設計してから着手。
+**Phase 7kはコミット済み(`312a64c`/`3eaf7ab`)・push済み(2026-07-29、他11コミットと一括)。** ⚠️ このフェーズが持ち込んだ`document::EditDelta`計算方式が性能リグレッションの原因だったことが後日(Phase 7p、§3.50)判明した — `Document`の変更メソッドが編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまっていた。
 
 ### 3.46 Phase 7l (真の増分再解析の SyntaxWorker 統合) 完了記録
 
@@ -1380,7 +1382,7 @@ Phase 7k完了後、ユーザーから「次Phaseへ進め」と指示された�
 
 **スコープ外(意図的、後続サブフェーズへ):** `ts_tree_get_changed_ranges()`による変更範囲限定トークン抽出(`walkTree()`全件再構築の解消、roadmap §7.11のDoD「≤50ms」達成に必要)、アウトライン抽出の増分化、複数言語を同時に保持するワーカー設計。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.14参照。
 
-**Phase 7lはコミット済み(`437ac8d`)・未push。** roadmap上の「真の増分再解析」ラインはPhase 7k+7lで完結した(性能面のDoDは`ts_tree_get_changed_ranges()`対応待ち)。次フェーズは残り21言語対応・ミニマップ・Sticky scroll等の詳細をPlan Modeで設計してから着手。
+**Phase 7lはコミット済み(`437ac8d`)・push済み(2026-07-29、他11コミットと一括)。** roadmap上の「真の増分再解析」ラインはPhase 7k+7lで完結した(性能面のDoDは`ts_tree_get_changed_ranges()`対応待ち)。
 
 ### 3.47 Phase 7m (`ts_tree_get_changed_ranges()` によるトークン部分更新、増分再解析の性能対応) 完了記録
 
@@ -1415,7 +1417,7 @@ Phase 7l完了後、ユーザーから「次フェーズ着手せよ」と指示
 
 **スコープ外(意図的、後続サブフェーズへ):** `IncrementalParser`の公開契約を「差分のみ返却」へ変更する設計(真のO(編集サイズ)達成に必要、`SyntaxWorker`/`RenderPipeline`側のマージロジック新設を伴う大規模変更)、残り21言語対応、ミニマップ、Sticky scroll。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.15参照。
 
-**Phase 7mはコミット済み(`f4f1a40`+docs `b85865b`)・未push。** roadmap DoDはまだ未達だが、着手前の楽観的な想定を実測で検証し正直に修正できたことは、次にこの課題へ着手する際の設計判断(差分返却化が必須)を明確にした点で価値があった。**この次アクション自体は§3.48のPhase 7n1着手により実行済み** — 以降のセッションは残り15言語・ミニマップ/Sticky scroll・`IncrementalParser`契約変更のいずれかを、着手前にPlan Modeで詳細設計を起こすこと(§3.48末尾参照)。
+**Phase 7mはコミット済み(`f4f1a40`+docs `b85865b`)・push済み(2026-07-29、他11コミットと一括)。** roadmap DoDはまだ未達だが、着手前の楽観的な想定を実測で検証し正直に修正できたことは、次にこの課題へ着手する際の設計判断(差分返却化が必須)を明確にした点で価値があった。
 
 ---
 
@@ -1448,7 +1450,7 @@ Phase 7m完了後、ユーザーから「次のPhaseへ進め」と指示され�
 
 **スコープ外(意図的、後続バッチへ):** TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML/SAP ABAP、新6言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.16参照。
 
-**Phase 7n1はコミット済み(`3cc7c49`)・未push。** この次アクション自体は§3.49のPhase 7o(Sticky scroll)着手により実行済み — 以降のセッションは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれかを、着手前にPlan Modeで詳細設計を起こすこと。
+**Phase 7n1はコミット済み(`3cc7c49`)・push済み(2026-07-29、他11コミットと一括)。**
 
 ---
 
@@ -1478,7 +1480,34 @@ Phase 7n1完了後、ユーザーから「次のPhaseへ進め」と指示され
 
 **スコープ外(意図的、後続サブフェーズへ):** ネストした複数regionのスタック表示、Sticky scroll行のシンタックスハイライト、行クリックでのジャンプ機能。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.17参照。
 
-**Phase 7oはコミット済み(`2d6aa7e`)・未push。** 次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+**Phase 7oはコミット済み(`2d6aa7e`)・push済み(2026-07-29、他11コミットと一括)。**
+
+---
+
+### 3.50 Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) 完了記録
+
+Phase 7j〜7o(12コミット)をまとめてpushした直後、ユーザーの「確認せよ」指示でCI (run [30367272798](https://github.com/itbizmonky/NeoMIFES/actions/runs/30367272798)) の状態を確認したところ、`Build & Test (debug)`/`(release)`両ジョブとも`neomifes_core_bench.exe`実行中に停止したまま6時間のジョブ上限でキャンセルされていた。新機能追加ではなく、この障害の原因調査と緊急修正のフェーズ。
+
+**原因:** Phase 7k(`document::EditDelta`導入、§3.45)が`Document::insertText()`/`eraseRange()`/`replaceRange()`の中で編集の都度`offsetToLine()`を呼ぶようになったが、`m_lineIndexDirty = true`をセットした直後にこれを呼んでいたため、**1回の編集ごとに必ず1回`LineIndex::build()`のO(文書長)フルスキャンが発生**するようになっていた。既存ベンチ`BM_UndoStack_PushOneMillion`(100万回の逐次`insertText()`、Phase 4のADR-012根拠)がこれをΣi(i=1..1,000,000)≈5×10¹¹相当のO(N²)として顕在化させ、CI上で実質ハングした。ローカル検証(Debug/Release/ubsan/clang-tidy、Phase 7k〜7o各セッションで実施済み)がこれを捉えられなかったのは、`core_undo_stack_bench.exe`が`ctest`に登録されておらず(CIの「ベンチマークスモーク実行」ステップのみが実行)、`ctest`単体では走らないため。
+
+**対応(issue doc [`line_index_o_log_n.md`](../issues/line_index_o_log_n.md)が既に示唆していた「案C」を採用):** `LineIndex::applyInsert()`/`applyErase()`を新設し、`build()`によるフル再構築の代わりに影響を受ける`m_lineStarts`要素だけをシフト/挿入/削除する。`Document`の3変更メソッドは`m_lineIndexDirty = true`をセットする代わりにこれらを直接呼ぶよう書き換え、インデックスを常時クリーンに保つ。公開契約(`offsetToLine`/`lineToOffset`/`EditDelta`の値)は無変更。
+
+**テスト:** `document_line_index_test.cpp`に12件追加(先頭/末尾/既存行頭ちょうどへの挿入、複数改行の挿入、削除範囲が複数行頭をまたぐ/ちょうど行頭で終わる、replaceの複合適用)。実際にハングを起こした「末尾への逐次1文字挿入」パターンも回帰テストとして固定。
+
+**実測値(Release、ローカル):** `BM_UndoStack_PushOneMillion` 412.5ms(修正前: CI 6時間タイムアウトで未完走)、`BM_UndoStack_UndoOneMillion` 267.1ms。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全784件pass(新規12件含む)。clang-tidy: 実装ファイル(`line_index.cpp`/`document.cpp`)新規警告0(テストファイルの`hicpp-uppercase-literal-suffix`警告は既存の全テストファイル共通の既知パターンであることを`document_document_test.cpp`で確認済み、新規指摘ではない)
+
+**完了条件:**
+- [x] `BM_UndoStack_PushOneMillion`がCIのジョブ上限内(6時間)で完走することを実測で確認(412.5ms)
+- [x] 既存`DocumentEditDeltaTest`群(公開契約のオラクル)が無変更で全件pass
+- [x] `LineIndex`の境界条件(先頭/末尾/行頭ちょうど/複数改行/削除範囲境界)をテストで固定
+- [ ] pushしてCIが実際にgreenになることの確認(次アクション、下記参照)
+
+**スコープ外(意図的):** `offsetToLine`/`lineToOffset`自体のO(log n)化(issue doc本来のスコープ、案A/B、PieceTreeのツリー集約化)は引き続き未着手。詳細は`detailed_design.md` §10.18参照。
+
+**Phase 7pはコミット済み・未push。** 次アクションは**まずpushしてCIが実際にgreenになることを確認する**こと(前回のpushがまさにこのフェーズを引き起こしたため、次回セッション冒頭で真っ先に確認)。CI greenを確認できたら、次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
 ---
 
@@ -1527,30 +1556,24 @@ Phase 7n1完了後、ユーザーから「次のPhaseへ進め」と指示され
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-**Phase 7a〜7d(構文解析エンジン選定 §3.35、C++シンタックスハイライト統合 §3.36、
-非同期シンタックス再解析 Syntax Worker Thread §3.37、シンタックス多言語対応:Python追加+
-言語ディスパッチ機構の一般化 §3.38)は全て完了・push済み・CI green確認済み**
-(2026-07-24、run 30095471821、release/debug/UBSan/clang-tidy 全4ジョブsuccess)。
-**Phase 7e(Indent guides、§3.39参照)・Phase 7f(アウトライン抽出、§3.40参照)・
-Phase 7g(アウトラインUI統合、§3.41参照)・Phase 7h(Breadcrumb、§3.42参照)・
-Phase 7i(折り畳みコア基盤、§3.43参照)・Phase 7j(折り畳みガタークリックトグル、§3.44参照)・
-Phase 7k(真の増分再解析コア基盤、ヘッドレス、§3.45参照)・
-Phase 7l(真の増分再解析のSyntaxWorker統合、§3.46参照)・
-Phase 7m(`ts_tree_get_changed_ranges()`によるトークン部分更新、§3.47参照)・
-Phase 7n1(追加言語対応バッチ1: C/JavaScript/Java/Go/Rust/JSON、§3.48参照)・
-Phase 7o(Sticky scroll、§3.49参照)は
-ローカル検証・コミット(`29e4473`/`dcfb6f1`/`0f54c73`/`7135b83`/`3c99cf6`/`e75bead`/
-`853556b`/`0b01376`/`bf6c8cd`/`312a64c`/`3eaf7ab`/`437ac8d`/`f4f1a40`/`b85865b`/
-`3cc7c49`/`2d6aa7e`)完了・未push。**
-**Phase 7mでroadmap DoD「≤50ms」はまだ未達 — `IncrementalParser`の公開契約を
-「差分のみ返却」へ変更する大規模改修が必要と判明した(§3.47参照)、性能面の
-「漸近的改善」ではなく「定数倍改善」に留まったことをベンチマーク実測で確認済み。**
-**Phase 7n1で言語対応がroadmap §7.2必須23言語中8言語まで進んだ(§3.48参照)、
-残り15言語+SAP ABAPはバッチ2以降。Phase 7oでSticky scrollが完了し(§3.49参照)、
-roadmap §7のv2.0差別化機能(ミニマップ以外)は出揃った。**
+Phase 7a〜7d・**Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49、12コミット)は
+2026-07-29に一括pushしたが、直後のCI (run 30367272798) が`Build & Test (debug)`/`(release)`
+両ジョブとも6時間のジョブ上限でキャンセルされた。**
+
+**原因はPhase 7k(`document::EditDelta`、§3.45)が持ち込んだ性能リグレッションで、
+`Document`の変更メソッドが編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまい、
+既存ベンチ`BM_UndoStack_PushOneMillion`(100万回逐次insert)が実質O(N²)でハングしていた。
+Phase 7pとして`LineIndex::applyInsert()`/`applyErase()`によるインクリメンタル更新へ
+修正済み(§3.50参照、実測412.5ms)だが、**Phase 7pはまだ未push**。
+
+**次回セッションで最優先ですべきこと: Phase 7pをpushし、CIが実際にgreenになることを
+確認する。** それまでは新機能フェーズ(残り15言語対応バッチ2・ミニマップ・
+`IncrementalParser`の契約変更)に着手しないこと。
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
-から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。
+から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は
+CI状況を`gh run list`/`gh run view`で確認するまでを1つの検証単位とみなすこと(2026-07-29の
+教訓、ヘッダ冒頭参照)。
 
 **(2026-07-24確認) PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブ
 ウィンドウのスクリーンショット撮影・`Read`ツールでの視覚確認は可能。プレーンな文字入力
