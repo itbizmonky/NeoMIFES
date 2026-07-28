@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-29 (Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49)は`git push`実行済み(コミット`bf6c8cd`〜`4651842`、12コミット一括)だが、直後のCI (run [30367272798](https://github.com/itbizmonky/NeoMIFES/actions/runs/30367272798)) が`Build & Test (debug)`/`(release)`両ジョブとも6時間のジョブ上限でキャンセルされた。原因調査の結果Phase 7k (`document::EditDelta`) が持ち込んだ性能リグレッション(編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまう)と判明し、Phase 7pとして緊急修正(詳細は§3.50)。**Phase 7pはローカル検証・コミット完了・未push、pushしたらCI再確認が必須**)
+> **最終更新:** 2026-07-29 (Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49)は`git push`実行済み(コミット`bf6c8cd`〜`4651842`、12コミット一括)だが、直後のCI (run [30367272798](https://github.com/itbizmonky/NeoMIFES/actions/runs/30367272798)) が`Build & Test (debug)`/`(release)`両ジョブとも6時間のジョブ上限でキャンセルされた。原因調査の結果Phase 7k (`document::EditDelta`) が持ち込んだ性能リグレッション(編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまう)と判明し、Phase 7pとして緊急修正(詳細は§3.50)。**Phase 7pはpush済み(コミット`73afcbd`/`dcadffd`)、CI (run [30402660974](https://github.com/itbizmonky/NeoMIFES/actions/runs/30402660974)) success確認済み(1h40m52s)。** roadmap §7のv2.0差別化機能(ミニマップ以外)は出揃った状態。次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`契約変更のいずれか、着手前にユーザー確認)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -82,7 +82,7 @@
 | Phase 7m (`ts_tree_get_changed_ranges()`によるトークン部分更新、増分再解析の性能対応) | ✅ 完了 (push済み、§3.47参照) |
 | Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (push済み、§3.48参照) |
 | Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
-| Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (**未push**、§3.50参照) |
+| Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (push済み、CI green確認済み、§3.50参照) |
 | **次フェーズ選定 — 残り15言語/ミニマップ/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
@@ -1503,11 +1503,11 @@ Phase 7j〜7o(12コミット)をまとめてpushした直後、ユーザーの�
 - [x] `BM_UndoStack_PushOneMillion`がCIのジョブ上限内(6時間)で完走することを実測で確認(412.5ms)
 - [x] 既存`DocumentEditDeltaTest`群(公開契約のオラクル)が無変更で全件pass
 - [x] `LineIndex`の境界条件(先頭/末尾/行頭ちょうど/複数改行/削除範囲境界)をテストで固定
-- [ ] pushしてCIが実際にgreenになることの確認(次アクション、下記参照)
+- [x] pushしてCIが実際にgreenになることの確認(run 30402660974、success、1h40m52s、2026-07-29)
 
 **スコープ外(意図的):** `offsetToLine`/`lineToOffset`自体のO(log n)化(issue doc本来のスコープ、案A/B、PieceTreeのツリー集約化)は引き続き未着手。詳細は`detailed_design.md` §10.18参照。
 
-**Phase 7pはコミット済み・未push。** 次アクションは**まずpushしてCIが実際にgreenになることを確認する**こと(前回のpushがまさにこのフェーズを引き起こしたため、次回セッション冒頭で真っ先に確認)。CI greenを確認できたら、次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+**Phase 7pはpush済み(`73afcbd`/`dcadffd`)・CI green確認済み(run 30402660974)。** roadmap §7のv2.0差別化機能(ミニマップ以外: Breadcrumb/折り畳み/Indent guides/Sticky scroll)は全て完了した。次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`の契約変更(真のDoD達成)のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
 ---
 
