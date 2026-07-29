@@ -62,7 +62,8 @@ const SymbolTable& symbolTableForPython() {
 // Phase 7n1: C/JavaScript/Java/Go/Rust/Json get an empty table (no symbol
 // definitions recognized) rather than symbol-extraction logic of their own -
 // Phase 7r extended this same empty-table treatment to Html/Css/Shell/Yaml/
-// Toml/Xml for the identical reason -
+// Toml/Xml, and Phase 7s to TypeScript/Tsx/Php/Markdown, for the identical
+// reason -
 // deliberately deferred (see Phase 7n1 plan's Context section: outline
 // extraction needs its own per-language declarator/name-resolution probing,
 // same order of effort as symbolTableForCpp()'s resolveFunctionDefinitionName()
@@ -71,7 +72,7 @@ const SymbolTable& symbolTableForPython() {
 // one: extractOutline()'s own header comment already documents "text
 // containing no recognized definitions yields an empty vector" as a normal,
 // expected outcome - this just means every input currently falls into that
-// case for these 6 languages. What this table intentionally does NOT do is
+// case for these 10 languages. What this table intentionally does NOT do is
 // route these languages through Cpp's or Python's table (which would invent
 // fake symbols by matching an unrelated language's node-type names).
 const SymbolTable& emptySymbolTable() {
@@ -101,6 +102,10 @@ const SymbolTable& symbolTableFor(Language language) {
         case Language::Yaml:
         case Language::Toml:
         case Language::Xml:
+        case Language::TypeScript:
+        case Language::Tsx:
+        case Language::Php:
+        case Language::Markdown:
             return emptySymbolTable();
     }
     return symbolTableForCpp();  // unreachable (all enumerators handled above)

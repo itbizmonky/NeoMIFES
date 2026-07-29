@@ -64,8 +64,16 @@ struct Token {
 // mattered). Phase 7r added Html/Css/Shell/Yaml/Toml/Xml (batch 2; Shell
 // covers tree-sitter-bash - the enumerator is named after the language
 // family, not the grammar package, matching detectLanguage()'s .sh/.bash
-// mapping).
-enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Css, Shell, Yaml, Toml, Xml };
+// mapping). Phase 7s added TypeScript/Tsx/Php/Markdown (batch 3). TypeScript
+// and Tsx are two separate enumerators (not one, unlike every other
+// multi-directory grammar repo this project has wired up) because
+// tree-sitter-typescript hosts two independent, complete grammars used by
+// file extension (.ts vs .tsx), not a "pick one" ambiguity - see
+// Dependencies.cmake's Phase 7s comment.
+enum class Language {
+    Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Css, Shell, Yaml, Toml, Xml,
+    TypeScript, Tsx, Php, Markdown
+};
 
 // Parses `text` as C++ and returns a flat, left-to-right, non-overlapping
 // token stream covering every leaf of the syntax tree (whitespace and
@@ -118,12 +126,25 @@ enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Cs
 // Same contract as parseCpp(), for XML (tree-sitter-xml v0.7.0).
 [[nodiscard]] std::vector<Token> parseXml(std::u16string_view text);
 
+// Same contract as parseCpp(), for TypeScript (tree-sitter-typescript v0.23.2, typescript/ grammar).
+[[nodiscard]] std::vector<Token> parseTypeScript(std::u16string_view text);
+
+// Same contract as parseCpp(), for TSX (tree-sitter-typescript v0.23.2, tsx/ grammar).
+[[nodiscard]] std::vector<Token> parseTsx(std::u16string_view text);
+
+// Same contract as parseCpp(), for PHP (tree-sitter-php v0.24.2, php/ grammar).
+[[nodiscard]] std::vector<Token> parsePhp(std::u16string_view text);
+
+// Same contract as parseCpp(), for Markdown (tree-sitter-markdown v0.5.3, block-level grammar only).
+[[nodiscard]] std::vector<Token> parseMarkdown(std::u16string_view text);
+
 // Thin dispatcher over parseCpp()/parsePython()/parseC()/parseJavaScript()/
 // parseJava()/parseGo()/parseRust()/parseJson()/parseHtml()/parseCss()/
-// parseShell()/parseYaml()/parseToml()/parseXml(). Kept alongside the
-// individual functions (rather than replacing them) so existing callers/
-// tests that only care about one language can keep calling it directly, and
-// so per-language expected-output tests stay easy to write (Phase 7b/7c
+// parseShell()/parseYaml()/parseToml()/parseXml()/parseTypeScript()/
+// parseTsx()/parsePhp()/parseMarkdown(). Kept alongside the individual
+// functions (rather than replacing them) so existing callers/tests that
+// only care about one language can keep calling it directly, and so
+// per-language expected-output tests stay easy to write (Phase 7b/7c
 // precedent) - see syntax_syntax_test.cpp.
 [[nodiscard]] std::vector<Token> parse(std::u16string_view text, Language language);
 

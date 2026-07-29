@@ -49,6 +49,14 @@ extern "C" const TSLanguage* tree_sitter_yaml(void);
 extern "C" const TSLanguage* tree_sitter_toml(void);
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" const TSLanguage* tree_sitter_xml(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_typescript(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_tsx(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_php(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_markdown(void);
 
 // Phase 7n1: single Language -> TSLanguage* mapping shared by syntax.cpp,
 // incremental_parser.cpp, and outline.cpp - previously each of the first two
@@ -87,6 +95,14 @@ extern "C" const TSLanguage* tree_sitter_xml(void);
             return tree_sitter_toml();
         case Language::Xml:
             return tree_sitter_xml();
+        case Language::TypeScript:
+            return tree_sitter_typescript();
+        case Language::Tsx:
+            return tree_sitter_tsx();
+        case Language::Php:
+            return tree_sitter_php();
+        case Language::Markdown:
+            return tree_sitter_markdown();
     }
     return tree_sitter_cpp();  // unreachable (all enumerators handled above)
 }
@@ -394,6 +410,106 @@ using LeafKindTable = std::unordered_map<std::string_view, TokenKind>;
         {"Name", TokenKind::Type},
         {"Comment", TokenKind::Comment},
         {"AttValue", TokenKind::String},  // non-leaf, quote-only children - see comment above
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7s) against real tree-sitter-
+// typescript v0.23.2 output. tree-sitter-typescript's grammar extends
+// tree-sitter-javascript's (documented upstream architecture) - every node
+// type this table shares with namedLeafKindsForJavaScript() above
+// (comment/number/identifier/property_identifier/string_fragment/
+// escape_sequence/regex_pattern/regex_flags/true/false/null/undefined/
+// this/super) was independently re-probed here and confirmed identical,
+// not assumed from the inheritance relationship alone. "type_identifier"
+// (interface/class names) and "predefined_type" are TypeScript-only
+// additions. "predefined_type" is NOT a true leaf (children=1: a single
+// anonymous child - e.g. "number" - spanning the exact same byte range as
+// the parent) but is registered anyway for consistency with how Cpp/Rust's
+// own "primitive_type" colors built-in type keywords as Type rather than
+// falling through to classifyAnonymousLeaf()'s generic alphabetic-keyword
+// rule (unlike TOML's "string"/XML's "AttValue" above, this one is not a
+// data-loss bug fix - the single child already covers the full span - just
+// a deliberate cross-language consistency choice).
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForTypeScript() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},
+        {"number", TokenKind::Number},
+        {"identifier", TokenKind::Variable},
+        {"property_identifier", TokenKind::Variable},
+        {"string_fragment", TokenKind::String},
+        {"escape_sequence", TokenKind::String},
+        {"regex_pattern", TokenKind::String},
+        {"regex_flags", TokenKind::String},
+        {"true", TokenKind::Keyword},
+        {"false", TokenKind::Keyword},
+        {"null", TokenKind::Keyword},
+        {"undefined", TokenKind::Keyword},
+        {"this", TokenKind::Keyword},
+        {"super", TokenKind::Keyword},
+        {"type_identifier", TokenKind::Type},
+        {"predefined_type", TokenKind::Type},  // non-leaf, see comment above
+    };
+    return table;
+}
+
+// tree-sitter-tsx is TypeScript's grammar plus JSX-only rules (documented
+// upstream architecture, same repo/release as TypeScript above). Verified
+// via the same standalone probe that every leaf type TSX's own sample
+// exercised (interface/function/JSX element/attribute/expression) reuses
+// TypeScript's exact node names (identifier/property_identifier/comment/
+// type_identifier/string/string_fragment) - no JSX-specific named leaf type
+// was found needing its own table entry, so this shares TypeScript's table
+// verbatim rather than duplicating it (any JSX-only leaf this sample didn't
+// exercise, e.g. plain JSX text content, would safely fall through to the
+// default Text classification if ever encountered - not a data-loss risk
+// the way an unregistered non-leaf node would be).
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForTsx() {
+    return namedLeafKindsForTypeScript();
+}
+
+// Verified via a standalone probe (Phase 7s) against real tree-sitter-php
+// v0.24.2 output (the php/ grammar, not php_only/ - see Dependencies.cmake's
+// comment for why). "php_tag"/"php_end_tag" (the "<?php"/"?>" delimiters)
+// are classified as Preprocessor, matching this table's existing convention
+// for other source/non-source boundary markers (C++'s "#include" etc.) -
+// text outside these tags (plain embedded HTML, node type "text") is left
+// unclassified (default Text), the same "no embedded-language highlighting"
+// simplification already accepted for HTML's raw_text/CSS's plain_value.
+// "name" is reused by this grammar for both function/variable names (e.g.
+// "foo" in a function_definition, the "x" inside a "$x" variable_name) -
+// same kind of grammar-level reuse already accepted for YAML's
+// string_scalar/XML's Name above.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForPhp() {
+    static const LeafKindTable table{
+        {"php_tag", TokenKind::Preprocessor},
+        {"php_end_tag", TokenKind::Preprocessor},
+        {"comment", TokenKind::Comment},
+        {"name", TokenKind::Variable},
+        {"integer", TokenKind::Number},
+        {"string_content", TokenKind::String},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7s) against real tree-sitter-
+// markdown v0.5.3 output (the block-level tree-sitter-markdown grammar
+// only - see Dependencies.cmake's comment for why tree-sitter-markdown-
+// inline is out of scope). Markdown's grammar has no comment concept
+// (matching JSON's own "deliberately much smaller table" precedent) and,
+// without the inline grammar's language injection, most paragraph/heading
+// text is exposed by the block grammar's own "inline" node only as a mix of
+// a few flanking delimiter characters (e.g. the "*"/"`" around emphasis/
+// code spans - which classifyAnonymousLeaf() already colors as Punctuation/
+// String respectively, an incidental but harmless side effect of existing
+// logic) with the actual prose words left uncovered by any node at all -
+// this renders identically to an explicit Text token (both fall back to the
+// editor's default text color) so no table entry is needed to paper over
+// it. "language" (the info-string language tag on a fenced code block, e.g.
+// "js" in "```js") is the one addition with a clean semantic fit.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForMarkdown() {
+    static const LeafKindTable table{
+        {"language", TokenKind::Type},
     };
     return table;
 }

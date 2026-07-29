@@ -390,6 +390,92 @@ add_library(tree-sitter-xml-grammar STATIC
 target_include_directories(tree-sitter-xml-grammar PRIVATE "${tree-sitter-xml_SOURCE_DIR}/xml/src")
 target_link_libraries(tree-sitter-xml-grammar PRIVATE tree-sitter)
 
+# ---- tree-sitter-typescript / tree-sitter-tsx grammars (Phase 7s) ---------
+# One repo hosts TWO independent, complete grammars side by side (typescript/
+# for .ts, tsx/ for .tsx with JSX support) - unlike PHP/Markdown below, this
+# is not a "pick the primary one" situation: both are used, selected by file
+# extension (detectLanguage()). Each scanner.c references the repo-root
+# common/scanner.h via a relative #include ("../../common/scanner.h",
+# confirmed via the real source file) - no extra target_include_directories
+# entry is needed for that (the relative include resolves on its own, same
+# as upstream's own CMakeLists.txt does not add common/ as an include dir).
+FetchContent_Declare(
+    tree-sitter-typescript
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-typescript.git
+    GIT_TAG        v0.23.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-typescript)
+
+add_library(tree-sitter-typescript-grammar STATIC
+    "${tree-sitter-typescript_SOURCE_DIR}/typescript/src/parser.c"
+    "${tree-sitter-typescript_SOURCE_DIR}/typescript/src/scanner.c"
+)
+target_include_directories(tree-sitter-typescript-grammar PRIVATE
+    "${tree-sitter-typescript_SOURCE_DIR}/typescript/src")
+target_link_libraries(tree-sitter-typescript-grammar PRIVATE tree-sitter)
+
+add_library(tree-sitter-tsx-grammar STATIC
+    "${tree-sitter-typescript_SOURCE_DIR}/tsx/src/parser.c"
+    "${tree-sitter-typescript_SOURCE_DIR}/tsx/src/scanner.c"
+)
+target_include_directories(tree-sitter-tsx-grammar PRIVATE
+    "${tree-sitter-typescript_SOURCE_DIR}/tsx/src")
+target_link_libraries(tree-sitter-tsx-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-php grammar (Phase 7s) ------------------------------------
+# This repo hosts TWO grammars (php/ and php_only/, confirmed via GitHub
+# API) - only php/ (the full grammar, including <?php ?> tag handling and
+# embedded HTML) is used here. php_only/ is meant for embedding PHP inside
+# another host grammar's injection, not for standalone .php files, so unlike
+# TypeScript/TSX above there is no ambiguity to resolve: php/ is simply the
+# only correct choice for opening real .php files.
+FetchContent_Declare(
+    tree-sitter-php
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-php.git
+    GIT_TAG        v0.24.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-php)
+
+add_library(tree-sitter-php-grammar STATIC
+    "${tree-sitter-php_SOURCE_DIR}/php/src/parser.c"
+    "${tree-sitter-php_SOURCE_DIR}/php/src/scanner.c"
+)
+target_include_directories(tree-sitter-php-grammar PRIVATE "${tree-sitter-php_SOURCE_DIR}/php/src")
+target_link_libraries(tree-sitter-php-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-markdown grammar (Phase 7s) -------------------------------
+# This repo hosts TWO grammars, but unlike php/php_only these are NOT
+# alternatives to pick between - tree-sitter-markdown (block-level: headings/
+# lists/code blocks/...) is meant to have tree-sitter-markdown-inline
+# (emphasis/links/inline code/...) injected into its paragraph text nodes via
+# tree-sitter's language-injection mechanism (the standard pattern used by
+# e.g. nvim-treesitter). neomifes::syntax has no injection mechanism (single
+# TSParser + single grammar per parse, confirmed by reading syntax_internal.h/
+# incremental_parser.cpp) and adding one is out of scope here (CLAUDE.md rule
+# 10 - no speculative complexity without a concrete need) - so only the block
+# grammar is wired up. Inline formatting inside paragraphs stays unstyled,
+# an accepted gap of the same kind as HTML's raw_text or CSS's plain_value.
+FetchContent_Declare(
+    tree-sitter-markdown
+    GIT_REPOSITORY https://github.com/tree-sitter-grammars/tree-sitter-markdown.git
+    GIT_TAG        v0.5.3
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-markdown)
+
+add_library(tree-sitter-markdown-grammar STATIC
+    "${tree-sitter-markdown_SOURCE_DIR}/tree-sitter-markdown/src/parser.c"
+    "${tree-sitter-markdown_SOURCE_DIR}/tree-sitter-markdown/src/scanner.c"
+)
+target_include_directories(tree-sitter-markdown-grammar PRIVATE
+    "${tree-sitter-markdown_SOURCE_DIR}/tree-sitter-markdown/src")
+target_link_libraries(tree-sitter-markdown-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -415,11 +501,13 @@ target_link_libraries(tree-sitter-xml-grammar PRIVATE tree-sitter)
 # tree-sitter-python-grammar (Phase 7d) is the same kind of target.
 # tree-sitter-{c,javascript,java,go,rust,json}-grammar (Phase 7n1) are too.
 # tree-sitter-{html,css,bash,yaml,toml,xml}-grammar (Phase 7r) are too.
+# tree-sitter-{typescript,tsx,php,markdown}-grammar (Phase 7s) are too.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
 foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar
         tree-sitter-c-grammar tree-sitter-javascript-grammar tree-sitter-java-grammar tree-sitter-go-grammar
         tree-sitter-rust-grammar tree-sitter-json-grammar tree-sitter-html-grammar tree-sitter-css-grammar
-        tree-sitter-bash-grammar tree-sitter-yaml-grammar tree-sitter-toml-grammar tree-sitter-xml-grammar)
+        tree-sitter-bash-grammar tree-sitter-yaml-grammar tree-sitter-toml-grammar tree-sitter-xml-grammar
+        tree-sitter-typescript-grammar tree-sitter-tsx-grammar tree-sitter-php-grammar tree-sitter-markdown-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

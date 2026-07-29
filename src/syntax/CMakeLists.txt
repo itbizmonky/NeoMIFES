@@ -30,6 +30,10 @@ target_link_libraries(neomifes_syntax
         tree-sitter-yaml-grammar
         tree-sitter-toml-grammar
         tree-sitter-xml-grammar
+        tree-sitter-typescript-grammar
+        tree-sitter-tsx-grammar
+        tree-sitter-php-grammar
+        tree-sitter-markdown-grammar
 )
 
 set_target_properties(neomifes_syntax PROPERTIES

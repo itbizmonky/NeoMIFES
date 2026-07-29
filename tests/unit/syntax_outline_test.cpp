@@ -244,4 +244,13 @@ TEST(SyntaxOutlineTest, NewPhase7rLanguagesProduceNoNodesWithoutCrashingOrMisrou
     EXPECT_TRUE(extractOutline(u"<root><child>text</child></root>\n", Language::Xml).empty());
 }
 
+// Phase 7s: same safe-degradation contract extended to TypeScript/Tsx/Php/
+// Markdown (see outline.cpp's emptySymbolTable() comment).
+TEST(SyntaxOutlineTest, NewPhase7sLanguagesProduceNoNodesWithoutCrashingOrMisroutingGrammar) {
+    EXPECT_TRUE(extractOutline(u"class Foo { getX(): number { return 1; } }\n", Language::TypeScript).empty());
+    EXPECT_TRUE(extractOutline(u"function Comp() { return <div>hi</div>; }\n", Language::Tsx).empty());
+    EXPECT_TRUE(extractOutline(u"<?php\nfunction foo() { return 1; }\n", Language::Php).empty());
+    EXPECT_TRUE(extractOutline(u"# Heading\n\nSome text.\n", Language::Markdown).empty());
+}
+
 }  // namespace

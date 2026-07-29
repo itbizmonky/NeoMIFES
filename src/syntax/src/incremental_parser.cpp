@@ -52,6 +52,14 @@ using detail::tsLanguageFor;
             return detail::namedLeafKindsForToml();
         case Language::Xml:
             return detail::namedLeafKindsForXml();
+        case Language::TypeScript:
+            return detail::namedLeafKindsForTypeScript();
+        case Language::Tsx:
+            return detail::namedLeafKindsForTsx();
+        case Language::Php:
+            return detail::namedLeafKindsForPhp();
+        case Language::Markdown:
+            return detail::namedLeafKindsForMarkdown();
     }
     return detail::namedLeafKindsForCpp();  // unreachable (all enumerators handled above)
 }

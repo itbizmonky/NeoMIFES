@@ -43,8 +43,13 @@ TEST(DetectLanguageTest, WorksWithFullAbsolutePath) {
 
 TEST(DetectLanguageTest, RejectsNonRecognizedExtensions) {
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.txt")), std::nullopt);
-    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.md")), std::nullopt);
-    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ts")), std::nullopt);
+    // .md/.ts were rejected here before Phase 7s added Markdown/TypeScript
+    // support (see RecognizesAllMarkdownExtensions/RecognizesAllTypeScript
+    // Extensions below) - .sql/.ps1 remain unrecognized (no trusted
+    // tree-sitter grammar wired up, see Dependencies.cmake's Phase 7r/7s
+    // comments on why SQL/PowerShell were excluded).
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.sql")), std::nullopt);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ps1")), std::nullopt);
 }
 
 TEST(DetectLanguageTest, RejectsFileNameWithNoExtension) {
@@ -123,6 +128,31 @@ TEST(DetectLanguageTest, RecognizesToml) {
 TEST(DetectLanguageTest, RecognizesXml) {
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.xml")), Language::Xml);
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.XML")), Language::Xml);
+}
+
+// Phase 7s.
+
+TEST(DetectLanguageTest, RecognizesAllTypeScriptExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ts")), Language::TypeScript);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.mts")), Language::TypeScript);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.cts")), Language::TypeScript);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.TS")), Language::TypeScript);
+}
+
+TEST(DetectLanguageTest, RecognizesTsx) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.tsx")), Language::Tsx);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.TSX")), Language::Tsx);
+}
+
+TEST(DetectLanguageTest, RecognizesPhp) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.php")), Language::Php);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.PHP")), Language::Php);
+}
+
+TEST(DetectLanguageTest, RecognizesAllMarkdownExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.md")), Language::Markdown);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.markdown")), Language::Markdown);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.MD")), Language::Markdown);
 }
 
 }  // namespace

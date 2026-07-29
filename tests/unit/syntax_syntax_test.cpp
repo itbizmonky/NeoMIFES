@@ -19,10 +19,14 @@ using neomifes::syntax::parseHtml;
 using neomifes::syntax::parseJava;
 using neomifes::syntax::parseJavaScript;
 using neomifes::syntax::parseJson;
+using neomifes::syntax::parseMarkdown;
+using neomifes::syntax::parsePhp;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
 using neomifes::syntax::parseShell;
 using neomifes::syntax::parseToml;
+using neomifes::syntax::parseTsx;
+using neomifes::syntax::parseTypeScript;
 using neomifes::syntax::parseXml;
 using neomifes::syntax::parseYaml;
 using neomifes::syntax::Token;
@@ -1002,6 +1006,301 @@ TEST(SyntaxParseDispatcherTest, ParseWithTomlLanguageMatchesParseToml) {
 TEST(SyntaxParseDispatcherTest, ParseWithXmlLanguageMatchesParseXml) {
     const std::u16string source = u"<root></root>";
     EXPECT_EQ(parse(source, Language::Xml), parseXml(source));
+}
+
+// Phase 7s (batch 3: TypeScript/Tsx/Php/Markdown). Every expectation below
+// was cross-checked against real tree-sitter output for that grammar via a
+// standalone probe before being written (CLAUDE.md rule 3); comprehensive
+// tests reuse the EXACT probe input string so the recorded token
+// count/kinds/ranges are not re-derived speculatively.
+
+TEST(SyntaxParseTypeScriptTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseTypeScript(u"").empty());
+}
+
+TEST(SyntaxParseTypeScriptTest, ClassifiesInterfaceClassCommentAndPredefinedTypes) {
+    const std::u16string source =
+        u"interface Foo {\n  x: number;\n}\n"
+        u"class Bar implements Foo {\n"
+        u"  x: number = 1;\n"
+        u"  // comment\n"
+        u"  getX(): number {\n"
+        u"    return this.x;\n"
+        u"  }\n"
+        u"}\n"
+        u"const y: string = \"hi\";\n";
+    const std::vector<Token> tokens = parseTypeScript(source);
+    ASSERT_EQ(tokens.size(), 42u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Keyword);  // interface
+    EXPECT_EQ(tokens[1].kind, TokenKind::Type);     // Foo (type_identifier)
+    EXPECT_EQ(tokens[1].range.start, 10u);
+    EXPECT_EQ(tokens[1].range.end, 13u);
+    // "number" is tree-sitter-typescript's predefined_type node - NOT a true
+    // leaf (children=1: a single anonymous "number" child spanning the
+    // identical range) but registered in the table anyway for Type-
+    // consistency with Cpp/Rust's own primitive_type handling (see
+    // namedLeafKindsForTypeScript()'s comment).
+    EXPECT_EQ(tokens[5].kind, TokenKind::Type);
+    EXPECT_EQ(tokens[5].range.start, 21u);
+    EXPECT_EQ(tokens[5].range.end, 27u);
+    EXPECT_EQ(tokens[8].kind, TokenKind::Keyword);   // class
+    EXPECT_EQ(tokens[9].kind, TokenKind::Type);      // Bar
+    EXPECT_EQ(tokens[10].kind, TokenKind::Keyword);  // implements
+    EXPECT_EQ(tokens[17].kind, TokenKind::Number);   // 1
+    EXPECT_EQ(tokens[19].kind, TokenKind::Comment);  // // comment
+    EXPECT_EQ(tokens[19].range.start, 77u);
+    EXPECT_EQ(tokens[19].range.end, 87u);
+    EXPECT_EQ(tokens[27].kind, TokenKind::Keyword);   // this
+    EXPECT_EQ(tokens[33].kind, TokenKind::Keyword);   // const
+    EXPECT_EQ(tokens[34].kind, TokenKind::Variable);  // y
+    EXPECT_EQ(tokens[36].kind, TokenKind::Type);      // string (predefined_type)
+    EXPECT_EQ(tokens[39].kind, TokenKind::String);    // hi (string_fragment)
+    EXPECT_EQ(tokens[39].range.start, 151u);
+    EXPECT_EQ(tokens[39].range.end, 153u);
+}
+
+TEST(SyntaxParseTypeScriptTest, ClassifiesTrueFalseNullUndefinedThisSuperAsKeyword) {
+    // Every one of these node type names (true/false/null/undefined/this/
+    // super) was independently re-probed for TypeScript (not assumed from
+    // tree-sitter-typescript extending tree-sitter-javascript's grammar
+    // alone) and confirmed identical to namedLeafKindsForJavaScript()'s own.
+    const std::vector<Token> tokens = parseTypeScript(
+        u"let a = true; let b = false; let c = null; let d = undefined;\n"
+        u"class X extends Y { constructor() { super(); } }\n");
+    const auto keywordCount = std::ranges::count(tokens, TokenKind::Keyword, &Token::kind);
+    EXPECT_GE(keywordCount, 8);  // let x4, true/false/null/undefined, class, extends, super
+}
+
+TEST(SyntaxParseTypeScriptTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseTypeScript(u"class Foo { getX(: {{{ ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseTypeScriptTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseTypeScript(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.start, 0u);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);
+}
+
+TEST(SyntaxParseTypeScriptTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"interface Foo {\n  x: number;\n}\n"
+        u"class Bar implements Foo {\n"
+        u"  x: number = 1;\n"
+        u"  // comment\n"
+        u"  getX(): number {\n"
+        u"    return this.x;\n"
+        u"  }\n"
+        u"}\n"
+        u"const y: string = \"hi\";\n";
+    const std::vector<Token> tokens = parseTypeScript(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseTsxTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseTsx(u"").empty());
+}
+
+TEST(SyntaxParseTsxTest, ClassifiesInterfaceFunctionCommentAndJsxElement) {
+    const std::u16string source =
+        u"interface Props {\n  value: string;\n}\n"
+        u"function Comp(props: Props) {\n"
+        u"  // comment\n"
+        u"  return <div className=\"a\">{props.value}</div>;\n"
+        u"}\n";
+    const std::vector<Token> tokens = parseTsx(source);
+    ASSERT_EQ(tokens.size(), 36u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Keyword);   // interface
+    EXPECT_EQ(tokens[1].kind, TokenKind::Type);      // Props
+    EXPECT_EQ(tokens[5].kind, TokenKind::Type);      // string (predefined_type)
+    EXPECT_EQ(tokens[8].kind, TokenKind::Keyword);   // function
+    EXPECT_EQ(tokens[9].kind, TokenKind::Variable);  // Comp
+    EXPECT_EQ(tokens[16].kind, TokenKind::Comment);  // // comment
+    EXPECT_EQ(tokens[17].kind, TokenKind::Keyword);  // return
+    EXPECT_EQ(tokens[19].kind, TokenKind::Variable);  // div (JSX tag name -> identifier)
+    EXPECT_EQ(tokens[20].kind, TokenKind::Variable);  // className (JSX attribute name -> property_identifier)
+    EXPECT_EQ(tokens[23].kind, TokenKind::String);    // a (JSX attribute value, string_fragment)
+}
+
+TEST(SyntaxParseTsxTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseTsx(u"function f() { return <div <<<");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseTsxTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"// 日本語コメント\n";
+    const std::vector<Token> tokens = parseTsx(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.start, 0u);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);
+}
+
+TEST(SyntaxParseTsxTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"interface Props {\n  value: string;\n}\n"
+        u"function Comp(props: Props) {\n"
+        u"  // comment\n"
+        u"  return <div className=\"a\">{props.value}</div>;\n"
+        u"}\n";
+    const std::vector<Token> tokens = parseTsx(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParsePhpTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parsePhp(u"").empty());
+}
+
+TEST(SyntaxParsePhpTest, ClassifiesTagsCommentFunctionVariablesAndEmbeddedHtml) {
+    const std::u16string source =
+        u"<?php\n"
+        u"// comment\n"
+        u"function foo($x) {\n"
+        u"    return $x + 1;\n"
+        u"}\n"
+        u"$y = \"hello\";\n"
+        u"?>\n"
+        u"<div>plain html</div>\n";
+    const std::vector<Token> tokens = parsePhp(source);
+    ASSERT_EQ(tokens.size(), 25u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Preprocessor);  // <?php
+    EXPECT_EQ(tokens[0].range.start, 0u);
+    EXPECT_EQ(tokens[0].range.end, 5u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Comment);   // // comment
+    EXPECT_EQ(tokens[2].kind, TokenKind::Keyword);   // function
+    EXPECT_EQ(tokens[3].kind, TokenKind::Variable);  // foo
+    EXPECT_EQ(tokens[6].kind, TokenKind::Variable);  // x (inside $x)
+    EXPECT_EQ(tokens[13].kind, TokenKind::Number);   // 1
+    EXPECT_EQ(tokens[17].kind, TokenKind::Variable);  // y (inside $y)
+    EXPECT_EQ(tokens[20].kind, TokenKind::String);    // hello (string_content)
+    EXPECT_EQ(tokens[23].kind, TokenKind::Preprocessor);  // ?>
+    // Text outside <?php ?> tags (plain embedded HTML) is left unclassified
+    // (default Text) - the same "no embedded-language highlighting"
+    // simplification already accepted for HTML's raw_text/CSS's plain_value.
+    EXPECT_EQ(tokens[24].kind, TokenKind::Text);
+    EXPECT_EQ(tokens[24].range.start, 74u);
+}
+
+TEST(SyntaxParsePhpTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parsePhp(u"<?php function foo( {{{ ???");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParsePhpTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    // PHP is hybrid HTML+code - a bare "//" without a preceding <?php tag is
+    // just literal HTML text, not a comment (verified via probe), so the tag
+    // must be present for this test to actually exercise comment parsing.
+    const std::u16string source = u"<?php\n// 日本語コメント\n";
+    const std::vector<Token> tokens = parsePhp(source);
+    const auto it = std::ranges::find(tokens, TokenKind::Comment, &Token::kind);
+    ASSERT_NE(it, tokens.end());
+    EXPECT_EQ(it->range.start, 6u);
+    EXPECT_EQ(it->range.end, 16u);
+}
+
+TEST(SyntaxParsePhpTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"<?php\n"
+        u"// comment\n"
+        u"function foo($x) {\n"
+        u"    return $x + 1;\n"
+        u"}\n"
+        u"$y = \"hello\";\n"
+        u"?>\n"
+        u"<div>plain html</div>\n";
+    const std::vector<Token> tokens = parsePhp(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseMarkdownTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseMarkdown(u"").empty());
+}
+
+TEST(SyntaxParseMarkdownTest, ClassifiesHeadingEmphasisCodeFenceListAndBlockquote) {
+    const std::u16string source =
+        u"# Heading\n"
+        u"\n"
+        u"Some *text* with `code`.\n"
+        u"\n"
+        u"```js\n"
+        u"const x = 1;\n"
+        u"```\n"
+        u"\n"
+        u"- item1\n"
+        u"- item2\n"
+        u"\n"
+        u"> blockquote\n";
+    const std::vector<Token> tokens = parseMarkdown(source);
+    ASSERT_EQ(tokens.size(), 18u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Text);  // # (atx_h1_marker, no fitting TokenKind)
+    EXPECT_EQ(tokens[1].kind, TokenKind::Text);  // Heading (inline, plain-text leaf)
+    EXPECT_EQ(tokens[2].kind, TokenKind::Punctuation);  // * (emphasis delimiter)
+    // "`" is already classified as a quote-style delimiter by
+    // classifyAnonymousLeaf() (shared with every other backtick/quote use in
+    // this codebase, e.g. Go raw strings) - an incidental but harmless side
+    // effect, not a deliberate inline-code feature (this batch does not
+    // implement inline-formatting structure - see
+    // namedLeafKindsForMarkdown()'s comment).
+    EXPECT_EQ(tokens[4].kind, TokenKind::String);  // ` (inline code delimiter)
+    EXPECT_EQ(tokens[8].kind, TokenKind::Type);    // js (fenced code block language tag)
+    EXPECT_EQ(tokens[8].range.start, 40u);
+    EXPECT_EQ(tokens[8].range.end, 42u);
+    EXPECT_EQ(tokens[13].kind, TokenKind::Text);  // item1 (inline, plain-text leaf)
+    EXPECT_EQ(tokens[17].kind, TokenKind::Text);  // blockquote (inline, plain-text leaf)
+}
+
+TEST(SyntaxParseMarkdownTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseMarkdown(u"# Head *incomplete");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseMarkdownTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"# Heading\n"
+        u"\n"
+        u"Some *text* with `code`.\n"
+        u"\n"
+        u"```js\n"
+        u"const x = 1;\n"
+        u"```\n"
+        u"\n"
+        u"- item1\n"
+        u"- item2\n"
+        u"\n"
+        u"> blockquote\n";
+    const std::vector<Token> tokens = parseMarkdown(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithTypeScriptLanguageMatchesParseTypeScript) {
+    const std::u16string source = u"const x: number = 42;\n";
+    EXPECT_EQ(parse(source, Language::TypeScript), parseTypeScript(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithTsxLanguageMatchesParseTsx) {
+    const std::u16string source = u"const el = <div />;\n";
+    EXPECT_EQ(parse(source, Language::Tsx), parseTsx(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithPhpLanguageMatchesParsePhp) {
+    const std::u16string source = u"<?php echo 1; ?>\n";
+    EXPECT_EQ(parse(source, Language::Php), parsePhp(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithMarkdownLanguageMatchesParseMarkdown) {
+    const std::u16string source = u"# Heading\n";
+    EXPECT_EQ(parse(source, Language::Markdown), parseMarkdown(source));
 }
 
 }  // namespace

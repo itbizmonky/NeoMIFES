@@ -19,9 +19,13 @@ using detail::namedLeafKindsForHtml;
 using detail::namedLeafKindsForJava;
 using detail::namedLeafKindsForJavaScript;
 using detail::namedLeafKindsForJson;
+using detail::namedLeafKindsForMarkdown;
+using detail::namedLeafKindsForPhp;
 using detail::namedLeafKindsForPython;
 using detail::namedLeafKindsForRust;
 using detail::namedLeafKindsForToml;
+using detail::namedLeafKindsForTsx;
+using detail::namedLeafKindsForTypeScript;
 using detail::namedLeafKindsForXml;
 using detail::namedLeafKindsForYaml;
 using detail::TSParserPtr;
@@ -102,6 +106,22 @@ std::vector<Token> parseXml(std::u16string_view text) {
     return parseWithLanguage(text, detail::tree_sitter_xml(), namedLeafKindsForXml());
 }
 
+std::vector<Token> parseTypeScript(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_typescript(), namedLeafKindsForTypeScript());
+}
+
+std::vector<Token> parseTsx(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_tsx(), namedLeafKindsForTsx());
+}
+
+std::vector<Token> parsePhp(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_php(), namedLeafKindsForPhp());
+}
+
+std::vector<Token> parseMarkdown(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_markdown(), namedLeafKindsForMarkdown());
+}
+
 std::vector<Token> parse(std::u16string_view text, Language language) {
     switch (language) {
         case Language::Cpp:
@@ -132,6 +152,14 @@ std::vector<Token> parse(std::u16string_view text, Language language) {
             return parseToml(text);
         case Language::Xml:
             return parseXml(text);
+        case Language::TypeScript:
+            return parseTypeScript(text);
+        case Language::Tsx:
+            return parseTsx(text);
+        case Language::Php:
+            return parsePhp(text);
+        case Language::Markdown:
+            return parseMarkdown(text);
     }
     return {};  // unreachable (all Language enumerators handled above)
 }
