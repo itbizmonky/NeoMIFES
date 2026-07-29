@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-29 (Phase 7pはpush済み・CI (run 30402660974) success確認済み。続けてユーザー選択でPhase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`)に着手・完了(詳細は§3.51)。**roadmap DoD「1文字入力後の増分解析≤50ms」は5万行103ms/50万行989msで依然未達** — tree-sitter側の再walkはO(edit size)化できたが、呼び出し側のマージ(`applyTokenPatch()`)自体がO(文書サイズ)のまま残り、真の漸近的改善には至らなかった。次サブフェーズ候補は永続トークン列のデータ構造再設計(可視範囲のみ保持等)・残り15言語対応バッチ2・ミニマップ。**Phase 7qはpush済み・CI (run 30421333851) success確認済み(1h37m33s)。** roadmap §7のv2.0機能は出揃い、次サブフェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応バッチ2・ミニマップのいずれか、着手前にユーザー確認)
+> **最終更新:** 2026-07-29 (Phase 7q完了・push・CI green確認後、ユーザー選択でPhase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML)に着手・完了(詳細は§3.52)。roadmap §7.2必須23言語のうち14言語まで対応完了。ローカルDebug/Release/ubsan全834件green・clang-tidy `src/`配下新規警告0まで確認済み・コミット済み(`bef2905`)、**pushはユーザーの明示指示待ち**。次サブフェーズ候補は永続トークン列のデータ構造再設計(真のO(edit size)化、Phase 7q未達DoD)・残り9言語(TypeScript/PHP/Markdown等)・ミニマップ)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -84,7 +84,8 @@
 | Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
 | Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (push済み、CI green確認済み、§3.50参照) |
 | Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、push済み、CI green確認済み、§3.51参照) |
-| **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り15言語/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (コミット済み`bef2905`、**push未実施**、§3.52参照) |
+| **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り9言語(TypeScript/PHP/Markdown等)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1542,6 +1543,32 @@ Phase 7p完了・push・CI green確認後、ユーザーから「次のPhaseへ�
 
 ---
 
+### 3.52 Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) 完了記録
+
+Phase 7q完了・push・CI green確認後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り15言語バッチ2/ミニマップ)をAskUserQuestionで提示し、**残り15言語バッチ2(推奨案)**が選ばれた — Phase 7n1で確立した機械的な追加手順をそのまま再利用できる候補。
+
+**着手前調査 (`gh api`直接確認、CLAUDE.mdルール3):** roadmap §7.2残り15言語のうち9言語がtree-sitter公式/準公式org配下に存在すると確認。うちTypeScript/PHP/Markdownは1リポジトリに複数`src/`ディレクトリが同居し主要文法選択の設計判断が要るため、AskUserQuestionでユーザーに確認の上**単一`src/`構造の6言語(HTML/CSS/Shell/YAML/TOML/XML)に絞る案(推奨)**が選ばれた。
+
+**実装:** `Language`にHtml/Css/Shell/Yaml/Toml/Xmlを追加(計14/23言語)。TOMLの`string`・XMLの`AttValue`はどちらも引用符のみの非リーフノード(Phase 7n1のRustコメントと同種)で、`isAtomicNode()`のテーブル登録が必要と実機probeで確認(登録しないと引用符内テキストがトークン列から欠落)。YAMLの`src/`は`schema.core.c`/`schema.json.c`/`schema.legacy.c`の3ファイルが追加で必要と実機ビルドで確認。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全834件pass(新規44件、うち6言語分の構造テストは実機probe出力から手計算した期待値と一致)
+- clang-tidy: `src/`配下(`syntax.cpp`/`outline.cpp`/`incremental_parser.cpp`)新規警告0。`tests/`側の`hicpp-uppercase-literal-suffix`警告は既存の未着手バックログ(`tests/`はWarningsAsErrors対象外)に属する既存パターンであり、追加した行に起因する新規警告ではないことを行番号で確認済み
+- 実アプリ`--open`でHTML/YAMLサンプルを開き、3秒後もプロセスが生存していることを確認(過去複数セッションのスクリーンショット/入力合成不調を踏まえた軽量代替検証)
+
+**完了条件:**
+- [x] HTML/CSS/Shell/YAML/TOML/XMLの6文法FetchContent追加+ビルド確認
+- [x] 6言語分の`namedLeafKindsForX()`テーブルを実機probe出力から作成(記憶からの推測ではない)
+- [x] `parseX()`×6+`detectLanguage()`拡張+空`SymbolTable`×6
+- [x] ローカルDebug/Release/ubsan全834テストgreen、`src/`配下clang-tidy新規警告0
+- [x] コミット(`bef2905`)
+
+**スコープ外(意図的、後続バッチへ):** TypeScript/PHP/Markdown(複数文法サブディレクトリの主要文法選択判断が必要)、SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、新6言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.20参照。
+
+**Phase 7rはコミット済み(`bef2905`)、pushはユーザーの明示指示待ち。** 次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化、Phase 7q未達DoD)・残り9言語(TypeScript/PHP/Markdown等)・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1587,18 +1614,19 @@ Phase 7p完了・push・CI green確認後、ユーザーから「次のPhaseへ�
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a〜7q(Indent guides〜IncrementalParser差分返却化)は全てpush済み・CI green確認済み
-(Phase 7q: run 30421333851、success、1h37m33s)。
+Phase 7a〜7qはpush済み・CI green確認済み(Phase 7q: run 30421333851、success、1h37m33s)。
+**Phase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML、§3.52参照)はローカル
+Debug/Release/ubsan全834件green・コミット済み(`bef2905`)だが未push。**
 
-**Phase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`、§3.51参照)完了後も
-roadmap DoD「1文字入力後の増分解析≤50ms」は依然未達のまま(5万行103ms・50万行989ms、
-Phase 7mから約30%の定数倍改善はあったが文書サイズにほぼ線形のまま)。原因はtree-sitter側の
-再walkはO(edit size)化できたが、呼び出し側のマージ処理(`applyTokenPatch()`)自体が
-O(文書サイズ)のまま残ったため。真のDoD達成には永続トークン列自体のデータ構造再設計
-(可視範囲のみ保持等)が必要と判明し、次サブフェーズへ意図的に据え置いた。**
+**roadmap §7.2必須23言語のうち14言語まで対応完了(残り9言語: TypeScript/PHP/Markdown
+[複数文法サブディレクトリの主要文法選択判断が必要]/SQL/PowerShell/VB/VBS/BAT/INI
+[公式org不在])。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7q時点から変わらず
+未達のまま(5万行103ms・50万行989ms、§3.51参照) — 永続トークン列自体のデータ構造再設計
+が必要と判明し、次サブフェーズへ意図的に据え置いている。**
 
-**次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応
-バッチ2・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
+**次フェーズは(1) Phase 7rのpush+CI green確認、その後(2) 永続トークン列のデータ構造
+再設計(真のO(edit size)化)・残り9言語対応バッチ3・ミニマップのいずれか、着手前に
+Plan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

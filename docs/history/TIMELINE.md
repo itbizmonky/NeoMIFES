@@ -2042,4 +2042,34 @@ roadmap §7の残り候補(IncrementalParser契約変更/残り15言語バッチ
 
 **次回:** Phase 7qはコミット済み・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り15言語対応バッチ2・ミニマップ)に着手しないこと。真のO(edit size)達成には`applyTokenPatch()`が触れるトークン数を編集近傍だけに限定できるデータ構造(可視範囲のみ保持等)への再設計が必要で、これが次の本命候補。
 
+## Session 62 (2026-07-29): pushせよ → CI green確認 → Phase 7r — 追加言語対応バッチ2(HTML/CSS/Shell/YAML/TOML/XML)
+
+前セッション(Session 61、Phase 7q完了)の続き。ユーザーから「pushせよ」と指示され、`git fetch`+`git log origin/main..HEAD`で確認の上`git push`実行、成功。CI green確認後、ユーザーから「完了を確認した。次のPhaseへ進めよ」と指示された。
+
+roadmap §7の残り候補(永続トークン列のデータ構造再設計/残り15言語バッチ2/ミニマップ)をAskUserQuestionで提示し、**残り15言語バッチ2(推奨案)**が選ばれた — Phase 7n1で確立した6言語追加の機械的手順(GitHub API直接確認→実機probe→`namedLeafKindsForX()`テーブル→`parseX()`実装→`detectLanguage()`拡張)をそのまま再利用でき、見通しの立てやすい候補だった。
+
+**Plan Mode着手前調査:** `gh api`でGitHub直接確認(CLAUDE.mdルール3、記憶からの推測はしない)し、roadmap §7.2残り15言語のうち9言語(TypeScript/PHP/HTML/CSS/Shell/YAML/TOML/Markdown/XML)がtree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在すると確認した。うちTypeScript/PHP/Markdownは1リポジトリに複数`src/`ディレクトリ(文法)が同居する構造(TS: `typescript`/`tsx`、PHP: `php`/`php_only`、Markdown: `tree-sitter-markdown`/`tree-sitter-markdown-inline`)と判明し、「どちらを主要文法とするか」の追加設計判断が要るため、AskUserQuestionでユーザーに確認した結果**単一`src/`構造の6言語(HTML/CSS/Shell/YAML/TOML/XML)に絞る案(推奨)**が選ばれ、TypeScript/PHP/Markdownは次バッチへ据え置いた。SQL/PowerShell/VB/VBS/BAT/INIは公式org不在(コミュニティ文法のみ)のため対象外とした。
+
+**実装:**
+- `cmake/Dependencies.cmake`に6文法のFetchContentブロックを追加。YAMLの`src/`は`parser.c`/`scanner.c`に加え`schema.core.c`/`schema.json.c`/`schema.legacy.c`の3ファイルを要すると実機ビルドで確認(YAML文法自体がスキーマ検証をスキャナに埋め込んでいる)。XMLは`xml/`+`dtd/`の2ディレクトリ構成だが`xml/`が明確に主要文法であり単一文法として扱った
+- 一時的なスタンドアロンprobeプログラム(コミットしない)を書き、CMake Debugビルドの`.lib`群にリンクして実際のtree-sitter出力をダンプした。初回コンパイルはCRTリンケージ不一致(`__imp_*`シンボル未解決)で失敗したが、`/MDd`をCMake Debugプリセットに合わせて追加し解決(Phase 7n1で踏んだのと同じ落とし穴の再発)
+- probe出力から`namedLeafKindsForX()`×6を`syntax_internal.h`に作成。**TOMLの`string`ノードとXMLの`AttValue`ノードが、どちらもPhase 7n1で発見したtree-sitter-rustのコメントノードと同種の「非葉ノード(引用符の無名子2つのみ、内容を持つ子ノードが無い)」であることを確認した。** 既存の`isAtomicNode()`のテーブルへ両ノードを登録しないと、引用符内のテキスト自体がトークンストリームから丸ごと欠落するバグになるため、登録して対処した
+- `syntax.h`/`syntax.cpp`に`Language`拡張+`parseX()`×6、`incremental_parser.cpp`の`namedKindsFor()`+6ケース、`outline.cpp`の`symbolTableFor()`+6ケース(空`SymbolTable`、Phase 7n1のパターン踏襲)、`syntax_language.h`の`detectLanguage()`+6拡張子
+
+**発見した文法の構造的曖昧さ(受容した既知の制約):** YAMLの`string_scalar`はマッピングキーと値の両方に使われ区別する専用ノード型が無い(キーもStringとして着色)。XMLの`Name`は要素タグ名と属性名の両方に使われる(属性名もTypeとして着色)。どちらもJSONのオブジェクトキー/文字列値が`string_content`を共有する既存の前例と同種のトレードオフとして受け入れた。
+
+**テスト:** `syntax_syntax_test.cpp`に6言語分のテストを追加。各テストは実機probeの生ノードダンプ(確認済みの`{start,end,type,children}`情報)からトークン数・種別・UTF-16範囲を手計算し、`ASSERT_EQ`/`EXPECT_EQ`で直接アサートする形にした(推測実装をしない、CLAUDE.mdルール3)。`app_syntax_language_test.cpp`(拡張子検出)・`syntax_outline_test.cpp`(空outline安全性)・`syntax_incremental_parser_test.cpp`(YAML増分再解析1件、`ReparsingSession`ヘルパー再利用)にも追加。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全834件pass(新規44件含む、手計算した期待値と実行結果が全て一致した)
+- clang-tidy: `src/`配下(`syntax.cpp`/`outline.cpp`/`incremental_parser.cpp`)新規警告0。`tests/`側で`hicpp-uppercase-literal-suffix`警告が多数出たが、変更していない既存行(未変更コードの行番号がシフトしただけ)にも同数出ることを行番号レベルで確認し、新規追加コードに起因しない既存バックログ(`tests/`はWarningsAsErrors対象外)と判断した
+- 実アプリでの視覚確認は過去複数セッションのスクリーンショット/入力合成不調を踏まえ、`--open`引数でHTML/YAMLサンプルファイルを開きプロセスが3秒後もクラッシュせず生存していることを確認する軽量スモークテストで代替した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7r ✅完了」行を追加(次候補は7sへ繰り下げ)、§7.2の言語対応状況を14/23言語へ更新、§7に「実装後の確定事項/変更点(2026-07-29、Phase 7r完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.20を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.52(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 7rはコミット済み(`bef2905`)・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り9言語対応バッチ3・ミニマップ)に着手しないこと。
+
 <!-- 次セッションはここに追記 -->

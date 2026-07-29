@@ -2335,6 +2335,45 @@ struct TokenPatch {
 
 ---
 
+### 10.20 追加言語対応 バッチ2 (Phase 7r実装)
+
+`neomifes::syntax::Language`にHtml/Css/Shell/Yaml/Toml/Xmlを追加した(roadmap §7.2必須23言語のうち計14言語が完了)。Phase 7n1で確立した6言語追加の機械的パターン(FetchContent追加+実機probe+`namedLeafKindsForX()`テーブル+`parseX()`実装+`detectLanguage()`拡張)をそのまま再利用した。
+
+```cpp
+// src/syntax/include/neomifes/syntax/syntax.h
+enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json,
+                       Html, Css, Shell, Yaml, Toml, Xml };  // Shell = tree-sitter-bash
+
+[[nodiscard]] std::vector<Token> parseHtml(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseCss(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseShell(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseYaml(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseToml(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseXml(std::u16string_view text);
+```
+
+**言語選定 (CLAUDE.mdルール3、`gh api`によるGitHub直接確認):** roadmap §7.2残り15言語のうち、tree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在する9言語(TypeScript/PHP/HTML/CSS/Shell/YAML/TOML/Markdown/XML)を発見。うちTypeScript/PHP/Markdownは1リポジトリに複数`src/`ディレクトリ(文法)が同居し主要文法選択の設計判断を要するため、AskUserQuestionでユーザーに確認の上、単一`src/`構造の6言語(HTML/CSS/Shell/YAML/TOML/XML)へ絞った。SQL/PowerShell/VB/VBS/BAT/INIは公式org不在(コミュニティ文法のみ)のため対象外。
+
+**非葉ノードの新規発見 (`isAtomicNode()`のRust以来2件目・3件目の適用例):**
+- TOMLの`string`ノードは子が引用符2つのみ(内容を持つ子ノードが無い)非葉ノード。`namedLeafKindsForToml()`に`{"string", TokenKind::String}`を登録しないと、引用符内のテキストがトークンストリームから丸ごと欠落する
+- XMLの`AttValue`ノードも同型(属性値の引用符2つのみ)。同じ理由で`namedLeafKindsForXml()`に登録した
+
+**文法自体の構造的曖昧さ(受容した既知の制約):**
+- YAMLの`string_scalar`はマッピングキーと値の両方に使われ、区別する専用ノード型が無い(キーもStringとして着色される、JSONのオブジェクトキー/文字列値が`string_content`を共有する既存の前例と同種)
+- XMLの`Name`は要素タグ名と属性名の両方に使われる専用ノード型が無い(属性名もTypeとして着色される)
+
+**YAMLビルド:** `src/`が`parser.c`/`scanner.c`に加え`schema.core.c`/`schema.json.c`/`schema.legacy.c`の3ファイルを要することを実機ビルドで確認(YAML文法自体がスキーマ検証をスキャナに埋め込んでいる)。XMLは`xml/`+`dtd/`の2ディレクトリ構成だが`xml/`が明確に主要文法であり単一文法として扱った。
+
+**設計上の要点:**
+- **6言語すべて、Phase 7n1確立の「正しい文法選択+空`SymbolTable`」パターンをそのまま踏襲した。** `detail::tsLanguageFor()`/`namedKindsFor()`/`symbolTableFor()`の一元化switchに6ケースずつ追加するだけで済み、Phase 7n1が修正した「三項演算子による誤パース」バグの再発を構造的に防げた
+- **`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更は不要だった。** Phase 7dで確立済みの汎用ディスパッチがそのまま新6言語でも機能する
+- **正しさの検証は実機probeの生出力(スタンドアロンプログラムでtree-sitterに実際にパースさせたノードダンプ)からトークン列を手計算し、`syntax_syntax_test.cpp`の各言語テストでトークン数・種別・範囲を直接アサートする形で行った(推測実装をしない、CLAUDE.mdルール3)。** 全834件のローカルテストがgreenであることで手計算の正しさを裏付けた
+- **実アプリでの視覚確認は、過去複数セッションのスクリーンショット/入力合成不調を踏まえ、`--open`引数でHTML/YAMLサンプルを開きプロセスが3秒後も生存していることを確認する軽量スモークテストに切り替えた**
+
+**スコープ外(意図的、後続バッチへ):** TypeScript/PHP/Markdown(複数文法サブディレクトリの主要文法選択判断が必要)、SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、新6言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

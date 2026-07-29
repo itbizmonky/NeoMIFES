@@ -228,7 +228,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7o | Sticky scroll | ✅ 完了 | §7 |
 | 7p | LineIndexインクリメンタル更新 (`applyInsert`/`applyErase`、Phase 7k性能リグレッション修正) | ✅ 完了 | §7 |
 | 7q | IncrementalParser差分返却化 (`TokenPatch`/`applyTokenPatch()`、真のO(edit size)化を試行) | ✅ 完了 (DoD未達、§7.11参照) | §7 |
-| 7r〜 | 残り15言語 + ミニマップ | ⏭️ 次候補 | §7 |
+| 7r | 追加言語対応 バッチ2 (HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 | §7 |
+| 7s〜 | 残り9言語 (TypeScript/PHP/Markdown等) + ミニマップ | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -887,7 +888,7 @@ v2.0 大幅拡張: **ミニマップ、Breadcrumb、Sticky scroll、Indent guide
 ### 7.2 対応言語 (Phase 7 の一次スコープ、要件定義書 §6 対応)
 必須: C / C++ / TypeScript / JavaScript / Python / Java / Go / Rust / PHP / HTML / CSS / JSON / XML / YAML / SQL / Markdown / PowerShell / VB / VBS / BAT / Shell / INI / TOML / **SAP ABAP** (P1 対応)
 
-> **実装状況 (2026-07-28、Phase 7n1完了時点):** ✅ 完了8言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)。残り15言語(TypeScript/PHP/HTML/CSS/XML/YAML/SQL/Markdown/PowerShell/VB/VBS/BAT/Shell/INI/TOML)+SAP ABAP(P1)は未着手、Phase 7n2以降で継続。
+> **実装状況 (2026-07-29、Phase 7r完了時点):** ✅ 完了14言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)。残り9言語(TypeScript/PHP/Markdown/SQL/PowerShell/VB/VBS/BAT/INI)+SAP ABAP(P1)は未着手。TypeScript/PHP/Markdownは1リポジトリに複数文法(TS: `typescript`/`tsx`、PHP: `php`/`php_only`、Markdown: `tree-sitter-markdown`/`tree-sitter-markdown-inline`)が同居し主要文法選択の設計判断が要るため7rでは意図的に対象外とした。SQL/PowerShell/VB/VBS/BAT/INIはtree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在せず、コミュニティ文法のみ(信頼度の問題)。Phase 7s以降で継続。
 
 ### 7.3 データ構造・アルゴリズム
 
@@ -1232,6 +1233,19 @@ public:
 **教訓:** 「この設計変更で計算量クラスが変わるはず」という期待は、ボトルネックが1箇所ではなく複数箇所(今回はtree-sitter側の再walkコストと、呼び出し側のマージコストの2箇所)に分散している場合、片方だけを直しても全体としては改善しきれないことがある。大規模文書での実測(9.6倍という具体的な比率)によって、残っているボトルネックが「マージ処理のO(N)性」だと定量的に特定できたこと自体が、次のサブフェーズの設計を正しく方向づける成果になった。
 
 **スコープ外(意図的、後続サブフェーズへ):** 永続トークン列のデータ構造再設計(真のO(edit size)化)、複数の独立した変更範囲を個別のTokenPatchとして返す設計、残り15言語対応バッチ2、ミニマップ。詳細は`detailed_design.md` §10.19参照。
+
+### 実装後の確定事項/変更点 (2026-07-29、Phase 7r完了 — 追加言語対応 バッチ2)
+
+**Phase 7qのCI green確認後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り15言語バッチ2/ミニマップ)をAskUserQuestionで提示し、残り15言語バッチ2(推奨案)が選ばれた** — Phase 7n1で確立した6言語追加の機械的な手順(GitHub API直接確認→実機probe→`namedLeafKindsForX()`テーブル→`parseX()`実装→`detectLanguage()`拡張)をそのまま再利用できる、見通しの立てやすい候補だった。
+
+- **着手前調査(`gh api`によるGitHub直接確認、CLAUDE.mdルール3)で、roadmap §7.2の残り15言語のうち9言語がtree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在することを確認した。** うちTypeScript/PHP/Markdownの3言語は1リポジトリに複数の`src/`ディレクトリ(文法)が同居する構造(TS: `typescript`/`tsx`、PHP: `php`/`php_only`、Markdown: `tree-sitter-markdown`/`tree-sitter-markdown-inline`)と判明し、「どちらを主要文法とするか」の追加の設計判断が必要になった。AskUserQuestionでユーザーに確認し、**単一`src/`構造の6言語(HTML/CSS/Shell/YAML/TOML/XML)に絞る案(推奨)が選ばれ**、TypeScript/PHP/Markdownは次バッチへ据え置いた。SQL/PowerShell/VB/VBS/BAT/INIは公式org配下に存在せずコミュニティ文法のみのため、Phase 7n1の判断方針を踏襲し対象外とした
+- **YAMLの`src/`ディレクトリは`parser.c`/`scanner.c`に加え`schema.core.c`/`schema.json.c`/`schema.legacy.c`という3つの追加Cファイルを要することを実機ビルドで確認した(YAML文法自体がスキーマ検証をスキャナに埋め込んでいるため)。** XMLは`xml/`+`dtd/`の2ディレクトリ構成だが`xml/`が明確に主要文法(DTDは補助的なスキーマ言語)であり曖昧さが無いため単一文法として扱った
+- **TOMLの`string`ノードとXMLの`AttValue`ノードが、どちらもPhase 7n1で発見したtree-sitter-rustの`line_comment`/`block_comment`と同種の「非葉ノード(引用符の無名子2つのみ、内容を持つ子ノードが無い)」であることを実機probeで確認した。** 既存の`isAtomicNode()`(Phase 7n1で「真の葉、またはLeafKindTableに直接エントリを持つ名前付きノード」へ一般化済み)のテーブルへ両ノードを登録することで、登録しなければ引用符内のテキスト自体がトークンストリームから丸ごと欠落するバグを未然に防いだ(TOMLの`"value"`、XMLの`attr="val"`の`val`部分)
+- **YAMLのマッピングキーと値がどちらも同じ`string_scalar`ノード型を共有し、XMLの要素タグ名と属性名がどちらも同じ`Name`ノード型を共有することを実機probeで確認した(文法自体の構造的な曖昧さ)。** キーと値/タグ名と属性名を区別せず同じTokenKindで着色する、という文法の制約をそのまま受け入れる設計にした(JSONのオブジェクトキーと文字列値が同じ`string_content`を共有する既存の前例と同種のトレードオフ)
+- **6言語すべてで、Phase 7n1確立の「正しい文法選択+空`SymbolTable`」パターン(outline抽出のシンボル本体は次バッチへ据え置き)をそのまま踏襲した。** `detail::tsLanguageFor()`の一元化switchに6ケースを追加するだけで済み、Phase 7n1が修正した「2値三項演算子による誤パース」バグの再発を構造的に防げた
+- **実アプリでの視覚確認は、過去複数セッションでスクリーンショット/入力合成が不安定だったことを踏まえ、`--open`引数でHTML/YAMLサンプルファイルを実際に開きプロセスが3秒後もクラッシュせず生存していることを確認する軽量スモークテストに切り替えた。** 正しさの証明は自動テスト(834件全green、6言語分の分類テスト・拡張子検出テスト・outline安全性テスト・YAML増分再解析テストを含む、うち構造テストは全て実機probe出力からトークン列を手計算し検証)に委ねた
+
+**スコープ外(意図的、後続バッチへ):** TypeScript/PHP/Markdown(複数文法サブディレクトリの主要文法選択判断が必要)、SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、新6言語のoutlineシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.20参照。
 
 ---
 
