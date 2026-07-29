@@ -2301,6 +2301,40 @@ void applyErase(TextRange range);
 
 ---
 
+### 10.19 IncrementalParser 差分返却化 (Phase 7q実装、DoD未達)
+
+Phase 7k〜7mの`incremental_parser.h`ヘッダコメント自身が「真のO(edit size)化には`reparse()`の契約を『差分のみ返却』へ変更し、呼び出し側が永続トークン列へマージする責務を持つ必要がある」と明記していた積み残し課題への着手。
+
+```cpp
+// incremental_parser.h — Phase 7q
+
+struct TokenPatch {
+    document::TextRange invalidatedRange;  // 最終(編集後)テキスト座標系
+    std::int64_t         shiftAmount = 0;   // このバッチの全edits合計(newEnd-oldEnd)
+    std::vector<Token>   replacementTokens; // invalidatedRange内の新規トークン
+};
+
+// tokensへpatchをマージする。invalidatedRangeと重なる既存トークンを破棄し、
+// それ以降のトークンをshiftAmountだけシフトし、replacementTokensを挿入する。
+// O(tokens.size() + replacementTokens.size())の単一線形パス。
+[[nodiscard]] std::vector<Token> applyTokenPatch(std::vector<Token> tokens, const TokenPatch& patch);
+
+// reparse()(完全なトークン列を返す契約)を完全に置き換え。
+[[nodiscard]] TokenPatch reparseDelta(std::u16string_view text, std::span<const ReparseEdit> edits);
+```
+
+**設計:** tree-sitter公式ヘッダで`ts_node_descendant_for_byte_range(TSNode, start, end)`(「指定バイト範囲をspanする最小のノードを返す」)の存在を確認し、Phase 7mの`walkTreeIncremental()`(木全体をpre-order走査しつつ変更されていないノードだけ既存トークンをスプライスする)を、「変更範囲(`ts_tree_get_changed_ranges()` + 各editの字面上の範囲を1つの連続範囲にマージしたもの)を包含する最小の祖先ノードを1回で特定し、そのノード配下だけを既存の`detail::walkTree()`(Phase 7a、rootノード引数を取る汎用関数、無変更のまま再利用)で新規に歩く」設計に置き換えた。`shiftTokensForEdits()`/`walkTreeIncremental()`/`nodeOverlapsAnyChangedRange()`等、Phase 7mのロジックの大半を削除できた。永続トークン列の保持は`IncrementalParser`(Phase 7mの`lastTokens`)から呼び出し側(`render::SyntaxWorker::workerLoop()`)へ移し、`RenderPipeline::applyAsyncSyntaxTokens()`は無変更のまま。
+
+**バグ修正:** 純粋な削除編集(`"12"→"1"`)は無効化範囲がゼロ幅([18,18)バイト)になり、`ts_node_descendant_for_byte_range()`がノード境界上のこのクエリに対して「削除により縮んだ`number_literal`ノード」ではなく無関係な直後のトークンを返してしまい、残るべきトークンが欠落するバグを実装直後のテストで発見した。ゼロ幅になる無効化範囲の開始位置を1コード単位(2バイト)後退させ、常に非ゼロ幅かつ削除位置の直前ノードを確実に含むよう修正した。
+
+**実測値 (Release、ローカル):** `BM_IncrementalReparse_SingleCharEdit`(5万行) 103ms、`_LargeDocument`(50万行) 989ms。Phase 7m比で約30%の定数倍改善(148ms→103ms、1419ms→989ms)を達成したが、比率(約9.6倍/文書サイズ10倍)は依然としてほぼ線形であり、**roadmap §7.11のDoD「≤50ms」は未達のまま。**
+
+**未達の原因:** `applyTokenPatch()`自体が「無効化範囲より後ろの全既存トークンをシフトする」というO(永続トークン列サイズ)の線形走査であり、tree-sitter側の再walkコストをO(edit size)化しても、マージ処理自体が文書サイズに比例するボトルネックとして残った。真のO(edit size)達成には、永続トークン列自体のデータ構造の再設計(可視範囲のみ保持する等)が必要と判明し、次サブフェーズへ意図的に据え置いた。CLAUDE.mdルール10(期待は大規模文書での追加ベンチマーク実測なしに完了報告に書いてはならない、Phase 7mで確立した規律)に従い、DoD未達を正直に記録する。
+
+**スコープ外(意図的、後続サブフェーズへ):** 永続トークン列のデータ構造再設計(真のO(edit size)化)、複数の独立した変更範囲を個別のTokenPatchとして返す設計(1バッチ内の離れた複数editsは1つの連続範囲にまとめる簡略化を維持)。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

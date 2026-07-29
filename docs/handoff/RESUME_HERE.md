@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-29 (Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49)は`git push`実行済み(コミット`bf6c8cd`〜`4651842`、12コミット一括)だが、直後のCI (run [30367272798](https://github.com/itbizmonky/NeoMIFES/actions/runs/30367272798)) が`Build & Test (debug)`/`(release)`両ジョブとも6時間のジョブ上限でキャンセルされた。原因調査の結果Phase 7k (`document::EditDelta`) が持ち込んだ性能リグレッション(編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまう)と判明し、Phase 7pとして緊急修正(詳細は§3.50)。**Phase 7pはpush済み(コミット`73afcbd`/`dcadffd`)、CI (run [30402660974](https://github.com/itbizmonky/NeoMIFES/actions/runs/30402660974)) success確認済み(1h40m52s)。** roadmap §7のv2.0差別化機能(ミニマップ以外)は出揃った状態。次フェーズは残り15言語対応(バッチ2)・ミニマップ・`IncrementalParser`契約変更のいずれか、着手前にユーザー確認)
+> **最終更新:** 2026-07-29 (Phase 7pはpush済み・CI (run 30402660974) success確認済み。続けてユーザー選択でPhase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`)に着手・完了(詳細は§3.51)。**roadmap DoD「1文字入力後の増分解析≤50ms」は5万行103ms/50万行989msで依然未達** — tree-sitter側の再walkはO(edit size)化できたが、呼び出し側のマージ(`applyTokenPatch()`)自体がO(文書サイズ)のまま残り、真の漸近的改善には至らなかった。次サブフェーズ候補は永続トークン列のデータ構造再設計(可視範囲のみ保持等)・残り15言語対応バッチ2・ミニマップ。**Phase 7qはローカル検証・コミット完了・未push、次回セッション最優先でpush+CI green確認が必要**)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -83,7 +83,8 @@
 | Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (push済み、§3.48参照) |
 | Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
 | Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (push済み、CI green確認済み、§3.50参照) |
-| **次フェーズ選定 — 残り15言語/ミニマップ/`IncrementalParser`差分返却化(真のO(編集サイズ)達成)等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、**未push**、§3.51参照) |
+| **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り15言語/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1511,6 +1512,36 @@ Phase 7j〜7o(12コミット)をまとめてpushした直後、ユーザーの�
 
 ---
 
+### 3.51 Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) 完了記録
+
+Phase 7p完了・push・CI green確認後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(IncrementalParser契約変更/残り15言語バッチ2/ミニマップ)をAskUserQuestionで提示し、**IncrementalParser契約変更(推奨案)**が選ばれた — `incremental_parser.h`のヘッダコメント自身が「真のO(edit size)化には差分のみ返却する契約変更が必要」と既に明記していた、Phase 7k〜7mからの唯一の積み残し課題。
+
+**着手前調査で確定した設計方針:**
+- `SyntaxWorker::workerLoop()`は既にループ内ローカル変数として`IncrementalParser`を保持していることを確認し、ここに「永続トークン列」も同じスコープで追加すれば`RenderPipeline::applyAsyncSyntaxTokens()`は一切変更不要と判明した
+- tree-sitter公式ヘッダで`ts_node_descendant_for_byte_range(TSNode, start, end)`(「指定バイト範囲をspanする最小のノードを返す」)の存在を直接確認し、Phase 7mの`walkTreeIncremental()`(木全体をpre-order走査しつつ変更されていないノードだけ既存トークンをスプライスする複雑なロジック)を、「変更範囲を包含する最小の祖先ノードを1回で特定し、そのノード配下だけを既存の`detail::walkTree()`(rootノード引数を取る汎用関数、無変更のまま再利用)で新規に歩く」というシンプルな設計に置き換えられると判明した
+- 1回のバッチに複数の独立した変更範囲がある場合は1つの連続範囲にまとめる設計にした(個別patchを複数返す設計は不採用、CLAUDE.mdルール10の過度な先行複雑化回避)
+
+**実装:** `IncrementalParser::reparse()`(完全トークン列を返す契約)を`reparseDelta()`(差分`TokenPatch`のみ返す契約)へ完全に置き換え。新規`TokenPatch{invalidatedRange, shiftAmount, replacementTokens}`+新規公開関数`applyTokenPatch(tokens, patch)`。`shiftTokensForEdits()`/`walkTreeIncremental()`等Phase 7mのロジックの大半を削除。
+
+**バグ発見・修正:** 実装直後のテスト(`SingleCharacterDeleteMatchesFullReparseOfNewText`)が失敗。純粋な削除編集(`"12"→"1"`)の無効化範囲がゼロ幅([18,18)バイト)になり、`ts_node_descendant_for_byte_range()`がノード境界上のこのクエリに対して「削除により縮んだ`number_literal`ノード」ではなく無関係な直後の`;`トークンを返してしまい、残るべき"1"というNumberトークンが完全に欠落するバグと特定した。ゼロ幅になる無効化範囲の開始位置を1コード単位(2バイト)後退させることで修正、他12件の既存テスト+新規6件の`applyTokenPatch()`境界条件テストは手計算検証の上で全green。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全790件pass。clang-tidy: 実装/テストファイル新規警告0(`syntax_parse_bench.cpp`のwarningは既存のGoogle Benchmarkマクロ由来パターンと確認済み、新規指摘ではない)
+- **実測(Release): `BM_IncrementalReparse_SingleCharEdit`(5万行) 103ms、`_LargeDocument`(50万行) 989ms。** Phase 7m比で約30%の定数倍改善(148ms→103ms、1419ms→989ms)を達成したが、比率(約9.6倍/文書サイズ10倍)は依然としてほぼ線形であり、**roadmap DoD「≤50ms」は未達のまま。** 原因は`applyTokenPatch()`自体が「無効化範囲より後ろの全既存トークンをシフトする」というO(永続トークン列サイズ)の線形走査であり、tree-sitter側の再walkコストをO(edit size)化しても、マージ処理自体が文書サイズに比例するボトルネックとして残ったため
+
+**完了条件:**
+- [x] tree-sitter側の再walkコストをO(edit size)化(`ts_node_descendant_for_byte_range()`ベースの設計)
+- [x] 既存13件のテストが新契約(`reparseDelta`+`applyTokenPatch`のマージオラクル)で全件pass、`applyTokenPatch()`単体の境界条件6件追加
+- [x] ローカルDebug/Release/ubsan全790テストgreen、`src/`配下clang-tidy新規警告0
+- [x] 5万行/50万行ベンチマークを再計測し、DoD達成有無を実測で正直に記録(未達と判明)
+- [ ] roadmap DoD「≤50ms」達成(未達のまま、次サブフェーズへ持ち越し — 永続トークン列自体のデータ構造再設計が必要)
+
+**スコープ外(意図的、後続サブフェーズへ):** 永続トークン列のデータ構造再設計(真のO(edit size)化、可視範囲のみ保持等)、複数の独立した変更範囲を個別のTokenPatchとして返す設計、残り15言語対応バッチ2、ミニマップ。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.19参照。
+
+**Phase 7qはコミット済み・未push。** 次アクションは**まずpushしてCIが実際にgreenになることを確認する**こと(Phase 7pの教訓通り、性能に関わる変更はpush→CI確認までを1検証単位とみなす)。CI green確認後、次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応バッチ2・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1556,19 +1587,20 @@ Phase 7j〜7o(12コミット)をまとめてpushした直後、ユーザーの�
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a〜7d・**Phase 7e〜7o(Indent guides §3.39〜Sticky scroll §3.49、12コミット)は
-2026-07-29に一括pushしたが、直後のCI (run 30367272798) が`Build & Test (debug)`/`(release)`
-両ジョブとも6時間のジョブ上限でキャンセルされた。**
+Phase 7a〜7p(Indent guides〜LineIndexインクリメンタル更新)は全てpush済み・CI green確認済み
+(Phase 7p: run 30402660974、success、1h40m52s)。
 
-**原因はPhase 7k(`document::EditDelta`、§3.45)が持ち込んだ性能リグレッションで、
-`Document`の変更メソッドが編集の都度`LineIndex`をO(文書長)でフルリビルドしてしまい、
-既存ベンチ`BM_UndoStack_PushOneMillion`(100万回逐次insert)が実質O(N²)でハングしていた。
-Phase 7pとして`LineIndex::applyInsert()`/`applyErase()`によるインクリメンタル更新へ
-修正済み(§3.50参照、実測412.5ms)だが、**Phase 7pはまだ未push**。
+**続けてPhase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`、§3.51参照)
+を実装・完了したが、roadmap DoD「1文字入力後の増分解析≤50ms」は依然未達のまま
+(5万行103ms・50万行989ms、Phase 7mから約30%の定数倍改善はあったが文書サイズに
+ほぼ線形のまま)。原因はtree-sitter側の再walkはO(edit size)化できたが、呼び出し側の
+マージ処理(`applyTokenPatch()`)自体がO(文書サイズ)のまま残ったため。真のDoD達成には
+永続トークン列自体のデータ構造再設計(可視範囲のみ保持等)が必要と判明し、次サブフェーズへ
+意図的に据え置いた。**
 
-**次回セッションで最優先ですべきこと: Phase 7pをpushし、CIが実際にgreenになることを
-確認する。** それまでは新機能フェーズ(残り15言語対応バッチ2・ミニマップ・
-`IncrementalParser`の契約変更)に着手しないこと。
+**次回セッションで最優先ですべきこと: Phase 7qをpushし、CIが実際にgreenになることを
+確認する。** それまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り15言語対応
+バッチ2・ミニマップ)に着手しないこと。
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

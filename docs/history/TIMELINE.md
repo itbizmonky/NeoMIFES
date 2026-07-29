@@ -2014,4 +2014,32 @@ Phase 7n1完了後、ユーザーから「次のPhaseへ進め」と指示され
 
 **次回:** Phase 7pはコミット済み・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(残り15言語対応バッチ2・ミニマップ・`IncrementalParser`契約変更)に着手しないこと。今回の教訓(高頻度呼び出しループの内側に新しい計算を追加する際は「他で既に払われているコストの前倒し」という主張の妥当性を必ず疑うこと、CIのベンチマークスモーク実行は`ctest`と独立していること)は`reference_windows_cpp_ci_gotchas.md`にも追記する。
 
+## Session 61 (2026-07-29): pushせよ → CI green確認 → Phase 7q — IncrementalParser差分返却化(DoD未達)
+
+前セッション(Session 60、Phase 7p完了)の続き。ユーザーから「pushせよ」と指示され、`git fetch`+`git log origin/main..HEAD`で確認の上`git push`実行、成功。CI(run 30402660974)を確認するとキューに入り、その後ユーザーから「正常に終了した、次のPhaseへ進め」と報告を受けた。念のため`gh run list`で再確認し、success(1h40m52s)を確認できた。
+
+roadmap §7の残り候補(IncrementalParser契約変更/残り15言語バッチ2/ミニマップ)をAskUserQuestionで提示し、**IncrementalParser契約変更(推奨案)**が選ばれた — `incremental_parser.h`のヘッダコメント自体が「真のO(edit size)化には差分のみ返却する契約変更が必要」と既に明記していた、Phase 7k〜7mからの唯一の積み残し課題。
+
+**Plan Mode着手前調査(既存コードの直接読解+tree-sitter公式ヘッダの直接確認、Agent委任なし):**
+- `SyntaxWorker::workerLoop()`が既にループ内ローカル変数として`IncrementalParser`を保持していることを確認し、ここに「永続トークン列」も同じスコープで追加すれば`RenderPipeline::applyAsyncSyntaxTokens()`は一切変更不要と判明した
+- tree-sitter公式ヘッダ(`tree_sitter/api.h`)で`ts_node_descendant_for_byte_range(TSNode, start, end)`(「指定バイト範囲をspanする最小のノードを返す」)の存在を直接確認した。Phase 7mの`walkTreeIncremental()`(木全体をpre-order走査しつつ変更されていないノードだけ既存トークンをスプライスする複雑なロジック)を、「変更範囲を包含する最小の祖先ノードを1回で特定し、そのノード配下だけを既存の`detail::walkTree()`(rootノード引数を取る汎用関数、Phase 7aから無変更のまま再利用)で新規に歩く」というシンプルな設計に置き換えられると判明し、Plan Modeで正式な計画としてまとめてユーザー承認を得た
+
+**実装:** `IncrementalParser::reparse()`(完全トークン列を返す契約)を`reparseDelta()`(差分`TokenPatch{invalidatedRange, shiftAmount, replacementTokens}`のみ返す契約)へ完全に置き換え。新規公開関数`applyTokenPatch(tokens, patch)`(マージ処理)を追加。`shiftTokensForEdits()`/`walkTreeIncremental()`/`nodeOverlapsAnyChangedRange()`等、Phase 7mのロジックの大半を削除できた。`SyntaxWorker::workerLoop()`に永続トークン列(`persistedTokens`)を追加し、`reparseDelta()`+`applyTokenPatch()`をチェーンする配線に変更。
+
+**バグ発見・修正:** 実装直後のテスト実行で`SingleCharacterDeleteMatchesFullReparseOfNewText`が失敗。デバッグの結果、純粋な削除編集(`"12"→"1"`)の無効化範囲がゼロ幅([18,18)バイト)になり、`ts_node_descendant_for_byte_range()`がノード境界上のこのクエリに対して「削除により縮んだ`number_literal`ノード」ではなく無関係な直後の`;`トークンを返してしまい、残るべき"1"というNumberトークンが完全に欠落するバグと特定した。トークンのバイト表現を手動でデコードし、実測結果と期待結果のトークン列を1件ずつ突き合わせて原因を特定する地道な作業だった。`computeDirtyRangesInFinalCoordinates()`で、ゼロ幅になる範囲の開始位置を1コード単位(2バイト)後退させることで修正した。
+
+**テスト:** 既存13件を新契約(`reparseDelta`+`applyTokenPatch`のマージオラクル、テスト内ヘルパー`ReparsingSession`が実際の`SyntaxWorker`のマージロジックを模倣)向けに書き換え、`applyTokenPatch()`単体の境界条件テスト6件(先頭/末尾無効化・正負のshiftAmount・空replacementTokens)を新規追加。全ての期待値を手計算で事前検証してから実装を確認するという、Phase 7pで確立した規律をそのまま踏襲した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全790件pass。clang-tidy: 実装/テストファイル新規警告0(`syntax_parse_bench.cpp`の警告は既存の`document_load_bench.cpp`(無変更)でも同数出ることを確認し、Google Benchmarkマクロ由来の既存パターンと判断)
+- **実測(Release): `BM_IncrementalReparse_SingleCharEdit`(5万行) 103ms、`_LargeDocument`(50万行) 989ms。** Phase 7m比で約30%の定数倍改善(148ms→103ms、1419ms→989ms)を達成したが、比率(約9.6倍/文書サイズ10倍)は依然としてほぼ線形であり、**roadmap DoD「≤50ms」は未達のまま。** 原因は`applyTokenPatch()`自体が「無効化範囲より後ろの全既存トークンをシフトする」というO(永続トークン列サイズ)の線形走査であり、tree-sitter側の再walkコストをO(edit size)化しても、マージ処理自体が文書サイズに比例するボトルネックとして残ったため。これはPlan策定時に「スコープ外」として明記していたリスクがそのまま現実になったもので、CLAUDE.mdルール10(Phase 7mで確立した「期待は大規模文書での追加ベンチマーク実測なしに完了報告に書いてはならない」規律)に従い正直に記録した
+
+**ドキュメント同期:**
+- `incremental_parser.h`/`syntax_worker.cpp`のヘッダコメントを実測結果に合わせて修正(「flat cost」という当初の期待表現を「依然O(文書サイズ)、次サブフェーズの課題」という正直な記述へ訂正)
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7q ✅完了(DoD未達)」行を追加(次候補は7rへ繰り下げ)、§7.11に3段階の実測推移(321ms→148ms→103ms)とDoD未達の原因を追記、§7に「実装後の確定事項/変更点(2026-07-29、Phase 7q完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.19を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.51(完了記録)、§6推奨プロンプトを現状に合わせて更新(「次回セッション最優先でPhase 7qをpushしCI green確認」を明記)
+
+**次回:** Phase 7qはコミット済み・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り15言語対応バッチ2・ミニマップ)に着手しないこと。真のO(edit size)達成には`applyTokenPatch()`が触れるトークン数を編集近傍だけに限定できるデータ構造(可視範囲のみ保持等)への再設計が必要で、これが次の本命候補。
+
 <!-- 次セッションはここに追記 -->

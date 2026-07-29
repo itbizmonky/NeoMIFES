@@ -227,7 +227,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7n1 | 追加言語対応 バッチ1 (C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 | §7 |
 | 7o | Sticky scroll | ✅ 完了 | §7 |
 | 7p | LineIndexインクリメンタル更新 (`applyInsert`/`applyErase`、Phase 7k性能リグレッション修正) | ✅ 完了 | §7 |
-| 7q〜 | 残り15言語 + ミニマップ + IncrementalParser差分返却化 | ⏭️ 次候補 | §7 |
+| 7q | IncrementalParser差分返却化 (`TokenPatch`/`applyTokenPatch()`、真のO(edit size)化を試行) | ✅ 完了 (DoD未達、§7.11参照) | §7 |
+| 7r〜 | 残り15言語 + ミニマップ | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1008,7 +1009,7 @@ public:
 
 ### 7.11 性能目標
 - 100 万行 C++ ファイルの初回全解析: ≤ 5 秒 (バックグラウンド)
-- 1 文字入力後の増分解析: ≤ 50ms
+- 1 文字入力後の増分解析: ≤ 50ms — **Phase 7k(321ms)→7m(148ms)→7q(103ms)と3段階で改善したが、2026-07-29時点で依然未達。** Phase 7qで`IncrementalParser`を「差分のみ返却」する契約(`TokenPatch`)に変更し、tree-sitter側の再walkコストはO(edit size)まで削減できたが、呼び出し側(`SyntaxWorker`)が永続トークン列へ差分をマージする`applyTokenPatch()`自体がO(文書サイズ)の線形走査(既存トークン全体のシフト)であるため、真の漸近的改善(O(edit size)化)には至らなかった(5万行103ms・50万行989ms、約9.6倍でほぼ線形のまま)。DoD達成には永続トークン列のデータ構造自体の再設計(可視範囲のみ保持等)が必要と判明、次サブフェーズの課題として明記(詳細は本ファイル§7のPhase 7q完了note、`detailed_design.md`§10.19参照)
 - 折り畳み展開/折りたたみ: ≤ 100ms (10000 fold)
 - ミニマップ描画: 60fps
 - Breadcrumb 更新: ≤ 50ms
@@ -1217,6 +1218,20 @@ public:
 **教訓・再発防止:** 高頻度に呼ばれる可能性のあるコアAPI(`Document`の変更メソッド等)に新しい計算を追加する際は、「他のどこかで既に払われているコストの前倒し」という主張は、その計算の**呼び出し元自身が高頻度ループの内側にいないか**を必ず確認する。CIのベンチマークスモーク実行は`ctest`とは独立したステップであるため、性能に関わる変更をレビューする際は明示的にベンチマーク実行ファイルをローカルで走らせて確認する。
 
 **スコープ外(意図的):** `offsetToLine`/`lineToOffset`自体のO(log n)化(issue doc本来のスコープ、PieceTreeのツリー集約化=案A/B)は引き続き未着手。詳細は`detailed_design.md` §10.18参照。
+
+### 実装後の確定事項/変更点 (2026-07-29、Phase 7q完了 — IncrementalParser差分返却化、DoD未達)
+
+**Phase 7pのCI green確認後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(IncrementalParser契約変更/残り15言語バッチ2/ミニマップ)をAskUserQuestionで提示し、IncrementalParser契約変更(推奨案)が選ばれた** — `incremental_parser.h`のヘッダコメント自体が「差分のみ返却する契約への変更が必要」と既に明記していた、Phase 7k〜7mからの唯一の積み残し課題。
+
+- **`IncrementalParser::reparse()`(完全なトークン列を返す契約)を`reparseDelta()`(差分`TokenPatch`のみ返す契約)へ完全に置き換えた。** `TokenPatch{invalidatedRange, shiftAmount, replacementTokens}`+新規公開関数`applyTokenPatch(tokens, patch)`(マージ処理、O(tokens.size()+replacementTokens.size())の単一線形パス)を新設。永続トークン列の保持責務を`IncrementalParser`(Phase 7mの`lastTokens`)から呼び出し側(`render::SyntaxWorker::workerLoop()`)へ移した — `RenderPipeline::applyAsyncSyntaxTokens()`は無変更のまま(マージ後の完全なトークン列を今まで通り受け取るだけ)で済み、影響範囲を`neomifes::syntax`/`SyntaxWorker`内部に閉じ込められた
+- **tree-sitter公式ヘッダで`ts_node_descendant_for_byte_range(TSNode, start, end)`(「指定バイト範囲をspanする最小のノードを返す」)の存在を直接確認し、Phase 7mの`walkTreeIncremental()`(木全体をpre-order走査しつつ変更されていないノードだけ既存トークンをスプライスする複雑なロジック)を、「変更範囲を包含する最小の祖先ノードを1回で特定し、そのノード配下だけを既存の`detail::walkTree()`(rootノード引数を取る汎用関数、Phase 7aから無変更のまま再利用)で新規に歩く」というシンプルな設計に置き換えた。** `shiftTokensForEdits()`/`walkTreeIncremental()`/`nodeOverlapsAnyChangedRange()`等、Phase 7mのロジックの大半を削除できた
+- **実装直後のテスト(`SingleCharacterDeleteMatchesFullReparseOfNewText`)で1件のバグを発見・修正した。** 純粋な削除編集(`"12"→"1"`)の無効化範囲がゼロ幅([18,18)バイト)になり、`ts_node_descendant_for_byte_range()`がノード境界上のこのクエリに対して「削除により縮んだnumber_literalノード」ではなく「無関係な直後の`;`トークン」を返してしまい、削除後も残るべき"1"というNumberトークンが完全に欠落するバグだった。`computeDirtyRangesInFinalCoordinates()`で、ゼロ幅になる範囲の開始位置を1コード単位(2バイト)後退させることで、クエリが常に非ゼロ幅になり削除位置の直前のノードを確実に含むよう修正した
+- **実測(Release、ローカル): `BM_IncrementalReparse_SingleCharEdit`(5万行) 103ms、`_LargeDocument`(50万行) 989ms。** Phase 7m比で約30%の定数倍改善(148ms→103ms、1419ms→989ms)を達成したが、比率(約9.6倍/文書サイズ10倍)は依然としてほぼ線形であり、**roadmap DoD「≤50ms」は未達のまま。** 原因は`applyTokenPatch()`自体が「無効化範囲より後ろの全既存トークンをシフトする」というO(永続トークン列サイズ)の線形走査であり、tree-sitter側の再walkコストをO(edit size)化しても、マージ処理自体が文書サイズに比例するボトルネックとして残ったため。これはPlan策定時に「スコープ外」として明記していたリスクがそのまま現実になったもので、CLAUDE.mdルール10(「この最適化はXという性質を持つはずだ」という期待は大規模文書での追加ベンチマーク実測なしに完了報告に書いてはならない、Phase 7mで確立した規律)に従い正直に記録する
+- **真のO(edit size)達成には、永続トークン列自体のデータ構造の再設計(可視範囲のみ保持する等、「シフトが実際に編集近傍のトークンだけに触れれば済む」構造)が必要と判明した。** 本フェーズはtree-sitterに面した半分(再walkの範囲限定)のみをスコープとし、この構造変更は意図的に次サブフェーズへ据え置いた
+
+**教訓:** 「この設計変更で計算量クラスが変わるはず」という期待は、ボトルネックが1箇所ではなく複数箇所(今回はtree-sitter側の再walkコストと、呼び出し側のマージコストの2箇所)に分散している場合、片方だけを直しても全体としては改善しきれないことがある。大規模文書での実測(9.6倍という具体的な比率)によって、残っているボトルネックが「マージ処理のO(N)性」だと定量的に特定できたこと自体が、次のサブフェーズの設計を正しく方向づける成果になった。
+
+**スコープ外(意図的、後続サブフェーズへ):** 永続トークン列のデータ構造再設計(真のO(edit size)化)、複数の独立した変更範囲を個別のTokenPatchとして返す設計、残り15言語対応バッチ2、ミニマップ。詳細は`detailed_design.md` §10.19参照。
 
 ---
 
