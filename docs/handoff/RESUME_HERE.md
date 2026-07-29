@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-29 (Phase 7pはpush済み・CI (run 30402660974) success確認済み。続けてユーザー選択でPhase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`)に着手・完了(詳細は§3.51)。**roadmap DoD「1文字入力後の増分解析≤50ms」は5万行103ms/50万行989msで依然未達** — tree-sitter側の再walkはO(edit size)化できたが、呼び出し側のマージ(`applyTokenPatch()`)自体がO(文書サイズ)のまま残り、真の漸近的改善には至らなかった。次サブフェーズ候補は永続トークン列のデータ構造再設計(可視範囲のみ保持等)・残り15言語対応バッチ2・ミニマップ。**Phase 7qはローカル検証・コミット完了・未push、次回セッション最優先でpush+CI green確認が必要**)
+> **最終更新:** 2026-07-29 (Phase 7pはpush済み・CI (run 30402660974) success確認済み。続けてユーザー選択でPhase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`)に着手・完了(詳細は§3.51)。**roadmap DoD「1文字入力後の増分解析≤50ms」は5万行103ms/50万行989msで依然未達** — tree-sitter側の再walkはO(edit size)化できたが、呼び出し側のマージ(`applyTokenPatch()`)自体がO(文書サイズ)のまま残り、真の漸近的改善には至らなかった。次サブフェーズ候補は永続トークン列のデータ構造再設計(可視範囲のみ保持等)・残り15言語対応バッチ2・ミニマップ。**Phase 7qはpush済み・CI (run 30421333851) success確認済み(1h37m33s)。** roadmap §7のv2.0機能は出揃い、次サブフェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応バッチ2・ミニマップのいずれか、着手前にユーザー確認)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -83,7 +83,7 @@
 | Phase 7n1 (追加言語対応 バッチ1: C/JavaScript/Java/Go/Rust/JSON) | ✅ 完了 (push済み、§3.48参照) |
 | Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
 | Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (push済み、CI green確認済み、§3.50参照) |
-| Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、**未push**、§3.51参照) |
+| Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、push済み、CI green確認済み、§3.51参照) |
 | **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り15言語/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
@@ -1538,7 +1538,7 @@ Phase 7p完了・push・CI green確認後、ユーザーから「次のPhaseへ�
 
 **スコープ外(意図的、後続サブフェーズへ):** 永続トークン列のデータ構造再設計(真のO(edit size)化、可視範囲のみ保持等)、複数の独立した変更範囲を個別のTokenPatchとして返す設計、残り15言語対応バッチ2、ミニマップ。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.19参照。
 
-**Phase 7qはコミット済み・未push。** 次アクションは**まずpushしてCIが実際にgreenになることを確認する**こと(Phase 7pの教訓通り、性能に関わる変更はpush→CI確認までを1検証単位とみなす)。CI green確認後、次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応バッチ2・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+**Phase 7qはpush済み(`a54ce27`/`94f938a`)・CI green確認済み(run 30421333851、1h37m33s)。** 次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応バッチ2・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
 ---
 
@@ -1587,20 +1587,18 @@ Phase 7p完了・push・CI green確認後、ユーザーから「次のPhaseへ�
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a〜7p(Indent guides〜LineIndexインクリメンタル更新)は全てpush済み・CI green確認済み
-(Phase 7p: run 30402660974、success、1h40m52s)。
+Phase 7a〜7q(Indent guides〜IncrementalParser差分返却化)は全てpush済み・CI green確認済み
+(Phase 7q: run 30421333851、success、1h37m33s)。
 
-**続けてPhase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`、§3.51参照)
-を実装・完了したが、roadmap DoD「1文字入力後の増分解析≤50ms」は依然未達のまま
-(5万行103ms・50万行989ms、Phase 7mから約30%の定数倍改善はあったが文書サイズに
-ほぼ線形のまま)。原因はtree-sitter側の再walkはO(edit size)化できたが、呼び出し側の
-マージ処理(`applyTokenPatch()`)自体がO(文書サイズ)のまま残ったため。真のDoD達成には
-永続トークン列自体のデータ構造再設計(可視範囲のみ保持等)が必要と判明し、次サブフェーズへ
-意図的に据え置いた。**
+**Phase 7q(IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`、§3.51参照)完了後も
+roadmap DoD「1文字入力後の増分解析≤50ms」は依然未達のまま(5万行103ms・50万行989ms、
+Phase 7mから約30%の定数倍改善はあったが文書サイズにほぼ線形のまま)。原因はtree-sitter側の
+再walkはO(edit size)化できたが、呼び出し側のマージ処理(`applyTokenPatch()`)自体が
+O(文書サイズ)のまま残ったため。真のDoD達成には永続トークン列自体のデータ構造再設計
+(可視範囲のみ保持等)が必要と判明し、次サブフェーズへ意図的に据え置いた。**
 
-**次回セッションで最優先ですべきこと: Phase 7qをpushし、CIが実際にgreenになることを
-確認する。** それまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り15言語対応
-バッチ2・ミニマップ)に着手しないこと。
+**次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化)・残り15言語対応
+バッチ2・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は
