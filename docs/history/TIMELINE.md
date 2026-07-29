@@ -2072,4 +2072,32 @@ roadmap §7の残り候補(永続トークン列のデータ構造再設計/残�
 
 **次回:** Phase 7rはコミット済み(`bef2905`)・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り9言語対応バッチ3・ミニマップ)に着手しないこと。
 
+## Session 63 (2026-07-29): 次のPhaseへ進めよ → Phase 7s — 追加言語対応バッチ3(TypeScript/TSX/PHP/Markdown)
+
+前セッション(Session 62、Phase 7r完了)の続き。ユーザーから「次のPhaseへ進め」と指示された(pushの指示はまだ無し)。roadmap §7の残り候補(残り9言語バッチ3/永続トークン列のデータ構造再設計/ミニマップ)をAskUserQuestionで提示し、**残り9言語バッチ3(推奨案)**が選ばれた — Phase 7rで意図的に据え置いたTypeScript/PHP/Markdownの3言語が実質的な対象(SQL/PowerShell/VB/VBS/BAT/INIは公式org不在で引き続き対象外)。
+
+**Plan Mode着手前調査(`gh api`/`curl`直接確認、CLAUDE.mdルール3):** Phase 7rでは「主要文法選択の判断が必要」として3言語ともまとめて次バッチへ据え置いていたが、個別に精査した結果、実際に判断が必要だったのはPHPのみと判明した。TypeScript(`tree-sitter/tree-sitter-typescript` v0.23.2)の`typescript/`と`tsx/`はどちらも独立した完全な文法で拡張子により使い分ける設計(公式CMakeLists.txtが両者を並列`add_subdirectory()`)、PHP(`tree-sitter/tree-sitter-php` v0.24.2)の`php/`と`php_only/`は`.php`ファイルを開く用途では`php/`が唯一の正解、Markdown(`tree-sitter-grammars/tree-sitter-markdown` v0.5.3)の`tree-sitter-markdown/`と`tree-sitter-markdown-inline/`は「主要文法を選ぶ」構造ではなくtree-sitterの言語注入機構で連携する設計と判明した。`neomifes::syntax`には言語注入の仕組みが無いため、v1はMarkdownのブロック文法のみを採用しインライン文法は対象外とした(CLAUDE.mdルール10)。
+
+**実装:**
+- `cmake/Dependencies.cmake`に3リポジトリ・4ターゲット(`tree-sitter-typescript-grammar`/`tree-sitter-tsx-grammar`/`tree-sitter-php-grammar`/`tree-sitter-markdown-grammar`)のFetchContentブロックを追加。TypeScript/TSXのscanner.cはリポジトリルート直下の`common/scanner.h`を相対`#include`で参照するため追加のインクルードパス設定は不要と実機ビルドで確認
+- 一時的なスタンドアロンprobeプログラム(コミットしない)で4文法の実際のtree-sitter出力を確認。`reference_windows_cpp_ci_gotchas.md`項目12(CRTモード不一致)を最初から踏まえて`/MDd`付きで`cl`起動し、CRTリンクエラーを未然に回避
+- probe出力から`namedLeafKindsForX()`×4を作成。TypeScriptはJavaScriptの表(Phase 7n1)と大部分を共有すると期待できたが、継承関係だけで済ませず各エントリ(comment/identifier/string_fragment/escape_sequence/regex_pattern/regex_flags/true/false/null/undefined/this/super)を独立して再probeし名前一致を確認してから記入した。TSXはJSX固有の新規named leaf型が見つからなかったためTypeScriptの表をそのまま再利用(`namedLeafKindsForTsx()`が`namedLeafKindsForTypeScript()`を呼ぶだけの実装)
+- TypeScriptの`predefined_type`ノード(組み込み型キーワード)は非leaf(子1つ、親と同一範囲を覆う無名子のみ)だが、TOMLの`string`/XMLの`AttValue`(Phase 7r)と異なり子が既に全範囲をカバーしておりデータ欠落バグではない。それでもCpp/Rustの`primitive_type`との一貫性のためTypeとして登録した
+- `Language`にTypeScript/Tsx/Php/Markdownを追加(計18/23言語)、`parseX()`×4+`incremental_parser.cpp`の`namedKindsFor()`拡張+`outline.cpp`の空`SymbolTable`×4(Phase 7n1/7r確立のパターン踏襲)+`detectLanguage()`拡張(`.ts`/`.mts`/`.cts`/`.tsx`/`.php`/`.md`/`.markdown`)
+
+**テスト:** `syntax_syntax_test.cpp`に4言語分のテストを追加。各テストは実機probeの生ノードダンプから手計算したトークン数・種別・UTF-16範囲を直接アサートする形にした。`app_syntax_language_test.cpp`(拡張子検出)・`syntax_outline_test.cpp`(空outline安全性)・`syntax_incremental_parser_test.cpp`(TypeScript増分再解析1件)にも追加。**既存テスト`RejectsNonRecognizedExtensions`が`.md`/`.ts`を「未対応」と検証していたためPhase 7sの言語追加と矛盾して失敗** — `.sql`/`.ps1`(引き続き未対応)に差し替えて修正した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全864件pass(新規50件、手計算した期待値と実行結果が全て一致)
+- clang-tidy: `src/`配下(`syntax.cpp`/`outline.cpp`/`incremental_parser.cpp`)新規警告0。`tests/`側の`hicpp-uppercase-literal-suffix`警告・1件の`readability-function-cognitive-complexity`警告(Phase 7n1由来の未変更Rustテスト関数)はどちらも`git diff`で自分の変更に起因しないことを確認した既存バックログ
+- 実アプリ`--open`でTypeScript/Markdownサンプルを開きプロセスが3秒後も生存していることを確認。連続起動時に2つ目が即終了する事象が一度発生したが、単独実行では再現せず、ADR-009の単一インスタンス用Named Mutexが直前プロセスの強制終了直後でまだ解放されていなかっただけと特定(実際のクラッシュではない)
+- コミット後、リポジトリルートに`ts_probe_batch3.obj`という一時probeのビルド成果物が誤って残っていることを発見・削除してからコミット(probeは常にスクラッチパッドで完結させるべきだったが、`cl`のデフォルト出力先がカレントディレクトリだったため漏れた)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7s ✅完了」行を追加(次候補は7tへ繰り下げ)、§7.2の言語対応状況を18/23言語へ更新、§7に「実装後の確定事項/変更点(2026-07-29、Phase 7s完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.21を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.53(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 7r・7sともコミット済み(`bef2905`/`540715b`/`54b87ea`)・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り6言語対応バッチ4・ミニマップ)に着手しないこと。
+
 <!-- 次セッションはここに追記 -->

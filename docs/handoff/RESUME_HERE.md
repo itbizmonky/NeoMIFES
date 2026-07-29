@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-29 (Phase 7q完了・push・CI green確認後、ユーザー選択でPhase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML)に着手・完了(詳細は§3.52)。roadmap §7.2必須23言語のうち14言語まで対応完了。ローカルDebug/Release/ubsan全834件green・clang-tidy `src/`配下新規警告0まで確認済み・コミット済み(`bef2905`)、**pushはユーザーの明示指示待ち**。次サブフェーズ候補は永続トークン列のデータ構造再設計(真のO(edit size)化、Phase 7q未達DoD)・残り9言語(TypeScript/PHP/Markdown等)・ミニマップ)
+> **最終更新:** 2026-07-29 (Phase 7q完了・push・CI green確認後、ユーザー選択でPhase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML、詳細§3.52)→続けてPhase 7s(追加言語対応バッチ3: TypeScript/TSX/PHP/Markdown、詳細§3.53)を連続実装。roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語はSQL/PowerShell/VB/VBS/BAT/INI、公式org不在で対象外)。ローカルDebug/Release/ubsan全864件green・clang-tidy `src/`配下新規警告0まで確認済み・Phase 7r/7sともコミット済み(`bef2905`/`540715b`/`54b87ea`)、**pushはユーザーの明示指示待ち**。次サブフェーズ候補は永続トークン列のデータ構造再設計(真のO(edit size)化、Phase 7q未達DoD)・残り6言語・ミニマップ)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -84,8 +84,9 @@
 | Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
 | Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (push済み、CI green確認済み、§3.50参照) |
 | Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、push済み、CI green確認済み、§3.51参照) |
-| Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (コミット済み`bef2905`、**push未実施**、§3.52参照) |
-| **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り9言語(TypeScript/PHP/Markdown等)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (コミット済み`bef2905`/`540715b`、**push未実施**、§3.52参照) |
+| Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) | ✅ 完了 (コミット済み`54b87ea`、**push未実施**、§3.53参照) |
+| **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1569,6 +1570,36 @@ Phase 7q完了・push・CI green確認後、ユーザーから「次のPhaseへ�
 
 ---
 
+### 3.53 Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) 完了記録
+
+Phase 7r完了後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り9言語バッチ3/永続トークン列のデータ構造再設計/ミニマップ)をAskUserQuestionで提示し、**残り9言語バッチ3(推奨案)**が選ばれた — 実質的な対象はPhase 7rで意図的に据え置いたTypeScript/PHP/Markdownの3言語(SQL/PowerShell/VB/VBS/BAT/INIは公式org不在で引き続き対象外)。
+
+**着手前調査(`gh api`/`curl`直接確認、CLAUDE.mdルール3):** Phase 7rでは「主要文法選択の判断が必要」として3言語ともまとめて据え置いていたが、個別に精査した結果、実際に判断が必要だったのはPHPのみと判明した。
+
+- **TypeScript(`tree-sitter/tree-sitter-typescript` v0.23.2)の`typescript/`と`tsx/`はどちらも独立した完全な文法で、拡張子で使い分ける設計(公式CMakeLists.txtが両者を並列`add_subdirectory()`している)。** `Language::TypeScript`(`.ts`/`.mts`/`.cts`)と`Language::Tsx`(`.tsx`)の2エントリを追加(1つに絞る判断は不要だった)
+- **PHP(`tree-sitter/tree-sitter-php` v0.24.2)の`php/`(完全な文法)と`php_only/`(タグなし純PHP、埋め込み専用)は、`.php`ファイルを開く用途では`php/`が唯一の正解。** `php_only/`は対象外
+- **Markdown(`tree-sitter-grammars/tree-sitter-markdown` v0.5.3)の`tree-sitter-markdown/`(ブロック)と`tree-sitter-markdown-inline/`(インライン)は「主要文法を選ぶ」構造ではなく、tree-sitterの言語注入機構で連携する設計と判明。** `neomifes::syntax`に言語注入の仕組みが無くCLAUDE.mdルール10に従いv1はブロック文法のみ採用、インラインは対象外
+
+**実装:** TypeScript/TSXのscanner.cはリポジトリルート直下の`common/scanner.h`を相対`#include`で参照するため追加のインクルードパス設定は不要と確認。`namedLeafKindsForTypeScript()`はJavaScriptの表(Phase 7n1)と大部分を共有(継承関係だけで済ませず、各エントリを独立して再probeし名前一致を確認)、`namedLeafKindsForTsx()`はJSX固有の新規named leaf型が見つからなかったためTypeScriptの表をそのまま再利用。`predefined_type`(組み込み型キーワード)は非leafだが子が全範囲をカバーしておりデータ欠落バグではない — それでもCpp/Rustの`primitive_type`との一貫性のためTypeとして登録した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全864件pass(新規50件、うち構造テストは実機probe出力から手計算した期待値と一致)
+- clang-tidy: `src/`配下新規警告0。1件、Phase 7q以前の既存テスト(`RejectsNonRecognizedExtensions`が`.md`/`.ts`を「未対応」と検証していた)がPhase 7sの言語追加と矛盾して失敗、`.sql`/`.ps1`に差し替えて修正
+- `--open`でTypeScript/Markdownサンプルを開き数秒後もプロセス生存を確認。連続起動時に2つ目が即終了する事象が一度発生したが、単独実行では再現せず、ADR-009の単一インスタンス用Named Mutexが直前のプロセス終了直後でまだ解放されていなかっただけ(実際のクラッシュではない)と特定
+
+**完了条件:**
+- [x] TypeScript/TSX/PHP/Markdownの4文法FetchContent追加+ビルド確認
+- [x] 4言語分の`namedLeafKindsForX()`テーブルを実機probe出力から作成(記憶からの推測ではない)
+- [x] `parseX()`×4+`detectLanguage()`拡張+空`SymbolTable`×4
+- [x] ローカルDebug/Release/ubsan全864テストgreen、`src/`配下clang-tidy新規警告0
+- [x] コミット(`54b87ea`)
+
+**スコープ外(意図的、後続バッチへ):** SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、Markdownのインライン文法+言語注入機構の新設、新4言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.21参照。
+
+**Phase 7sはコミット済み(`54b87ea`)、pushはユーザーの明示指示待ち。** 次フェーズは永続トークン列のデータ構造再設計(真のO(edit size)化、Phase 7q未達DoD)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1615,17 +1646,17 @@ Phase 7q完了・push・CI green確認後、ユーザーから「次のPhaseへ�
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
 Phase 7a〜7qはpush済み・CI green確認済み(Phase 7q: run 30421333851、success、1h37m33s)。
-**Phase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML、§3.52参照)はローカル
-Debug/Release/ubsan全834件green・コミット済み(`bef2905`)だが未push。**
+**Phase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML、§3.52参照)→Phase 7s
+(追加言語対応バッチ3: TypeScript/TSX/PHP/Markdown、§3.53参照)を連続実装済み。ローカル
+Debug/Release/ubsan全864件green・コミット済み(`bef2905`/`540715b`/`54b87ea`)だが未push。**
 
-**roadmap §7.2必須23言語のうち14言語まで対応完了(残り9言語: TypeScript/PHP/Markdown
-[複数文法サブディレクトリの主要文法選択判断が必要]/SQL/PowerShell/VB/VBS/BAT/INI
-[公式org不在])。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7q時点から変わらず
-未達のまま(5万行103ms・50万行989ms、§3.51参照) — 永続トークン列自体のデータ構造再設計
-が必要と判明し、次サブフェーズへ意図的に据え置いている。**
+**roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語: SQL/PowerShell/VB/VBS/BAT/INI
+は公式org不在のため対象外のまま)。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7q
+時点から変わらず未達のまま(5万行103ms・50万行989ms、§3.51参照) — 永続トークン列自体の
+データ構造再設計が必要と判明し、次サブフェーズへ意図的に据え置いている。**
 
-**次フェーズは(1) Phase 7rのpush+CI green確認、その後(2) 永続トークン列のデータ構造
-再設計(真のO(edit size)化)・残り9言語対応バッチ3・ミニマップのいずれか、着手前に
+**次フェーズは(1) Phase 7r+7sのpush+CI green確認、その後(2) 永続トークン列のデータ構造
+再設計(真のO(edit size)化)・残り6言語対応バッチ4・ミニマップのいずれか、着手前に
 Plan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して

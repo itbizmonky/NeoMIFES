@@ -2374,6 +2374,62 @@ enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json,
 
 ---
 
+### 10.21 追加言語対応 バッチ3 (Phase 7s実装)
+
+`neomifes::syntax::Language`にTypeScript/Tsx/Php/Markdownを追加した(roadmap §7.2必須23言語のうち計18言語が完了)。
+
+```cpp
+// src/syntax/include/neomifes/syntax/syntax.h
+enum class Language {
+    Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Css, Shell, Yaml, Toml, Xml,
+    TypeScript, Tsx, Php, Markdown
+};
+
+[[nodiscard]] std::vector<Token> parseTypeScript(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseTsx(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parsePhp(std::u16string_view text);
+[[nodiscard]] std::vector<Token> parseMarkdown(std::u16string_view text);
+```
+
+**言語選定・主要文法判断 (CLAUDE.mdルール3、`gh api`/`curl`によるGitHub直接確認):** Phase 7rで「主要文法選択の判断が必要」として据え置いたTypeScript/PHP/Markdownの3リポジトリを個別に精査した結果、実際に判断が必要だったのはPHPのみと判明した。
+
+- **TypeScript(`tree-sitter/tree-sitter-typescript` v0.23.2)の`typescript/`と`tsx/`は、どちらも`parser.c`+`scanner.c`+`grammar.json`+`node-types.json`を完備した独立した完全な文法で、拡張子(`.ts`/`.tsx`)により使い分ける設計(公式`CMakeLists.txt`が両者を並列`add_subdirectory()`している)。** 「主要文法を1つ選ぶ」判断は不要と判明し、`Language::TypeScript`/`Language::Tsx`の2エントリを追加した
+- **PHP(`tree-sitter/tree-sitter-php` v0.24.2)の`php/`(完全な文法、`<?php ?>`タグ+埋め込みHTML込み)と`php_only/`(タグなし純PHPコード専用、他言語への埋め込み用途)は、実際に`.php`ファイルを開く用途では`php/`が唯一の正解であり曖昧さは無い。** `php_only/`は対象外
+- **Markdown(`tree-sitter-grammars/tree-sitter-markdown` v0.5.3)の`tree-sitter-markdown/`(ブロック)と`tree-sitter-markdown-inline/`(インライン: 強調/リンク/インラインコード等)は「主要文法を選ぶ」構造ではなく、tree-sitterの言語注入(language injection)機構でブロック文法がインライン文法を段落テキストへ注入する設計(nvim-treesitter等の標準パターン)。** `neomifes::syntax`には言語注入の仕組みが無く新設は非自明な拡張を要するため、v1はブロック文法のみ採用しインライン文法は対象外とした
+
+**TypeScript/TSXのCMake配線 (`cmake/Dependencies.cmake`):** 両者のscanner.cはリポジトリルート直下の`common/scanner.h`を`#include "../../common/scanner.h"`という相対パスで参照する(実ファイル確認済み)。公式`CMakeLists.txt`自身も`common/`を`target_include_directories`に追加していない(相対includeが自動解決するため)ので、追加のインクルードパス設定は不要だった。
+
+**`namedLeafKindsForX()`テーブルの共有設計:**
+```cpp
+// syntax_internal.h
+// TypeScriptはJavaScriptの表(Phase 7n1)と大部分を共有 - tree-sitter-
+// typescriptがtree-sitter-javascriptの文法を拡張する公式アーキテクチャ。
+// ただし共有元の各エントリ(comment/identifier/string_fragment/escape_
+// sequence/regex_pattern/regex_flags/true/false/null/undefined/this/
+// super)はTypeScript側でも独立して実機probeし直し、名前が同一であること
+// を確認してから記入した(継承関係からの類推だけで済ませない、CLAUDE.md
+// ルール3)。type_identifier/predefined_typeはTypeScript固有の追加。
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForTypeScript() { ... }
+
+// TSXはJSX固有の新規named leaf型が実機probeで見つからなかったため、
+// TypeScriptの表をそのまま再利用する(別テーブルを複製しない)。
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForTsx() {
+    return namedLeafKindsForTypeScript();
+}
+```
+
+**`predefined_type`のisAtomicNode()登録 (データ欠落回避ではなく一貫性のための選択):** TypeScriptの組み込み型キーワード(`number`/`string`等)を表す`predefined_type`ノードは非leaf(子1つ、親と同一バイト範囲を覆う無名子のみ)だが、子が既に全範囲をカバーしているためTOMLの`string`/XMLの`AttValue`(Phase 7r)のような「登録しないとテキストが欠落する」バグではない。それでもテーブルへ登録し、Cpp/Rustの`primitive_type`と一貫してTypeとして着色する設計にした(未登録のままだと`classifyAnonymousLeaf()`の「全アルファベット文字ならKeyword」ルールでKeyword扱いになり、他言語の組み込み型表示と食い違う)。
+
+**設計上の要点:**
+- **PHPの`php_tag`/`php_end_tag`(`<?php`/`?>`)はPreprocessorに分類した。** タグ外の埋め込みHTML(`text`ノード)は無彩色のまま(HTMLのraw_text/CSSのplain_valueと同種の「組み込み言語のネストハイライトはしない」簡略化)
+- **Markdownはブロック文法のみのため、`` ` ``(バックティック)と`*`が既存の`classifyAnonymousLeaf()`のルール(バックティックは引用符扱い→String、`*`は非アルファベット→Punctuation)により偶発的にインライン区切り文字として着色される。** 意図した機能ではなく、既存ロジックの無害な副産物として文書化した(段落本文自体は無彩色のまま)
+- **6言語すべて、Phase 7n1/7r確立の「正しい文法選択+空`SymbolTable`」パターンをそのまま踏襲した。** `RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更は不要(Phase 7dの汎用ディスパッチがそのまま機能する)
+- **正しさの検証は実機probeの生出力からトークン列を手計算し、`syntax_syntax_test.cpp`の各言語テストで直接アサートする形で行った。** 全864件のローカルテストがgreenであることで手計算の正しさを裏付けた
+
+**スコープ外(意図的、後続バッチへ):** SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、Markdownのインライン文法+言語注入機構の新設、新4言語のoutlineシンボル抽出ロジック本体。詳細は`master_roadmap.md` §7参照。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

@@ -229,7 +229,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7p | LineIndexインクリメンタル更新 (`applyInsert`/`applyErase`、Phase 7k性能リグレッション修正) | ✅ 完了 | §7 |
 | 7q | IncrementalParser差分返却化 (`TokenPatch`/`applyTokenPatch()`、真のO(edit size)化を試行) | ✅ 完了 (DoD未達、§7.11参照) | §7 |
 | 7r | 追加言語対応 バッチ2 (HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 | §7 |
-| 7s〜 | 残り9言語 (TypeScript/PHP/Markdown等) + ミニマップ | ⏭️ 次候補 | §7 |
+| 7s | 追加言語対応 バッチ3 (TypeScript/TSX/PHP/Markdown) | ✅ 完了 | §7 |
+| 7t〜 | 永続トークン列のデータ構造再設計 / 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / ミニマップ | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -888,7 +889,7 @@ v2.0 大幅拡張: **ミニマップ、Breadcrumb、Sticky scroll、Indent guide
 ### 7.2 対応言語 (Phase 7 の一次スコープ、要件定義書 §6 対応)
 必須: C / C++ / TypeScript / JavaScript / Python / Java / Go / Rust / PHP / HTML / CSS / JSON / XML / YAML / SQL / Markdown / PowerShell / VB / VBS / BAT / Shell / INI / TOML / **SAP ABAP** (P1 対応)
 
-> **実装状況 (2026-07-29、Phase 7r完了時点):** ✅ 完了14言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)。残り9言語(TypeScript/PHP/Markdown/SQL/PowerShell/VB/VBS/BAT/INI)+SAP ABAP(P1)は未着手。TypeScript/PHP/Markdownは1リポジトリに複数文法(TS: `typescript`/`tsx`、PHP: `php`/`php_only`、Markdown: `tree-sitter-markdown`/`tree-sitter-markdown-inline`)が同居し主要文法選択の設計判断が要るため7rでは意図的に対象外とした。SQL/PowerShell/VB/VBS/BAT/INIはtree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在せず、コミュニティ文法のみ(信頼度の問題)。Phase 7s以降で継続。
+> **実装状況 (2026-07-29、Phase 7s完了時点):** ✅ 完了18言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)・TypeScript/Tsx/PHP/Markdown(7s)。TypeScriptは`.ts`/`.tsx`で2つの独立した完全な文法(`typescript`/`tsx`)を使い分ける設計にし、PHPは`php`のみ採用(`php_only`は埋め込み専用で対象外)、Markdownはブロック文法(`tree-sitter-markdown`)のみ採用(`tree-sitter-markdown-inline`は言語注入機構が本コードベースに無いため対象外、段落内の強調/リンク等は無彩色のまま)。残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)+SAP ABAP(P1)は、tree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在せずコミュニティ文法のみ(信頼度の問題)のため引き続き未着手。
 
 ### 7.3 データ構造・アルゴリズム
 
@@ -1246,6 +1247,19 @@ public:
 - **実アプリでの視覚確認は、過去複数セッションでスクリーンショット/入力合成が不安定だったことを踏まえ、`--open`引数でHTML/YAMLサンプルファイルを実際に開きプロセスが3秒後もクラッシュせず生存していることを確認する軽量スモークテストに切り替えた。** 正しさの証明は自動テスト(834件全green、6言語分の分類テスト・拡張子検出テスト・outline安全性テスト・YAML増分再解析テストを含む、うち構造テストは全て実機probe出力からトークン列を手計算し検証)に委ねた
 
 **スコープ外(意図的、後続バッチへ):** TypeScript/PHP/Markdown(複数文法サブディレクトリの主要文法選択判断が必要)、SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、新6言語のoutlineシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.20参照。
+
+### 実装後の確定事項/変更点 (2026-07-29、Phase 7s完了 — 追加言語対応 バッチ3)
+
+**Phase 7r完了後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り9言語バッチ3/永続トークン列のデータ構造再設計/ミニマップ)をAskUserQuestionで提示し、残り9言語バッチ3(推奨案)が選ばれた** — Phase 7rで意図的に据え置いたTypeScript/PHP/Markdownが実質的な対象(SQL/PowerShell/VB/VBS/BAT/INIは公式org不在のため引き続き対象外)。
+
+- **`gh api`/`curl`によるGitHub直接確認(CLAUDE.mdルール3)で、TypeScript(`tree-sitter/tree-sitter-typescript` v0.23.2)が`typescript/`(`.ts`向け)と`tsx/`(`.tsx`向け、JSX拡張込み)の2つの独立した完全な文法を持つが、Phase 7rでPHP/Markdownが直面した「どちらを主要文法とするか」という曖昧さはそもそも存在しないと判明した。** 両ディレクトリとも`parser.c`+`scanner.c`+`grammar.json`+`node-types.json`を完備し、拡張子で使い分ける設計(公式`CMakeLists.txt`自身が`typescript`/`tsx`を並列`add_subdirectory()`している)。このため`Language::TypeScript`(`.ts`/`.mts`/`.cts`)と`Language::Tsx`(`.tsx`)の2つのenumeratorを追加した(Language 1つに絞る判断は不要)
+- **PHP(`tree-sitter/tree-sitter-php` v0.24.2)の`php/`(完全な文法、`<?php ?>`タグ+埋め込みHTML込み)と`php_only/`(タグなしの純PHPコードのみ、他言語への埋め込み用途)は、実際に`.php`ファイルを開く用途では`php/`が明確に唯一の正解であり、こちらもPHP/Markdownで警戒した曖昧さは実質存在しないと判明した。** `php_only/`は対象外、`php/`のみ採用
+- **Markdown(`tree-sitter-grammars/tree-sitter-markdown` v0.5.3)の`tree-sitter-markdown/`(ブロックレベル)と`tree-sitter-markdown-inline/`(インラインレベル: 強調/リンク/インラインコード等)は、PHPと異なり「主要文法を選ぶ」構造ではなく、tree-sitterの言語注入(language injection)機構でブロック文法がインライン文法を段落テキストへ注入する設計(nvim-treesitter等が採用する標準パターン)と判明した。** `neomifes::syntax`には言語注入の仕組みが存在せず、新設は`walkTree()`/`IncrementalParser`双方への非自明な拡張を要するため、CLAUDE.mdルール10(ベンチマーク根拠のない先行複雑化を避ける)に従いv1は`tree-sitter-markdown`(ブロック文法)のみ採用、インライン文法は対象外とした。段落内の強調/リンク等は無彩色のまま(既存のHTML raw_text/CSS plain_valueと同種の受容済み簡略化) — ただし`` ` ``(バックティック、classifyAnonymousLeaf()の既存の引用符扱い)と`*`(Punctuation)が偶発的にインライン区切り文字として着色される副次効果を確認した(意図した機能ではなく、既存ロジックの無害な副産物)
+- **TypeScript/TSXの`scanner.c`はどちらもリポジトリルート直下の`common/scanner.h`を相対`#include`で参照する(実機ファイル確認済み)ため、追加の`target_include_directories`設定は不要と確認した。** TypeScriptの`namedLeafKindsForTypeScript()`はJavaScriptの表(Phase 7n1)と大部分を共有する設計にし(tree-sitter-typescriptがtree-sitter-javascriptの文法を拡張する公式アーキテクチャ)、TSXはTypeScriptの表をそのまま再利用する形にした(JSX固有の新規named leaf型は実機probeで確認されなかったため)
+- **TypeScriptの`predefined_type`ノード(組み込み型キーワード)は非leaf(子1つ、親と同一範囲を覆う無名子のみ)だが、TOMLの`string`/XMLの`AttValue`と異なりデータ欠落バグではない(子が既に全範囲をカバーしている)。** それでもテーブルへ登録し、Cpp/Rustの`primitive_type`と一貫してTypeとして着色する設計にした(データ欠落回避ではなく、言語間一貫性のための意図的な選択)
+- **実アプリでの視覚確認は、`--open`引数でTypeScript/Markdownサンプルファイルを開きプロセスが3秒後もクラッシュせず生存していることを確認する軽量スモークテストで実施した。** 2つのサンプルを連続起動した際に2つ目が即座に終了する事象が一度発生したが、`Stop-Process -Force`直後に次のインスタンスを起動したことでADR-009の単一インスタンス用Named Mutexがまだ解放されておらず後発インスタンスが起動ハンドオフとして即終了しただけと判明(単独実行では再現せず、実際のクラッシュではない)
+
+**スコープ外(意図的、後続バッチへ):** SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、Markdownのインライン文法+言語注入機構の新設、新4言語のoutlineシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.21参照。
 
 ---
 
