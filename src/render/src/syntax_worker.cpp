@@ -59,10 +59,19 @@ void SyntaxWorker::workerLoop() {
     // (never a partial reset() on the existing instance) whenever a picked-
     // up batch demands it, since a freshly-constructed IncrementalParser has
     // no retained tree yet, which is exactly what "start over with a full
-    // parse" needs (see reparse()'s "edits empty, no tree retained" full-
-    // parse path).
+    // parse" needs (see reparseDelta()'s "edits empty, no tree retained"
+    // full-parse path).
     std::optional<syntax::IncrementalParser> parser;
     syntax::Language                          parserLanguage = syntax::Language::Cpp;
+    // Phase 7q: the full token list, persisted across loop iterations and
+    // updated in place via syntax::applyTokenPatch() - reparseDelta() itself
+    // now only returns the DELTA since the previous call (see
+    // incremental_parser.h's header comment on why). Cleared whenever
+    // `parser` itself is reconstructed (below) - a fresh parser's first
+    // reparseDelta() call always returns a "whole document" patch anyway, so
+    // merging it against a stale non-empty list here would just be wasted
+    // work, not a correctness issue.
+    std::vector<syntax::Token> persistedTokens;
 
     // False-positive leak diagnostic anchors here: ownership of the heap-
     // allocated token vector below is transferred across the
@@ -96,9 +105,10 @@ void SyntaxWorker::workerLoop() {
         if (reset || !parser.has_value() || parserLanguage != language) {
             parser.emplace(language);
             parserLanguage = language;
+            persistedTokens.clear();
         }
 
-        // Neither extract() nor IncrementalParser::reparse() is noexcept; a
+        // Neither extract() nor IncrementalParser::reparseDelta() is noexcept; a
         // genuine std::bad_alloc is allowed to propagate and terminate the
         // process rather than being swallowed here, matching
         // BufferSnapshot::pieceView()'s own documented stance on this
@@ -111,7 +121,15 @@ void SyntaxWorker::workerLoop() {
         for (const document::EditDelta& delta : edits) {
             reparseEdits.push_back(toReparseEdit(delta));
         }
-        auto tokens = std::make_unique<std::vector<syntax::Token>>(parser->reparse(text, reparseEdits));
+        // Phase 7q: reparseDelta() returns only what changed (O(edit size)
+        // on the tree-sitter side); applyTokenPatch() merges it into this
+        // loop's own persisted list - see this function's local variable
+        // comment above and incremental_parser.h's header comment for the
+        // full rationale, including the benchmark-confirmed caveat that the
+        // merge itself is still O(persisted list size), not O(edit size).
+        const syntax::TokenPatch patch = parser->reparseDelta(text, reparseEdits);
+        persistedTokens = syntax::applyTokenPatch(std::move(persistedTokens), patch);
+        auto tokens = std::make_unique<std::vector<syntax::Token>>(persistedTokens);
 
         // Ownership transferred to whichever code handles kMsgSyntaxTokensReady
         // (main.cpp's onAppMessage hook) - it must reconstruct a unique_ptr

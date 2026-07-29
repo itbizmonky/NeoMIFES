@@ -1,6 +1,6 @@
 #pragma once
 
-// SyntaxWorker - runs syntax::IncrementalParser::reparse() (language
+// SyntaxWorker - runs syntax::IncrementalParser::reparseDelta() (language
 // selected per request, Phase 7d) on a single dedicated background thread
 // (Phase 7c, roadmap sec.7.9), so RenderPipeline's UI thread never blocks on
 // a re-parse (7a's benchmark: ~6.6s for a full 1,000,000-line parse). This is
@@ -94,7 +94,7 @@ public:
     // passing empty `edits` alone is NOT equivalent: an existing retained
     // tree from an unrelated document would otherwise still get reused as
     // tree-sitter's reparse hint, corrupting the result (see
-    // IncrementalParser::reparse()'s behavior when a tree is retained).
+    // IncrementalParser::reparseDelta()'s behavior when a tree is retained).
     // Sticky: once set true for the still-pending batch, stays true until
     // the worker actually picks the batch up, even if a later call in the
     // same batch passes false. Safe to call only from the UI thread (same

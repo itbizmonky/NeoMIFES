@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
-#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -89,137 +88,44 @@ using detail::tsLanguageFor;
             const TSInputEdit laterEdit = toTsInputEdit(edits[j]);
             ts_range_edit(&range, &laterEdit);
         }
+        // Phase 7q: a pure deletion (this edit inserted nothing) collapses
+        // to a ZERO-WIDTH range in final coordinates - e.g. "12" -> "1"
+        // deletes the '2' at code-unit 9, giving [18,18) in bytes. Querying
+        // ts_node_descendant_for_byte_range() with a zero-width range sitting
+        // exactly on a node boundary is ambiguous: it can resolve to either
+        // the node ending there or the one starting there, and empirically
+        // (confirmed via a failing test before this adjustment existed) it
+        // picked the WRONG one here - the unchanged ';' immediately after,
+        // not the number_literal that actually shrank from "12" to "1" -
+        // silently dropping that node's token from the re-walk entirely.
+        // Backing the start up by one code unit (2 bytes, ADR-014's
+        // byte=codeUnit*2 convention) makes the range unambiguously
+        // non-empty and guarantees it reaches into the node immediately
+        // before the deletion point, where a shrinking/merging node is
+        // actually anchored.
+        if (range.start_byte == range.end_byte && range.start_byte >= 2) {
+            range.start_byte -= 2;
+        }
         dirty.push_back(range);
     }
     return dirty;
 }
 
-// Phase 7m: true if tree-sitter byte ranges [aStart,aEnd) and [bStart,bEnd)
-// overlap OR merely touch (aEnd == bStart or bEnd == aStart also count).
-// Deliberately inclusive, not the usual half-open "touching is not overlap"
-// rule document::TextRange uses elsewhere - a node/token sitting exactly at
-// an edit's boundary can still merge with the edit (e.g. a digit inserted
-// immediately after another digit extends one number_literal leaf; deleting
-// the character right after a leaf can equally pull a following leaf into
-// it), so a dirty/changed range must flag anything touching it as affected,
-// never just anything strictly inside it. A zero-width dirty range (a pure
-// deletion's own span, see computeDirtyRangesInFinalCoordinates()) can only
-// ever flag a node under this inclusive rule - under a strict one it could
-// never overlap anything, silently missing the exact case it exists for
-// (confirmed empirically via a failing test before this was inclusive).
-// Being more inclusive than strictly necessary only ever costs a few extra
-// fresh leaf reclassifications, never correctness.
-[[nodiscard]] bool rangesOverlap(std::uint32_t aStart, std::uint32_t aEnd, std::uint32_t bStart,
-                                  std::uint32_t bEnd) noexcept {
-    return aStart <= bEnd && bStart <= aEnd;
-}
-
-[[nodiscard]] bool nodeOverlapsAnyChangedRange(std::uint32_t nodeStartByte, std::uint32_t nodeEndByte,
-                                                std::span<const TSRange> changedRanges) noexcept {
-    return std::ranges::any_of(changedRanges, [&](const TSRange& range) {
-        return rangesOverlap(nodeStartByte, nodeEndByte, range.start_byte, range.end_byte);
-    });
-}
-
-// Shifts one token's range according to a single edit (code-unit space,
-// derived from ReparseEdit's byte fields halved - ADR-014's "byte offset =
-// code-unit offset * 2" convention). nullopt means `range` overlaps the
-// edit - the caller discards it, since walkTreeIncremental() re-derives its
-// replacement from ts_tree_get_changed_ranges() instead of guessing at the
-// exact boundary here.
-[[nodiscard]] std::optional<document::TextRange> shiftRange(document::TextRange range, document::TextPos startPos,
-                                                              document::TextPos oldEndPos,
-                                                              document::TextPos newEndPos) noexcept {
-    if (range.end <= startPos) {
-        return range;  // entirely before the edit, unaffected
+// Phase 7q: the smallest [start, end) byte span containing every range in
+// `ranges` - reparseDelta() looks up the AST node covering this span via
+// ts_node_descendant_for_byte_range() rather than re-walking multiple
+// independent subtrees separately (a deliberate simplification over Phase
+// 7m's per-range splicing - see incremental_parser.h's header comment).
+// `ranges` is never empty when called (always seeded with at least one
+// entry from computeDirtyRangesInFinalCoordinates()).
+[[nodiscard]] std::pair<std::uint32_t, std::uint32_t> mergedByteSpan(std::span<const TSRange> ranges) noexcept {
+    std::uint32_t start = ranges.front().start_byte;
+    std::uint32_t end   = ranges.front().end_byte;
+    for (const TSRange& range : ranges) {
+        start = std::min(start, range.start_byte);
+        end   = std::max(end, range.end_byte);
     }
-    if (range.start >= oldEndPos) {
-        const auto delta = static_cast<std::int64_t>(newEndPos) - static_cast<std::int64_t>(oldEndPos);
-        return document::TextRange{
-            .start = static_cast<document::TextPos>(static_cast<std::int64_t>(range.start) + delta),
-            .end   = static_cast<document::TextPos>(static_cast<std::int64_t>(range.end) + delta)};
-    }
-    return std::nullopt;  // overlaps the edit
-}
-
-// Applies every edit in `edits` (call order - the same "reflects every
-// mutation chronologically" contract reparse() already documents for
-// ts_tree_edit()) to `tokens`, dropping any token that overlapped an edit.
-// Mirrors how ts_tree_edit() itself gets applied edit-by-edit to the
-// retained tree.
-[[nodiscard]] std::vector<Token> shiftTokensForEdits(std::vector<Token> tokens, std::span<const ReparseEdit> edits) {
-    for (const ReparseEdit& edit : edits) {
-        const auto startPos  = static_cast<document::TextPos>(edit.startByte / 2);
-        const auto oldEndPos = static_cast<document::TextPos>(edit.oldEndByte / 2);
-        const auto newEndPos = static_cast<document::TextPos>(edit.newEndByte / 2);
-        std::vector<Token> shifted;
-        shifted.reserve(tokens.size());
-        for (const Token& token : tokens) {
-            if (const auto shiftedRange = shiftRange(token.range, startPos, oldEndPos, newEndPos)) {
-                shifted.push_back(Token{.range = *shiftedRange, .kind = token.kind});
-            }
-        }
-        tokens = std::move(shifted);
-    }
-    return tokens;
-}
-
-// Phase 7m: walkTree()'s pruned sibling. Pre-order cursor walk over
-// `newRoot`, but for any node whose byte range doesn't overlap
-// `changedRanges`, splices in the corresponding tokens from `oldTokens`
-// (already shifted into newRoot's coordinate space by shiftTokensForEdits())
-// instead of descending and reclassifying - safe per
-// ts_tree_get_changed_ranges()'s documented guarantee that characters
-// outside the changed ranges have identical ancestor nodes in both trees.
-// `oldTokens` must be sorted ascending (shiftTokensForEdits() preserves
-// walkTree()'s left-to-right order) so it can be consumed via a single
-// forward-advancing cursor without random access.
-[[nodiscard]] std::vector<Token> walkTreeIncremental(TSNode newRoot, const detail::LeafKindTable& namedKinds,
-                                                      std::span<const Token>   oldTokens,
-                                                      std::span<const TSRange> changedRanges) {
-    std::vector<Token> tokens;
-    std::size_t        oldIdx = 0;
-
-    // Appends every old token fully contained in [start,end) (code-unit
-    // space), first skipping past any earlier ones that fell inside a
-    // changed region already handled by walking fresh - those must be
-    // discarded, not appended anywhere.
-    auto appendOldTokensInSpan = [&](document::TextPos start, document::TextPos end) {
-        while (oldIdx < oldTokens.size() && oldTokens[oldIdx].range.start < start) {
-            ++oldIdx;
-        }
-        while (oldIdx < oldTokens.size() && oldTokens[oldIdx].range.end <= end) {
-            tokens.push_back(oldTokens[oldIdx]);
-            ++oldIdx;
-        }
-    };
-
-    TSTreeCursor cursor     = ts_tree_cursor_new(newRoot);
-    bool         descending = true;
-    while (true) {
-        if (descending) {
-            const TSNode node          = ts_tree_cursor_current_node(&cursor);
-            const auto   nodeStartByte = ts_node_start_byte(node);
-            const auto   nodeEndByte   = ts_node_end_byte(node);
-            if (!nodeOverlapsAnyChangedRange(nodeStartByte, nodeEndByte, changedRanges)) {
-                appendOldTokensInSpan(static_cast<document::TextPos>(nodeStartByte / 2),
-                                      static_cast<document::TextPos>(nodeEndByte / 2));
-                descending = false;
-            } else if (detail::isAtomicNode(node, namedKinds)) {
-                detail::appendLeafToken(tokens, node, namedKinds);
-                descending = false;
-            } else if (!ts_tree_cursor_goto_first_child(&cursor)) {
-                descending = false;
-            }
-        } else if (ts_tree_cursor_goto_next_sibling(&cursor)) {
-            descending = true;
-        } else if (!ts_tree_cursor_goto_parent(&cursor)) {
-            break;  // back at the root with nowhere left to go
-        }
-    }
-
-    ts_tree_cursor_delete(&cursor);
-    return tokens;
+    return {start, end};
 }
 
 }  // namespace
@@ -230,11 +136,7 @@ struct IncrementalParser::Impl {
 
     Language            language;
     detail::TSParserPtr parser;
-    detail::TSTreePtr   tree;  // nullptr until the first reparse() call completes
-    // Phase 7m: full token list from the previous successful reparse() call -
-    // input to the next incremental splice (walkTreeIncremental()). Empty
-    // until the first call completes, mirroring `tree`'s own lifecycle.
-    std::vector<Token> lastTokens;
+    detail::TSTreePtr   tree;  // nullptr until the first reparseDelta() call completes
 };
 
 IncrementalParser::IncrementalParser(Language language) : m_impl(std::make_unique<Impl>(language)) {}
@@ -242,7 +144,7 @@ IncrementalParser::~IncrementalParser() = default;
 IncrementalParser::IncrementalParser(IncrementalParser&&) noexcept            = default;
 IncrementalParser& IncrementalParser::operator=(IncrementalParser&&) noexcept = default;
 
-std::vector<Token> IncrementalParser::reparse(std::u16string_view text, std::span<const ReparseEdit> edits) {
+TokenPatch IncrementalParser::reparseDelta(std::u16string_view text, std::span<const ReparseEdit> edits) {
     const bool hadTree = static_cast<bool>(m_impl->tree);
     if (hadTree) {
         for (const ReparseEdit& edit : edits) {
@@ -257,21 +159,25 @@ std::vector<Token> IncrementalParser::reparse(std::u16string_view text, std::spa
                                                               length, TSInputEncodingUTF16LE),
                               &ts_tree_delete);
     if (!newTree) {
-        return {};  // ts_parser_parse_string_encoding only returns NULL if no language is set
+        // ts_parser_parse_string_encoding only returns NULL if no language is
+        // set - unreachable via this class's public API (makeParser() always
+        // sets one), kept only as a defensive fallback matching parse()'s own
+        // "always succeeds" contract.
+        return TokenPatch{.invalidatedRange = {.start = 0, .end = static_cast<document::TextPos>(text.size())},
+                          .shiftAmount       = 0,
+                          .replacementTokens = {}};
     }
 
-    std::vector<Token> tokens;
     if (hadTree && !edits.empty()) {
-        // Phase 7m: incremental token splice - only the subtrees flagged as
-        // changed (by ts_tree_get_changed_ranges() OR by directly
-        // overlapping one of the edits' own literal spans, see
-        // computeDirtyRangesInFinalCoordinates()'s comment on why both are
-        // needed) actually get freshly re-walked; everything else reuses
-        // (position-shifted) tokens from the previous call.
+        // Phase 7q: only the subtree covering every affected byte range (by
+        // ts_tree_get_changed_ranges() OR by directly overlapping one of the
+        // edits' own literal spans, see computeDirtyRangesInFinalCoordinates()'s
+        // comment on why both are needed) gets freshly re-walked; everything
+        // else is left to the caller's own persisted token list.
         // ts_tree_get_changed_ranges() must run here, before m_impl->tree is
-        // overwritten below - this is the one window where both the
-        // (already ts_tree_edit()ed) old tree and the freshly parsed new
-        // tree are simultaneously valid, which that call requires.
+        // overwritten below - this is the one window where both the (already
+        // ts_tree_edit()ed) old tree and the freshly parsed new tree are
+        // simultaneously valid, which that call requires.
         std::uint32_t changedCount = 0;
         // This is unique_ptr's array specialization RAII-wrapping a
         // malloc'd C array (ts_tree_get_changed_ranges()'s documented
@@ -285,16 +191,64 @@ std::vector<Token> IncrementalParser::reparse(std::u16string_view text, std::spa
         const std::vector<TSRange> dirtyRanges = computeDirtyRangesInFinalCoordinates(edits);
         affectedRanges.insert(affectedRanges.end(), dirtyRanges.begin(), dirtyRanges.end());
 
-        const std::vector<Token> shiftedOld = shiftTokensForEdits(std::move(m_impl->lastTokens), edits);
-        tokens = walkTreeIncremental(ts_tree_root_node(newTree.get()), namedKindsFor(m_impl->language), shiftedOld,
-                                     affectedRanges);
-    } else {
-        tokens = detail::walkTree(ts_tree_root_node(newTree.get()), namedKindsFor(m_impl->language));
+        const auto [spanStart, spanEnd] = mergedByteSpan(affectedRanges);
+        const TSNode newRoot            = ts_tree_root_node(newTree.get());
+        const TSNode coveringNode       = ts_node_descendant_for_byte_range(newRoot, spanStart, spanEnd);
+        auto replacement = detail::walkTree(coveringNode, namedKindsFor(m_impl->language));
+
+        std::int64_t shiftBytes = 0;
+        for (const ReparseEdit& edit : edits) {
+            shiftBytes += static_cast<std::int64_t>(edit.newEndByte) - static_cast<std::int64_t>(edit.oldEndByte);
+        }
+
+        const auto invalidatedStart = static_cast<document::TextPos>(ts_node_start_byte(coveringNode) / 2);
+        const auto invalidatedEnd   = static_cast<document::TextPos>(ts_node_end_byte(coveringNode) / 2);
+
+        m_impl->tree = std::move(newTree);
+        return TokenPatch{.invalidatedRange = {.start = invalidatedStart, .end = invalidatedEnd},
+                          .shiftAmount       = shiftBytes / 2,
+                          .replacementTokens = std::move(replacement)};
     }
 
-    m_impl->tree       = std::move(newTree);
-    m_impl->lastTokens = tokens;
-    return tokens;
+    auto tokens  = detail::walkTree(ts_tree_root_node(newTree.get()), namedKindsFor(m_impl->language));
+    m_impl->tree = std::move(newTree);
+    return TokenPatch{.invalidatedRange = {.start = 0, .end = static_cast<document::TextPos>(text.size())},
+                      .shiftAmount       = 0,
+                      .replacementTokens = std::move(tokens)};
+}
+
+std::vector<Token> applyTokenPatch(std::vector<Token> tokens, const TokenPatch& patch) {
+    // invalidatedRange is in the FINAL (post-edit) coordinate space (see
+    // TokenPatch's header comment); `tokens` is still in the PRE-edit space.
+    // The start needs no translation (it sits before every edit in this
+    // batch, by construction of mergedByteSpan()/computeDirtyRangesInFinal
+    // Coordinates()); the end does (subtract shiftAmount to recover its
+    // PRE-edit position).
+    const document::TextPos oldInvalidatedStart = patch.invalidatedRange.start;
+    const auto               oldInvalidatedEnd =
+        static_cast<document::TextPos>(static_cast<std::int64_t>(patch.invalidatedRange.end) - patch.shiftAmount);
+
+    std::vector<Token> merged;
+    merged.reserve(tokens.size() + patch.replacementTokens.size());
+
+    std::size_t i = 0;
+    while (i < tokens.size() && tokens[i].range.end <= oldInvalidatedStart) {
+        merged.push_back(tokens[i]);
+        ++i;
+    }
+    while (i < tokens.size() && tokens[i].range.start < oldInvalidatedEnd) {
+        ++i;  // overlaps the invalidated span - discard, replaced below
+    }
+    merged.insert(merged.end(), patch.replacementTokens.begin(), patch.replacementTokens.end());
+    for (; i < tokens.size(); ++i) {
+        merged.push_back(Token{
+            .range = {.start = static_cast<document::TextPos>(static_cast<std::int64_t>(tokens[i].range.start) +
+                                                                patch.shiftAmount),
+                      .end   = static_cast<document::TextPos>(static_cast<std::int64_t>(tokens[i].range.end) +
+                                                              patch.shiftAmount)},
+            .kind  = tokens[i].kind});
+    }
+    return merged;
 }
 
 }  // namespace neomifes::syntax

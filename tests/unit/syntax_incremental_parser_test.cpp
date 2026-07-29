@@ -3,8 +3,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "neomifes/syntax/incremental_parser.h"
@@ -12,11 +14,16 @@
 
 namespace {
 
+using neomifes::syntax::applyTokenPatch;
 using neomifes::syntax::IncrementalParser;
 using neomifes::syntax::Language;
 using neomifes::syntax::parseCpp;
 using neomifes::syntax::parsePython;
+using neomifes::syntax::parseRust;
 using neomifes::syntax::ReparseEdit;
+using neomifes::syntax::Token;
+using neomifes::syntax::TokenKind;
+using neomifes::syntax::TokenPatch;
 
 // Test-only helpers mirroring what document::Document computes internally
 // (see document.cpp's insertText()/eraseRange()/replaceRange(), Phase 7k) -
@@ -62,21 +69,49 @@ using neomifes::syntax::ReparseEdit;
     };
 }
 
+// Phase 7q: drives the new reparseDelta()+applyTokenPatch() contract the
+// same way render::SyntaxWorker::workerLoop() does - keeps its own
+// persisted token list across calls, folding each returned TokenPatch into
+// it via applyTokenPatch(). Lets the existing tests below keep the same
+// "call once per edit, compare the returned tokens against a full reparse"
+// shape the old (Phase 7k-7m) reparse() oracle pattern used, without every
+// call site having to repeat the merge boilerplate. This is a deliberate,
+// minimal re-implementation of SyntaxWorker's own merge step (not a shared
+// helper) - if the two ever drift, render_syntax_worker_test.cpp's
+// integration tests are what actually catches it, since they exercise the
+// real SyntaxWorker/workerLoop() path end-to-end.
+class ReparsingSession {
+public:
+    explicit ReparsingSession(Language language) : m_parser(language) {}
+
+    [[nodiscard]] std::vector<Token> reparse(std::u16string_view text, std::span<const ReparseEdit> edits) {
+        const TokenPatch patch = m_parser.reparseDelta(text, edits);
+        m_tokens                = applyTokenPatch(std::move(m_tokens), patch);
+        return m_tokens;
+    }
+
+private:
+    IncrementalParser  m_parser;
+    std::vector<Token> m_tokens;
+};
+
 // The core correctness guarantee this whole class exists for: an
-// incrementally reparsed result must be byte-for-byte identical to what a
-// full reparse of the final text produces. Any divergence here means
-// ts_tree_edit()'s inputs were computed wrong somewhere upstream (Document
-// or the caller building ReparseEdit) - exactly the class of bug that would
-// otherwise show up as silently-wrong syntax highlighting after an edit.
+// incrementally reparsed (and merged) result must be byte-for-byte
+// identical to what a full reparse of the final text produces. Any
+// divergence here means ts_tree_edit()'s inputs were computed wrong
+// somewhere upstream (Document or the caller building ReparseEdit), or the
+// TokenPatch/applyTokenPatch() merge itself is wrong - exactly the class of
+// bug that would otherwise show up as silently-wrong syntax highlighting
+// after an edit.
 
 TEST(SyntaxIncrementalParserTest, FirstReparseWithNoEditsMatchesFullParse) {
-    IncrementalParser  parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string text = u"int x = 1;\n";
     EXPECT_EQ(parser.reparse(text, {}), parseCpp(text));
 }
 
 TEST(SyntaxIncrementalParserTest, SingleCharacterInsertMatchesFullReparseOfNewText) {
-    IncrementalParser  parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int x = 1;\n";
     (void)parser.reparse(oldText, {});
 
@@ -86,7 +121,7 @@ TEST(SyntaxIncrementalParserTest, SingleCharacterInsertMatchesFullReparseOfNewTe
 }
 
 TEST(SyntaxIncrementalParserTest, SingleCharacterDeleteMatchesFullReparseOfNewText) {
-    IncrementalParser  parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int x = 12;\n";
     (void)parser.reparse(oldText, {});
 
@@ -96,7 +131,7 @@ TEST(SyntaxIncrementalParserTest, SingleCharacterDeleteMatchesFullReparseOfNewTe
 }
 
 TEST(SyntaxIncrementalParserTest, MultiLineReplaceMatchesFullReparse) {
-    IncrementalParser  parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int x = 1;\nint y = 2;\n";
     (void)parser.reparse(oldText, {});
 
@@ -110,7 +145,7 @@ TEST(SyntaxIncrementalParserTest, MultiLineReplaceMatchesFullReparse) {
 }
 
 TEST(SyntaxIncrementalParserTest, InsertingNewlineMatchesFullReparse) {
-    IncrementalParser  parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int x = 1; int y = 2;\n";
     (void)parser.reparse(oldText, {});
 
@@ -126,10 +161,11 @@ TEST(SyntaxIncrementalParserTest, InsertingNewlineMatchesFullReparse) {
 }
 
 TEST(SyntaxIncrementalParserTest, SequentialEditsAccumulateCorrectly) {
-    // Three reparse() calls in a row on the SAME parser instance - proves
-    // the retained tree stays internally consistent across repeated
-    // ts_tree_edit() + reparse cycles, not just a single edit.
-    IncrementalParser parser(Language::Cpp);
+    // Three reparse() calls in a row on the SAME session - proves the
+    // retained tree AND the persisted token list stay internally consistent
+    // across repeated ts_tree_edit()+reparse+merge cycles, not just a
+    // single edit.
+    ReparsingSession parser(Language::Cpp);
 
     const std::u16string text1 = u"int x = 1;\n";
     (void)parser.reparse(text1, {});
@@ -143,7 +179,7 @@ TEST(SyntaxIncrementalParserTest, SequentialEditsAccumulateCorrectly) {
 }
 
 TEST(SyntaxIncrementalParserTest, PythonSingleCharacterInsertMatchesFullReparse) {
-    IncrementalParser  parser(Language::Python);
+    ReparsingSession      parser(Language::Python);
     const std::u16string oldText = u"x = 1\n";
     (void)parser.reparse(oldText, {});
 
@@ -152,14 +188,15 @@ TEST(SyntaxIncrementalParserTest, PythonSingleCharacterInsertMatchesFullReparse)
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parsePython(newText));
 }
 
-// Phase 7m: the tests below specifically stress the new
-// ts_tree_get_changed_ranges()-based token splice (walkTreeIncremental()) -
-// same "result must equal an independent full reparse" oracle as above, just
-// aimed at edit shapes chosen to exercise its subtree-pruning/reuse logic
-// rather than the tree-sitter edit bookkeeping the earlier tests cover.
+// Phase 7m/7q: the tests below specifically stress the changed-range subtree
+// lookup (ts_node_descendant_for_byte_range(), Phase 7q) and its predecessor
+// walkTreeIncremental() (Phase 7m) - same "result must equal an independent
+// full reparse" oracle as above, just aimed at edit shapes chosen to
+// exercise subtree-pruning/reuse logic rather than the tree-sitter edit
+// bookkeeping the earlier tests cover.
 
 TEST(SyntaxIncrementalParserTest, EditInMiddleOfLargerDocumentReusesSurroundingTokens) {
-    IncrementalParser parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText =
         u"int a = 1;\n"
         u"int b = 2;\n"
@@ -170,7 +207,7 @@ TEST(SyntaxIncrementalParserTest, EditInMiddleOfLargerDocumentReusesSurroundingT
 
     // Only the middle statement's literal changes - the surrounding
     // sibling statements are exactly the "unaffected subtree, reuse old
-    // tokens" case walkTreeIncremental() is meant to prune.
+    // tokens" case the changed-range subtree lookup is meant to prune.
     const std::u16string newText =
         u"int a = 1;\n"
         u"int b = 2;\n"
@@ -185,7 +222,7 @@ TEST(SyntaxIncrementalParserTest, EditInMiddleOfLargerDocumentReusesSurroundingT
 }
 
 TEST(SyntaxIncrementalParserTest, EditAtStartOfDocumentMatchesFullReparse) {
-    IncrementalParser parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int x = 1;\nint y = 2;\n";
     (void)parser.reparse(oldText, {});
 
@@ -195,7 +232,7 @@ TEST(SyntaxIncrementalParserTest, EditAtStartOfDocumentMatchesFullReparse) {
 }
 
 TEST(SyntaxIncrementalParserTest, EditAtEndOfDocumentMatchesFullReparse) {
-    IncrementalParser parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int x = 1;\nint y = 2;\n";
     (void)parser.reparse(oldText, {});
 
@@ -210,12 +247,12 @@ TEST(SyntaxIncrementalParserTest, EditAtEndOfDocumentMatchesFullReparse) {
 // Inserting "/*" makes everything until EOF (no matching "*/") part of a
 // single comment node in the new tree - ts_tree_get_changed_ranges() must
 // flag that whole trailing region as changed, not just the two inserted
-// characters, or walkTreeIncremental() would wrongly reuse the old (non-
-// comment) tokens for text that is now inside the comment. This is the
-// core test that the CHANGED-RANGES output, not the literal edit window, is
-// what actually decides which old tokens get discarded.
+// characters, or the covering-node lookup would wrongly stop short and
+// reuse old (non-comment) tokens for text that is now inside the comment.
+// This is the core test that the CHANGED-RANGES output, not the literal
+// edit window, is what actually decides how much gets re-walked/discarded.
 TEST(SyntaxIncrementalParserTest, UnterminatedCommentInsertionExpandsChangedRangeBeyondLiteralEdit) {
-    IncrementalParser parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText = u"int a = 1;\nint b = 2;\nint c = 3;\n";
     (void)parser.reparse(oldText, {});
 
@@ -225,11 +262,17 @@ TEST(SyntaxIncrementalParserTest, UnterminatedCommentInsertionExpandsChangedRang
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseCpp(newText));
 }
 
-// Two independent, non-overlapping edits describing the SAME reparse() call
-// - mirrors SyntaxWorker accumulating multiple requestParse() calls into
-// one batch before the worker picks them up (Phase 7l).
+// Two independent, non-overlapping edits describing the SAME reparseDelta()
+// call - mirrors SyntaxWorker accumulating multiple requestParse() calls
+// into one batch before the worker picks them up (Phase 7l). Phase 7q
+// merges the two edits' affected ranges into a single covering span (see
+// incremental_parser.h's TokenPatch comment) rather than splicing two
+// independent patches, so this also confirms that simplification still
+// produces a byte-identical result to a full reparse even though it
+// necessarily re-walks the (small, unrelated) text between editA and editC
+// too.
 TEST(SyntaxIncrementalParserTest, MultipleEditsInOneBatchAllApplyCorrectly) {
-    IncrementalParser parser(Language::Cpp);
+    ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText =
         u"int a = 1;\n"
         u"int b = 2;\n"
@@ -254,11 +297,12 @@ TEST(SyntaxIncrementalParserTest, MultipleEditsInOneBatchAllApplyCorrectly) {
 }
 
 // Extends SequentialEditsAccumulateCorrectly (3 calls) to a 4th, specifically
-// to prove lastTokens produced by an INCREMENTAL splice (not just a full
-// walkTree()) remains valid input for the NEXT incremental splice - the 2nd,
-// 3rd, and 4th calls below all take the incremental path.
+// to prove a persisted token list produced by an INCREMENTAL merge (not just
+// the first call's full-parse patch) remains valid input for the NEXT
+// incremental merge - the 2nd, 3rd, and 4th calls below all take the
+// incremental path.
 TEST(SyntaxIncrementalParserTest, FourSequentialIncrementalReparsesStayConsistent) {
-    IncrementalParser parser(Language::Cpp);
+    ReparsingSession parser(Language::Cpp);
 
     const std::u16string text1 = u"int x = 1;\nint y = 2;\n";
     (void)parser.reparse(text1, {});
@@ -278,7 +322,7 @@ TEST(SyntaxIncrementalParserTest, FourSequentialIncrementalReparsesStayConsisten
 }
 
 TEST(SyntaxIncrementalParserTest, PythonEditInMiddleOfLargerDocumentReusesSurroundingTokens) {
-    IncrementalParser parser(Language::Python);
+    ReparsingSession      parser(Language::Python);
     const std::u16string oldText =
         u"a = 1\n"
         u"b = 2\n"
@@ -298,15 +342,15 @@ TEST(SyntaxIncrementalParserTest, PythonEditInMiddleOfLargerDocumentReusesSurrou
 
 // Phase 7n1: proves the incremental path is genuinely generic across
 // languages added in this batch, not just Cpp/Python - Rust specifically
-// exercises isAtomicNode()'s new branch (line_comment is a non-leaf atomic
-// node, see namedLeafKindsForRust()'s comment) inside walkTreeIncremental(),
-// which is a SEPARATE code path from walkTree()'s full-parse walk that
-// syntax_syntax_test.cpp's Rust comment test already covers - both needed
-// the same fix, but only a test that exercises reparse() with edits proves
-// the incremental one actually got it too.
+// exercises isAtomicNode()'s branch (line_comment is a non-leaf atomic node,
+// see namedLeafKindsForRust()'s comment) inside detail::walkTree() as called
+// from reparseDelta()'s covering-subtree walk, which is a SEPARATE code path
+// from a full parseRust() call that syntax_syntax_test.cpp's Rust comment
+// test already covers - both needed the same fix, but only a test that
+// exercises reparseDelta() with edits proves the incremental one actually
+// got it too.
 TEST(SyntaxIncrementalParserTest, RustEditNearACommentReusesSurroundingTokensAndKeepsCommentAtomic) {
-    using neomifes::syntax::parseRust;
-    IncrementalParser parser(Language::Rust);
+    ReparsingSession      parser(Language::Rust);
     const std::u16string oldText =
         u"// leading comment\n"
         u"fn main() {\n"
@@ -322,6 +366,114 @@ TEST(SyntaxIncrementalParserTest, RustEditNearACommentReusesSurroundingTokensAnd
     const std::size_t startPos = oldText.find(u"1;");
     const ReparseEdit edit     = buildEdit(oldText, newText, startPos, startPos + 1, startPos + 3);
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseRust(newText));
+}
+
+// Phase 7q: applyTokenPatch() boundary-condition tests, independent of
+// IncrementalParser/tree-sitter - exercises the merge function itself
+// directly against hand-built TokenPatch values.
+
+TEST(ApplyTokenPatchTest, FullReplacementAgainstEmptyListYieldsReplacementTokensVerbatim) {
+    // Mirrors the very first reparseDelta() call's patch shape (see
+    // IncrementalParser::reparseDelta()'s "no tree retained" branch):
+    // invalidatedRange spans the whole (empty, so far) persisted list.
+    const std::vector<Token> replacement = {
+        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
+        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Variable},
+    };
+    const TokenPatch patch{
+        .invalidatedRange = {.start = 0, .end = 100}, .shiftAmount = 0, .replacementTokens = replacement};
+    EXPECT_EQ(applyTokenPatch({}, patch), replacement);
+}
+
+TEST(ApplyTokenPatchTest, InvalidatingAPrefixKeepsTheSuffixUnshifted) {
+    const std::vector<Token> existing = {
+        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
+        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Variable},
+        Token{.range = {.start = 10, .end = 11}, .kind = TokenKind::Number},
+    };
+    // Invalidate [0, 5) (the first two tokens), replace with one new token,
+    // shiftAmount=0 since the edit didn't change the text's length.
+    const std::vector<Token> replacement = {Token{.range = {.start = 0, .end = 4}, .kind = TokenKind::Type}};
+    const TokenPatch          patch{
+        .invalidatedRange = {.start = 0, .end = 5}, .shiftAmount = 0, .replacementTokens = replacement};
+    const std::vector<Token> expected = {
+        Token{.range = {.start = 0, .end = 4}, .kind = TokenKind::Type},
+        Token{.range = {.start = 10, .end = 11}, .kind = TokenKind::Number},
+    };
+    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
+}
+
+TEST(ApplyTokenPatchTest, InvalidatingASuffixKeepsThePrefixAndDropsNothingAfter) {
+    const std::vector<Token> existing = {
+        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
+        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Variable},
+    };
+    // Invalidate everything from offset 4 onward, append one new token.
+    const std::vector<Token> replacement = {Token{.range = {.start = 4, .end = 6}, .kind = TokenKind::Number}};
+    const TokenPatch          patch{
+        .invalidatedRange = {.start = 4, .end = 6}, .shiftAmount = 1, .replacementTokens = replacement};
+    const std::vector<Token> expected = {
+        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
+        Token{.range = {.start = 4, .end = 6}, .kind = TokenKind::Number},
+    };
+    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
+}
+
+TEST(ApplyTokenPatchTest, PositiveShiftAmountMovesTokensAfterTheInvalidatedRangeForward) {
+    const std::vector<Token> existing = {
+        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},   // untouched, before invalidated range
+        Token{.range = {.start = 2, .end = 3}, .kind = TokenKind::Number},  // inside invalidated range, discarded
+        Token{.range = {.start = 5, .end = 6}, .kind = TokenKind::Punctuation},  // after, must shift by +2
+    };
+    // invalidatedRange in FINAL coordinates: [2, 5) (2 code units grew to
+    // 3+2=5 wide after a 2-code-unit insertion, shiftAmount=+2). PRE-edit
+    // end = 5 - 2 = 3, matching the discarded token's own end.
+    const std::vector<Token> replacement = {Token{.range = {.start = 2, .end = 5}, .kind = TokenKind::Number}};
+    const TokenPatch          patch{
+        .invalidatedRange = {.start = 2, .end = 5}, .shiftAmount = 2, .replacementTokens = replacement};
+    const std::vector<Token> expected = {
+        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
+        Token{.range = {.start = 2, .end = 5}, .kind = TokenKind::Number},
+        Token{.range = {.start = 7, .end = 8}, .kind = TokenKind::Punctuation},
+    };
+    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
+}
+
+TEST(ApplyTokenPatchTest, NegativeShiftAmountMovesTokensAfterTheInvalidatedRangeBackward) {
+    const std::vector<Token> existing = {
+        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
+        Token{.range = {.start = 2, .end = 6}, .kind = TokenKind::Number},  // discarded (deletion shrank this span)
+        Token{.range = {.start = 8, .end = 9}, .kind = TokenKind::Punctuation},  // after, must shift by -2
+    };
+    // A 2-code-unit deletion: PRE-edit invalidated span [2,6), FINAL
+    // coordinates [2,4) (shiftAmount=-2, so 4-(-2)=6 recovers the PRE-edit
+    // end).
+    const std::vector<Token> replacement = {Token{.range = {.start = 2, .end = 4}, .kind = TokenKind::Number}};
+    const TokenPatch          patch{
+        .invalidatedRange = {.start = 2, .end = 4}, .shiftAmount = -2, .replacementTokens = replacement};
+    const std::vector<Token> expected = {
+        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
+        Token{.range = {.start = 2, .end = 4}, .kind = TokenKind::Number},
+        Token{.range = {.start = 6, .end = 7}, .kind = TokenKind::Punctuation},
+    };
+    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
+}
+
+TEST(ApplyTokenPatchTest, EmptyReplacementTokensRemovesTokensWithoutInsertingAnything) {
+    // A deletion that removes an entire token (e.g. a comment deleted
+    // outright) with nothing replacing it - replacementTokens can
+    // legitimately be empty.
+    const std::vector<Token> existing = {
+        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
+        Token{.range = {.start = 2, .end = 6}, .kind = TokenKind::Comment},
+        Token{.range = {.start = 8, .end = 9}, .kind = TokenKind::Punctuation},
+    };
+    const TokenPatch patch{.invalidatedRange = {.start = 2, .end = 2}, .shiftAmount = -4, .replacementTokens = {}};
+    const std::vector<Token> expected = {
+        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
+        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Punctuation},
+    };
+    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
 }
 
 }  // namespace

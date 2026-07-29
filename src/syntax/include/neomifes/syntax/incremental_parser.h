@@ -4,7 +4,7 @@
 // around tree-sitter's incremental reparse API (Phase 7k). Unlike
 // parseCpp()/parsePython()/parse() (syntax.h, single-shot: new TSParser +
 // TSTree per call, tree discarded immediately), this class retains the
-// previous TSTree across reparse() calls and feeds each accumulated edit
+// previous TSTree across reparseDelta() calls and feeds each accumulated edit
 // through ts_tree_edit() before reparsing, letting tree-sitter reuse
 // unaffected subtrees instead of re-walking the whole document.
 //
@@ -15,35 +15,42 @@
 // NOT thread-safe for concurrent calls - single-writer use only, same
 // assumption as document::Document.
 //
-// Phase 7k's own token EXTRACTION (walkTree() over the whole resulting
-// tree, every reparse() call) was, once benchmarked, the dominant cost even
-// though tree-sitter's internal reparse was already properly incremental -
-// see master_roadmap.md sec.7's Phase 7k completion note. Phase 7m narrowed
-// that gap: reparse() now also uses ts_tree_get_changed_ranges() to only
-// re-walk the subtrees that actually changed, splicing position-shifted
-// tokens from the previous call into everywhere else - an internal
-// optimization only, this class's public contract (reparse()'s output is
-// always byte-identical to a full parse() of the resulting text) is
-// unchanged and still what every caller/test relies on.
+// Phase 7k/7m both discovered the same bottleneck from different angles:
+// reparse() had to return a token vector sized to the WHOLE document on
+// EVERY call, which dominates the cost even once tree-sitter's own
+// incremental reparse and the token-splice logic around it are both
+// properly incremental internally (Phase 7m: ~2.2x win vs. Phase 7k, but
+// still O(document size), confirmed via a 10x-larger-document benchmark
+// that cost ~10x more, not the hoped-for flat cost). See
+// master_roadmap.md sec.7's Phase 7k/7m completion notes for that history.
 //
-// IMPORTANT, benchmark-grounded (CLAUDE.md rule 10): this is a substantial
-// CONSTANT-FACTOR win (~8x over a full parse for a single-character edit,
-// measured on a 50,000-line file), not an asymptotic one - reparse() still
-// costs roughly O(document size), not O(edit size), because it still
-// returns (and therefore still allocates/copies) a token vector sized to
-// the WHOLE document on every call, and shifting the retained token list to
-// account for an edit (shiftTokensForEdits(), incremental_parser.cpp) walks
-// that entire vector once per edit even when nothing in most of it changed.
-// Confirmed empirically, not assumed: a 500,000-line variant of the same
-// single-character-edit benchmark costs roughly 10x the 50,000-line one,
-// i.e. genuinely proportional to document size
-// (BM_IncrementalReparse_SingleCharEdit_LargeDocument, syntax_parse_bench.cpp).
-// Reaching true O(edit size) would require changing this class's contract
-// to return only a DELTA of changed tokens instead of the full list, with
-// the caller (SyntaxWorker/RenderPipeline) responsible for merging that
-// delta into a persisted token list - deliberately out of scope for Phase
-// 7m to keep its blast radius to this class alone; see master_roadmap.md
-// sec.7's Phase 7m completion note for the full analysis.
+// Phase 7q narrows this further: reparseDelta() below returns only a DELTA
+// of changed tokens (TokenPatch) instead of the full list. The caller
+// (SyntaxWorker) persists its own token list across calls and merges each
+// patch into it via applyTokenPatch(). The tree-sitter side of this really
+// is O(edit size) now (ts_node_descendant_for_byte_range() finds the
+// smallest subtree spanning the changed region, detail::walkTree()
+// re-walks only that subtree, instead of Phase 7m's whole-tree pre-order
+// walk with per-node splicing).
+//
+// IMPORTANT, benchmark-grounded (CLAUDE.md rule 10): this is again a
+// substantial CONSTANT-FACTOR win (~30% faster than Phase 7m on both the
+// 50,000-line and 500,000-line benchmarks below), NOT the asymptotic one
+// hoped for - reparseDelta()+applyTokenPatch() together still cost roughly
+// O(document size), because applyTokenPatch() itself is a single linear
+// pass over the ENTIRE persisted token list on every call (shifting/
+// copying every token after the invalidated range, even when the edit
+// touched one character). Confirmed empirically: the 500,000-line variant
+// of the single-character-edit benchmark costs ~9.6x the 50,000-line one -
+// genuinely proportional to document size, not flat
+// (BM_IncrementalReparse_SingleCharEdit[_LargeDocument], syntax_parse_bench.
+// cpp; 103ms/989ms measured on Release, still well over roadmap sec.7.11's
+// <=50ms DoD). Reaching true O(edit size) end-to-end would require
+// restructuring how the persisted token list itself is stored (e.g. so a
+// shift only has to touch tokens actually near the edit, not every token
+// after it) - deliberately out of scope here to keep Phase 7q's blast
+// radius to the tree-sitter-facing half of the problem; see
+// master_roadmap.md sec.7's Phase 7q completion note.
 //
 // tree-sitter types (TSNode/TSTree/TSParser) never appear in this header -
 // they are an implementation detail confined to incremental_parser.cpp/
@@ -81,6 +88,38 @@ struct ReparseEdit {
     std::uint32_t newEndColumn = 0;
 };
 
+// Describes how to update an existing, PERSISTED token list after an
+// incremental reparse (Phase 7q), instead of reparseDelta() itself
+// returning the full list every time. `invalidatedRange`/`replacementTokens`
+// are both expressed in the FINAL (post-edit) text's coordinate space -
+// straight from the freshly parsed tree, no translation needed on that
+// side. `shiftAmount` (code units, the sum of every edit's newEndPos -
+// oldEndPos in this batch) is what applyTokenPatch() uses to translate
+// `invalidatedRange` back into the PRE-edit coordinate space the caller's
+// existing token list is still in: `invalidatedRange.start` needs no
+// translation (it sits before every edit in this batch, by construction -
+// see reparseDelta()'s comment), `invalidatedRange.end` does (subtract
+// shiftAmount to recover its PRE-edit position).
+struct TokenPatch {
+    document::TextRange invalidatedRange;
+    std::int64_t         shiftAmount = 0;
+    std::vector<Token>   replacementTokens;
+};
+
+// Merges `patch` into `tokens` - discards every token overlapping
+// `patch.invalidatedRange` (translated to `tokens`' own PRE-edit coordinate
+// space, see TokenPatch's comment), shifts every token entirely after it by
+// `patch.shiftAmount`, and splices in `patch.replacementTokens` at that
+// position. `tokens` must be sorted ascending by range.start (reparseDelta()
+// always produces patches consistent with that invariant, since
+// detail::walkTree() itself visits nodes in left-to-right document order).
+// O(tokens.size() + patch.replacementTokens.size()) - a single linear pass,
+// no tree-sitter API calls or node classification, but NOT O(edit size):
+// every token after the invalidated range gets touched (shifted) on every
+// call, regardless of edit size (see this file's header comment on the
+// benchmark that confirms this is the dominant remaining cost).
+[[nodiscard]] std::vector<Token> applyTokenPatch(std::vector<Token> tokens, const TokenPatch& patch);
+
 class IncrementalParser {
 public:
     explicit IncrementalParser(Language language);
@@ -92,22 +131,27 @@ public:
     IncrementalParser& operator=(IncrementalParser&&) noexcept;
 
     // `edits` empty (including the very first call, when no tree is
-    // retained yet) triggers a full parse - identical output to
-    // parse(text, language), same "always succeeds, even on malformed
-    // input" contract (see syntax.h's parseCpp() comment). Non-empty
-    // `edits` applies each via ts_tree_edit() (in the given order) to the
-    // retained tree before reparsing.
+    // retained yet) triggers a full parse - the resulting TokenPatch's
+    // `invalidatedRange` then spans the WHOLE text and `replacementTokens`
+    // is therefore the full token list, same "always succeeds, even on
+    // malformed input" contract parseCpp() documents. Feeding that patch to
+    // applyTokenPatch() against an EMPTY persisted list naturally reduces to
+    // "the full list" - callers never need to special-case the first call
+    // vs. every incremental one after it (see SyntaxWorker::workerLoop()).
+    // Non-empty `edits` applies each via ts_tree_edit() (in the given
+    // order) to the retained tree before reparsing.
     //
     // Caller is responsible for `edits` reflecting EVERY mutation since the
-    // previous reparse() call, in chronological order - skipping one
+    // previous reparseDelta() call, in chronological order - skipping one
     // silently corrupts the retained tree's byte-offset bookkeeping (a
-    // documented hazard, not guarded against here; a future queueing
-    // design that never drops an edit is what actually prevents this once
-    // wired to real edits, see this file's header comment).
-    [[nodiscard]] std::vector<Token> reparse(std::u16string_view text, std::span<const ReparseEdit> edits);
+    // documented hazard, not guarded against here; SyntaxWorker's
+    // accumulate-never-drop queue, Phase 7l, is what actually prevents this
+    // once wired to real edits).
+    [[nodiscard]] TokenPatch reparseDelta(std::u16string_view text, std::span<const ReparseEdit> edits);
 
 private:
-    struct Impl;
+    struct Impl;  // no longer holds a persisted token list (Phase 7m's
+                  // lastTokens) - the caller owns that now (Phase 7q)
     std::unique_ptr<Impl> m_impl;
 };
 

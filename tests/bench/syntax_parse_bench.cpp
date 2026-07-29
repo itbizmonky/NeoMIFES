@@ -17,14 +17,18 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "neomifes/syntax/incremental_parser.h"
 #include "neomifes/syntax/syntax.h"
 
+using neomifes::syntax::applyTokenPatch;
 using neomifes::syntax::IncrementalParser;
 using neomifes::syntax::Language;
 using neomifes::syntax::parseCpp;
 using neomifes::syntax::ReparseEdit;
+using neomifes::syntax::Token;
 
 namespace {
 
@@ -109,14 +113,22 @@ namespace {
 // UTF-16 code unit replaced by one, same row/column), so a single retained
 // IncrementalParser can be reused indefinitely without the document ever
 // drifting in size or needing a per-iteration reset (which would defeat
-// the point: reparse() only takes the fast incremental path when a tree is
-// already retained from a previous call). Shared by both benchmarks below
-// (Phase 7m) - `lineCount` is the only difference between them, and that
-// difference is the entire point of the large-document variant.
+// the point: reparseDelta() only takes the fast incremental path when a
+// tree is already retained from a previous call). Shared by both
+// benchmarks below (Phase 7m) - `lineCount` is the only difference between
+// them, and that difference is the entire point of the large-document
+// variant.
+//
+// Phase 7q: times reparseDelta() PLUS applyTokenPatch() together, not just
+// reparseDelta() alone - render::SyntaxWorker::workerLoop() pays for both
+// on every call (see syntax_worker.cpp), so timing only the first would
+// understate the real per-keystroke cost this benchmark exists to measure
+// against the roadmap DoD.
 static void runIncrementalReparseSingleCharEditBenchmark(benchmark::State& state, int lineCount) {
     const std::u16string source = makeSyntheticCppSource(lineCount);
     IncrementalParser    parser(Language::Cpp);
-    benchmark::DoNotOptimize(parser.reparse(source, {}));  // seed the baseline tree, not timed
+    // Seeds the baseline tree AND the persisted token list, not timed.
+    std::vector<Token> tokens = applyTokenPatch({}, parser.reparseDelta(source, {}));
 
     std::size_t editPos = source.size() / 2;
     if (source[editPos] == u'\n') {
@@ -143,7 +155,9 @@ static void runIncrementalReparseSingleCharEditBenchmark(benchmark::State& state
     bool useVariant = false;
     for (auto _ : state) {
         const std::u16string_view text = useVariant ? std::u16string_view(variant) : std::u16string_view(source);
-        benchmark::DoNotOptimize(parser.reparse(text, std::array{edit}));
+        const auto patch = parser.reparseDelta(text, std::array{edit});
+        tokens            = applyTokenPatch(std::move(tokens), patch);
+        benchmark::DoNotOptimize(tokens);
         useVariant = !useVariant;
     }
     state.counters["source_KiB"] =

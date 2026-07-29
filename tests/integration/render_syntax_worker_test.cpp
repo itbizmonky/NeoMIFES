@@ -166,7 +166,7 @@ TEST(SyntaxWorkerTest, RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced) {
 // document - passing edits=empty alone is NOT sufficient, since tree-sitter
 // would otherwise still receive the stale tree as its reparse hint and may
 // incorrectly reuse subtrees against completely unrelated text (see
-// IncrementalParser::reparse()'s behavior when a tree is retained). Uses the
+// IncrementalParser::reparseDelta()'s behavior when a tree is retained). Uses the
 // SAME language (Cpp) for both documents deliberately, to isolate this
 // flag's own effect from the worker's separate internal language-mismatch
 // safety net (which a same-language document switch never triggers) - a
