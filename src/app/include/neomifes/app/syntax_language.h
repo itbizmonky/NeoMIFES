@@ -21,8 +21,10 @@ namespace neomifes::app {
 
 // Recognizes .cpp/.cc/.cxx/.h/.hpp/.hxx/.hh as C++, .py/.pyw/.pyi as Python,
 // .c as C, .js/.mjs/.cjs as JavaScript, .java as Java, .go as Go, .rs as
-// Rust, and .json as JSON, case-insensitively; nullopt for anything else.
-// This is the single gate neomifes::render::RenderPipeline::setLanguage()'s
+// Rust, .json as JSON, .html/.htm as HTML, .css as CSS, .sh/.bash as Shell,
+// .yaml/.yml as YAML, .toml as TOML, and .xml as XML, case-insensitively;
+// nullopt for anything else. This is the single gate
+// neomifes::render::RenderPipeline::setLanguage()'s
 // argument is built from. Shebang-line detection (a Python script with no
 // .py extension) is deliberately not implemented - C++ detection is
 // extension-only too, and symmetry is preferred until shebang detection is
@@ -65,6 +67,24 @@ namespace neomifes::app {
     }
     if (ext == L".json") {
         return syntax::Language::Json;
+    }
+    if (ext == L".html" || ext == L".htm") {
+        return syntax::Language::Html;
+    }
+    if (ext == L".css") {
+        return syntax::Language::Css;
+    }
+    if (ext == L".sh" || ext == L".bash") {
+        return syntax::Language::Shell;
+    }
+    if (ext == L".yaml" || ext == L".yml") {
+        return syntax::Language::Yaml;
+    }
+    if (ext == L".toml") {
+        return syntax::Language::Toml;
+    }
+    if (ext == L".xml") {
+        return syntax::Language::Xml;
     }
     return std::nullopt;
 }

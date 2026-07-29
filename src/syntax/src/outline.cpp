@@ -61,6 +61,8 @@ const SymbolTable& symbolTableForPython() {
 
 // Phase 7n1: C/JavaScript/Java/Go/Rust/Json get an empty table (no symbol
 // definitions recognized) rather than symbol-extraction logic of their own -
+// Phase 7r extended this same empty-table treatment to Html/Css/Shell/Yaml/
+// Toml/Xml for the identical reason -
 // deliberately deferred (see Phase 7n1 plan's Context section: outline
 // extraction needs its own per-language declarator/name-resolution probing,
 // same order of effort as symbolTableForCpp()'s resolveFunctionDefinitionName()
@@ -93,6 +95,12 @@ const SymbolTable& symbolTableFor(Language language) {
         case Language::Go:
         case Language::Rust:
         case Language::Json:
+        case Language::Html:
+        case Language::Css:
+        case Language::Shell:
+        case Language::Yaml:
+        case Language::Toml:
+        case Language::Xml:
             return emptySymbolTable();
     }
     return symbolTableForCpp();  // unreachable (all enumerators handled above)

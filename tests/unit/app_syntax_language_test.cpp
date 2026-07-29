@@ -92,4 +92,37 @@ TEST(DetectLanguageTest, HeaderExtensionStillMapsToCppNotC) {
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.h")), Language::Cpp);
 }
 
+// Phase 7r.
+
+TEST(DetectLanguageTest, RecognizesAllHtmlExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.html")), Language::Html);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.htm")), Language::Html);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.HTML")), Language::Html);
+}
+
+TEST(DetectLanguageTest, RecognizesCss) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.css")), Language::Css);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.CSS")), Language::Css);
+}
+
+TEST(DetectLanguageTest, RecognizesAllShellExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.sh")), Language::Shell);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.bash")), Language::Shell);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.SH")), Language::Shell);
+}
+
+TEST(DetectLanguageTest, RecognizesAllYamlExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.yaml")), Language::Yaml);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.yml")), Language::Yaml);
+}
+
+TEST(DetectLanguageTest, RecognizesToml) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.toml")), Language::Toml);
+}
+
+TEST(DetectLanguageTest, RecognizesXml) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.xml")), Language::Xml);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.XML")), Language::Xml);
+}
+
 }  // namespace

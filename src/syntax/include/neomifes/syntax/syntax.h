@@ -61,8 +61,11 @@ struct Token {
 // syntax_internal.h's detail::tsLanguageFor() at the same time so syntax.cpp/
 // incremental_parser.cpp/outline.cpp share one switch instead of each
 // maintaining their own (see outline.cpp's Phase 7n1 comment for why that
-// mattered).
-enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json };
+// mattered). Phase 7r added Html/Css/Shell/Yaml/Toml/Xml (batch 2; Shell
+// covers tree-sitter-bash - the enumerator is named after the language
+// family, not the grammar package, matching detectLanguage()'s .sh/.bash
+// mapping).
+enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Css, Shell, Yaml, Toml, Xml };
 
 // Parses `text` as C++ and returns a flat, left-to-right, non-overlapping
 // token stream covering every leaf of the syntax tree (whitespace and
@@ -97,8 +100,27 @@ enum class Language { Cpp, Python, C, JavaScript, Java, Go, Rust, Json };
 // Same contract as parseCpp(), for JSON (tree-sitter-json v0.24.8).
 [[nodiscard]] std::vector<Token> parseJson(std::u16string_view text);
 
+// Same contract as parseCpp(), for HTML (tree-sitter-html v0.23.2).
+[[nodiscard]] std::vector<Token> parseHtml(std::u16string_view text);
+
+// Same contract as parseCpp(), for CSS (tree-sitter-css v0.25.0).
+[[nodiscard]] std::vector<Token> parseCss(std::u16string_view text);
+
+// Same contract as parseCpp(), for Shell/Bash (tree-sitter-bash v0.25.1).
+[[nodiscard]] std::vector<Token> parseShell(std::u16string_view text);
+
+// Same contract as parseCpp(), for YAML (tree-sitter-yaml v0.7.2).
+[[nodiscard]] std::vector<Token> parseYaml(std::u16string_view text);
+
+// Same contract as parseCpp(), for TOML (tree-sitter-toml v0.7.0).
+[[nodiscard]] std::vector<Token> parseToml(std::u16string_view text);
+
+// Same contract as parseCpp(), for XML (tree-sitter-xml v0.7.0).
+[[nodiscard]] std::vector<Token> parseXml(std::u16string_view text);
+
 // Thin dispatcher over parseCpp()/parsePython()/parseC()/parseJavaScript()/
-// parseJava()/parseGo()/parseRust()/parseJson(). Kept alongside the
+// parseJava()/parseGo()/parseRust()/parseJson()/parseHtml()/parseCss()/
+// parseShell()/parseYaml()/parseToml()/parseXml(). Kept alongside the
 // individual functions (rather than replacing them) so existing callers/
 // tests that only care about one language can keep calling it directly, and
 // so per-language expected-output tests stay easy to write (Phase 7b/7c

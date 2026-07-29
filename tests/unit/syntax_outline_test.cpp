@@ -233,4 +233,15 @@ TEST(SyntaxOutlineTest, NewPhase7n1LanguagesProduceNoNodesWithoutCrashingOrMisro
     EXPECT_TRUE(extractOutline(u"{\"a\": 1}", Language::Json).empty());
 }
 
+// Phase 7r: same safe-degradation contract extended to Html/Css/Shell/Yaml/
+// Toml/Xml (see outline.cpp's emptySymbolTable() comment).
+TEST(SyntaxOutlineTest, NewPhase7rLanguagesProduceNoNodesWithoutCrashingOrMisroutingGrammar) {
+    EXPECT_TRUE(extractOutline(u"<div><span>text</span></div>\n", Language::Html).empty());
+    EXPECT_TRUE(extractOutline(u".foo { color: red; }\n", Language::Css).empty());
+    EXPECT_TRUE(extractOutline(u"foo() { echo hi; }\n", Language::Shell).empty());
+    EXPECT_TRUE(extractOutline(u"key:\n  nested: value\n", Language::Yaml).empty());
+    EXPECT_TRUE(extractOutline(u"[section]\nkey = 1\n", Language::Toml).empty());
+    EXPECT_TRUE(extractOutline(u"<root><child>text</child></root>\n", Language::Xml).empty());
+}
+
 }  // namespace

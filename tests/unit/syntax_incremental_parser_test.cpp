@@ -20,6 +20,7 @@ using neomifes::syntax::Language;
 using neomifes::syntax::parseCpp;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
+using neomifes::syntax::parseYaml;
 using neomifes::syntax::ReparseEdit;
 using neomifes::syntax::Token;
 using neomifes::syntax::TokenKind;
@@ -366,6 +367,19 @@ TEST(SyntaxIncrementalParserTest, RustEditNearACommentReusesSurroundingTokensAnd
     const std::size_t startPos = oldText.find(u"1;");
     const ReparseEdit edit     = buildEdit(oldText, newText, startPos, startPos + 1, startPos + 3);
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseRust(newText));
+}
+
+// Phase 7r: proves the incremental path also works for one of this batch's
+// new languages, not just Cpp/Python/Rust (Phase 7n1 precedent above) -
+// reuses the same ReparsingSession/oracle pattern.
+TEST(SyntaxIncrementalParserTest, YamlSingleCharacterInsertMatchesFullReparse) {
+    ReparsingSession      parser(Language::Yaml);
+    const std::u16string oldText = u"num: 42\n";
+    (void)parser.reparse(oldText, {});
+
+    const std::u16string newText = u"num: 420\n";  // '0' inserted right after '2' (pos 7)
+    const ReparseEdit    edit    = buildEdit(oldText, newText, 7, 7, 8);
+    EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseYaml(newText));
 }
 
 // Phase 7q: applyTokenPatch() boundary-condition tests, independent of

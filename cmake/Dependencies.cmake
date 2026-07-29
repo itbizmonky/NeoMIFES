@@ -262,6 +262,134 @@ add_library(tree-sitter-json-grammar STATIC
 target_include_directories(tree-sitter-json-grammar PRIVATE "${tree-sitter-json_SOURCE_DIR}/src")
 target_link_libraries(tree-sitter-json-grammar PRIVATE tree-sitter)
 
+# ---- tree-sitter-html grammar (Phase 7r) -----------------------------------
+# Same SOURCE_SUBDIR workaround. Has scanner.c (confirmed via GitHub API,
+# same 2-file shape as tree-sitter-python/tree-sitter-cpp above).
+FetchContent_Declare(
+    tree-sitter-html
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-html.git
+    GIT_TAG        v0.23.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-html)
+
+add_library(tree-sitter-html-grammar STATIC
+    "${tree-sitter-html_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-html_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-html-grammar PRIVATE "${tree-sitter-html_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-html-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-css grammar (Phase 7r) ------------------------------------
+# Same SOURCE_SUBDIR workaround. Has scanner.c (confirmed via GitHub API).
+FetchContent_Declare(
+    tree-sitter-css
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-css.git
+    GIT_TAG        v0.25.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-css)
+
+add_library(tree-sitter-css-grammar STATIC
+    "${tree-sitter-css_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-css_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-css-grammar PRIVATE "${tree-sitter-css_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-css-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-bash grammar (Phase 7r) -----------------------------------
+# neomifes::syntax's Language::Shell - upstream repo/grammar name is "bash"
+# (covers sh/bash scripts generically), roadmap sec.7.2 calls the language
+# "Shell". Same SOURCE_SUBDIR workaround. Has scanner.c (confirmed via
+# GitHub API).
+FetchContent_Declare(
+    tree-sitter-bash
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-bash.git
+    GIT_TAG        v0.25.1
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-bash)
+
+add_library(tree-sitter-bash-grammar STATIC
+    "${tree-sitter-bash_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-bash_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-bash-grammar PRIVATE "${tree-sitter-bash_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-bash-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-yaml grammar (Phase 7r) -----------------------------------
+# From tree-sitter-grammars/ (the org tree-sitter migrated many community
+# grammars into), not tree-sitter/ - confirmed to exist and MIT-licensed via
+# GitHub API before adding this block. Same SOURCE_SUBDIR workaround. Has
+# scanner.c PLUS three extra schema-validation source files (schema.core.c/
+# schema.json.c/schema.legacy.c, confirmed via GitHub API) - all four are
+# compiled in since parser.c references symbols from all of them (schema
+# validation is baked into the grammar's external scanner, not an optional
+# add-on).
+FetchContent_Declare(
+    tree-sitter-yaml
+    GIT_REPOSITORY https://github.com/tree-sitter-grammars/tree-sitter-yaml.git
+    GIT_TAG        v0.7.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-yaml)
+
+add_library(tree-sitter-yaml-grammar STATIC
+    "${tree-sitter-yaml_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-yaml_SOURCE_DIR}/src/scanner.c"
+    "${tree-sitter-yaml_SOURCE_DIR}/src/schema.core.c"
+    "${tree-sitter-yaml_SOURCE_DIR}/src/schema.json.c"
+    "${tree-sitter-yaml_SOURCE_DIR}/src/schema.legacy.c"
+)
+target_include_directories(tree-sitter-yaml-grammar PRIVATE "${tree-sitter-yaml_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-yaml-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-toml grammar (Phase 7r) -----------------------------------
+# From tree-sitter-grammars/. Same SOURCE_SUBDIR workaround. Has scanner.c
+# (confirmed via GitHub API).
+FetchContent_Declare(
+    tree-sitter-toml
+    GIT_REPOSITORY https://github.com/tree-sitter-grammars/tree-sitter-toml.git
+    GIT_TAG        v0.7.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-toml)
+
+add_library(tree-sitter-toml-grammar STATIC
+    "${tree-sitter-toml_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-toml_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-toml-grammar PRIVATE "${tree-sitter-toml_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-toml-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-xml grammar (Phase 7r) ------------------------------------
+# From tree-sitter-grammars/. This repo hosts TWO grammars side by side
+# (xml/ and dtd/, confirmed via GitHub API) - only xml/ is used here (dtd/
+# is a separate, much less commonly needed schema language, deliberately
+# out of scope). Source paths therefore include the xml/ subdirectory,
+# unlike every other grammar block above whose single-grammar repos put
+# src/ at the repo root. Has scanner.c (confirmed via GitHub API).
+FetchContent_Declare(
+    tree-sitter-xml
+    GIT_REPOSITORY https://github.com/tree-sitter-grammars/tree-sitter-xml.git
+    GIT_TAG        v0.7.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-xml)
+
+add_library(tree-sitter-xml-grammar STATIC
+    "${tree-sitter-xml_SOURCE_DIR}/xml/src/parser.c"
+    "${tree-sitter-xml_SOURCE_DIR}/xml/src/scanner.c"
+)
+target_include_directories(tree-sitter-xml-grammar PRIVATE "${tree-sitter-xml_SOURCE_DIR}/xml/src")
+target_link_libraries(tree-sitter-xml-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -286,10 +414,12 @@ target_link_libraries(tree-sitter-json-grammar PRIVATE tree-sitter)
 # to the same loop rather than duplicating these property-setting calls.
 # tree-sitter-python-grammar (Phase 7d) is the same kind of target.
 # tree-sitter-{c,javascript,java,go,rust,json}-grammar (Phase 7n1) are too.
+# tree-sitter-{html,css,bash,yaml,toml,xml}-grammar (Phase 7r) are too.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
 foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar
         tree-sitter-c-grammar tree-sitter-javascript-grammar tree-sitter-java-grammar tree-sitter-go-grammar
-        tree-sitter-rust-grammar tree-sitter-json-grammar)
+        tree-sitter-rust-grammar tree-sitter-json-grammar tree-sitter-html-grammar tree-sitter-css-grammar
+        tree-sitter-bash-grammar tree-sitter-yaml-grammar tree-sitter-toml-grammar tree-sitter-xml-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

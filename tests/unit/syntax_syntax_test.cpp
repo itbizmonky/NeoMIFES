@@ -13,12 +13,18 @@ using neomifes::syntax::Language;
 using neomifes::syntax::parse;
 using neomifes::syntax::parseC;
 using neomifes::syntax::parseCpp;
+using neomifes::syntax::parseCss;
 using neomifes::syntax::parseGo;
+using neomifes::syntax::parseHtml;
 using neomifes::syntax::parseJava;
 using neomifes::syntax::parseJavaScript;
 using neomifes::syntax::parseJson;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
+using neomifes::syntax::parseShell;
+using neomifes::syntax::parseToml;
+using neomifes::syntax::parseXml;
+using neomifes::syntax::parseYaml;
 using neomifes::syntax::Token;
 using neomifes::syntax::TokenKind;
 
@@ -675,6 +681,327 @@ TEST(SyntaxParseDispatcherTest, ParseWithRustLanguageMatchesParseRust) {
 TEST(SyntaxParseDispatcherTest, ParseWithJsonLanguageMatchesParseJson) {
     const std::u16string source = u"{\"a\": 42}";
     EXPECT_EQ(parse(source, Language::Json), parseJson(source));
+}
+
+// Phase 7r (batch 2: Html/Css/Shell/Yaml/Toml/Xml). Every expectation below
+// was cross-checked against real tree-sitter output for that grammar via a
+// standalone probe before being written (CLAUDE.md rule 3); comprehensive
+// tests reuse the EXACT probe input string so the recorded token
+// count/kinds/ranges are not re-derived speculatively.
+
+TEST(SyntaxParseHtmlTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseHtml(u"").empty());
+}
+
+TEST(SyntaxParseHtmlTest, ClassifiesTagAttributeCommentEntityAndScriptBody) {
+    const std::u16string source =
+        u"<div class=\"a\">\n<!-- comment -->\nText &amp; more\n<script>var x = 1;</script>\n</div>\n";
+    const std::vector<Token> tokens = parseHtml(source);
+    ASSERT_EQ(tokens.size(), 22u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Punctuation);  // <
+    EXPECT_EQ(tokens[1].kind, TokenKind::Type);          // div (tag_name)
+    EXPECT_EQ(tokens[1].range.start, 1u);
+    EXPECT_EQ(tokens[1].range.end, 4u);
+    EXPECT_EQ(tokens[2].kind, TokenKind::Variable);      // class (attribute_name)
+    EXPECT_EQ(tokens[5].kind, TokenKind::String);        // a (attribute_value)
+    EXPECT_EQ(tokens[8].kind, TokenKind::Comment);       // <!-- comment -->
+    EXPECT_EQ(tokens[8].range.start, 16u);
+    EXPECT_EQ(tokens[8].range.end, 32u);
+    EXPECT_EQ(tokens[9].kind, TokenKind::Text);          // "Text" (unclassified text leaf)
+    EXPECT_EQ(tokens[10].kind, TokenKind::String);       // &amp; (entity)
+    EXPECT_EQ(tokens[13].kind, TokenKind::Type);         // script (tag_name)
+    EXPECT_EQ(tokens[15].kind, TokenKind::Text);         // var x = 1; (raw_text, unclassified)
+    EXPECT_EQ(tokens[21].kind, TokenKind::Punctuation);  // final >
+}
+
+TEST(SyntaxParseHtmlTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseHtml(u"<div class=<<<");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseHtmlTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"<div><!-- 日本語コメント --></div>";
+    const std::vector<Token> tokens = parseHtml(source);
+    const auto it = std::ranges::find(tokens, TokenKind::Comment, &Token::kind);
+    ASSERT_NE(it, tokens.end());
+    EXPECT_EQ(it->range.start, 5u);
+    EXPECT_EQ(it->range.end, 21u);
+}
+
+TEST(SyntaxParseHtmlTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"<div class=\"a\">\n<!-- comment -->\nText &amp; more\n<script>var x = 1;</script>\n</div>\n";
+    const std::vector<Token> tokens = parseHtml(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseCssTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseCss(u"").empty());
+}
+
+TEST(SyntaxParseCssTest, ClassifiesSelectorsDeclarationsCommentAndString) {
+    const std::u16string source =
+        u".foo {\n  color: red; /* comment */\n}\n#bar::before {\n  content: \"hi\";\n}\n";
+    const std::vector<Token> tokens = parseCss(source);
+    ASSERT_EQ(tokens.size(), 21u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Variable);  // foo (class_name identifier)
+    EXPECT_EQ(tokens[3].kind, TokenKind::Variable);  // color (property_name)
+    EXPECT_EQ(tokens[5].kind, TokenKind::Text);      // red (plain_value, unclassified)
+    EXPECT_EQ(tokens[7].kind, TokenKind::Comment);   // /* comment */
+    EXPECT_EQ(tokens[7].range.start, 21u);
+    EXPECT_EQ(tokens[7].range.end, 34u);
+    EXPECT_EQ(tokens[10].kind, TokenKind::Type);  // bar (id_name)
+    EXPECT_EQ(tokens[12].kind, TokenKind::Type);  // before (pseudo-element tag_name)
+    EXPECT_EQ(tokens[17].kind, TokenKind::String);  // hi (string_content)
+    EXPECT_EQ(tokens[17].range.start, 64u);
+    EXPECT_EQ(tokens[17].range.end, 66u);
+}
+
+TEST(SyntaxParseCssTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseCss(u".foo { color: <<<");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseCssTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u".foo { /* 日本語コメント */ }";
+    const std::vector<Token> tokens = parseCss(source);
+    const auto it = std::ranges::find(tokens, TokenKind::Comment, &Token::kind);
+    ASSERT_NE(it, tokens.end());
+    EXPECT_EQ(it->range.start, 7u);
+    EXPECT_EQ(it->range.end, 20u);
+}
+
+TEST(SyntaxParseCssTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u".foo {\n  color: red; /* comment */\n}\n#bar::before {\n  content: \"hi\";\n}\n";
+    const std::vector<Token> tokens = parseCss(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseShellTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseShell(u"").empty());
+}
+
+TEST(SyntaxParseShellTest, ClassifiesShebangCommentStringExpansionAndForLoop) {
+    const std::u16string source =
+        u"#!/bin/bash\n# comment\necho \"hello $USER\"\nfor i in 1 2 3; do\n  echo $i\ndone\nx=42\n";
+    const std::vector<Token> tokens = parseShell(source);
+    ASSERT_EQ(tokens.size(), 23u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);   // shebang line - also just a "comment" node
+    EXPECT_EQ(tokens[0].range.start, 0u);
+    EXPECT_EQ(tokens[0].range.end, 11u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Comment);   // # comment
+    EXPECT_EQ(tokens[2].kind, TokenKind::Variable);  // echo (command_name -> word)
+    EXPECT_EQ(tokens[6].kind, TokenKind::Variable);  // USER (variable_name inside $USER)
+    EXPECT_EQ(tokens[8].kind, TokenKind::Keyword);   // for
+    EXPECT_EQ(tokens[11].kind, TokenKind::Number);   // 1
+    EXPECT_EQ(tokens[12].kind, TokenKind::Number);   // 2
+    EXPECT_EQ(tokens[13].kind, TokenKind::Number);   // 3
+    EXPECT_EQ(tokens[19].kind, TokenKind::Keyword);  // done
+    EXPECT_EQ(tokens[22].kind, TokenKind::Number);   // 42
+}
+
+TEST(SyntaxParseShellTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseShell(u"if [ <<<");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseShellTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"# 日本語コメント\n";
+    const std::vector<Token> tokens = parseShell(source);
+    ASSERT_EQ(tokens.size(), 1u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.start, 0u);
+    EXPECT_EQ(tokens[0].range.end, source.size() - 1);  // excludes trailing \n
+}
+
+TEST(SyntaxParseShellTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"#!/bin/bash\n# comment\necho \"hello $USER\"\nfor i in 1 2 3; do\n  echo $i\ndone\nx=42\n";
+    const std::vector<Token> tokens = parseShell(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseYamlTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseYaml(u"").empty());
+}
+
+TEST(SyntaxParseYamlTest, ClassifiesScalarsCommentSequenceAndTypedValues) {
+    // tree-sitter-yaml does not distinguish a mapping key from a plain
+    // scalar value at the node-type level - both are "string_scalar"
+    // (verified via probe) - so "key" below colors as String, same as
+    // "value" (see namedLeafKindsForYaml()'s comment).
+    const std::u16string source =
+        u"key: value\n# comment\nlist:\n  - item1\n  - item2\nnum: 42\nbool: true\nnil_val: null\n";
+    const std::vector<Token> tokens = parseYaml(source);
+    ASSERT_EQ(tokens.size(), 19u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::String);   // key
+    EXPECT_EQ(tokens[2].kind, TokenKind::String);   // value
+    EXPECT_EQ(tokens[3].kind, TokenKind::Comment);  // # comment
+    EXPECT_EQ(tokens[3].range.start, 11u);
+    EXPECT_EQ(tokens[3].range.end, 20u);
+    EXPECT_EQ(tokens[7].kind, TokenKind::String);   // item1
+    EXPECT_EQ(tokens[9].kind, TokenKind::String);   // item2
+    EXPECT_EQ(tokens[12].kind, TokenKind::Number);  // 42
+    EXPECT_EQ(tokens[15].kind, TokenKind::Keyword);  // true (boolean_scalar)
+    EXPECT_EQ(tokens[18].kind, TokenKind::Keyword);  // null (null_scalar)
+}
+
+TEST(SyntaxParseYamlTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseYaml(u"key: : : broken\n");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseYamlTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"key: value\n# 日本語コメント\n";
+    const std::vector<Token> tokens = parseYaml(source);
+    const auto it = std::ranges::find(tokens, TokenKind::Comment, &Token::kind);
+    ASSERT_NE(it, tokens.end());
+    EXPECT_EQ(it->range.start, 11u);
+    EXPECT_EQ(it->range.end, 20u);
+}
+
+TEST(SyntaxParseYamlTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"key: value\n# comment\nlist:\n  - item1\n  - item2\nnum: 42\nbool: true\nnil_val: null\n";
+    const std::vector<Token> tokens = parseYaml(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseTomlTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseToml(u"").empty());
+}
+
+TEST(SyntaxParseTomlTest, ClassifiesTableKeysStringCommentAndTypedValues) {
+    const std::u16string source =
+        u"[section]\nkey = \"value\" # comment\nnum = 42\nbool = true\n\n[[array]]\nx = 1\n";
+    const std::vector<Token> tokens = parseToml(source);
+    ASSERT_EQ(tokens.size(), 19u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Variable);  // section (bare_key)
+    EXPECT_EQ(tokens[3].kind, TokenKind::Variable);  // key
+    // "string" is a non-leaf node (2 quote-only children, no separate
+    // content child - verified via probe) that isAtomicNode() must treat as
+    // ONE token, or the quoted text would be silently dropped (see
+    // namedLeafKindsForToml()'s comment).
+    EXPECT_EQ(tokens[5].kind, TokenKind::String);
+    EXPECT_EQ(tokens[5].range.start, 16u);
+    EXPECT_EQ(tokens[5].range.end, 23u);
+    EXPECT_EQ(tokens[6].kind, TokenKind::Comment);   // # comment
+    EXPECT_EQ(tokens[9].kind, TokenKind::Number);    // 42
+    EXPECT_EQ(tokens[12].kind, TokenKind::Keyword);  // true
+    EXPECT_EQ(tokens[14].kind, TokenKind::Variable);  // array (table_array_element bare_key)
+    EXPECT_EQ(tokens[18].kind, TokenKind::Number);   // 1
+}
+
+TEST(SyntaxParseTomlTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseToml(u"key = = broken\n");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseTomlTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"key = 1 # 日本語コメント\n";
+    const std::vector<Token> tokens = parseToml(source);
+    const auto it = std::ranges::find(tokens, TokenKind::Comment, &Token::kind);
+    ASSERT_NE(it, tokens.end());
+    EXPECT_EQ(it->range.start, 8u);
+    EXPECT_EQ(it->range.end, 17u);
+}
+
+TEST(SyntaxParseTomlTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"[section]\nkey = \"value\" # comment\nnum = 42\nbool = true\n\n[[array]]\nx = 1\n";
+    const std::vector<Token> tokens = parseToml(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseXmlTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseXml(u"").empty());
+}
+
+TEST(SyntaxParseXmlTest, ClassifiesDeclElementAttributeAndComment) {
+    const std::u16string source =
+        u"<?xml version=\"1.0\"?>\n<root attr=\"val\">\n<!-- comment -->\nText\n</root>\n";
+    const std::vector<Token> tokens = parseXml(source);
+    ASSERT_EQ(tokens.size(), 20u);
+    EXPECT_EQ(tokens[9].kind, TokenKind::Type);  // root (element Name)
+    // tree-sitter-xml's grammar reuses "Name" for BOTH element tag names and
+    // attribute names (no separate AttributeName node type - verified via
+    // probe), so attr also colors as Type - an accepted grammar-level
+    // limitation (see namedLeafKindsForXml()'s comment).
+    EXPECT_EQ(tokens[10].kind, TokenKind::Type);  // attr (attribute Name)
+    // AttValue is a non-leaf node (2 quote-only children, no separate
+    // content child) - same situation as TOML's "string" above; without the
+    // table entry the quoted "val" text would be silently dropped.
+    EXPECT_EQ(tokens[12].kind, TokenKind::String);
+    EXPECT_EQ(tokens[12].range.start, 33u);
+    EXPECT_EQ(tokens[12].range.end, 38u);
+    EXPECT_EQ(tokens[15].kind, TokenKind::Comment);  // <!-- comment -->
+    EXPECT_EQ(tokens[15].range.start, 40u);
+    EXPECT_EQ(tokens[15].range.end, 56u);
+    EXPECT_EQ(tokens[18].kind, TokenKind::Type);  // root (closing tag Name)
+}
+
+TEST(SyntaxParseXmlTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseXml(u"<root attr=<<<");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseXmlTest, HandlesJapaneseCommentTextWithCorrectUtf16Ranges) {
+    const std::u16string source = u"<root><!-- 日本語コメント --></root>";
+    const std::vector<Token> tokens = parseXml(source);
+    const auto it = std::ranges::find(tokens, TokenKind::Comment, &Token::kind);
+    ASSERT_NE(it, tokens.end());
+    EXPECT_EQ(it->range.start, 6u);
+    EXPECT_EQ(it->range.end, 22u);
+}
+
+TEST(SyntaxParseXmlTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source =
+        u"<?xml version=\"1.0\"?>\n<root attr=\"val\">\n<!-- comment -->\nText\n</root>\n";
+    const std::vector<Token> tokens = parseXml(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithHtmlLanguageMatchesParseHtml) {
+    const std::u16string source = u"<div class=\"a\"></div>";
+    EXPECT_EQ(parse(source, Language::Html), parseHtml(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithCssLanguageMatchesParseCss) {
+    const std::u16string source = u".foo { color: red; }";
+    EXPECT_EQ(parse(source, Language::Css), parseCss(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithShellLanguageMatchesParseShell) {
+    const std::u16string source = u"echo hello\n";
+    EXPECT_EQ(parse(source, Language::Shell), parseShell(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithYamlLanguageMatchesParseYaml) {
+    const std::u16string source = u"key: value\n";
+    EXPECT_EQ(parse(source, Language::Yaml), parseYaml(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithTomlLanguageMatchesParseToml) {
+    const std::u16string source = u"key = 42\n";
+    EXPECT_EQ(parse(source, Language::Toml), parseToml(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithXmlLanguageMatchesParseXml) {
+    const std::u16string source = u"<root></root>";
+    EXPECT_EQ(parse(source, Language::Xml), parseXml(source));
 }
 
 }  // namespace

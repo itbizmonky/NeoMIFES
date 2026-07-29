@@ -37,6 +37,18 @@ extern "C" const TSLanguage* tree_sitter_go(void);
 extern "C" const TSLanguage* tree_sitter_rust(void);
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" const TSLanguage* tree_sitter_json(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_html(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_css(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_bash(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_yaml(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_toml(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_xml(void);
 
 // Phase 7n1: single Language -> TSLanguage* mapping shared by syntax.cpp,
 // incremental_parser.cpp, and outline.cpp - previously each of the first two
@@ -63,6 +75,18 @@ extern "C" const TSLanguage* tree_sitter_json(void);
             return tree_sitter_rust();
         case Language::Json:
             return tree_sitter_json();
+        case Language::Html:
+            return tree_sitter_html();
+        case Language::Css:
+            return tree_sitter_css();
+        case Language::Shell:
+            return tree_sitter_bash();
+        case Language::Yaml:
+            return tree_sitter_yaml();
+        case Language::Toml:
+            return tree_sitter_toml();
+        case Language::Xml:
+            return tree_sitter_xml();
     }
     return tree_sitter_cpp();  // unreachable (all enumerators handled above)
 }
@@ -262,6 +286,114 @@ using LeafKindTable = std::unordered_map<std::string_view, TokenKind>;
         {"true", TokenKind::Keyword},
         {"false", TokenKind::Keyword},
         {"null", TokenKind::Keyword},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7r) against real tree-sitter-html
+// v0.23.2 output. "text" (element body text) and "raw_text" (<script>/
+// <style> body) are genuine leaves too but deliberately left unclassified
+// (fall through to the default TokenKind::Text) - this batch does not
+// attempt embedded-language highlighting for <script>/<style> contents.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForHtml() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},
+        {"tag_name", TokenKind::Type},
+        {"attribute_name", TokenKind::Variable},
+        {"attribute_value", TokenKind::String},
+        {"entity", TokenKind::String},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7r) against real tree-sitter-css
+// v0.25.0 output. "plain_value" (e.g. the "red" in "color: red;") is left
+// unclassified - the probe sample only exercised keyword-like values, and
+// CLAUDE.md rule 3 forbids extending the table to numeric/dimension values
+// that were never actually observed in real parser output.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForCss() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},
+        {"property_name", TokenKind::Variable},
+        {"identifier", TokenKind::Variable},
+        {"id_name", TokenKind::Type},
+        {"tag_name", TokenKind::Type},
+        {"string_content", TokenKind::String},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7r) against real tree-sitter-bash
+// v0.25.1 output (used for Language::Shell). "word" is bash's generic
+// bareword node (command names, plain arguments, ...) - classified as
+// Variable for lack of a more precise structural signal, matching this
+// table's existing "best defensible bucket, not a perfect one" precedent
+// (see e.g. namedLeafKindsForJson()'s comment above).
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForBash() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},
+        {"variable_name", TokenKind::Variable},
+        {"number", TokenKind::Number},
+        {"word", TokenKind::Variable},
+        {"string_content", TokenKind::String},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7r) against real tree-sitter-yaml
+// v0.7.2 output. tree-sitter-yaml's grammar does not distinguish a mapping
+// key from a plain scalar value at the node-type level - both are
+// "string_scalar" (visible in the probe: "key" and "value" in "key: value"
+// are both string_scalar) - so map keys are colored as strings too, an
+// accepted grammar-level limitation (same class of trade-off as JSON object
+// keys sharing string_content with JSON string values).
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForYaml() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},
+        {"string_scalar", TokenKind::String},
+        {"integer_scalar", TokenKind::Number},
+        {"boolean_scalar", TokenKind::Keyword},
+        {"null_scalar", TokenKind::Keyword},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7r) against real tree-sitter-toml
+// v0.7.0 output. "string" is NOT a true leaf (children=2: only the two
+// anonymous quote-delimiter children, no separate content child) - same
+// non-leaf-atomic-node situation as tree-sitter-rust's line_comment/
+// block_comment (see isAtomicNode()'s Phase 7n1 comment above). Without this
+// table entry, isAtomicNode() would descend into "string" and only emit
+// Punctuation tokens for the two quote characters, silently dropping the
+// quoted text itself from the token stream.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForToml() {
+    static const LeafKindTable table{
+        {"bare_key", TokenKind::Variable},
+        {"comment", TokenKind::Comment},
+        {"integer", TokenKind::Number},
+        {"boolean", TokenKind::Keyword},
+        {"string", TokenKind::String},  // non-leaf, quote-only children - see comment above
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7r) against real tree-sitter-xml
+// v0.7.0 output. Two non-obvious findings from the probe:
+//  - "Name" is used by this grammar for BOTH element tag names and
+//    attribute names (no separate AttributeName node type exists) - so
+//    attribute names are colored as Type too, an accepted grammar-level
+//    limitation (same trade-off class as YAML's key/value ambiguity above).
+//  - "AttValue" is NOT a true leaf (children=2: only the two anonymous
+//    quote-delimiter children, no separate content child) - the exact same
+//    situation as TOML's "string" above (and tree-sitter-rust's comments
+//    before that). Without this entry, the quoted attribute value text
+//    (e.g. "val" in attr="val") would be silently dropped from the token
+//    stream.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForXml() {
+    static const LeafKindTable table{
+        {"Name", TokenKind::Type},
+        {"Comment", TokenKind::Comment},
+        {"AttValue", TokenKind::String},  // non-leaf, quote-only children - see comment above
     };
     return table;
 }

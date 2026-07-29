@@ -24,6 +24,12 @@ target_link_libraries(neomifes_syntax
         tree-sitter-go-grammar
         tree-sitter-rust-grammar
         tree-sitter-json-grammar
+        tree-sitter-html-grammar
+        tree-sitter-css-grammar
+        tree-sitter-bash-grammar
+        tree-sitter-yaml-grammar
+        tree-sitter-toml-grammar
+        tree-sitter-xml-grammar
 )
 
 set_target_properties(neomifes_syntax PROPERTIES

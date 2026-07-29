@@ -10,14 +10,20 @@ namespace {
 
 using detail::LeafKindTable;
 using detail::makeParser;
+using detail::namedLeafKindsForBash;
 using detail::namedLeafKindsForC;
 using detail::namedLeafKindsForCpp;
+using detail::namedLeafKindsForCss;
 using detail::namedLeafKindsForGo;
+using detail::namedLeafKindsForHtml;
 using detail::namedLeafKindsForJava;
 using detail::namedLeafKindsForJavaScript;
 using detail::namedLeafKindsForJson;
 using detail::namedLeafKindsForPython;
 using detail::namedLeafKindsForRust;
+using detail::namedLeafKindsForToml;
+using detail::namedLeafKindsForXml;
+using detail::namedLeafKindsForYaml;
 using detail::TSParserPtr;
 using detail::TSTreePtr;
 using detail::walkTree;
@@ -72,6 +78,30 @@ std::vector<Token> parseJson(std::u16string_view text) {
     return parseWithLanguage(text, detail::tree_sitter_json(), namedLeafKindsForJson());
 }
 
+std::vector<Token> parseHtml(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_html(), namedLeafKindsForHtml());
+}
+
+std::vector<Token> parseCss(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_css(), namedLeafKindsForCss());
+}
+
+std::vector<Token> parseShell(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_bash(), namedLeafKindsForBash());
+}
+
+std::vector<Token> parseYaml(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_yaml(), namedLeafKindsForYaml());
+}
+
+std::vector<Token> parseToml(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_toml(), namedLeafKindsForToml());
+}
+
+std::vector<Token> parseXml(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_xml(), namedLeafKindsForXml());
+}
+
 std::vector<Token> parse(std::u16string_view text, Language language) {
     switch (language) {
         case Language::Cpp:
@@ -90,6 +120,18 @@ std::vector<Token> parse(std::u16string_view text, Language language) {
             return parseRust(text);
         case Language::Json:
             return parseJson(text);
+        case Language::Html:
+            return parseHtml(text);
+        case Language::Css:
+            return parseCss(text);
+        case Language::Shell:
+            return parseShell(text);
+        case Language::Yaml:
+            return parseYaml(text);
+        case Language::Toml:
+            return parseToml(text);
+        case Language::Xml:
+            return parseXml(text);
     }
     return {};  // unreachable (all Language enumerators handled above)
 }

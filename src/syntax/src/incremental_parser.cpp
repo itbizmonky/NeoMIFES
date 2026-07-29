@@ -40,6 +40,18 @@ using detail::tsLanguageFor;
             return detail::namedLeafKindsForRust();
         case Language::Json:
             return detail::namedLeafKindsForJson();
+        case Language::Html:
+            return detail::namedLeafKindsForHtml();
+        case Language::Css:
+            return detail::namedLeafKindsForCss();
+        case Language::Shell:
+            return detail::namedLeafKindsForBash();
+        case Language::Yaml:
+            return detail::namedLeafKindsForYaml();
+        case Language::Toml:
+            return detail::namedLeafKindsForToml();
+        case Language::Xml:
+            return detail::namedLeafKindsForXml();
     }
     return detail::namedLeafKindsForCpp();  // unreachable (all enumerators handled above)
 }
