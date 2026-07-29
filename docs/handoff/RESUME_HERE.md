@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-29 (Phase 7q完了・push・CI green確認後、ユーザー選択でPhase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML、詳細§3.52)→続けてPhase 7s(追加言語対応バッチ3: TypeScript/TSX/PHP/Markdown、詳細§3.53)を連続実装。roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語はSQL/PowerShell/VB/VBS/BAT/INI、公式org不在で対象外)。ローカルDebug/Release/ubsan全864件green・clang-tidy `src/`配下新規警告0まで確認済み・Phase 7r/7sともコミット済み(`bef2905`/`540715b`/`54b87ea`)、**pushはユーザーの明示指示待ち**。次サブフェーズ候補は永続トークン列のデータ構造再設計(真のO(edit size)化、Phase 7q未達DoD)・残り6言語・ミニマップ)
+> **最終更新:** 2026-07-30 (Phase 7s完了・push・CI green確認後、ユーザー選択で永続トークン列のデータ構造再設計(Phase 7t)を実装。`TokenPatch`/`applyTokenPatch()`/`reparseDelta()`を廃止し、可視範囲(+プリフェッチ余白)のみをカバーする`reparseRange()`へ全面置換した。ベンチマーク実測(Release): 5万行103ms→15.65ms(約6.6倍、DoD「≤50ms」達成)、50万行989ms→155.95ms(約6.4倍、DoD未達 — narrow window/full documentがほぼ同一コストになり、ボトルネックが`ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移ったと判明)。ローカルDebug/Release/ubsan全865件green・clang-tidy `src/`配下新規警告0まで確認済み・実アプリ視覚確認(小規模/25000行ファイルともプロセス生存確認)済み、コミット済み(`b8bf882`)、**pushはユーザーの明示指示待ち**。次サブフェーズ候補は`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -84,9 +84,10 @@
 | Phase 7o (Sticky scroll) | ✅ 完了 (push済み、§3.49参照) |
 | Phase 7p (LineIndexインクリメンタル更新、Phase 7k性能リグレッション緊急修正) | ✅ 完了 (push済み、CI green確認済み、§3.50参照) |
 | Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、push済み、CI green確認済み、§3.51参照) |
-| Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (コミット済み`bef2905`/`540715b`、**push未実施**、§3.52参照) |
-| Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) | ✅ 完了 (コミット済み`54b87ea`、**push未実施**、§3.53参照) |
-| **次フェーズ選定 — 永続トークン列のデータ構造再設計(真のO(edit size)化)/残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (push済み、CI green確認済み、§3.52参照) |
+| Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) | ✅ 完了 (push済み、CI green確認済み、§3.53参照) |
+| Phase 7t (可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達、コミット済み`b8bf882`、**push未実施**、§3.54参照) |
+| **次フェーズ選定 — `TSInput`コールバックAPI採用(大規模文書のDoD達成)/残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1600,6 +1601,33 @@ Phase 7r完了後、ユーザーから「次のPhaseへ進め」と指示され�
 
 ---
 
+### 3.54 Phase 7t (可視範囲スコープ化トークン再設計) 完了記録
+
+Phase 7r/7s push・CI green確認後、ユーザーから次のPhaseとして**「永続トークン列のデータ構造再設計」(推奨案)**が選ばれた — Phase 7qが明示的に積み残した唯一の宿題であり、`incremental_parser.h`のヘッダコメント自身が「真のO(edit size)化には永続トークン列のデータ構造自体の再設計が必要」と本フェーズの設計を予告していた。
+
+**着手前調査(既存コードの直接読解、Agent委任なし、CLAUDE.mdルール3):** `RenderPipeline::m_tokens`が常に文書全体をカバーする設計だったことが根本原因と特定。`drawTokensOnLine()`は`m_tokens`に対する単調な`tokenCursor`スイープで「トークンが無い区間はデフォルトブラシで描画される」を既に前提としていたため、`m_tokens`を可視範囲のみカバーする設計に変えても描画ロジックは無変更で済むと確認した。`SyntaxWorker`が単一バックグラウンドスレッドで直列に1件ずつリクエストを処理する設計(Phase 7c以来不変)であるため、レスポンスに「実際にカバーした範囲」を含める必要が無いことも確認し、`kMsgSyntaxTokensReady`/`main.cpp`/`RenderPipeline::applyAsyncSyntaxTokens()`は無変更で済んだ。
+
+**実装:** `TokenPatch`/`applyTokenPatch()`/`reparseDelta()`を丸ごと廃止し、呼び出し側が指定した範囲だけを新規にウォークして返す`IncrementalParser::reparseRange(text, edits, rangeStartByte, rangeEndByte)`へ全面置換。`SyntaxWorker::requestParse()`に`range`引数(snapshot/languageと同じ最新優先)を追加し、`workerLoop()`の`persistedTokens`ループローカル変数を削除。`RenderPipeline`に新規`ensureSyntaxTokensCoverVisibleRange()`(`renderOnce()`から毎フレーム無条件で呼ぶ)を新設し、「編集された」(`refreshDocumentCacheIfStale()`がステージ)と「スクロールで可視範囲が要求済み範囲からはみ出た」の両トリガーを統合。可視範囲+プリフェッチ余白(1画面分、未チューニング)の計算は`drawVisibleLines()`から抽出した`visibleLineRange()`と新規`viewport_math.h::widenLineRangeWithMargin()`で行う。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全865件pass(新規9件: `NarrowRangeRequestReturnsASubsetOfTheFullParseCoveringTheRequestedSpan`等の部分範囲契約テスト、`WidenLineRangeWithMarginTest`5件、`ScrollingFarBeyondTheInitiallyRequestedRangeStillRendersWithoutError`)
+- **ベンチマーク実測(Release、`BM_ReparseRange_SingleCharEdit_*`):** 5万行narrow window 15.65ms(Phase 7qの103msから約6.6倍、**roadmap §7.11のDoD「≤50ms」達成**)。50万行narrow window 155.95ms・50万行full document 155.45ms(ほぼ同一、989ms比で約6.4倍改善したがDoD未達) — narrow windowとfull documentのコストが一致したことから、ボトルネックが`applyTokenPatch()`から`ts_parser_parse_string_encoding()`自体(文字列ベースAPIの制約で常に文書全体のテキストを要求する、文書サイズに比例するtree-sitter自身の再解析コスト)へ完全に移ったと確認した
+- `--open`で小規模C++サンプル・25000行の大規模C++サンプルの両方を開き、数秒後もプロセス生存を確認(GUI自動化不調の既知の制約を踏まえた軽量代替検証)
+
+**完了条件:**
+- [x] `IncrementalParser::reparseRange()`実装、`TokenPatch`/`applyTokenPatch()`/`reparseDelta()`削除
+- [x] `SyntaxWorker::requestParse()`にrange引数追加、`persistedTokens`廃止
+- [x] `RenderPipeline::ensureSyntaxTokensCoverVisibleRange()`新設、可視範囲+余白の要求範囲追跡実装
+- [x] 新規ベンチマークで5万行/50万行それぞれnarrow window/full documentを実測、DoD達成有無を正直に記録
+- [x] ローカルDebug/Release/ubsan全865テストgreen、`src/`配下clang-tidy新規警告0
+- [x] コミット(`b8bf882`)
+
+**スコープ外(意図的、後続フェーズへ):** `ts_parser_parse_string_encoding()`/`BufferSnapshot::extract()`自体の文書全体依存コスト解消(`TSInput`コールバックAPI採用、次フェーズ候補)、余白サイズのチューニング、大きなジャンプ時の一時的無彩色表示の緩和、`extractOutline()`(Breadcrumb)の可視範囲スコープ化。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.22参照。
+
+**Phase 7tはコミット済み(`b8bf882`)、pushはユーザーの明示指示待ち。** 次フェーズは`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1645,18 +1673,19 @@ Phase 7r完了後、ユーザーから「次のPhaseへ進め」と指示され�
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a〜7qはpush済み・CI green確認済み(Phase 7q: run 30421333851、success、1h37m33s)。
-**Phase 7r(追加言語対応バッチ2: HTML/CSS/Shell/YAML/TOML/XML、§3.52参照)→Phase 7s
-(追加言語対応バッチ3: TypeScript/TSX/PHP/Markdown、§3.53参照)を連続実装済み。ローカル
-Debug/Release/ubsan全864件green・コミット済み(`bef2905`/`540715b`/`54b87ea`)だが未push。**
+Phase 7a〜7sはpush済み・CI green確認済み。**Phase 7t(可視範囲スコープ化トークン再設計:
+`reparseRange()`、永続トークン列を廃止、§3.54参照)を実装済み。ローカルDebug/Release/ubsan
+全865件green・コミット済み(`b8bf882`)だが未push。**
 
 **roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語: SQL/PowerShell/VB/VBS/BAT/INI
-は公式org不在のため対象外のまま)。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7q
-時点から変わらず未達のまま(5万行103ms・50万行989ms、§3.51参照) — 永続トークン列自体の
-データ構造再設計が必要と判明し、次サブフェーズへ意図的に据え置いている。**
+は公式org不在のため対象外のまま)。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7tで
+小〜中規模文書では達成(5万行15.65ms)したが、大規模文書は未達のまま(50万行155.95ms、
+§3.54参照) — narrow window/full documentがほぼ同一コストになったことから、ボトルネックが
+`ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移った
+と判明し、`TSInput`コールバックAPI採用という次サブフェーズへ意図的に据え置いている。**
 
-**次フェーズは(1) Phase 7r+7sのpush+CI green確認、その後(2) 永続トークン列のデータ構造
-再設計(真のO(edit size)化)・残り6言語対応バッチ4・ミニマップのいずれか、着手前に
+**次フェーズは(1) Phase 7tのpush+CI green確認、その後(2) `TSInput`コールバックAPI採用
+(大規模文書のDoD達成)・残り6言語対応バッチ4・ミニマップのいずれか、着手前に
 Plan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して

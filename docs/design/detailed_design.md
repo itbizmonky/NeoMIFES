@@ -2430,6 +2430,48 @@ enum class Language {
 
 ---
 
+### 10.22 可視範囲スコープ化トークン再設計 (Phase 7t実装)
+
+Phase 7qが明示的に積み残した課題(`incremental_parser.h`のヘッダコメント「Reaching true O(edit size) end-to-end would require restructuring how the persisted token list itself is stored」)への着手。`TokenPatch`/`applyTokenPatch()`/`reparseDelta()`を丸ごと廃止し、`m_tokens`自体が文書全体ではなく可視範囲(+プリフェッチ余白)のみをカバーする設計へ全面置換した。
+
+```cpp
+// incremental_parser.h — Phase 7t (TokenPatch/applyTokenPatch()/reparseDelta()を置き換え)
+[[nodiscard]] std::vector<Token> reparseRange(std::u16string_view text, std::span<const ReparseEdit> edits,
+                                               std::uint32_t rangeStartByte, std::uint32_t rangeEndByte);
+```
+
+**設計:** `ts_tree_edit()`を全editsに適用→`ts_parser_parse_string_encoding()`で再解析、の前半はPhase 7qと変わらない(tree-sitter自身の内部増分再利用に必要)。後半はPhase 7qが行っていた「`ts_tree_get_changed_ranges()`で変更範囲を特定→`computeDirtyRangesInFinalCoordinates()`で字面上の編集範囲とマージ→その範囲を覆うノードをウォーク→`TokenPatch`(無効化範囲+シフト量+置換トークン)を組み立てる」という一連の処理が全て不要になった。呼び出し側が渡した`[rangeStartByte, rangeEndByte)`を`ts_node_descendant_for_byte_range()`でそのままノード解決し、`detail::walkTree()`(Phase 7a、無変更のまま再利用)でウォークした結果をそのまま返すだけになる。返却契約は「要求範囲を**少なくとも**カバーする」(tree-sitterの最小包含ノードの性質上、要求範囲より広がることがある — 構文的にネストした親ノードの端まで広がるのは、tree-sitterベースのハイライタ全般が持つ既知の粒度特性)。
+
+**`drawTokensOnLine()`は無変更で済んだ:** この関数(Phase 7b)は`m_tokens`(ソート済み)に対する単調な`tokenCursor`スイープであり、「トークンが無い区間はデフォルトブラシで描画される」を既に前提として実装されていた。`m_tokens`が可視範囲だけをカバーする(範囲外は「ギャップ」として無彩色になる)設計に変えても、ペイントロジック自体には一切手を入れる必要がなかった。
+
+**`SyntaxWorker`/`main.cpp`側の変更:**
+```cpp
+// syntax_worker.h — requestParse()にrange引数を追加(snapshot/languageと同じ
+// 「最新優先」、editsのように蓄積はしない)
+void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                  syntax::Language language, std::vector<document::EditDelta> edits,
+                  bool resetIncrementalState, document::TextRange range) noexcept;
+```
+`workerLoop()`のループローカル変数`persistedTokens`(Phase 7q)は完全に削除し、毎イテレーション`parser->reparseRange(text, reparseEdits, range.start*2, range.end*2)`を呼んでその結果をそのまま`kMsgSyntaxTokensReady`で送る。**`kMsgSyntaxTokensReady`のペイロード形状・`main.cpp`のハンドラ・`RenderPipeline::applyAsyncSyntaxTokens()`のシグネチャは無変更で済んだ** — `SyntaxWorker`は単一バックグラウンドスレッドで直列に1件ずつリクエストを処理する設計(Phase 7c以来不変)であり、古いレスポンスが新しいレスポンスより後に届くという競合は構造的に起こり得ないため、レスポンスに「実際にカバーした範囲」を含める必要が無いと判明した。
+
+**`RenderPipeline`側のトリガー統合:** 純粋なスクロール(`setTopLine()`のみ変化、編集なし)では`Document::version()`が変わらないため、既存の`refreshDocumentCacheIfStale()`はそもそも呼び出し本体まで到達しない(早期return)。新規`ensureSyntaxTokensCoverVisibleRange()`を新設し、`renderOnce()`から`refreshDocumentCacheIfStale()`の直後に毎フレーム無条件で呼ぶことで、「編集された」(`refreshDocumentCacheIfStale()`が`m_pendingSyntaxEdits`/`m_forceFullReparseNextRequest`へ暫定的にステージ)と「スクロールで可視範囲が要求済み範囲(`m_requestedTokenRange`)からはみ出た」の両トリガーを1箇所に統合した。可視範囲+余白は既存の`drawVisibleLines()`の可視行計算ロジックを`visibleLineRange()`として抽出・共有し、新規`viewport_math.h::widenLineRangeWithMargin()`(可視行数と同じだけ上下に1画面分、文書境界でクランプ)で広げる。
+
+**ベンチマーク実測 (Release、`syntax_parse_bench.cpp`の`BM_ReparseRange_SingleCharEdit_*`):**
+
+| ベンチマーク | 実測値 | Phase 7q比 |
+|---|---|---|
+| 5万行、narrow window(~150行) | 15.65ms | 103ms→15.65ms(約6.6倍) |
+| 50万行、narrow window(~150行) | 155.95ms | 989ms→155.95ms(約6.4倍) |
+| 50万行、full document(文書全体) | 155.45ms | (参考、narrow windowとほぼ同一) |
+
+5万行ではroadmap §7.11のDoD「≤50ms」を達成した。しかし50万行ではnarrow windowとfull documentのコストがほぼ同一(155.95ms vs 155.45ms)になっており、**ウォーク範囲を絞ってもコストが変わらないことから、ボトルネックが`applyTokenPatch()`から`ts_parser_parse_string_encoding()`自体(文字列ベースAPIの制約で常に文書全体のテキストを要求する、文書サイズに比例するtree-sitter自身の再解析コスト)へ完全に移ったと確認した。** このベンチマークは既に実体化された`std::u16string`に対して`reparseRange()`を直接計測するもので、`SyntaxWorker::workerLoop()`が実際に払う`BufferSnapshot::extract()`(文書全体のテキスト実体化)のコストは含まない — つまり50万行の実際の per-keystroke コストはこの155ms以上になりうる。
+
+**未達の原因と次候補:** 大規模文書のDoD達成には、tree-sitterの`TSInput.read`コールバックAPIを`document::BufferSnapshot`/`PieceTable`に対して実装し、文書全体のテキスト実体化・再解析自体を回避する必要があると判明した。これは本フェーズより大きな別のアーキテクチャ変更であり、次サブフェーズの課題として明記する。CLAUDE.mdルール10に従い、DoD未達を正直に記録する。
+
+**スコープ外(意図的、後続サブフェーズへ):** `TSInput`コールバックAPI採用、余白サイズ(1画面分)のチューニング、大きくジャンプした際の一時的な無彩色表示の緩和、`extractOutline()`(Breadcrumb)の可視範囲スコープ化(Phase 7h以来の独立した同期・全文書解析のまま継続)。
+
+---
+
 ## 11. ログ解析モード 詳細
 
 ### 11.1 アーキテクチャ

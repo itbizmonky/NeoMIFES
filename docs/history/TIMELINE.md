@@ -2100,4 +2100,35 @@ roadmap §7の残り候補(永続トークン列のデータ構造再設計/残�
 
 **次回:** Phase 7r・7sともコミット済み(`bef2905`/`540715b`/`54b87ea`)・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(永続トークン列のデータ構造再設計・残り6言語対応バッチ4・ミニマップ)に着手しないこと。
 
+## Session 64 (2026-07-30): pushせよ → CI green確認 → Phase 7t — 可視範囲スコープ化トークン再設計
+
+前セッション(Session 63、Phase 7s完了・未push)の続き。ユーザーから「pushせよ」と指示され、Phase 7p〜7sの5コミットを`origin/main`へpush、CI(run `30439599444`)がsuccess・1h44m37sで完了したことを確認した。
+
+続けてユーザーから「終了している。次のフェーズに進め。その前に`/compact`を実行せよ」と指示されたが、`/compact`はクライアント側専用のスラッシュコマンドでありAssistant自身はツールとして呼び出せないことを説明し、AskUserQuestionで「このまま次Phaseの選定へ進む」を選んでもらった。続けてAskUserQuestionでroadmap §7の残り候補(永続トークン列のデータ構造再設計/残り6言語バッチ4/ミニマップ)を提示し、**永続トークン列のデータ構造再設計(推奨案)**が選ばれた — Phase 7qが明示的に積み残した唯一の宿題であり、roadmap §7.11のDoD「1文字入力後の増分解析≤50ms」がPhase 7k→7m→7qと3段階改善しても未達のままだった。
+
+**Plan Mode着手前調査(既存コードの直接読解のみ、Agent委任なし、CLAUDE.mdルール3):** `incremental_parser.h`/`.cpp`・`syntax_worker.h`/`.cpp`・`render_pipeline.h`/`.cpp`・`main.cpp`・`viewport_math.h`・`syntax_parse_bench.cpp`・`syntax_incremental_parser_test.cpp`を全文読解し、根本原因が「`RenderPipeline::m_tokens`が常に文書全体をカバーする」という前提にあると特定した。`drawTokensOnLine()`(Phase 7b)が`m_tokens`(ソート済み)に対する単調な`tokenCursor`スイープであり「トークンが無い区間はデフォルトブラシで描画される」を既に前提として実装されていることを確認し、`m_tokens`を可視範囲のみカバーする設計に変えても描画ロジック自体は無変更で済むと判明した。`SyntaxWorker`が単一バックグラウンドスレッドで直列に1件ずつリクエストを処理する設計(Phase 7c以来不変)であることから、レスポンスに「実際にカバーした範囲」を含める必要が無いことも確認し、`kMsgSyntaxTokensReady`/`main.cpp`/`RenderPipeline::applyAsyncSyntaxTokens()`を無変更のまま済ませる設計にした(Phase 7l/7qのような複数ファイル同時変更に比べ影響範囲が意外に小さく収まった)。
+
+**実装:**
+- `IncrementalParser::reparseDelta()`/`TokenPatch`/`applyTokenPatch()`を丸ごと廃止し、`reparseRange(text, edits, rangeStartByte, rangeEndByte)`へ全面置換。`ts_tree_get_changed_ranges()`による変更範囲特定・`computeDirtyRangesInFinalCoordinates()`によるマージ・無効化範囲/シフト量の計算が全て不要になり、呼び出し側が渡した範囲を`ts_node_descendant_for_byte_range()`で直接ノード解決して`detail::walkTree()`するだけの実装になった(Phase 7qより実装が単純化)
+- `SyntaxWorker::requestParse()`に`range`引数(snapshot/languageと同じ最新優先、editsのように蓄積はしない)を追加、`workerLoop()`の`persistedTokens`ループローカル変数(Phase 7q)を完全に削除
+- `RenderPipeline`に新規`ensureSyntaxTokensCoverVisibleRange()`(`renderOnce()`から毎フレーム無条件で呼ぶ)を新設し、「編集された」(`refreshDocumentCacheIfStale()`が`m_pendingSyntaxEdits`/`m_forceFullReparseNextRequest`へ暫定的にステージ、この関数自体は純粋なスクロールでは早期returnし本体まで到達しないため)と「スクロールで可視範囲が要求済み範囲(`m_requestedTokenRange`)からはみ出た」の両トリガーを1箇所に統合した
+- 可視範囲+プリフェッチ余白(可視行数と同じだけ上下に1画面分、未ベンチマークの出発点)の計算は、既存の`drawVisibleLines()`の可視行計算ロジックを`visibleLineRange()`として抽出・共有し、新規`viewport_math.h::widenLineRangeWithMargin()`(文書境界でクランプする純粋関数)で広げる設計にした
+- 大きくジャンプした場合(Ctrl+End等)に新しく見えた範囲が非同期応答到着まで一時的に無彩色になる仕様は、Phase 7c/7l以来既に受容されている「編集直後、非同期応答が届くまで無彩色」という仕様の自然な拡張と判断し、追加のユーザー確認は求めずそのまま採用した
+
+**テスト:** `syntax_incremental_parser_test.cpp`の`ReparsingSession`を`reparseRange()`向けに書き換えたが、既存13件の「== 全文書再解析結果」オラクルテストは`reparse()`(内部で常に全体範囲を要求)経由でそのまま無変更で通用する設計にした(diffを最小化)。`ApplyTokenPatchTest`スイート(8件)は関数ごと削除し、代わりに「要求範囲を少なくともカバーする」契約を検証する新規2件(`NarrowRangeRequestReturnsASubsetOfTheFullParseCoveringTheRequestedSpan`/`RangeLandingInsideALeafStillReturnsThatLeafsFullToken`)を追加。`render_viewport_math_test.cpp`に`widenLineRangeWithMargin()`の単体テスト5件、`render_syntax_worker_test.cpp`の既存4件に`range`引数を追加、`render_text_smoke_test.cpp`に純粋なスクロール(編集なし)で可視範囲が未カバー領域へ移動しても`render()`がエラー無く完了することを確認する新規1件を追加。
+
+**ベンチマーク再構成(`syntax_parse_bench.cpp`):** `BM_IncrementalReparse_SingleCharEdit`/`_LargeDocument`(Phase 7q由来)を`BM_ReparseRange_SingleCharEdit_SmallDocument_NarrowWindow`/`_LargeDocument_NarrowWindow`/`_LargeDocument_FullDocument`の3本へ置き換え、narrow window(~150行相当、6000コード単位)とfull documentを両方測定できるようにした。
+
+**検証:**
+- ローカル**Debug/Release/ubsan(clang-cl) 全green**、ctest全865件pass(新規9件)
+- **ベンチマーク実測(Release):** 5万行narrow window 15.65ms(Phase 7qの103msから約6.6倍、**roadmap §7.11のDoD「≤50ms」達成**)。50万行narrow window 155.95ms・50万行full document 155.45ms(ほぼ同一、989ms比で約6.4倍改善したが**DoD未達**) — narrow windowとfull documentのコストが一致したことから、ボトルネックが`applyTokenPatch()`から`ts_parser_parse_string_encoding()`自体(文字列ベースAPIの制約で常に文書全体のテキストを要求する、文書サイズに比例するtree-sitter自身の再解析コスト)へ完全に移ったと確認した。このベンチマークは`BufferSnapshot::extract()`のコストを含まないため、実際のper-keystrokeコストは50万行でこれ以上になりうることも正直に記録した
+- 実アプリ`--open`で小規模C++サンプル・25000行の大規模C++サンプルの両方を開き、数秒後もプロセス生存を確認(GUI自動化不調の既知の制約を踏まえた軽量代替検証、Phase 7r/7s以来の手法を踏襲)
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7t ✅完了」行を追加(次候補行を「7u〜」として`TSInput`コールバックAPI採用を筆頭に更新)、§7.11のDoD行を実測値付きで更新、§7に「実装後の確定事項/変更点(2026-07-30、Phase 7t完了)」小節を新設
+- `docs/design/detailed_design.md`に新規§10.22を追加(ベンチマーク実測値の表を含む)
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表(7r/7sのpush済み表記も修正)、新規§3.54(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 7tはコミット済み(`b8bf882`)・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(`TSInput`コールバックAPI採用・残り6言語対応バッチ4・ミニマップ)に着手しないこと。
+
 <!-- 次セッションはここに追記 -->

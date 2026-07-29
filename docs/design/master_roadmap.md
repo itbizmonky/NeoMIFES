@@ -230,7 +230,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7q | IncrementalParser差分返却化 (`TokenPatch`/`applyTokenPatch()`、真のO(edit size)化を試行) | ✅ 完了 (DoD未達、§7.11参照) | §7 |
 | 7r | 追加言語対応 バッチ2 (HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 | §7 |
 | 7s | 追加言語対応 バッチ3 (TypeScript/TSX/PHP/Markdown) | ✅ 完了 | §7 |
-| 7t〜 | 永続トークン列のデータ構造再設計 / 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / ミニマップ | ⏭️ 次候補 | §7 |
+| 7t | 可視範囲スコープ化トークン再設計 (`reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達・§7.11参照) | §7 |
+| 7u〜 | `TSInput`コールバックAPI採用 (大規模文書のDoD達成) / 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / ミニマップ | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1011,7 +1012,7 @@ public:
 
 ### 7.11 性能目標
 - 100 万行 C++ ファイルの初回全解析: ≤ 5 秒 (バックグラウンド)
-- 1 文字入力後の増分解析: ≤ 50ms — **Phase 7k(321ms)→7m(148ms)→7q(103ms)と3段階で改善したが、2026-07-29時点で依然未達。** Phase 7qで`IncrementalParser`を「差分のみ返却」する契約(`TokenPatch`)に変更し、tree-sitter側の再walkコストはO(edit size)まで削減できたが、呼び出し側(`SyntaxWorker`)が永続トークン列へ差分をマージする`applyTokenPatch()`自体がO(文書サイズ)の線形走査(既存トークン全体のシフト)であるため、真の漸近的改善(O(edit size)化)には至らなかった(5万行103ms・50万行989ms、約9.6倍でほぼ線形のまま)。DoD達成には永続トークン列のデータ構造自体の再設計(可視範囲のみ保持等)が必要と判明、次サブフェーズの課題として明記(詳細は本ファイル§7のPhase 7q完了note、`detailed_design.md`§10.19参照)
+- 1 文字入力後の増分解析: ≤ 50ms — **Phase 7k(321ms)→7m(148ms)→7q(103ms)→7t(15.65ms、5万行)と4段階で改善し、2026-07-30時点で小〜中規模文書ではDoD達成。大規模文書(50万行)では依然未達(155.95ms)。** Phase 7tで`IncrementalParser::reparseDelta()`/`TokenPatch`/`applyTokenPatch()`(永続トークン列へのO(文書サイズ)シフト)を廃止し、呼び出し側が指定した範囲(可視範囲+プリフェッチ余白)だけをその都度ウォークして返す`reparseRange()`へ全面置換した(`RenderPipeline::m_tokens`も文書全体ではなく可視範囲のみを保持)。5万行では103ms→15.65ms(約6.6倍)でDoD達成、50万行でも989ms→155.95ms(約6.4倍)の改善は得たが、**narrow window(可視範囲のみ要求)とfull document(文書全体を要求)がほぼ同一コスト(155.95ms vs 155.45ms)になった**ことから、ボトルネックは`applyTokenPatch()`から`ts_parser_parse_string_encoding()`自体(文書サイズに比例するtree-sitter自身の再解析コスト、この関数は文字列ベースAPIの制約で常に文書全体のテキストを要求する)へ完全に移ったと判明。大規模文書のDoD達成には`TSInput`コールバックAPI採用(`document::BufferSnapshot`/`PieceTable`に対して実装し、文書全体のテキスト実体化・再解析自体を回避する)という、本フェーズよりさらに大きな別のアーキテクチャ変更が必要と判明、次サブフェーズの課題として明記(詳細は本ファイル§7のPhase 7t完了note、`detailed_design.md`§10.22参照)
 - 折り畳み展開/折りたたみ: ≤ 100ms (10000 fold)
 - ミニマップ描画: 60fps
 - Breadcrumb 更新: ≤ 50ms
@@ -1260,6 +1261,20 @@ public:
 - **実アプリでの視覚確認は、`--open`引数でTypeScript/Markdownサンプルファイルを開きプロセスが3秒後もクラッシュせず生存していることを確認する軽量スモークテストで実施した。** 2つのサンプルを連続起動した際に2つ目が即座に終了する事象が一度発生したが、`Stop-Process -Force`直後に次のインスタンスを起動したことでADR-009の単一インスタンス用Named Mutexがまだ解放されておらず後発インスタンスが起動ハンドオフとして即終了しただけと判明(単独実行では再現せず、実際のクラッシュではない)
 
 **スコープ外(意図的、後続バッチへ):** SQL/PowerShell/VB/VBS/BAT/INI/SAP ABAP(公式org不在)、Markdownのインライン文法+言語注入機構の新設、新4言語のoutlineシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.21参照。
+
+### 実装後の確定事項/変更点 (2026-07-30、Phase 7t完了 — 可視範囲スコープ化トークン再設計)
+
+**Phase 7s完了後、ユーザーから次のPhaseとして「永続トークン列のデータ構造再設計」(推奨案)が選ばれた** — Phase 7qが明示的に積み残した唯一の宿題であり、`incremental_parser.h`のヘッダコメント自身が「Reaching true O(edit size) end-to-end would require restructuring how the persisted token list itself is stored」と本フェーズの設計を予告していた。
+
+- **根本原因は「永続トークン列が常に文書全体をカバーする」という前提そのものにあると特定した。** `RenderPipeline::m_tokens`は可視範囲だけでなく文書全体のトークンを保持し続けており、だからこそ「一部を無効化して残りをシフトする」`applyTokenPatch()`のO(既存トークン数)コストが避けられなかった。**`m_tokens`を「可視範囲(+プリフェッチ余白)だけをカバーする」設計に変え、`TokenPatch`/`applyTokenPatch()`/`SyntaxWorker::workerLoop()`内の`persistedTokens`(Phase 7q)を丸ごと廃止し、毎回リクエストされた範囲だけを新規に(マージ無しで)ウォークして返す**、質的に異なるアーキテクチャへ置き換えた
+- **`drawTokensOnLine()`を直接読解し、この置き換えが安全であることを確認した。** この関数は`m_tokens`(ソート済み)に対する単調な`tokenCursor`スイープであり、「トークンが無い区間はデフォルトブラシで描画される」を既に前提として実装されていた(既存コード変更不要)
+- **新API`IncrementalParser::reparseRange(text, edits, rangeStartByte, rangeEndByte)`は、Phase 7qの`reparseDelta()`より実装がシンプルになった。** `ts_tree_get_changed_ranges()`による変更範囲特定→`computeDirtyRangesInFinalCoordinates()`によるマージ→無効化範囲/シフト量の計算、という一連の処理が全て不要になり、呼び出し側が渡した範囲を`ts_node_descendant_for_byte_range()`で直接ノード解決して`detail::walkTree()`するだけになった。返却契約は「要求範囲を**少なくとも**カバーする」(tree-sitterの最小包含ノードの性質上、要求範囲より広がることがある)
+- **`SyntaxWorker`は単一バックグラウンドスレッドで直列に1件ずつリクエストを処理する設計(Phase 7c以来不変)であるため、レスポンスに「実際にカバーした範囲」を含める必要はないと判明した。** 古いレスポンスが新しいレスポンスより後に届くという競合は構造的に起こり得ず、`kMsgSyntaxTokensReady`のペイロード形状・`main.cpp`のハンドラ・`RenderPipeline::applyAsyncSyntaxTokens()`のシグネチャは全て無変更で済んだ(Phase 7l/7qのような複数ファイル同時変更に比べ影響範囲が小さく収まった)
+- **「可視範囲が変わったら再リクエストする」トリガーを、`Document::version()`変化ゲート(`refreshDocumentCacheIfStale()`の早期return)とは独立させる必要があると判明した。** 純粋なスクロール(編集なし)では`version()`が変わらずこの関数の本体まで到達しないため、新規`RenderPipeline::ensureSyntaxTokensCoverVisibleRange()`を新設し、`renderOnce()`から毎フレーム無条件で呼ぶことで「編集された」「スクロールで可視範囲が要求済み範囲からはみ出た」の両トリガーを1箇所に統合した
+- **余白サイズ(可視行数と同じだけ上下に1画面分)は未ベンチマークの出発点とし、大きくジャンプした場合(Ctrl+End等)は新しく見えた範囲が非同期応答到着まで一時的に無彩色になる仕様にした。** これはPhase 7c/7l以来既に受容されている「編集直後、非同期応答が届くまで無彩色」という仕様の自然な拡張であり、新しいUXカテゴリではないと判断し追加のユーザー確認は求めなかった
+- **ベンチマーク実測(Release、`BM_ReparseRange_SingleCharEdit_*`):** 5万行narrow window 15.65ms(Phase 7qの103msから約6.6倍、roadmap §7.11のDoD「≤50ms」達成)。50万行narrow window 155.95ms・50万行full document 155.45ms(ほぼ同一) — **narrow windowとfull documentのコストが一致したことから、ボトルネックが`applyTokenPatch()`から`ts_parser_parse_string_encoding()`自体(文書サイズに比例するtree-sitter自身の再解析コスト、文字列ベースAPIの制約で常に文書全体のテキストを要求する)へ完全に移ったと確認した。** 大規模文書のDoD達成には、tree-sitterの`TSInput.read`コールバックAPIを`document::BufferSnapshot`/`PieceTable`に対して実装し、文書全体のテキスト実体化・再解析自体を回避する、本フェーズよりさらに大きな別のアーキテクチャ変更が必要と判明した(詳細は`detailed_design.md` §10.22参照)
+
+**スコープ外(意図的、後続フェーズへ):** `ts_parser_parse_string_encoding()`/`BufferSnapshot::extract()`自体の文書全体依存コスト解消(`TSInput`コールバックAPI採用、次フェーズ候補)、余白サイズのチューニング、大きなジャンプ時の一時的無彩色表示の緩和、`extractOutline()`(Breadcrumb)の可視範囲スコープ化(Phase 7h以来の独立した同期・全文書解析のまま継続)。
 
 ---
 
