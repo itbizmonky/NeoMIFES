@@ -13,6 +13,8 @@
 
 #include <windows.h>
 
+#include <string>
+
 #include "neomifes/document/document.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
@@ -395,6 +397,51 @@ TEST(RenderTextSmokeTest, SyntaxHighlightingRendersWithoutErrorAfterAnEdit) {
     const auto secondRender = pipeline.render();
     ASSERT_TRUE(secondRender.has_value())
         << "render() after an edit failed: " << neomifes::render::describe(secondRender.error());
+}
+
+// Phase 7t: exercises ensureSyntaxTokensCoverVisibleRange()'s scroll-driven
+// trigger - a plain scroll (setTopLine(), no document edit at all) into an
+// area outside whatever narrow range the first render() requested must
+// still complete render() without error. Correctness of what tokens
+// SyntaxWorker eventually delivers is covered by
+// render_syntax_worker_test.cpp/syntax_incremental_parser_test.cpp; this
+// one only proves the render()-driven scroll path doesn't crash or return
+// an error, same "render() succeeds, no pixel-level assertion, no waiting
+// for the async result" scope as the rest of this file.
+TEST(RenderTextSmokeTest, ScrollingFarBeyondTheInitiallyRequestedRangeStillRendersWithoutError) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document      doc;
+    std::u16string content;
+    for (int i = 0; i < 500; ++i) {
+        content += u"int line";
+        content += static_cast<char16_t>(u'0' + (i % 10));
+        content += u" = 0;\n";
+    }
+    doc.insertText(0, content);
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    const auto firstRender = pipeline.render();
+    ASSERT_TRUE(firstRender.has_value())
+        << "initial render() failed: " << neomifes::render::describe(firstRender.error());
+
+    // No document edit at all - purely a scroll far past whatever narrow
+    // range the first render() requested (this window is 200x100px, so the
+    // initially visible+margin window is well under 500 lines).
+    pipeline.setTopLine(400);
+    const auto secondRender = pipeline.render();
+    ASSERT_TRUE(secondRender.has_value())
+        << "render() after scrolling into an uncovered range failed: "
+        << neomifes::render::describe(secondRender.error());
 }
 
 // Phase 7d: same shape as the C++ case above, confirming setLanguage()'s

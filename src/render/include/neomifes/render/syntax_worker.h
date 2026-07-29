@@ -1,6 +1,6 @@
 #pragma once
 
-// SyntaxWorker - runs syntax::IncrementalParser::reparseDelta() (language
+// SyntaxWorker - runs syntax::IncrementalParser::reparseRange() (language
 // selected per request, Phase 7d) on a single dedicated background thread
 // (Phase 7c, roadmap sec.7.9), so RenderPipeline's UI thread never blocks on
 // a re-parse (7a's benchmark: ~6.6s for a full 1,000,000-line parse). This is
@@ -82,27 +82,31 @@ public:
     // earlier pending request yet, `edits` is APPENDED to (never replaces)
     // whatever is already queued, so no edit is ever silently dropped (see
     // this file's header comment on why that matters for correctness, not
-    // just performance). `snapshot`/`language` always overwrite the pending
-    // ones - only the FINAL text/language matters once all queued edits are
-    // eventually replayed against it. `resetIncrementalState=true` tells the
-    // worker to discard whatever incremental-parse tree it has retained
-    // (from any earlier request, picked up or still pending) and start over
-    // with a full parse - `edits` is irrelevant in that case (a fresh parser
-    // has no tree for ts_tree_edit() to apply them to). Pass this whenever
-    // the caller's own document identity might have changed (e.g.
-    // RenderPipeline after setLanguage(), see its forceFullReparse) -
-    // passing empty `edits` alone is NOT equivalent: an existing retained
-    // tree from an unrelated document would otherwise still get reused as
-    // tree-sitter's reparse hint, corrupting the result (see
-    // IncrementalParser::reparseDelta()'s behavior when a tree is retained).
-    // Sticky: once set true for the still-pending batch, stays true until
-    // the worker actually picks the batch up, even if a later call in the
-    // same batch passes false. Safe to call only from the UI thread (same
-    // single-writer assumption as every other RenderPipeline method).
+    // just performance). `snapshot`/`language`/`range` always overwrite the
+    // pending ones - only the FINAL text/language/range matters once all
+    // queued edits are eventually replayed against it (Phase 7t: `range` is
+    // NOT accumulated like `edits` - only the latest requested range is ever
+    // meaningful, see RenderPipeline::computeDesiredTokenRange()).
+    // `resetIncrementalState=true` tells the worker to discard whatever
+    // incremental-parse tree it has retained (from any earlier request,
+    // picked up or still pending) and start over with a full parse - `edits`
+    // is irrelevant in that case (a fresh parser has no tree for
+    // ts_tree_edit() to apply them to). Pass this whenever the caller's own
+    // document identity might have changed (e.g. RenderPipeline after
+    // setLanguage(), see its forceFullReparse) - passing empty `edits` alone
+    // is NOT equivalent: an existing retained tree from an unrelated
+    // document would otherwise still get reused as tree-sitter's reparse
+    // hint, corrupting the result (see IncrementalParser::reparseRange()'s
+    // behavior when a tree is retained). Sticky: once set true for the
+    // still-pending batch, stays true until the worker actually picks the
+    // batch up, even if a later call in the same batch passes false. Safe to
+    // call only from the UI thread (same single-writer assumption as every
+    // other RenderPipeline method).
     void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
                       syntax::Language                               language,
                       std::vector<document::EditDelta>               edits,
-                      bool                                            resetIncrementalState) noexcept;
+                      bool                                            resetIncrementalState,
+                      document::TextRange                             range) noexcept;
 
 private:
     void workerLoop();
@@ -136,6 +140,11 @@ private:
     // written together with m_pendingSnapshot in requestParse() so they
     // never disagree about which request they describe).
     syntax::Language m_pendingLanguage = syntax::Language::Cpp;
+    // Guarded by m_mutex, meaningful only while m_pendingSnapshot != nullptr
+    // (Phase 7t - the byte range workerLoop() should actually walk into
+    // tokens; always overwritten together with m_pendingSnapshot, same
+    // "latest wins, not accumulated" treatment as m_pendingLanguage).
+    document::TextRange m_pendingRange{};
     // Guarded by m_mutex. OR-latched by requestParse() (see its doc comment
     // on stickiness), consumed (and reset to false) by workerLoop().
     bool m_pendingReset = false;

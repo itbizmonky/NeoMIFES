@@ -42,7 +42,8 @@ SyntaxWorker::~SyntaxWorker() {
 void SyntaxWorker::requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
                                 syntax::Language                               language,
                                 std::vector<document::EditDelta>               edits,
-                                bool                                            resetIncrementalState) noexcept {
+                                bool                                            resetIncrementalState,
+                                document::TextRange                             range) noexcept {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_pendingSnapshot = std::move(snapshot);
@@ -50,6 +51,7 @@ void SyntaxWorker::requestParse(std::shared_ptr<const document::BufferSnapshot> 
                               std::make_move_iterator(edits.end()));
         m_pendingLanguage = language;
         m_pendingReset    = m_pendingReset || resetIncrementalState;
+        m_pendingRange    = range;
     }
     m_cv.notify_one();
 }
@@ -59,19 +61,9 @@ void SyntaxWorker::workerLoop() {
     // (never a partial reset() on the existing instance) whenever a picked-
     // up batch demands it, since a freshly-constructed IncrementalParser has
     // no retained tree yet, which is exactly what "start over with a full
-    // parse" needs (see reparseDelta()'s "edits empty, no tree retained"
-    // full-parse path).
+    // parse" needs.
     std::optional<syntax::IncrementalParser> parser;
     syntax::Language                          parserLanguage = syntax::Language::Cpp;
-    // Phase 7q: the full token list, persisted across loop iterations and
-    // updated in place via syntax::applyTokenPatch() - reparseDelta() itself
-    // now only returns the DELTA since the previous call (see
-    // incremental_parser.h's header comment on why). Cleared whenever
-    // `parser` itself is reconstructed (below) - a fresh parser's first
-    // reparseDelta() call always returns a "whole document" patch anyway, so
-    // merging it against a stale non-empty list here would just be wasted
-    // work, not a correctness issue.
-    std::vector<syntax::Token> persistedTokens;
 
     // False-positive leak diagnostic anchors here: ownership of the heap-
     // allocated token vector below is transferred across the
@@ -86,6 +78,7 @@ void SyntaxWorker::workerLoop() {
         std::vector<document::EditDelta>                edits;
         syntax::Language                                 language = syntax::Language::Cpp;
         bool                                              reset    = false;
+        document::TextRange                               range{};
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_cv.wait(lock, [this] { return m_pendingSnapshot != nullptr || m_shuttingDown; });
@@ -96,6 +89,7 @@ void SyntaxWorker::workerLoop() {
             edits    = std::exchange(m_pendingEdits, {});
             language = m_pendingLanguage;
             reset    = std::exchange(m_pendingReset, false);
+            range    = m_pendingRange;
         }
 
         // A fresh parser is also required (regardless of `reset`) the very
@@ -105,10 +99,9 @@ void SyntaxWorker::workerLoop() {
         if (reset || !parser.has_value() || parserLanguage != language) {
             parser.emplace(language);
             parserLanguage = language;
-            persistedTokens.clear();
         }
 
-        // Neither extract() nor IncrementalParser::reparseDelta() is noexcept; a
+        // Neither extract() nor IncrementalParser::reparseRange() is noexcept; a
         // genuine std::bad_alloc is allowed to propagate and terminate the
         // process rather than being swallowed here, matching
         // BufferSnapshot::pieceView()'s own documented stance on this
@@ -121,26 +114,26 @@ void SyntaxWorker::workerLoop() {
         for (const document::EditDelta& delta : edits) {
             reparseEdits.push_back(toReparseEdit(delta));
         }
-        // Phase 7q: reparseDelta() returns only what changed (O(edit size)
-        // on the tree-sitter side); applyTokenPatch() merges it into this
-        // loop's own persisted list - see this function's local variable
-        // comment above and incremental_parser.h's header comment for the
-        // full rationale, including the benchmark-confirmed caveat that the
-        // merge itself is still O(persisted list size), not O(edit size).
-        const syntax::TokenPatch patch = parser->reparseDelta(text, reparseEdits);
-        persistedTokens = syntax::applyTokenPatch(std::move(persistedTokens), patch);
-        auto tokens = std::make_unique<std::vector<syntax::Token>>(persistedTokens);
+        // Phase 7t: reparseRange() returns a complete, self-contained token
+        // list for `range` directly - no persisted list to merge into (see
+        // incremental_parser.h's header comment for the full rationale).
+        // Byte conversion (*2) matches toReparseEdit()'s existing UTF-16-
+        // code-unit-to-byte convention.
+        std::vector<syntax::Token> tokens =
+            parser->reparseRange(text, reparseEdits, static_cast<std::uint32_t>(range.start * 2),
+                                 static_cast<std::uint32_t>(range.end * 2));
+        auto tokensPtr = std::make_unique<std::vector<syntax::Token>>(std::move(tokens));
 
         // Ownership transferred to whichever code handles kMsgSyntaxTokensReady
         // (main.cpp's onAppMessage hook) - it must reconstruct a unique_ptr
         // from this pointer immediately upon receipt. Only released once
         // PostMessageW actually succeeds - if the target window is already
-        // gone (e.g. a shutdown race), `tokens` stays owned by this
+        // gone (e.g. a shutdown race), `tokensPtr` stays owned by this
         // unique_ptr and its destructor reclaims the memory instead of
         // leaking it.
         if (::PostMessageW(m_targetHwnd, kMsgSyntaxTokensReady, 0,
-                           reinterpret_cast<LPARAM>(tokens.get())) != 0) {
-            [[maybe_unused]] auto* released = tokens.release();
+                           reinterpret_cast<LPARAM>(tokensPtr.get())) != 0) {
+            [[maybe_unused]] auto* released = tokensPtr.release();
         }
     }
 }

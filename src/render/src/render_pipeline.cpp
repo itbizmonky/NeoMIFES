@@ -1,6 +1,7 @@
 #include "neomifes/render/render_pipeline.h"
 
 #include <algorithm>
+#include <iterator>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -224,20 +225,20 @@ RenderExpected<void> RenderPipeline::refreshDocumentCacheIfStale() noexcept {
     // accumulates these regardless of whether syntax highlighting is
     // enabled, and leaving them undrained here would grow m_document's
     // internal vector without bound.
+    //
+    // Phase 7t: staged into m_pendingSyntaxEdits/m_forceFullReparseNextRequest
+    // rather than sent to SyntaxWorker directly - this function returns
+    // EARLY on a pure scroll (see the version-unchanged check above) and
+    // never reaches this point at all in that case, so the actual
+    // requestParse() call is centralized in ensureSyntaxTokensCoverVisibleRange()
+    // (called unconditionally every frame from renderOnce()), which can also
+    // fire a request purely because the visible range moved with no document
+    // change.
     std::vector<document::EditDelta> pendingEdits = m_document->takePendingEdits();
+    m_pendingSyntaxEdits.insert(m_pendingSyntaxEdits.end(), std::make_move_iterator(pendingEdits.begin()),
+                                std::make_move_iterator(pendingEdits.end()));
+    m_forceFullReparseNextRequest = m_forceFullReparseNextRequest || forceFullReparse;
     if (m_language.has_value()) {
-        // Lazily started here (not setLanguage()) because that can be called
-        // before RenderPipeline::attach() has set m_hwnd (main.cpp calls it
-        // right after wireNormalMode(), before window.create() runs) -
-        // refreshDocumentCacheIfStale() is only ever reached from render(),
-        // which requires a live m_device/m_hwnd already, so m_hwnd is
-        // guaranteed valid here. --measure-frame/-startup/-memory never
-        // enable syntax highlighting at all, so they never pay for an idle
-        // background thread either way.
-        if (!m_syntaxWorker.has_value()) {
-            m_syntaxWorker.emplace(m_hwnd);
-        }
-        m_syntaxWorker->requestParse(m_cachedSnapshot, *m_language, std::move(pendingEdits), forceFullReparse);
         // Phase 7h (Breadcrumb): SYNCHRONOUS, unlike token coloring above -
         // extractOutline() is already a deliberately independent, separate
         // parse from token coloring (outline.h's header comment), so this
@@ -510,15 +511,13 @@ RenderExpected<void> RenderPipeline::ensureBreadcrumbBrush(ID2D1DeviceContext6& 
     return {};
 }
 
-void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
-    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
-        !m_dwriteFactory) {
-        return;
+std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F) {
+        return {0, 0};
     }
-
     const std::uint64_t totalLines = m_document->lineCount();
     if (totalLines == 0) {
-        return;
+        return {0, 0};
     }
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
@@ -533,7 +532,7 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     const std::uint32_t effectiveHeightPx = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
     const std::uint32_t visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
     if (visibleCount == 0) {
-        return;
+        return {startLine, startLine};
     }
     // Phase 7i: walk forward counting only VISIBLE (non-folded-hidden) lines,
     // so a screen holding `visibleCount` rows can span more than
@@ -547,6 +546,74 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
             ++visibleSeen;
         }
         ++endLineExclusive;
+    }
+    return {startLine, endLineExclusive};
+}
+
+document::TextRange RenderPipeline::computeDesiredTokenRange() const noexcept {
+    // Phase 7t: layout info not measured yet (pre-first-resize) - fall back
+    // to the whole document, a safe default that resolves itself within a
+    // frame or two once the window is sized (mirrors what this class
+    // effectively did for every request before Phase 7t).
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || m_dpiScale <= 0.0F ||
+        m_height == 0) {
+        return TextRange{.start = 0, .end = m_cachedSnapshot ? m_cachedSnapshot->length() : 0};
+    }
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return TextRange{.start = 0, .end = 0};
+    }
+    const auto [startLine, endLineExclusive] = visibleLineRange();
+    const auto           reservedTopPx       = static_cast<std::uint32_t>(reservedTopHeightDips() * m_dpiScale);
+    const std::uint32_t  effectiveHeightPx   = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
+    const std::uint32_t  visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
+    const auto [marginedStart, marginedEnd] =
+        widenLineRangeWithMargin(startLine, endLineExclusive, visibleCount, totalLines);
+    const TextPos startOffset = m_document->lineToOffset(static_cast<LineNumber>(marginedStart));
+    const TextPos endOffset   = (marginedEnd >= totalLines)
+                                     ? m_cachedSnapshot->length()
+                                     : m_document->lineToOffset(static_cast<LineNumber>(marginedEnd));
+    return TextRange{.start = startOffset, .end = endOffset};
+}
+
+void RenderPipeline::ensureSyntaxTokensCoverVisibleRange() noexcept {
+    if (!m_language.has_value() || !m_cachedSnapshot || m_document == nullptr) {
+        // Nowhere to send staged edits - drop them rather than let
+        // m_pendingSyntaxEdits grow unbounded while highlighting is off.
+        m_pendingSyntaxEdits.clear();
+        m_forceFullReparseNextRequest = false;
+        return;
+    }
+    const TextRange desired     = computeDesiredTokenRange();
+    const bool      rangeCovered = m_hasRequestedTokenRange && m_requestedTokenRange.start <= desired.start &&
+                               desired.end <= m_requestedTokenRange.end;
+    if (rangeCovered && m_pendingSyntaxEdits.empty() && !m_forceFullReparseNextRequest) {
+        return;
+    }
+    if (!m_syntaxWorker.has_value()) {
+        m_syntaxWorker.emplace(m_hwnd);
+    }
+    m_syntaxWorker->requestParse(m_cachedSnapshot, *m_language, std::move(m_pendingSyntaxEdits),
+                                  m_forceFullReparseNextRequest, desired);
+    m_pendingSyntaxEdits.clear();
+    m_forceFullReparseNextRequest = false;
+    m_requestedTokenRange         = desired;
+    m_hasRequestedTokenRange      = true;
+}
+
+void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
+        !m_dwriteFactory) {
+        return;
+    }
+
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return;
+    }
+    const auto [startLine, endLineExclusive] = visibleLineRange();
+    if (startLine == endLineExclusive) {
+        return;
     }
 
     const TextPos startOffset = m_document->lineToOffset(startLine);
@@ -1130,6 +1197,12 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!docResult) {
         return docResult;
     }
+    // Phase 7t: unconditional every frame (unlike refreshDocumentCacheIfStale()
+    // above, which can return before reaching its own body on a pure scroll -
+    // see that function's comment) - this is what lets scrolling into a
+    // not-yet-tokenized area trigger a new request with no document edit at
+    // all.
+    ensureSyntaxTokensCoverVisibleRange();
     auto formatResult = ensureTextFormat();
     if (!formatResult) {
         return formatResult;

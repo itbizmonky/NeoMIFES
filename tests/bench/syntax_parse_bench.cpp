@@ -23,21 +23,24 @@
 #include "neomifes/syntax/incremental_parser.h"
 #include "neomifes/syntax/syntax.h"
 
-using neomifes::syntax::applyTokenPatch;
 using neomifes::syntax::IncrementalParser;
 using neomifes::syntax::Language;
 using neomifes::syntax::parseCpp;
 using neomifes::syntax::ReparseEdit;
-using neomifes::syntax::Token;
 
 namespace {
 
 constexpr int kLineCount      = 50'000;
-// Phase 7m: 10x kLineCount, used only by BM_IncrementalReparse_SingleCharEdit_
-// LargeDocument to demonstrate that the ts_tree_get_changed_ranges()-based
-// token splice costs roughly the same regardless of document size (an
-// asymptotic win, not just a constant-factor one) - see that benchmark.
+// Phase 7m: 10x kLineCount, used by the *_LargeDocument benchmarks below to
+// check whether a cost scales with document size or stays flat.
 constexpr int kLargeLineCount = 500'000;
+// Phase 7t: ~150 lines' worth of code units (average ~40 chars/line, see
+// makeSyntheticCppSource()'s reserve() call below) - approximates the
+// "visible viewport + one screenful of margin on each side" window
+// RenderPipeline::computeDesiredTokenRange() actually requests in the real
+// app. Not tuned/benchmarked itself (CLAUDE.md rule 10 - this is the
+// starting-point margin size Phase 7t's plan documented as untuned).
+constexpr std::size_t kNarrowWindowCodeUnits = 6'000;
 
 void appendNumber(std::u16string& out, int value) {
     const std::string digits = std::to_string(value);
@@ -113,22 +116,27 @@ namespace {
 // UTF-16 code unit replaced by one, same row/column), so a single retained
 // IncrementalParser can be reused indefinitely without the document ever
 // drifting in size or needing a per-iteration reset (which would defeat
-// the point: reparseDelta() only takes the fast incremental path when a
-// tree is already retained from a previous call). Shared by both
-// benchmarks below (Phase 7m) - `lineCount` is the only difference between
-// them, and that difference is the entire point of the large-document
-// variant.
+// the point: reparseRange() only takes the fast incremental tree-sitter
+// path when a tree is already retained from a previous call).
 //
-// Phase 7q: times reparseDelta() PLUS applyTokenPatch() together, not just
-// reparseDelta() alone - render::SyntaxWorker::workerLoop() pays for both
-// on every call (see syntax_worker.cpp), so timing only the first would
-// understate the real per-keystroke cost this benchmark exists to measure
-// against the roadmap DoD.
-static void runIncrementalReparseSingleCharEditBenchmark(benchmark::State& state, int lineCount) {
+// Phase 7t: `windowCodeUnits` controls how much of the document is
+// REQUESTED (0 = the whole document, matching Phase 7q-era behavior and
+// kept as a comparison baseline; otherwise a window centered on the edit -
+// see kNarrowWindowCodeUnits). This does NOT include
+// render::SyntaxWorker::workerLoop()'s own BufferSnapshot::extract() cost
+// (materializing the whole document's text every call) - reparseRange()
+// itself still needs the FULL text passed to
+// ts_parser_parse_string_encoding() regardless of the requested range, so
+// this benchmark isolates "how much does narrowing the WALKED range help"
+// from "does the parse call itself scale with document size", not the
+// latter question by itself. See this file's benchmark registrations below
+// for how the results are meant to be read together.
+static void runReparseRangeSingleCharEditBenchmark(benchmark::State& state, int lineCount,
+                                                    std::size_t windowCodeUnits) {
     const std::u16string source = makeSyntheticCppSource(lineCount);
     IncrementalParser    parser(Language::Cpp);
-    // Seeds the baseline tree AND the persisted token list, not timed.
-    std::vector<Token> tokens = applyTokenPatch({}, parser.reparseDelta(source, {}));
+    // Seeds the baseline retained tree, not timed.
+    (void)parser.reparseRange(source, {}, 0, static_cast<std::uint32_t>(source.size() * 2));
 
     std::size_t editPos = source.size() / 2;
     if (source[editPos] == u'\n') {
@@ -152,11 +160,20 @@ static void runIncrementalReparseSingleCharEditBenchmark(benchmark::State& state
         .newEndColumn = column + 2,
     };
 
+    std::uint32_t rangeStartByte = 0;
+    std::uint32_t rangeEndByte   = static_cast<std::uint32_t>(source.size() * 2);
+    if (windowCodeUnits > 0) {
+        const std::size_t half        = windowCodeUnits / 2;
+        const std::size_t windowStart = editPos > half ? editPos - half : 0;
+        const std::size_t windowEnd   = std::min(source.size(), editPos + half);
+        rangeStartByte                = static_cast<std::uint32_t>(windowStart * 2);
+        rangeEndByte                  = static_cast<std::uint32_t>(windowEnd * 2);
+    }
+
     bool useVariant = false;
     for (auto _ : state) {
         const std::u16string_view text = useVariant ? std::u16string_view(variant) : std::u16string_view(source);
-        const auto patch = parser.reparseDelta(text, std::array{edit});
-        tokens            = applyTokenPatch(std::move(tokens), patch);
+        auto tokens = parser.reparseRange(text, std::array{edit}, rangeStartByte, rangeEndByte);
         benchmark::DoNotOptimize(tokens);
         useVariant = !useVariant;
     }
@@ -164,25 +181,38 @@ static void runIncrementalReparseSingleCharEditBenchmark(benchmark::State& state
         static_cast<double>(source.size() * sizeof(char16_t)) / 1024.0;
 }
 
-static void BM_IncrementalReparse_SingleCharEdit(benchmark::State& state) {
-    runIncrementalReparseSingleCharEditBenchmark(state, kLineCount);
+// The DoD-determining benchmark on a modest document: does a narrow-window
+// request cost well under 50ms even before accounting for extract()/parse
+// costs this file doesn't measure (see the function comment above)?
+static void BM_ReparseRange_SingleCharEdit_SmallDocument_NarrowWindow(benchmark::State& state) {
+    runReparseRangeSingleCharEditBenchmark(state, kLineCount, kNarrowWindowCodeUnits);
 }
-BENCHMARK(BM_IncrementalReparse_SingleCharEdit)->Unit(benchmark::kMillisecond)->Iterations(20);
+BENCHMARK(BM_ReparseRange_SingleCharEdit_SmallDocument_NarrowWindow)->Unit(benchmark::kMillisecond)->Iterations(20);
 
-// Phase 7m: same edit shape as above but on a 10x larger document
-// (kLargeLineCount) - originally added hoping to show a roughly CONSTANT
-// cost regardless of document size (an asymptotic win). The actual measured
-// result: this costs roughly 10x the 50,000-line benchmark above, i.e.
-// genuinely proportional to document size, not flat. See
-// incremental_parser.h's header comment for why (reparse() still allocates
-// and shifts a token vector sized to the whole document on every call) -
-// the win Phase 7m actually delivers is a substantial constant-factor
-// speedup (avoiding tree-sitter API calls for unaffected regions), not the
-// hoped-for asymptotic one. Kept as a benchmark specifically BECAUSE it
-// disproved that optimistic assumption with a real measurement rather than
-// leaving it unverified (CLAUDE.md rule 10) - removing it would hide this
-// finding, not just the code that produced it.
-static void BM_IncrementalReparse_SingleCharEdit_LargeDocument(benchmark::State& state) {
-    runIncrementalReparseSingleCharEditBenchmark(state, kLargeLineCount);
+// Same narrow window, 10x the document (kLargeLineCount) - THE key
+// benchmark for Phase 7t's DoD verdict: if this costs roughly the SAME as
+// the small-document variant above, the walked-range cost genuinely stopped
+// scaling with document size (Phase 7q's applyTokenPatch() bottleneck is
+// gone). If it still scales with document size despite the identical
+// narrow window, the remaining cost is coming from somewhere this
+// benchmark's own text is already fully materialized past (i.e.
+// ts_parser_parse_string_encoding()'s own per-call cost, or
+// BufferSnapshot::extract() in the real worker) - see this file's top
+// function comment.
+static void BM_ReparseRange_SingleCharEdit_LargeDocument_NarrowWindow(benchmark::State& state) {
+    runReparseRangeSingleCharEditBenchmark(state, kLargeLineCount, kNarrowWindowCodeUnits);
 }
-BENCHMARK(BM_IncrementalReparse_SingleCharEdit_LargeDocument)->Unit(benchmark::kMillisecond)->Iterations(20);
+BENCHMARK(BM_ReparseRange_SingleCharEdit_LargeDocument_NarrowWindow)->Unit(benchmark::kMillisecond)->Iterations(20);
+
+// Comparison baseline: requesting the WHOLE document as the range, on the
+// large document - continuity with Phase 7q's own
+// BM_IncrementalReparse_SingleCharEdit_LargeDocument (103ms/989ms at 50k/
+// 500k lines, Release), and a sanity check that the narrow-window variant
+// above is actually meaningfully faster than asking for everything on the
+// SAME document size (if it isn't, the range-scoping itself isn't buying
+// anything, independent of whatever the parse-call-cost question above
+// resolves to).
+static void BM_ReparseRange_SingleCharEdit_LargeDocument_FullDocument(benchmark::State& state) {
+    runReparseRangeSingleCharEditBenchmark(state, kLargeLineCount, 0);
+}
+BENCHMARK(BM_ReparseRange_SingleCharEdit_LargeDocument_FullDocument)->Unit(benchmark::kMillisecond)->Iterations(20);

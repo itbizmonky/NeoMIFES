@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "neomifes/document/document.h"
 #include "neomifes/document/text_pos.h"
 #include "neomifes/render/render_device.h"
 #include "neomifes/render/render_error.h"
@@ -208,6 +209,12 @@ public:
     void setLanguage(std::optional<syntax::Language> language) noexcept {
         m_language          = language;
         m_hasCachedSnapshot = false;
+        // Phase 7t: a requested-range value from the PREVIOUS document is
+        // meaningless once the document identity changes - forceFullReparse
+        // (derived from m_hasCachedSnapshot above) would cause a re-request
+        // regardless, but resetting this explicitly avoids relying on that
+        // indirection for correctness.
+        m_hasRequestedTokenRange = false;
     }
 
     // Called once per completed background parse (Phase 7c) - main.cpp's
@@ -316,6 +323,39 @@ private:
     // actually drew there, without duplicating the walk a third time.
     [[nodiscard]] document::LineNumber visibleLineAtRow(
         document::LineNumber startLine, document::LineNumber visibleRowOffset) const noexcept;
+    // Logical line span [startLine, endLineExclusive) currently visible,
+    // given m_topLine/m_height/m_lineHeightDips/m_dpiScale - the same walk
+    // drawVisibleLines() has always done inline (skipping folded-hidden
+    // lines, Phase 7i), extracted (Phase 7t) so computeDesiredTokenRange()
+    // can share it instead of duplicating a third copy (same "extract once
+    // 2 call sites exist" rule as visibleLineAtRow()'s Phase 7j precedent).
+    // Returns {startLine, startLine} (empty span) if the window can't show
+    // even one line yet (m_lineHeightDips not measured, m_height == 0,
+    // etc.) - callers check for that themselves, same as drawVisibleLines()
+    // already did via its own visibleCount==0 early return.
+    [[nodiscard]] std::pair<document::LineNumber, document::LineNumber> visibleLineRange() const noexcept;
+    // The document::TextRange (code-unit space) syntax tokens should cover
+    // right now - the currently visible line span (visibleLineRange())
+    // widened by one screenful of margin on each side
+    // (viewport_math.h::widenLineRangeWithMargin(), Phase 7t - untuned
+    // starting point, see incremental_parser.h's header comment on why
+    // m_tokens no longer needs whole-document coverage), converted to
+    // offsets via m_document->lineToOffset(). Falls back to the whole
+    // document if layout info isn't measured yet (m_lineHeightDips <= 0
+    // etc.) - a safe, simple default for a state that resolves itself
+    // within a frame or two once the window is sized.
+    [[nodiscard]] document::TextRange computeDesiredTokenRange() const noexcept;
+    // Phase 7t: the single place that decides whether to fire a new
+    // SyntaxWorker::requestParse() - unifies two independent triggers that
+    // refreshDocumentCacheIfStale() alone can't cover: (a) the document
+    // changed (drained EditDeltas staged in m_pendingSyntaxEdits/
+    // m_forceFullReparseNextRequest by refreshDocumentCacheIfStale(), since
+    // that function returns early on a pure scroll and never reaches its
+    // own body then) and (b) the visible range moved outside
+    // m_requestedTokenRange even with NO document change (pure scrolling).
+    // Called unconditionally from renderOnce() every frame, right after
+    // refreshDocumentCacheIfStale().
+    void ensureSyntaxTokensCoverVisibleRange() noexcept;
     [[nodiscard]] RenderExpected<void> renderOnce() noexcept;
     void drawVisibleLines(ID2D1DeviceContext6& dc) noexcept;
     // Draws the top-of-editor Breadcrumb strip: a background band
@@ -528,6 +568,22 @@ private:
     // instead). Never constructed at all for the --measure-* launch modes,
     // which never enable syntax highlighting.
     std::optional<SyntaxWorker>                        m_syntaxWorker;
+    // Phase 7t: staged by refreshDocumentCacheIfStale() (which can return
+    // early on a pure scroll and never reach its own body - see
+    // setLanguage()'s forceFullReparse), consumed by
+    // ensureSyntaxTokensCoverVisibleRange() the same frame or a later one.
+    // Accumulates (never overwritten) the same way SyntaxWorker's own
+    // m_pendingEdits does, for the same reason (an edit must never be
+    // silently dropped).
+    std::vector<document::EditDelta> m_pendingSyntaxEdits;
+    bool                              m_forceFullReparseNextRequest = false;
+    // What was last actually REQUESTED from the worker (not what m_tokens
+    // currently holds - SyntaxWorker processes requests strictly in order
+    // on a single background thread, so a request-time value alone is
+    // sufficient to avoid redundant re-requests; no separate "what m_tokens
+    // covers" bookkeeping is needed - see ensureSyntaxTokensCoverVisibleRange()).
+    document::TextRange m_requestedTokenRange{};
+    bool                 m_hasRequestedTokenRange = false;
 
     // m_textFormat/m_dwriteFactory are DPI-independent (DIPs) and survive
     // device loss; m_textBrush/m_selectionBrush are bound to the device

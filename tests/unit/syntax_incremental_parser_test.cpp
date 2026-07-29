@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -14,7 +15,6 @@
 
 namespace {
 
-using neomifes::syntax::applyTokenPatch;
 using neomifes::syntax::IncrementalParser;
 using neomifes::syntax::Language;
 using neomifes::syntax::parseCpp;
@@ -25,7 +25,6 @@ using neomifes::syntax::parseYaml;
 using neomifes::syntax::ReparseEdit;
 using neomifes::syntax::Token;
 using neomifes::syntax::TokenKind;
-using neomifes::syntax::TokenPatch;
 
 // Test-only helpers mirroring what document::Document computes internally
 // (see document.cpp's insertText()/eraseRange()/replaceRange(), Phase 7k) -
@@ -71,40 +70,40 @@ using neomifes::syntax::TokenPatch;
     };
 }
 
-// Phase 7q: drives the new reparseDelta()+applyTokenPatch() contract the
-// same way render::SyntaxWorker::workerLoop() does - keeps its own
-// persisted token list across calls, folding each returned TokenPatch into
-// it via applyTokenPatch(). Lets the existing tests below keep the same
-// "call once per edit, compare the returned tokens against a full reparse"
-// shape the old (Phase 7k-7m) reparse() oracle pattern used, without every
-// call site having to repeat the merge boilerplate. This is a deliberate,
-// minimal re-implementation of SyntaxWorker's own merge step (not a shared
-// helper) - if the two ever drift, render_syntax_worker_test.cpp's
-// integration tests are what actually catches it, since they exercise the
-// real SyntaxWorker/workerLoop() path end-to-end.
+// Phase 7t: thin wrapper keeping the same "call once per edit, compare the
+// returned tokens against a full reparse" shape the pre-7t tests already
+// used, without every call site having to spell out a byte range. reparse()
+// always requests the FULL text as its range - reparseRange()'s own
+// contract ("returns AT LEAST the requested range") then reduces to
+// "returns everything", so these tests continue to exercise the same
+// ts_tree_edit()-accumulation correctness they always have. reparseRange()
+// below exposes the underlying ranged contract directly for tests that
+// specifically exercise partial-range requests.
 class ReparsingSession {
 public:
     explicit ReparsingSession(Language language) : m_parser(language) {}
 
     [[nodiscard]] std::vector<Token> reparse(std::u16string_view text, std::span<const ReparseEdit> edits) {
-        const TokenPatch patch = m_parser.reparseDelta(text, edits);
-        m_tokens                = applyTokenPatch(std::move(m_tokens), patch);
-        return m_tokens;
+        return m_parser.reparseRange(text, edits, 0, static_cast<std::uint32_t>(text.size() * 2));
+    }
+
+    [[nodiscard]] std::vector<Token> reparseRange(std::u16string_view text, std::span<const ReparseEdit> edits,
+                                                   std::uint32_t rangeStartByte, std::uint32_t rangeEndByte) {
+        return m_parser.reparseRange(text, edits, rangeStartByte, rangeEndByte);
     }
 
 private:
-    IncrementalParser  m_parser;
-    std::vector<Token> m_tokens;
+    IncrementalParser m_parser;
 };
 
 // The core correctness guarantee this whole class exists for: an
-// incrementally reparsed (and merged) result must be byte-for-byte
-// identical to what a full reparse of the final text produces. Any
-// divergence here means ts_tree_edit()'s inputs were computed wrong
-// somewhere upstream (Document or the caller building ReparseEdit), or the
-// TokenPatch/applyTokenPatch() merge itself is wrong - exactly the class of
-// bug that would otherwise show up as silently-wrong syntax highlighting
-// after an edit.
+// incrementally reparsed result (requesting the FULL text as the range, via
+// ReparsingSession::reparse() above) must be byte-for-byte identical to what
+// a full reparse of the final text produces. Any divergence here means
+// ts_tree_edit()'s inputs were computed wrong somewhere upstream (Document
+// or the caller building ReparseEdit), or reparseRange()'s own tree-sitter
+// bookkeeping is wrong - exactly the class of bug that would otherwise show
+// up as silently-wrong syntax highlighting after an edit.
 
 TEST(SyntaxIncrementalParserTest, FirstReparseWithNoEditsMatchesFullParse) {
     ReparsingSession      parser(Language::Cpp);
@@ -264,15 +263,13 @@ TEST(SyntaxIncrementalParserTest, UnterminatedCommentInsertionExpandsChangedRang
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseCpp(newText));
 }
 
-// Two independent, non-overlapping edits describing the SAME reparseDelta()
+// Two independent, non-overlapping edits describing the SAME reparseRange()
 // call - mirrors SyntaxWorker accumulating multiple requestParse() calls
-// into one batch before the worker picks them up (Phase 7l). Phase 7q
-// merges the two edits' affected ranges into a single covering span (see
-// incremental_parser.h's TokenPatch comment) rather than splicing two
-// independent patches, so this also confirms that simplification still
-// produces a byte-identical result to a full reparse even though it
-// necessarily re-walks the (small, unrelated) text between editA and editC
-// too.
+// into one batch before the worker picks them up (Phase 7l). Confirms
+// ts_tree_edit() is applied correctly for EACH edit in the batch, in order,
+// before reparsing - a single incorrectly-applied edit here would desync
+// the retained tree's byte offsets and show up as a divergence from the
+// full-reparse oracle.
 TEST(SyntaxIncrementalParserTest, MultipleEditsInOneBatchAllApplyCorrectly) {
     ReparsingSession      parser(Language::Cpp);
     const std::u16string oldText =
@@ -346,10 +343,10 @@ TEST(SyntaxIncrementalParserTest, PythonEditInMiddleOfLargerDocumentReusesSurrou
 // languages added in this batch, not just Cpp/Python - Rust specifically
 // exercises isAtomicNode()'s branch (line_comment is a non-leaf atomic node,
 // see namedLeafKindsForRust()'s comment) inside detail::walkTree() as called
-// from reparseDelta()'s covering-subtree walk, which is a SEPARATE code path
+// from reparseRange()'s covering-node walk, which is a SEPARATE code path
 // from a full parseRust() call that syntax_syntax_test.cpp's Rust comment
 // test already covers - both needed the same fix, but only a test that
-// exercises reparseDelta() with edits proves the incremental one actually
+// exercises reparseRange() with edits proves the incremental one actually
 // got it too.
 TEST(SyntaxIncrementalParserTest, RustEditNearACommentReusesSurroundingTokensAndKeepsCommentAtomic) {
     ReparsingSession      parser(Language::Rust);
@@ -396,112 +393,63 @@ TEST(SyntaxIncrementalParserTest, TypeScriptSingleCharacterInsertMatchesFullRepa
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseTypeScript(newText));
 }
 
-// Phase 7q: applyTokenPatch() boundary-condition tests, independent of
-// IncrementalParser/tree-sitter - exercises the merge function itself
-// directly against hand-built TokenPatch values.
+// Phase 7t: reparseRange()'s partial-range contract ("returns a sorted
+// token list covering AT LEAST the requested [rangeStart, rangeEnd)") -
+// exercised directly (no edits involved, just the range-narrowing behavior
+// itself), independent of the ts_tree_edit()-accumulation tests above.
 
-TEST(ApplyTokenPatchTest, FullReplacementAgainstEmptyListYieldsReplacementTokensVerbatim) {
-    // Mirrors the very first reparseDelta() call's patch shape (see
-    // IncrementalParser::reparseDelta()'s "no tree retained" branch):
-    // invalidatedRange spans the whole (empty, so far) persisted list.
-    const std::vector<Token> replacement = {
-        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
-        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Variable},
-    };
-    const TokenPatch patch{
-        .invalidatedRange = {.start = 0, .end = 100}, .shiftAmount = 0, .replacementTokens = replacement};
-    EXPECT_EQ(applyTokenPatch({}, patch), replacement);
+TEST(SyntaxIncrementalParserTest, NarrowRangeRequestReturnsASubsetOfTheFullParseCoveringTheRequestedSpan) {
+    ReparsingSession      session(Language::Cpp);
+    const std::u16string text =
+        u"int a = 1;\n"
+        u"int b = 2;\n"
+        u"int c = 3;\n";
+    const std::vector<Token> full = parseCpp(text);
+
+    const std::size_t lineStart = text.find(u"int b");
+    const std::size_t lineEnd   = text.find(u"int c");  // one past "int b = 2;\n"
+    const auto         rangeStartByte = static_cast<std::uint32_t>(lineStart * 2);
+    const auto         rangeEndByte   = static_cast<std::uint32_t>(lineEnd * 2);
+
+    const std::vector<Token> narrow = session.reparseRange(text, {}, rangeStartByte, rangeEndByte);
+
+    // Correctness: a narrower request must never fabricate or misclassify a
+    // token relative to what a full reparse would produce for the same text.
+    for (const Token& token : narrow) {
+        EXPECT_NE(std::find(full.begin(), full.end(), token), full.end())
+            << "narrow-range token not found in full parse: [" << token.range.start << "," << token.range.end
+            << ")";
+    }
+    // Completeness ("at least covers the requested range"): every token that
+    // a full reparse places entirely inside the requested line must be
+    // present in the narrow result too.
+    for (const Token& expected : full) {
+        if (expected.range.start >= lineStart && expected.range.end <= lineEnd) {
+            EXPECT_NE(std::find(narrow.begin(), narrow.end(), expected), narrow.end())
+                << "expected token from the requested line missing: [" << expected.range.start << ","
+                << expected.range.end << ")";
+        }
+    }
 }
 
-TEST(ApplyTokenPatchTest, InvalidatingAPrefixKeepsTheSuffixUnshifted) {
-    const std::vector<Token> existing = {
-        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
-        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Variable},
-        Token{.range = {.start = 10, .end = 11}, .kind = TokenKind::Number},
-    };
-    // Invalidate [0, 5) (the first two tokens), replace with one new token,
-    // shiftAmount=0 since the edit didn't change the text's length.
-    const std::vector<Token> replacement = {Token{.range = {.start = 0, .end = 4}, .kind = TokenKind::Type}};
-    const TokenPatch          patch{
-        .invalidatedRange = {.start = 0, .end = 5}, .shiftAmount = 0, .replacementTokens = replacement};
-    const std::vector<Token> expected = {
-        Token{.range = {.start = 0, .end = 4}, .kind = TokenKind::Type},
-        Token{.range = {.start = 10, .end = 11}, .kind = TokenKind::Number},
-    };
-    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
-}
+TEST(SyntaxIncrementalParserTest, RangeLandingInsideALeafStillReturnsThatLeafsFullToken) {
+    ReparsingSession      session(Language::Cpp);
+    const std::u16string text = u"int value = 100;\n";
+    const std::vector<Token> full = parseCpp(text);
 
-TEST(ApplyTokenPatchTest, InvalidatingASuffixKeepsThePrefixAndDropsNothingAfter) {
-    const std::vector<Token> existing = {
-        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
-        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Variable},
-    };
-    // Invalidate everything from offset 4 onward, append one new token.
-    const std::vector<Token> replacement = {Token{.range = {.start = 4, .end = 6}, .kind = TokenKind::Number}};
-    const TokenPatch          patch{
-        .invalidatedRange = {.start = 4, .end = 6}, .shiftAmount = 1, .replacementTokens = replacement};
-    const std::vector<Token> expected = {
-        Token{.range = {.start = 0, .end = 3}, .kind = TokenKind::Type},
-        Token{.range = {.start = 4, .end = 6}, .kind = TokenKind::Number},
-    };
-    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
-}
+    // A zero-width range landing entirely INSIDE the "100" number literal -
+    // ts_node_descendant_for_byte_range() must still resolve to (at least)
+    // that whole leaf, not return nothing or a truncated fragment.
+    const std::size_t numPos         = text.find(u"100");
+    const auto         rangeStartByte = static_cast<std::uint32_t>((numPos + 1) * 2);
+    const auto         rangeEndByte   = rangeStartByte;
 
-TEST(ApplyTokenPatchTest, PositiveShiftAmountMovesTokensAfterTheInvalidatedRangeForward) {
-    const std::vector<Token> existing = {
-        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},   // untouched, before invalidated range
-        Token{.range = {.start = 2, .end = 3}, .kind = TokenKind::Number},  // inside invalidated range, discarded
-        Token{.range = {.start = 5, .end = 6}, .kind = TokenKind::Punctuation},  // after, must shift by +2
-    };
-    // invalidatedRange in FINAL coordinates: [2, 5) (2 code units grew to
-    // 3+2=5 wide after a 2-code-unit insertion, shiftAmount=+2). PRE-edit
-    // end = 5 - 2 = 3, matching the discarded token's own end.
-    const std::vector<Token> replacement = {Token{.range = {.start = 2, .end = 5}, .kind = TokenKind::Number}};
-    const TokenPatch          patch{
-        .invalidatedRange = {.start = 2, .end = 5}, .shiftAmount = 2, .replacementTokens = replacement};
-    const std::vector<Token> expected = {
-        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
-        Token{.range = {.start = 2, .end = 5}, .kind = TokenKind::Number},
-        Token{.range = {.start = 7, .end = 8}, .kind = TokenKind::Punctuation},
-    };
-    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
-}
+    const std::vector<Token> narrow = session.reparseRange(text, {}, rangeStartByte, rangeEndByte);
 
-TEST(ApplyTokenPatchTest, NegativeShiftAmountMovesTokensAfterTheInvalidatedRangeBackward) {
-    const std::vector<Token> existing = {
-        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
-        Token{.range = {.start = 2, .end = 6}, .kind = TokenKind::Number},  // discarded (deletion shrank this span)
-        Token{.range = {.start = 8, .end = 9}, .kind = TokenKind::Punctuation},  // after, must shift by -2
-    };
-    // A 2-code-unit deletion: PRE-edit invalidated span [2,6), FINAL
-    // coordinates [2,4) (shiftAmount=-2, so 4-(-2)=6 recovers the PRE-edit
-    // end).
-    const std::vector<Token> replacement = {Token{.range = {.start = 2, .end = 4}, .kind = TokenKind::Number}};
-    const TokenPatch          patch{
-        .invalidatedRange = {.start = 2, .end = 4}, .shiftAmount = -2, .replacementTokens = replacement};
-    const std::vector<Token> expected = {
-        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
-        Token{.range = {.start = 2, .end = 4}, .kind = TokenKind::Number},
-        Token{.range = {.start = 6, .end = 7}, .kind = TokenKind::Punctuation},
-    };
-    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
-}
-
-TEST(ApplyTokenPatchTest, EmptyReplacementTokensRemovesTokensWithoutInsertingAnything) {
-    // A deletion that removes an entire token (e.g. a comment deleted
-    // outright) with nothing replacing it - replacementTokens can
-    // legitimately be empty.
-    const std::vector<Token> existing = {
-        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
-        Token{.range = {.start = 2, .end = 6}, .kind = TokenKind::Comment},
-        Token{.range = {.start = 8, .end = 9}, .kind = TokenKind::Punctuation},
-    };
-    const TokenPatch patch{.invalidatedRange = {.start = 2, .end = 2}, .shiftAmount = -4, .replacementTokens = {}};
-    const std::vector<Token> expected = {
-        Token{.range = {.start = 0, .end = 1}, .kind = TokenKind::Type},
-        Token{.range = {.start = 4, .end = 5}, .kind = TokenKind::Punctuation},
-    };
-    EXPECT_EQ(applyTokenPatch(existing, patch), expected);
+    const auto numberToken =
+        std::find_if(full.begin(), full.end(), [](const Token& t) { return t.kind == TokenKind::Number; });
+    ASSERT_NE(numberToken, full.end());
+    EXPECT_NE(std::find(narrow.begin(), narrow.end(), *numberToken), narrow.end());
 }
 
 }  // namespace

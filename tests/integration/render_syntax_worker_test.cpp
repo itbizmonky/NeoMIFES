@@ -17,6 +17,7 @@
 namespace {
 
 using neomifes::document::Document;
+using neomifes::document::TextRange;
 using neomifes::render::kMsgSyntaxTokensReady;
 using neomifes::render::SyntaxWorker;
 using neomifes::syntax::Language;
@@ -86,7 +87,7 @@ TEST(SyntaxWorkerTest, RequestParseDeliversTokensViaWindowMessage) {
 
     SyntaxWorker worker(window.get());
     worker.requestParse(doc.snapshot(), Language::Cpp, doc.takePendingEdits(),
-                        /*resetIncrementalState=*/true);
+                        /*resetIncrementalState=*/true, TextRange{.start = 0, .end = doc.length()});
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
@@ -111,7 +112,7 @@ TEST(SyntaxWorkerTest, RequestParseWithPythonLanguageParsesAsPython) {
 
     SyntaxWorker worker(window.get());
     worker.requestParse(doc.snapshot(), Language::Python, doc.takePendingEdits(),
-                        /*resetIncrementalState=*/true);
+                        /*resetIncrementalState=*/true, TextRange{.start = 0, .end = doc.length()});
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
@@ -146,14 +147,14 @@ TEST(SyntaxWorkerTest, RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced) {
 
     SyntaxWorker worker(window.get());
     worker.requestParse(doc.snapshot(), Language::Cpp, doc.takePendingEdits(),
-                        /*resetIncrementalState=*/true);
+                        /*resetIncrementalState=*/true, TextRange{.start = 0, .end = doc.length()});
 
     // Fired immediately after the first, no pump in between - forces the
     // same race the old coalescing test exercised, but this time as a real
     // edit chain on one document rather than two unrelated documents.
     doc.insertText(doc.length(), u" int y = 2;");
     worker.requestParse(doc.snapshot(), Language::Cpp, doc.takePendingEdits(),
-                        /*resetIncrementalState=*/false);
+                        /*resetIncrementalState=*/false, TextRange{.start = 0, .end = doc.length()});
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "kMsgSyntaxTokensReady never arrived within the timeout";
@@ -166,7 +167,7 @@ TEST(SyntaxWorkerTest, RapidSequentialEditsNeverLoseAnEditEvenWhenCoalesced) {
 // document - passing edits=empty alone is NOT sufficient, since tree-sitter
 // would otherwise still receive the stale tree as its reparse hint and may
 // incorrectly reuse subtrees against completely unrelated text (see
-// IncrementalParser::reparseDelta()'s behavior when a tree is retained). Uses the
+// IncrementalParser::reparseRange()'s behavior when a tree is retained). Uses the
 // SAME language (Cpp) for both documents deliberately, to isolate this
 // flag's own effect from the worker's separate internal language-mismatch
 // safety net (which a same-language document switch never triggers) - a
@@ -181,13 +182,13 @@ TEST(SyntaxWorkerTest, ResetIncrementalStateDiscardsStaleTreeAcrossUnrelatedDocu
     Document firstDoc;
     firstDoc.insertText(0, u"int x = 1;");
     worker.requestParse(firstDoc.snapshot(), Language::Cpp, firstDoc.takePendingEdits(),
-                        /*resetIncrementalState=*/true);
+                        /*resetIncrementalState=*/true, TextRange{.start = 0, .end = firstDoc.length()});
     ASSERT_NE(pumpForLatestTokens(5000), nullptr) << "first parse never completed";
 
     Document secondDoc;
     secondDoc.insertText(0, u"double pi = 3.14;\nbool ready = true;\n");
     worker.requestParse(secondDoc.snapshot(), Language::Cpp, secondDoc.takePendingEdits(),
-                        /*resetIncrementalState=*/true);
+                        /*resetIncrementalState=*/true, TextRange{.start = 0, .end = secondDoc.length()});
 
     const auto tokens = pumpForLatestTokens(5000);
     ASSERT_NE(tokens, nullptr) << "second parse never completed";
