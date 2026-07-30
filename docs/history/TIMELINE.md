@@ -2129,6 +2129,8 @@ roadmap §7の残り候補(永続トークン列のデータ構造再設計/残�
 - `docs/design/detailed_design.md`に新規§10.22を追加(ベンチマーク実測値の表を含む)
 - `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表(7r/7sのpush済み表記も修正)、新規§3.54(完了記録)、§6推奨プロンプトを現状に合わせて更新
 
-**次回:** Phase 7tはコミット済み(`b8bf882`)・**未push**。次回セッション最優先で(1)push、(2)`gh run list`/`gh run view`でCIが実際にgreenになることを確認、の2点を行うこと。CI greenを確認できるまでは新機能フェーズ(`TSInput`コールバックAPI採用・残り6言語対応バッチ4・ミニマップ)に着手しないこと。
+**push・CI確認:** ユーザーの「push」指示でPhase 7t分の2コミット(`b8bf882`/`802610b`)を`origin/main`へpush。CI(run `30489212731`)が1h47m35sでsuccess完了したことを`gh run list`で確認した。
+
+**次回:** Phase 7tはpush済み・CI green確認済み。次は`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語対応バッチ4・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
 <!-- 次セッションはここに追記 -->

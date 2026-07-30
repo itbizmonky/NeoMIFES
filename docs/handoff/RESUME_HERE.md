@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-30 (Phase 7s完了・push・CI green確認後、ユーザー選択で永続トークン列のデータ構造再設計(Phase 7t)を実装。`TokenPatch`/`applyTokenPatch()`/`reparseDelta()`を廃止し、可視範囲(+プリフェッチ余白)のみをカバーする`reparseRange()`へ全面置換した。ベンチマーク実測(Release): 5万行103ms→15.65ms(約6.6倍、DoD「≤50ms」達成)、50万行989ms→155.95ms(約6.4倍、DoD未達 — narrow window/full documentがほぼ同一コストになり、ボトルネックが`ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移ったと判明)。ローカルDebug/Release/ubsan全865件green・clang-tidy `src/`配下新規警告0まで確認済み・実アプリ視覚確認(小規模/25000行ファイルともプロセス生存確認)済み、コミット済み(`b8bf882`)、**pushはユーザーの明示指示待ち**。次サブフェーズ候補は`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ)
+> **最終更新:** 2026-07-30 (Phase 7s完了・push・CI green確認後、ユーザー選択で永続トークン列のデータ構造再設計(Phase 7t)を実装。`TokenPatch`/`applyTokenPatch()`/`reparseDelta()`を廃止し、可視範囲(+プリフェッチ余白)のみをカバーする`reparseRange()`へ全面置換した。ベンチマーク実測(Release): 5万行103ms→15.65ms(約6.6倍、DoD「≤50ms」達成)、50万行989ms→155.95ms(約6.4倍、DoD未達 — narrow window/full documentがほぼ同一コストになり、ボトルネックが`ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移ったと判明)。ローカルDebug/Release/ubsan全865件green・clang-tidy `src/`配下新規警告0まで確認済み・実アプリ視覚確認(小規模/25000行ファイルともプロセス生存確認)済み。**push済み(`b8bf882`/`802610b`)・CI green確認済み(run `30489212731`、1h47m35s)。** 次サブフェーズ候補は`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -86,7 +86,7 @@
 | Phase 7q (IncrementalParser差分返却化、`TokenPatch`/`applyTokenPatch()`) | ✅ 完了 (DoD未達、push済み、CI green確認済み、§3.51参照) |
 | Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (push済み、CI green確認済み、§3.52参照) |
 | Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) | ✅ 完了 (push済み、CI green確認済み、§3.53参照) |
-| Phase 7t (可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達、コミット済み`b8bf882`、**push未実施**、§3.54参照) |
+| Phase 7t (可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達、push済み・CI green確認済み、§3.54参照) |
 | **次フェーズ選定 — `TSInput`コールバックAPI採用(大規模文書のDoD達成)/残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
@@ -1624,7 +1624,9 @@ Phase 7r/7s push・CI green確認後、ユーザーから次のPhaseとして**�
 
 **スコープ外(意図的、後続フェーズへ):** `ts_parser_parse_string_encoding()`/`BufferSnapshot::extract()`自体の文書全体依存コスト解消(`TSInput`コールバックAPI採用、次フェーズ候補)、余白サイズのチューニング、大きなジャンプ時の一時的無彩色表示の緩和、`extractOutline()`(Breadcrumb)の可視範囲スコープ化。詳細は`master_roadmap.md` §7・`detailed_design.md` §10.22参照。
 
-**Phase 7tはコミット済み(`b8bf882`)、pushはユーザーの明示指示待ち。** 次フェーズは`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+**push・CI確認 (2026-07-29):** ユーザーの「push」指示でPhase 7t分の2コミット(`b8bf882`/`802610b`)を`origin/main`へpush。CI(run `30489212731`)が1h47m35sでsuccess完了したことを`gh run list`で確認した。
+
+**Phase 7tはpush済み・CI green確認済み。** 次フェーズは`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
 ---
 
@@ -1673,9 +1675,9 @@ Phase 7r/7s push・CI green確認後、ユーザーから次のPhaseとして**�
 
 ```
 RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a〜7sはpush済み・CI green確認済み。**Phase 7t(可視範囲スコープ化トークン再設計:
-`reparseRange()`、永続トークン列を廃止、§3.54参照)を実装済み。ローカルDebug/Release/ubsan
-全865件green・コミット済み(`b8bf882`)だが未push。**
+Phase 7a〜7tは全てpush済み・CI green確認済み(Phase 7t: run `30489212731`、success、
+1h47m35s)。**Phase 7t(可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列
+を廃止、§3.54参照)を実装・push・CI確認済み。ローカルDebug/Release/ubsan全865件green。**
 
 **roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語: SQL/PowerShell/VB/VBS/BAT/INI
 は公式org不在のため対象外のまま)。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7tで
@@ -1684,9 +1686,8 @@ Phase 7a〜7sはpush済み・CI green確認済み。**Phase 7t(可視範囲ス�
 `ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移った
 と判明し、`TSInput`コールバックAPI採用という次サブフェーズへ意図的に据え置いている。**
 
-**次フェーズは(1) Phase 7tのpush+CI green確認、その後(2) `TSInput`コールバックAPI採用
-(大規模文書のDoD達成)・残り6言語対応バッチ4・ミニマップのいずれか、着手前に
-Plan Modeで詳細設計を起こすこと。**
+**次フェーズは`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語対応バッチ4・
+ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は
