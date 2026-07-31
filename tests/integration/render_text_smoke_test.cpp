@@ -856,6 +856,238 @@ TEST(RenderTextSmokeTest, StickyScrollSelectsInnermostNestedRegion) {
     EXPECT_GE(*hit, 12U);  // line2 ("body", offset 12-16), not line1
 }
 
+// Phase 7v: exercises drawMinimap() end-to-end - a document with several
+// distinct token kinds (keyword/string/number/comment) so minimapLineBrush()
+// picks a real color for at least some rows, not just the empty-line/no-
+// color fallback path. Same "render() succeeds, no pixel-level assertion"
+// scope as the rest of this file.
+TEST(RenderTextSmokeTest, MinimapRendersWithoutError) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"#include <cstdint>\n// comment\nint x = 42;\nstd::string s = \"hi\";\n");
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with the minimap enabled failed: " << neomifes::render::describe(rendered.error());
+}
+
+// Phase 7v: pins the design decision that the minimap's window comes from
+// widenedVisibleLineRange() (visibleLineRange()/reservedTopHeightDips()), NOT
+// m_requestedTokenRange - that member stays unset whenever setLanguage() is
+// never called (ensureSyntaxTokensCoverVisibleRange()'s early return), which
+// would otherwise leave the minimap's window silently stuck at {0,0}.
+TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabled) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+    // setLanguage() deliberately never called.
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with the minimap but no language set failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+// Phase 7v: exercises hitTestMinimap()'s X-range check - this 200px-wide
+// HiddenWindow puts the strip's left edge at 200-120=80 DIPs (at the default
+// 1.0 DPI scale a hidden STATIC window reports), so x=150 lands solidly
+// inside it.
+TEST(RenderTextSmokeTest, HitTestMinimapReturnsLineForClickInsideTheStrip) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    EXPECT_TRUE(pipeline.hitTestMinimap(150, 10).has_value());
+}
+
+TEST(RenderTextSmokeTest, HitTestMinimapReturnsNulloptForClickInTextArea) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // x=10 is well left of the 80-DIP strip boundary - lands in the text area.
+    EXPECT_FALSE(pipeline.hitTestMinimap(10, 10).has_value());
+}
+
+// Phase 7v: pins minimapLineAtY()'s deliberate X-independence - onMouseDrag
+// calls this (not hitTestMinimap()) once a minimap drag has started, so the
+// cursor drifting outside the strip's X range during the drag must not stop
+// tracking (same convention an ordinary Win32 scrollbar thumb drag follows).
+TEST(RenderTextSmokeTest, MinimapLineAtYIgnoresHorizontalPositionDuringDrag) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // A far-outside-the-strip X fails hitTestMinimap()'s own X gate...
+    EXPECT_FALSE(pipeline.hitTestMinimap(10, 10).has_value());
+    // ...but minimapLineAtY() (what onMouseDrag actually calls once a drag
+    // has started) still resolves the same Y to a valid line, since it takes
+    // no X at all.
+    EXPECT_TRUE(pipeline.minimapLineAtY(10).has_value());
+}
+
+// Phase 7v: at topLine=0 (the very start of the document), the minimap's
+// window (widenedVisibleLineRange()) necessarily starts at line 0 too (a
+// margin can't extend before the document start) - so a click at the very
+// top of the strip (y=0) must resolve to line 0, the same self-consistency
+// drawMinimapViewportHighlight()'s coordinate math relies on.
+TEST(RenderTextSmokeTest, HitTestMinimapAtWindowTopReturnsWindowStartLine) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+    pipeline.setTopLine(0);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    const auto hit = pipeline.hitTestMinimap(150, 0);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(*hit, 0U);
+}
+
+// Phase 7v: exercises drawVisibleLines()+drawMinimap() together with a
+// folded region present - confirms the minimap's own (deliberately
+// fold-unaware, see the Phase 7v plan's scope-out section) line walk
+// doesn't crash when isLineHidden() is in play elsewhere in the same frame.
+TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorWithFoldedRegions) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 3, .folded = true}});
+
+    const auto rendered = pipeline.render();
+    EXPECT_TRUE(rendered.has_value())
+        << "render() with the minimap and a folded region failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+// Phase 7v: pins widenedVisibleLineRange()'s clamp near the document end -
+// scrolling near the last line must not push the minimap's window past
+// totalLines (the same clamp widenLineRangeWithMargin() already guarantees,
+// exercised here through the minimap's own hit-testing path).
+TEST(RenderTextSmokeTest, MinimapWindowClampsNearDocumentEnd) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document      doc;
+    std::u16string content;
+    for (int i = 0; i < 20; ++i) {
+        content += u"line";
+        content += static_cast<char16_t>(u'0' + (i % 10));
+        content += u"\n";
+    }
+    doc.insertText(0, content);
+    // 20 newline-terminated lines produce 21 logical lines (0-20) - the
+    // trailing '\n' starts an empty 21st line, same convention
+    // Document::lineCount() uses throughout this codebase.
+    pipeline.setDocument(&doc);
+    pipeline.setTopLine(20);  // the very last line
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // A click far down the strip (well past where the window's actual
+    // content ends) must still resolve to a valid line at or before the last
+    // line (20), never past it - minimapLineAtY()'s own clamp
+    // (`target < windowEnd ? target : windowEnd - 1`).
+    const auto hit = pipeline.minimapLineAtY(5000);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_LE(*hit, 20U);
+}
+
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();

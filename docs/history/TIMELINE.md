@@ -2157,4 +2157,37 @@ roadmap §7の残り候補(永続トークン列のデータ構造再設計/残�
 
 **次回:** roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の対応方針は未定。次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。安易にTSInput的アプローチを再試行せず、`docs/issues/tree_sitter_incremental_parse_cost.md`の教訓(遅延読み込みの正しさを確認しても、tree-sitter内部の保持木依存コストは解消されない)を踏まえること。コミットはPhase 7u実装が一切残っていない(Phase 7t状態への復元のみの)ため、Issue doc新設分のみコミットが必要。
 
+## Session 66 (2026-07-31): pushせよ → CI green確認 → Phase 7v — ミニマップ (簡易版・スクロール追従型)
+
+前セッション(Session 65、Phase 7u全面revert完了)の続き。ユーザーから「pushせよ」と指示され、Phase 7u revertのドキュメント同期commit(`aecd939`)を`origin/main`へpush、CI(run `30604893065`)が1h46m35sでsuccess完了したことを`gh run list`で複数回確認した(ユーザーからも同一内容の確認依頼が3回届いたが、CIが実行中の間は都度素直に「まだin_progress」と状況報告し、憶測での完了報告はしなかった)。
+
+続けてユーザーから「次のPhaseへ進め」と指示され、AskUserQuestionでroadmap §7の残り候補(ミニマップ/残り6言語対応バッチ4/tree-sitter内部実装のさらなる調査)を提示し、**ミニマップ(推奨案)**が選ばれた — roadmap §7のv2.0差別化機能のうち唯一未着手(折り畳み・Sticky scroll・Breadcrumb・Indent guidesは全て完了済み)。
+
+**Plan Mode着手前調査(3つのExploreエージェント並列実行、Agent委任ありだが結果は自身で検証):** `RenderPipeline`の全体構造・既存の帯型UI(ガター/Breadcrumb/Sticky scroll)の実装パターン、`core::Viewport`/マウス入力処理経路・本コードベースにスクロールバーが一切存在しないこと、`Token`/`TokenKind`定義・色マッピング・roadmap §7.4のミニマップ仕様スケッチ、の3系統を並行調査した。
+
+**表示範囲モデルの選定(AskUserQuestion):** 調査の結果判明した2つの制約(`RenderPipeline::m_tokens`はPhase 7t以降「可視範囲+マージンのみ」しか保持しない設計であること、本コードベースにスクロールバーが一切存在しないこと)を踏まえ、「文書全体を常に俯瞰表示するVSCode型」/「可視範囲+マージンのみを縮小表示するスクロール追従型(簡易版)」/「まず簡易版を実装し実測後に拡張判断」の3択を提示し、**「まず簡易版を実装し、実アプリでの使い心地・性能を実測してから、文書全体俯瞰型への拡張を別フェーズで検討する」(推奨案)**が選ばれた。続けてPlan agent(1体)に詳細設計を依頼し、自身で`ensureSyntaxTokensCoverVisibleRange()`/`viewport_math.h::widenLineRangeWithMargin()`/`document::LineNumber`の実際のコードを直接読解して提案の技術的妥当性を検証した上で最終プランを確定した。
+
+**設計方針の要点:**
+- ミニマップの「窓」に既存`m_requestedTokenRange`(Phase 7t由来)を使わず、`computeDesiredTokenRange()`から窓計算部分を`widenedVisibleLineRange()`として新規抽出・共有する設計にした — `m_requestedTokenRange`は`ensureSyntaxTokensCoverVisibleRange()`がシンタックスハイライトOFF時に早期returnして一切更新しないメンバであり、これに依存するとハイライトOFF時にミニマップの窓が`{0,0}`のまま固定されるバグになるため
+- 描画はroadmap §7.4スケッチの「`D2D1_BITMAP_INTERPOLATION_MODE_LINEAR`によるGPUスケーリング」ではなく、既存の`FillRectangle`/`SolidColorBrush`による直接描画を採用した — 同スケッチ自体が「1/8スケールで縮小描画」と「GPU補間スケーリング」という技術的に矛盾する2手法を並記しており、Breadcrumb/Sticky scrollが同種のroadmapスケッチより遥かにシンプルな直接D2Dプリミティブ描画に落ち着いた前例に倣った。新規ファイル・CMake変更なし
+- 行の色決定は「その行で最初に見つかった着色トークンの色」のみを使う最もシンプルな設計にした(密度表現の精緻化はスコープ外)
+- `hitTestMinimap(xPx,yPx)`(クリック開始、X範囲チェックあり)と`minimapLineAtY(yPx)`(ドラッグ継続、X非依存)を分離した — ドラッグ継続中はWindowsの通常のスクロールバーのつまみドラッグと同様、掴んだ後はX座標が帯の外にずれても追従すべきため
+- `drawVisibleLines()`側の変更は不要と判明した — `drawTextLine()`は元々65536DIPの巨大レイアウトボックスでNO_WRAP描画しており実クリップは常にレンダーターゲットの物理境界任せなので、ミニマップは`drawVisibleLines()`の後に不透明な背景矩形で右端を上書きするだけで済む
+
+**実装:** `render_pipeline.h`/`.cpp`に`widenedVisibleLineRange()`(既存`computeDesiredTokenRange()`からの無破壊抽出、単独コミット可能な最もリスクの低いステップとして最初に実装・ビルド確認)、ブラシ3種+`ensureMinimapBrushes()`、`minimapLeftDips()`/`minimapLineBrush()`/`drawMinimapLines()`/`drawMinimapViewportHighlight()`/`drawMinimap()`、`hitTestMinimap()`/`minimapLineAtY()`を追加、`renderOnce()`へ配線。`main.cpp`に`tryHandleMinimapClick()`(`tryToggleFoldMarker()`と同型の「最優先判定→ヒットならreturn」パターン)、`isDraggingMinimap`フラグ(`wWinMain`ローカル変数、毎回の`handleMouseDownEvent()`冒頭で無条件リセット)、`onMouseDrag`への最優先分岐を追加。`wireNormalMode()`のシグネチャに`isDraggingMinimap`引数を追加する際、最初のビルドでラムダキャプチャ漏れのコンパイルエラーが発生し、関数シグネチャと呼び出し側両方に引数追加して解消した。
+
+**テスト:** `render_text_smoke_test.cpp`に8件追加(`MinimapRendersWithoutError`/`MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabled`/`HitTestMinimapReturnsLineForClickInsideTheStrip`/`HitTestMinimapReturnsNulloptForClickInTextArea`/`MinimapLineAtYIgnoresHorizontalPositionDuringDrag`/`HitTestMinimapAtWindowTopReturnsWindowStartLine`/`MinimapRendersWithoutErrorWithFoldedRegions`/`MinimapWindowClampsNearDocumentEnd`)。最後のテストで「20個の改行終端行→21論理行(末尾に空行)」という`Document`の行カウント規約を見落とし、期待値`19`が実際の返り値`20`と食い違って1件失敗したが、原因を特定し期待値を`20`へ修正して解決した(実装のバグではなくテストの手計算ミス)。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全865件green**、clang-tidy: `src/`配下(`render_pipeline.cpp`/`main.cpp`)新規警告0。テストファイルの`misc-const-correctness`(window変数)警告は既存の全32テストに共通するパターンの継続であり新規のユニークな警告カテゴリではないことを確認
+- **`--measure-frame`実測(Release、5万行合成文書スクロール300フレーム):** avgFrameNs≈16.53ms(既存ベースライン「avgFrameNs≈16.5ms」、`RESUME_HERE.md`/`TIMELINE.md`記載の過去実測と同水準) — ミニマップ描画による有意なフレーム時間の悪化なし
+- **実アプリ視覚確認:** `--open`でC++ファイル(`render_pipeline.cpp`自身)を開き、PowerShell+.NET(`Graphics.CopyFromScreen`)でスクリーンショットを撮影。右側にシンタックス色(緑=型/文字列、ピンク/紫=キーワード)を反映したミニマップ帯・現在可視範囲の半透明強調矩形が表示されていることを確認。続けて`SetCursorPos`+`mouse_event`でミニマップ帯上をクリックし、クリック前後のスクリーンショット比較でテキストエリアの表示内容が実際にジャンプ(スクロール)することを確認した — 過去のセッションで不調だったキーボード修飾キー合成とは異なり、マウスクリック単体の合成は今回問題なく機能した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7v ✅完了」行を追加(次候補行を「7w〜」へ更新)、§7.4に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.23を追加。§10.22末尾にPhase 7u revertの注記も追加(以前のセッションで欠落していた同期漏れを今回補完)
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.56(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 7vはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ文書全体俯瞰型拡張・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。
+
 <!-- 次セッションはここに追記 -->

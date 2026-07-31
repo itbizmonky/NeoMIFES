@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-31 (Phase 7t push・CI green確認済み(`b8bf882`/`802610b`、run `30489212731`)後、ユーザー選択で`TSInput`コールバックAPI採用(Phase 7u)を実装したが、診断計測で明確な性能後退(旧文字列一括APIの公正な合計約175msに対し約300〜325ms、約1.8倍遅い)と判明し、ユーザー承認のもと全面revert。Phase 7t完了時点のコードに復元し(Release再ビルドで865/865 green確認)、発見内容は`docs/issues/tree_sitter_incremental_parse_cost.md`に記録した。§3.55参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達、次の対応方針は未定 — 次サブフェーズ候補は残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ・tree-sitter内部実装のさらなる調査)
+> **最終更新:** 2026-07-31 (Phase 7u revert完了・ドキュメント同期commit(`aecd939`)のpush・CI green確認(run `30604893065`、success、1h46m35s)後、ユーザー選択でミニマップ(簡易版・スクロール追従型、Phase 7v)を実装・完了。roadmap §7.4の元スケッチから「文書全体俯瞰型」ではなく「まず簡易版を実装し実測後に拡張判断」方針をAskUserQuestionで確定。右側縦帯・シンタックス色反映・現在可視範囲の強調矩形・クリックジャンプ/ドラッグスクロールを実装、ローカルDebug/Release/ubsan全865件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.53ms、既存ベースラインと同水準)・実アプリでのクリックジャンプ視覚確認済み。§3.56参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず)、次の対応方針は未定)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -88,7 +88,8 @@
 | Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) | ✅ 完了 (push済み、CI green確認済み、§3.53参照) |
 | Phase 7t (可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達、push済み・CI green確認済み、§3.54参照) |
 | Phase 7u (`TSInput`コールバックAPI採用) | ❌ 実装完了後に全面revert (性能後退、Phase 7t状態に復元。§3.55参照) |
-| **次フェーズ選定 — 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ/tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7v (ミニマップ、簡易版・スクロール追従型) | ✅ 完了 (実測avgFrameNs≈16.53ms・実アプリ視覚確認済み、§3.56参照) |
+| **次フェーズ選定 — 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ文書全体俯瞰型拡張/tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1645,6 +1646,35 @@ Phase 7t完了後、ユーザーが次候補として`TSInput`コールバック
 
 **roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の対応方針は未定。** 次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題あり)・ミニマップ・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。
 
+### 3.56 Phase 7v (ミニマップ、簡易版・スクロール追従型) 完了記録 (2026-07-31)
+
+Phase 7u revertのドキュメント同期commit(`aecd939`)のpush・CI green確認後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補(残り6言語対応バッチ4/ミニマップ/tree-sitter内部実装調査)をAskUserQuestionで提示し、**ミニマップ(推奨案)**が選ばれた — roadmap §7のv2.0差別化機能のうち唯一未着手(折り畳み・Sticky scroll・Breadcrumb・Indent guidesは全て完了済み)。
+
+**表示範囲モデルの選定:** 調査の結果、(1) `RenderPipeline::m_tokens`はPhase 7t以降「可視範囲+マージンのみ」しか保持しない設計であること、(2) 本コードベースにはスクロールバーが一切存在しないこと、が判明した。AskUserQuestionで「文書全体俯瞰型(VSCode型)」/「スクロール追従型(簡易版)」/「まず簡易版を実装し実測後に拡張判断」の3択を提示し、**「まず簡易版を実装し実測後に拡張判断」(推奨案)**が選ばれた。
+
+**設計方針の要点(3つのExploreエージェント+1つのPlan agentによる調査、詳細は`docs/design/master_roadmap.md` §7.4実装後の確定事項・`detailed_design.md` §10.23参照):**
+- ミニマップの「窓」に既存`m_requestedTokenRange`(Phase 7t由来)を使わず、`computeDesiredTokenRange()`から窓計算部分を`widenedVisibleLineRange()`として新規抽出・共有(`m_requestedTokenRange`はハイライトOFF時に未更新のまま残るため)
+- 描画はroadmapスケッチの「GPU補間スケーリング」ではなく既存の`FillRectangle`/`SolidColorBrush`による直接描画(Breadcrumb/Sticky scrollの前例踏襲)、新規ファイル・CMake変更なし
+- `hitTestMinimap(xPx,yPx)`(クリック開始、X範囲チェックあり)と`minimapLineAtY(yPx)`(ドラッグ継続、X非依存)を分離
+- `drawVisibleLines()`側の変更は不要(ミニマップは`drawVisibleLines()`の後に不透明背景で右端を上書きするだけ)
+
+**検証:**
+- ローカル**Debug/Release/ubsan全865件green**、`render_text_smoke_test.cpp`に新規8件追加。clang-tidy `src/`配下新規警告0
+- **`--measure-frame`実測(Release、5万行合成文書スクロール300フレーム):** avgFrameNs≈16.53ms(既存ベースライン「avgFrameNs≈16.5ms」と同水準) — ミニマップ描画による有意な悪化なし
+- **実アプリ視覚確認:** `--open`でC++ファイルを開き、右側にシンタックス色反映のミニマップ帯・現在可視範囲の強調矩形が表示されることを確認。マウスクリック合成(`SetCursorPos`+`mouse_event`)でミニマップ上をクリックし、クリック前後のスクリーンショット比較でテキストエリアが実際にジャンプ(スクロール)することを確認した
+
+**完了条件:**
+- [x] `widenedVisibleLineRange()`抽出、`ensureMinimapBrushes()`/`drawMinimap()`系実装、`renderOnce()`配線
+- [x] `hitTestMinimap()`/`minimapLineAtY()`実装
+- [x] `main.cpp`配線(`tryHandleMinimapClick()`、`isDraggingMinimap`フラグ、`onMouseDrag`分岐)
+- [x] 統合テスト8件追加
+- [x] ローカルDebug/Release/ubsan全865テストgreen、`src/`配下clang-tidy新規警告0
+- [x] `--measure-frame`実測+実アプリ視覚確認
+
+**スコープ外(意図的、後続フェーズへ):** 文書全体俯瞰表示(VSCode型)、フォールドされている行のミニマップ内での特別扱い、密度表現の精緻化、テーマ対応、キーボードショートカットでのミニマップ表示/非表示トグル。
+
+**Phase 7vはコミット済み(次コミットで記録)、pushはユーザーの明示指示待ち。** 次フェーズは残り6言語対応バッチ4・ミニマップ文書全体俯瞰型拡張・tree-sitter内部実装のさらなる調査のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -1706,12 +1736,21 @@ Phase 7a〜7tは全てpush済み・CI green確認済み(Phase 7t: run `304892127
 `ts_parser_parse()`自体が旧文字列一括API(`extract()`込みの公正な合計約175ms)より約1.8倍
 遅い(約300〜325ms)ことが判明し、明確な性能後退と確認された。ユーザー承認のもと全面
 revertし、Phase 7t完了時点のコードに戻した(§3.55参照、詳細は
-`docs/issues/tree_sitter_incremental_parse_cost.md`)。roadmap DoDは大規模文書で引き続き
-未達のまま、次の対応方針は未定 — 安易にTSInput的アプローチを再試行せず、まずtree-sitter
-自身の内部実装を読解してから設計すること。**
+`docs/issues/tree_sitter_incremental_parse_cost.md`)。revertドキュメント同期commit
+(`aecd939`)はpush済み・CI green確認済み(run `30604893065`、success、1h46m35s)。
+roadmap DoDは大規模文書で引き続き未達のまま、次の対応方針は未定 — 安易にTSInput的
+アプローチを再試行せず、まずtree-sitter自身の内部実装を読解してから設計すること。**
 
-**次フェーズは残り6言語対応バッチ4・ミニマップ・(未確定)tree-sitter内部実装のさらなる
-調査のいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
+**Phase 7v(ミニマップ、簡易版・スクロール追従型)を実装・完了した(§3.56参照)。右側縦帯・
+シンタックス色反映・現在可視範囲の強調矩形・クリックジャンプ/ドラッグスクロール。文書全体を
+常に俯瞰表示するVSCode型ではなく、まず可視範囲+マージンのみを表示するスクロール追従型v1に
+留め、実測・実アプリ確認後に拡張判断する方針をユーザーが選択した。ローカルDebug/Release/
+ubsan全865件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.53ms、既存
+ベースラインと同水準)・実アプリでのクリックジャンプ視覚確認済み。コミット済み、pushは
+ユーザーの明示指示待ち。**
+
+**次フェーズは残り6言語対応バッチ4・ミニマップ文書全体俯瞰型拡張・(未確定)tree-sitter
+内部実装のさらなる調査のいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

@@ -47,6 +47,19 @@ constexpr float kBreadcrumbHeightDips = 24.0F;
 // Phase 7o: Sticky scroll strip height, directly below the Breadcrumb strip
 // when present - see reservedTopHeightDips()/drawStickyScroll().
 constexpr float kStickyScrollHeightDips = 24.0F;
+
+// Phase 7v: right-edge minimap strip width - the midpoint of roadmap
+// sec.7.4's "100-150px" range, taken as DIPs (an untuned starting point per
+// CLAUDE.md rule 10 - this is a look-and-feel choice, not something a
+// benchmark determines, so it gets adjusted from real-app viewing rather
+// than measurement). Unlike kGutterWidthDips, this is NOT a contract every
+// x-coordinate consumer in this file must agree on - see
+// RenderPipeline::minimapLeftDips()'s header comment for why.
+constexpr float kMinimapWidthDips = 120.0F;
+// Roadmap sec.7.4's own specified reduction factor for both row height and
+// character width, applied to the already-measured m_lineHeightDips/
+// m_charWidthDips (not a separately guessed value - CLAUDE.md rule 3).
+constexpr float kMinimapScaleDivisor = 8.0F;
 }  // namespace
 
 RenderExpected<void> RenderPipeline::attach(HWND hwnd) noexcept {
@@ -160,6 +173,9 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_activeIndentGuideBrush.Reset();
     m_breadcrumbBackgroundBrush.Reset();
     m_foldMarkerBrush.Reset();
+    m_minimapBackgroundBrush.Reset();
+    m_minimapViewportBrush.Reset();
+    m_minimapTextBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -511,6 +527,37 @@ RenderExpected<void> RenderPipeline::ensureBreadcrumbBrush(ID2D1DeviceContext6& 
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureMinimapBrushes(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_minimapBackgroundBrush) {
+        // Same chrome color as ensureBreadcrumbBrush() - a distinct strip
+        // color reused rather than a fourth hardcoded constant.
+        constexpr D2D1_COLOR_F kMinimapBackgroundColor = {37.0F / 255.0F, 37.0F / 255.0F, 38.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapBackgroundColor, m_minimapBackgroundBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_minimapViewportBrush) {
+        // Translucent white - readable against both the dark background and
+        // any token color bar underneath.
+        constexpr D2D1_COLOR_F kMinimapViewportColor = {1.0F, 1.0F, 1.0F, 0.15F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapViewportColor, m_minimapViewportBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_minimapTextBrush) {
+        // Neutral mid-gray fallback for lines with content but no colored
+        // token - same rationale as ensureFoldMarkerBrush()'s gray.
+        constexpr D2D1_COLOR_F kMinimapTextColor = {110.0F / 255.0F, 110.0F / 255.0F, 110.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapTextColor, m_minimapTextBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F) {
         return {0, 0};
@@ -550,6 +597,15 @@ std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexc
     return {startLine, endLineExclusive};
 }
 
+std::pair<LineNumber, LineNumber> RenderPipeline::widenedVisibleLineRange() const noexcept {
+    const auto [startLine, endLineExclusive] = visibleLineRange();
+    const auto           reservedTopPx       = static_cast<std::uint32_t>(reservedTopHeightDips() * m_dpiScale);
+    const std::uint32_t  effectiveHeightPx   = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
+    const std::uint32_t  visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
+    const std::uint64_t  totalLines   = m_document != nullptr ? m_document->lineCount() : 0;
+    return widenLineRangeWithMargin(startLine, endLineExclusive, visibleCount, totalLines);
+}
+
 document::TextRange RenderPipeline::computeDesiredTokenRange() const noexcept {
     // Phase 7t: layout info not measured yet (pre-first-resize) - fall back
     // to the whole document, a safe default that resolves itself within a
@@ -563,12 +619,7 @@ document::TextRange RenderPipeline::computeDesiredTokenRange() const noexcept {
     if (totalLines == 0) {
         return TextRange{.start = 0, .end = 0};
     }
-    const auto [startLine, endLineExclusive] = visibleLineRange();
-    const auto           reservedTopPx       = static_cast<std::uint32_t>(reservedTopHeightDips() * m_dpiScale);
-    const std::uint32_t  effectiveHeightPx   = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
-    const std::uint32_t  visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
-    const auto [marginedStart, marginedEnd] =
-        widenLineRangeWithMargin(startLine, endLineExclusive, visibleCount, totalLines);
+    const auto [marginedStart, marginedEnd] = widenedVisibleLineRange();
     const TextPos startOffset = m_document->lineToOffset(static_cast<LineNumber>(marginedStart));
     const TextPos endOffset   = (marginedEnd >= totalLines)
                                      ? m_cachedSnapshot->length()
@@ -1075,6 +1126,102 @@ void RenderPipeline::drawStickyScroll(ID2D1DeviceContext6& dc) noexcept {
     dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, kBreadcrumbHeightDips), layout.Get(), m_textBrush.Get());
 }
 
+float RenderPipeline::minimapLeftDips() const noexcept {
+    if (m_dpiScale <= 0.0F) {
+        return 0.0F;
+    }
+    return (static_cast<float>(m_width) / m_dpiScale) - kMinimapWidthDips;
+}
+
+ID2D1SolidColorBrush* RenderPipeline::minimapLineBrush(TextPos lineStart, TextPos lineEnd,
+                                                        std::size_t& tokenCursor) noexcept {
+    // Same "monotonic sweep over sorted m_tokens" contract drawTokensOnLine()
+    // uses - drawMinimapLines() walks its window in ascending line order so
+    // this holds.
+    while (tokenCursor < m_tokens.size() && m_tokens[tokenCursor].range.end <= lineStart) {
+        ++tokenCursor;
+    }
+    for (std::size_t i = tokenCursor; i < m_tokens.size() && m_tokens[i].range.start < lineEnd; ++i) {
+        if (ID2D1SolidColorBrush* brush = tokenBrush(m_tokens[i].kind); brush != nullptr) {
+            return brush;
+        }
+    }
+    return (lineEnd > lineStart) ? m_minimapTextBrush.Get() : nullptr;
+}
+
+void RenderPipeline::drawMinimapLines(ID2D1DeviceContext6& dc, float left, LineNumber windowStart,
+                                      LineNumber windowEnd, float rowHeightDips, float charWidthDips) noexcept {
+    if (!m_minimapTextBrush) {
+        return;
+    }
+    const std::uint64_t totalLines   = m_document->lineCount();
+    constexpr float      kPaddingDips = 4.0F;
+    const float           maxBarWidth = std::max(0.0F, kMinimapWidthDips - (2.0F * kPaddingDips));
+    std::size_t            tokenCursor = 0;
+    float                   y           = 0.0F;
+    for (LineNumber line = windowStart; line < windowEnd; ++line, y += rowHeightDips) {
+        const TextPos lineStart   = m_document->lineToOffset(line);
+        const bool     hasNextLine = (line + 1) < totalLines;
+        const TextPos lineEndIncNl =
+            hasNextLine ? m_document->lineToOffset(line + 1) : m_cachedSnapshot->length();
+        // Same "drop the trailing '\n'" convention extractLineText() uses.
+        const TextPos lineEnd = (hasNextLine && lineEndIncNl > lineStart) ? lineEndIncNl - 1 : lineEndIncNl;
+
+        ID2D1SolidColorBrush* brush = minimapLineBrush(lineStart, lineEnd, tokenCursor);
+        if (brush == nullptr) {
+            continue;  // empty line - nothing to draw
+        }
+        const float barWidth =
+            std::min(static_cast<float>(lineEnd - lineStart) * charWidthDips, maxBarWidth);
+        dc.FillRectangle(D2D1::RectF(left + kPaddingDips, y, left + kPaddingDips + barWidth,
+                                     y + std::max(1.0F, rowHeightDips - 1.0F)),
+                         brush);
+    }
+}
+
+void RenderPipeline::drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float left, float widthDips,
+                                                   LineNumber windowStart, float rowHeightDips) noexcept {
+    const auto [visStart, visEnd] = visibleLineRange();
+    if (visStart >= visEnd) {
+        return;
+    }
+    // widenedVisibleLineRange() always widens to at least [visStart, visEnd)
+    // (viewport_math.h::widenLineRangeWithMargin()'s own contract), so
+    // windowStart <= visStart and visEnd <= windowEnd - no underflow here.
+    const float rectTop    = static_cast<float>(visStart - windowStart) * rowHeightDips;
+    const float rectBottom = static_cast<float>(visEnd - windowStart) * rowHeightDips;
+    dc.FillRectangle(D2D1::RectF(left, rectTop, widthDips, rectBottom), m_minimapViewportBrush.Get());
+}
+
+void RenderPipeline::drawMinimap(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || m_dpiScale <= 0.0F ||
+        !m_minimapBackgroundBrush || !m_minimapViewportBrush) {
+        return;
+    }
+    const std::uint64_t totalLines = m_document->lineCount();
+    if (totalLines == 0) {
+        return;
+    }
+    const float left = minimapLeftDips();
+    // Window too narrow (strip would collide with the gutter) - drawing
+    // neither is safer than drawing both overlapping.
+    if (left <= kGutterWidthDips) {
+        return;
+    }
+    const float widthDips  = static_cast<float>(m_width) / m_dpiScale;
+    const float heightDips = static_cast<float>(m_height) / m_dpiScale;
+    dc.FillRectangle(D2D1::RectF(left, 0.0F, widthDips, heightDips), m_minimapBackgroundBrush.Get());
+
+    const auto [windowStart, windowEnd] = widenedVisibleLineRange();
+    if (windowStart >= windowEnd) {
+        return;
+    }
+    const float rowHeightDips = m_lineHeightDips / kMinimapScaleDivisor;
+    const float charWidthDips = m_charWidthDips / kMinimapScaleDivisor;
+    drawMinimapLines(dc, left, windowStart, windowEnd, rowHeightDips, charWidthDips);
+    drawMinimapViewportHighlight(dc, left, widthDips, windowStart, rowHeightDips);
+}
+
 std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::int32_t yPx) noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || !m_dwriteFactory ||
         m_dpiScale <= 0.0F) {
@@ -1178,6 +1325,34 @@ std::optional<document::LineNumber> RenderPipeline::hitTestFoldMarker(std::int32
     return targetLine;
 }
 
+std::optional<document::LineNumber> RenderPipeline::minimapLineAtY(std::int32_t yPx) const noexcept {
+    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || m_dpiScale <= 0.0F) {
+        return std::nullopt;
+    }
+    const auto [windowStart, windowEnd] = widenedVisibleLineRange();
+    if (windowStart >= windowEnd) {
+        return std::nullopt;
+    }
+    const float       rowHeightDips = m_lineHeightDips / kMinimapScaleDivisor;
+    const float       yDip          = std::max(0.0F, static_cast<float>(yPx) / m_dpiScale);
+    const auto         rowOffset     = static_cast<LineNumber>(yDip / rowHeightDips);
+    const LineNumber   target        = windowStart + rowOffset;
+    return target < windowEnd ? target : windowEnd - 1;
+}
+
+std::optional<document::LineNumber> RenderPipeline::hitTestMinimap(std::int32_t xPx,
+                                                                    std::int32_t yPx) const noexcept {
+    const float left = minimapLeftDips();
+    if (left <= kGutterWidthDips) {
+        return std::nullopt;  // matches drawMinimap()'s own "too narrow" bail-out
+    }
+    const float xDip = static_cast<float>(xPx) / m_dpiScale;
+    if (xDip < left) {
+        return std::nullopt;  // click landed in the text area, not the minimap
+    }
+    return minimapLineAtY(yPx);
+}
+
 RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     // render() already checks isAttached() before calling this, but
     // renderOnce() is a private helper reachable from two call sites in
@@ -1256,6 +1431,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return foldMarkerBrushResult;
     }
+    auto minimapBrushResult = ensureMinimapBrushes(*dc);
+    if (!minimapBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return minimapBrushResult;
+    }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the
     // GDI->D2D handoff (ADR-009) stays visually seamless as a background.
@@ -1264,6 +1444,7 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     drawVisibleLines(*dc);
     drawBreadcrumb(*dc);
     drawStickyScroll(*dc);
+    drawMinimap(*dc);
 
     return device.endFrame();
 }

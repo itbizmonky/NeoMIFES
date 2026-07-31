@@ -2470,6 +2470,58 @@ void requestParse(std::shared_ptr<const document::BufferSnapshot> snapshot,
 
 **スコープ外(意図的、後続サブフェーズへ):** `TSInput`コールバックAPI採用、余白サイズ(1画面分)のチューニング、大きくジャンプした際の一時的な無彩色表示の緩和、`extractOutline()`(Breadcrumb)の可視範囲スコープ化(Phase 7h以来の独立した同期・全文書解析のまま継続)。
 
+**注記(2026-07-31):** `TSInput`コールバックAPI採用はPhase 7uとして実際に実装されたが、診断計測で明確な性能後退(旧文字列一括APIより約1.8倍遅い)と判明し全面revertされた。詳細は`docs/issues/tree_sitter_incremental_parse_cost.md`参照。
+
+### 10.23 ミニマップ (簡易版・スクロール追従型、Phase 7v実装)
+
+Phase 7u revert完了後、ユーザーが次候補としてミニマップ(推奨案)を選んだ。roadmap §7.4の元スケッチ(右側縦帯・1/8スケール・GPU補間スケーリング・現在可視領域の強調矩形・クリックジャンプ/ドラッグスクロール)をベースに、AskUserQuestionで「まず簡易版(スクロール追従型)を実装し、実測後に文書全体俯瞰型への拡張を検討する」方針が選ばれた。新規ファイル・CMake変更なし、`render_pipeline.h`/`.cpp`・`main.cpp`への実装追加のみ。
+
+**窓計算の共有(`m_requestedTokenRange`不使用の理由):**
+```cpp
+// render_pipeline.h — Phase 7v (computeDesiredTokenRange()から窓計算部分を無破壊抽出)
+[[nodiscard]] std::pair<document::LineNumber, document::LineNumber> widenedVisibleLineRange() const noexcept;
+```
+`ensureSyntaxTokensCoverVisibleRange()`はシンタックスハイライトOFF時(`m_language.has_value()==false`)に早期returnし`m_requestedTokenRange`を一切更新しない。ミニマップはハイライトの有無に関わらず動作すべき機能のため、この可変メンバに依存すると窓が`{0,0}`のまま固定されるバグになる。代わりに`computeDesiredTokenRange()`が内部で行っていた「`visibleLineRange()` → `widenLineRangeWithMargin()`」という行番号ベースの窓計算ロジックそのものを`widenedVisibleLineRange()`として切り出し、`computeDesiredTokenRange()`とミニマップの両方が共有する(Sticky scrollの`reservedTopHeightDips()`集約と同じ「2箇所目の呼び出しが生まれた時点で抽出する」既存ルール)。
+
+**描画(直接プリミティブ、オフスクリーンビットマップ不使用):**
+```cpp
+// render_pipeline.cpp 無名namespace — roadmapスケッチの明記値をそのまま採用
+constexpr float kMinimapWidthDips    = 120.0F;  // 「100-150px」の中間値
+constexpr float kMinimapScaleDivisor = 8.0F;    // 「1/8スケール」
+
+void RenderPipeline::drawMinimap(ID2D1DeviceContext6& dc) noexcept;
+void RenderPipeline::drawMinimapLines(ID2D1DeviceContext6& dc, float left, LineNumber windowStart,
+                                      LineNumber windowEnd, float rowHeightDips, float charWidthDips) noexcept;
+void RenderPipeline::drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float left, float widthDips,
+                                                   LineNumber windowStart, float rowHeightDips) noexcept;
+```
+roadmapスケッチの「`D2D1_BITMAP_INTERPOLATION_MODE_LINEAR`によるGPUスケーリング」は不採用 — 「1/8スケールで直接描画」という同スケッチ内の別の記述と技術的に矛盾しており(オフスクリーン全サイズ描画→縮小 vs 最初から低解像度で直接描画は別技術)、Breadcrumb/Sticky scrollが同種のroadmapスケッチより遥かにシンプルな直接D2Dプリミティブ描画に落ち着いた前例に倣った。`drawMinimapLines()`は`drawTokensOnLine()`と同じ「ソート済み`m_tokens`に対する前進のみのスイープ」パターンで各行の代表色(その行で最初に見つかった着色トークンの色、なければ中間グレー、空行なら何も描かない)を求め、幅だけ行の長さに比例させた単色1本の`FillRectangle`を描く(密度表現の精緻化はスコープ外)。**`drawVisibleLines()`側の変更は不要** — `drawTextLine()`は元々65536DIPの巨大レイアウトボックスでNO_WRAP描画しており実クリップは常にレンダーターゲットの物理境界任せなので、ミニマップは`drawVisibleLines()`の**後**に不透明な背景矩形で右端を上書きするだけで済む(Breadcrumb/Sticky scrollの「Y軸上部を予約する」方式とは異なる、意図的に緩い設計 — 本コードベースには横スクロール機構が無いため「隠れたテキストにアクセスする手段が失われる」という懸念も無関係)。
+
+**ヒットテストの分離(クリック開始 vs ドラッグ継続):**
+```cpp
+[[nodiscard]] std::optional<document::LineNumber> hitTestMinimap(std::int32_t xPx, std::int32_t yPx) const noexcept;
+[[nodiscard]] std::optional<document::LineNumber> minimapLineAtY(std::int32_t yPx) const noexcept;
+```
+クリック開始時はX範囲チェック(`hitTestMinimap()`)が必要だが、ドラッグ継続中はWindowsの通常のスクロールバーのつまみドラッグと同様、掴んだ後はX座標が帯の外にずれても追従すべきなので、Y座標のみで判定する`minimapLineAtY()`をコアとして分離し`onMouseDrag`はこちらを呼ぶ。両メソッドとも`m_layoutCache`に触れないため`hitTest()`/`hitTestFoldMarker()`と異なり`const noexcept`。
+
+**`main.cpp`配線:** 新規`tryHandleMinimapClick()`(`tryToggleFoldMarker()`と同じ「最優先判定→ヒットならreturn」パターン)を`handleMouseDownEvent()`の先頭付近に追加。`MainWindow`は`onMouseUp`フックを公開していないため、新規フラグ`isDraggingMinimap`(`wWinMain`ローカル変数)は毎回の`handleMouseDownEvent()`冒頭で無条件リセットする設計にした(`altCursorAnchor`/`rectangularAnchor`と同じ扱い)。`onMouseWheel`はミニマップ帯の上でも特別扱いしない(WM_MOUSEWHEELはカーソル位置を見ておらず、ミニマップも本体テキストも同じ`Viewport`を共有するため)。
+
+**ベンチマーク実測 (Release、`--measure-frame`、5万行合成文書スクロール300フレーム):**
+
+| 指標 | 実測値 | 既存ベースライン (Phase 3c以来) |
+|---|---|---|
+| avgFrameNs | 16,526,073ns (≈16.53ms) | ≈16.5ms |
+| p50FrameNs | 16,675,200ns (≈16.68ms) | — |
+| p95FrameNs | 17,016,300ns (≈17.02ms) | — |
+
+ミニマップ描画による有意なフレーム時間の悪化は確認されなかった(roadmap §7.11「ミニマップ描画: 60fps」目標と整合)。
+
+**テスト:** `render_text_smoke_test.cpp`に8件追加(`MinimapRendersWithoutError`/`MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabled`/`HitTestMinimapReturnsLineForClickInsideTheStrip`/`HitTestMinimapReturnsNulloptForClickInTextArea`/`MinimapLineAtYIgnoresHorizontalPositionDuringDrag`/`HitTestMinimapAtWindowTopReturnsWindowStartLine`/`MinimapRendersWithoutErrorWithFoldedRegions`/`MinimapWindowClampsNearDocumentEnd`)。ローカルDebug/Release/ubsan全865件green、clang-tidy `src/`配下新規警告0(designated-initializer等の既存パターン外の新規警告なし)。
+
+**実アプリ視覚確認:** `--open`でC++ファイルを開き、右側にシンタックス色を反映したミニマップ帯・現在可視範囲の半透明強調矩形が表示されることを確認。ミニマップ上でのクリック合成(`SetCursorPos`+`mouse_event`)を試行し、クリック前後のスクリーンショット比較でテキストエリアの表示内容が実際にジャンプ(スクロール)することを確認した — 過去のセッションで不調だったキーボード修飾キー合成とは異なり、マウスクリック単体の合成は今回問題なく機能した。
+
+**スコープ外(意図的、後続フェーズへ):** 文書全体俯瞰表示(VSCode型、次候補として明示的に留保)、フォールドされている行のミニマップ内での特別扱い、密度表現の精緻化、テーマ対応、キーボードショートカットでのミニマップ表示/非表示トグル。
+
 ---
 
 ## 11. ログ解析モード 詳細

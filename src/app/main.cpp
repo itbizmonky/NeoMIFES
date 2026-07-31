@@ -897,6 +897,26 @@ bool tryToggleFoldMarker(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeli
     return true;
 }
 
+// Checks whether a WM_LBUTTONDOWN landed on the minimap strip and, if so,
+// jumps the viewport there and starts drag tracking, returning true so the
+// caller skips its ordinary hitTest()/dispatchMouseDown() cursor-placement
+// path entirely (Phase 7v) - same "priority-check, consume, and return"
+// shape as tryToggleFoldMarker() above. Does not touch SelectionModel: a
+// minimap click is a scroll-position operation, not a cursor-placement one
+// (matches the common convention other minimap-bearing editors use).
+bool tryHandleMinimapClick(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeline& renderPipeline,
+                           Viewport& viewport, const SelectionModel& selectionModel,
+                           bool& isDraggingMinimap) {
+    const auto targetLine = renderPipeline.hitTestMinimap(x, y);
+    if (!targetLine) {
+        return false;
+    }
+    isDraggingMinimap = true;
+    viewport.scrollTo(*targetLine);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    return true;
+}
+
 // Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
 // applies it. Pulled out of wireNormalMode's onMouseDown lambda to keep that
 // function's cognitive complexity down (same rationale as
@@ -972,8 +992,16 @@ void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftD
                           std::optional<neomifes::document::TextPos>& altCursorAnchor,
                           std::optional<neomifes::document::TextPos>& rectangularAnchor,
                           std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                          FoldingModel& foldingModel) {
+                          FoldingModel& foldingModel, bool& isDraggingMinimap) {
+    // Every new mouse-down is the start of a fresh gesture - this is the one
+    // reliable reset point for this flag (MainWindow exposes no onMouseUp
+    // hook; see isDraggingMinimap's declaration comment in wWinMain). Only
+    // tryHandleMinimapClick() below sets it back to true.
+    isDraggingMinimap = false;
     if (tryToggleFoldMarker(hwnd, x, y, renderPipeline, foldingModel)) {
+        return;
+    }
+    if (tryHandleMinimapClick(hwnd, x, y, renderPipeline, viewport, selectionModel, isDraggingMinimap)) {
         return;
     }
     const auto hit = renderPipeline.hitTest(x, y);
@@ -1627,7 +1655,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     SearchHistory& searchHistory, OutlinePane& outlinePane, BookmarkManager& bookmarks,
                     FoldingModel& foldingModel, bool& freeCursorModeEnabled,
                     std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                    std::optional<std::filesystem::path>& currentDocumentPath) {
+                    std::optional<std::filesystem::path>& currentDocumentPath, bool& isDraggingMinimap) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
                           &grepBar, &grepState, &searchHistory, &outlinePane, &bookmarks, &foldingModel,
@@ -1762,16 +1790,27 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor, &freeCursorVirtualColumns, &foldingModel](
+                       &rectangularAnchor, &freeCursorVirtualColumns, &foldingModel, &isDraggingMinimap](
                           HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
                           int clickCount) {
         handleMouseDownEvent(hwnd, x, y, shiftDown, altDown, clickCount, selectionModel, viewport,
                              document, renderPipeline, altCursorAnchor, rectangularAnchor,
-                             freeCursorVirtualColumns, foldingModel);
+                             freeCursorVirtualColumns, foldingModel, isDraggingMinimap);
     };
     cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor, &freeCursorVirtualColumns](HWND hwnd, std::int32_t x,
-                                                                      std::int32_t y) {
+                       &rectangularAnchor, &freeCursorVirtualColumns, &isDraggingMinimap](
+                          HWND hwnd, std::int32_t x, std::int32_t y) {
+        // Highest priority: a minimap drag never falls through to
+        // rectangularAnchor/altCursorAnchor/ordinary text-drag handling
+        // below - it tracks by Y alone (Phase 7v, see minimapLineAtY()'s
+        // comment on why X is ignored once a drag has started).
+        if (isDraggingMinimap) {
+            if (const auto targetLine = renderPipeline.minimapLineAtY(y)) {
+                viewport.scrollTo(*targetLine);
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            }
+            return;
+        }
         const auto hit = renderPipeline.hitTest(x, y);
         if (!hit) {
             return;
@@ -1880,6 +1919,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // altCursorAnchor) since the two gestures are deliberately independent -
     // see dispatchMouseDown()'s comment.
     std::optional<neomifes::document::TextPos> rectangularAnchor;
+    // Phase 7v: true while a minimap click-and-drag is in progress. Reset to
+    // false at the top of every handleMouseDownEvent() call (the only
+    // reliable reset point - MainWindow exposes no onMouseUp hook, see
+    // handleMouseDownEvent()'s comment) and set back to true only by
+    // tryHandleMinimapClick() when the down-click itself lands on the strip.
+    bool isDraggingMinimap = false;
     // Find bar state (Phase 5b3a, bundled into FindReplaceState in Phase
     // 5b3b) - lives here (not inside FindBar itself) so FindBar can stay
     // decoupled from neomifes::search, same rationale as core::ReplaceAllCommand
@@ -1970,7 +2015,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
                        commandPalette, gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
                        bookmarks, foldingModel, freeCursorModeEnabled, freeCursorVirtualColumns,
-                       currentDocumentPath);
+                       currentDocumentPath, isDraggingMinimap);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
