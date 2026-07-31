@@ -231,7 +231,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7r | 追加言語対応 バッチ2 (HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 | §7 |
 | 7s | 追加言語対応 バッチ3 (TypeScript/TSX/PHP/Markdown) | ✅ 完了 | §7 |
 | 7t | 可視範囲スコープ化トークン再設計 (`reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達・§7.11参照) | §7 |
-| 7u〜 | `TSInput`コールバックAPI採用 (大規模文書のDoD達成) / 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / ミニマップ | ⏭️ 次候補 | §7 |
+| 7u | `TSInput`コールバックAPI採用 (大規模文書のDoD達成を試行) | ❌ 全面revert (性能後退のため、`docs/issues/tree_sitter_incremental_parse_cost.md`参照) | §7 |
+| 7v〜 | 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / ミニマップ | ⏭️ 次候補 | §7 |
 | 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
@@ -1275,6 +1276,19 @@ public:
 - **ベンチマーク実測(Release、`BM_ReparseRange_SingleCharEdit_*`):** 5万行narrow window 15.65ms(Phase 7qの103msから約6.6倍、roadmap §7.11のDoD「≤50ms」達成)。50万行narrow window 155.95ms・50万行full document 155.45ms(ほぼ同一) — **narrow windowとfull documentのコストが一致したことから、ボトルネックが`applyTokenPatch()`から`ts_parser_parse_string_encoding()`自体(文書サイズに比例するtree-sitter自身の再解析コスト、文字列ベースAPIの制約で常に文書全体のテキストを要求する)へ完全に移ったと確認した。** 大規模文書のDoD達成には、tree-sitterの`TSInput.read`コールバックAPIを`document::BufferSnapshot`/`PieceTable`に対して実装し、文書全体のテキスト実体化・再解析自体を回避する、本フェーズよりさらに大きな別のアーキテクチャ変更が必要と判明した(詳細は`detailed_design.md` §10.22参照)
 
 **スコープ外(意図的、後続フェーズへ):** `ts_parser_parse_string_encoding()`/`BufferSnapshot::extract()`自体の文書全体依存コスト解消(`TSInput`コールバックAPI採用、次フェーズ候補)、余白サイズのチューニング、大きなジャンプ時の一時的無彩色表示の緩和、`extractOutline()`(Breadcrumb)の可視範囲スコープ化(Phase 7h以来の独立した同期・全文書解析のまま継続)。
+
+### Phase 7u — `TSInput`コールバックAPI採用 (2026-07-31、実装完了後に全面revert)
+
+Phase 7t完了後、ユーザーが次候補として選んだ`TSInput`コールバックAPI採用に着手した。Phase 7tの実測(narrow window/full documentのコストがほぼ同一)から「`ts_parser_parse_string_encoding()`が毎回文書全体のテキスト実体化を要求すること自体がボトルネック」と仮説を立て、tree-sitterのコールバックベースAPI(`TSInput`+`ts_parser_parse()`)へ切り替える実装(`neomifes::syntax::TextSource`/`TextChunk`、`neomifes::render::BufferSnapshotTextSource`)を行った。実装は正しく完成し、Debug/Release/ubsanの870テスト全てgreen、clang-tidy新規警告0を確認した。
+
+**しかし一時的な診断計測で、当初の仮説が誤りだったと判明した:**
+
+- `BufferSnapshotTextSource::read()`は50万行文書の増分再解析で**実際に1回・8192バイトしか呼ばれていない**(文書全体1億1500万バイト中)ことを確認 — 遅延読み込みメカニズム自体は設計通り完璧に動作していた
+- にもかかわらず`ts_parser_parse()`単体のコストは約300〜325msで、`ts_tree_edit()`のコスト(0.02〜0.05ms)は無視できるほど小さかった
+- Phase 7tが除外していた`BufferSnapshot::extract()`(文書全体実体化)のコストを別途計測すると**わずか19.07ms**であり、Phase 7tの実際のエンドツーエンドコスト(`extract()`+`ts_parser_parse_string_encoding()`)は公正には約175msだった
+- **つまりPhase 7uの新方式(約300〜325ms)は、旧方式の公正な合計(約175ms)より約1.8倍遅い、明確な性能後退だった。** 真のボトルネックはテキスト実体化コストではなく、tree-sitterの`ts_parser_parse()`自身が保持木(`old_tree`)を使った再解析で内部的に払うコスト(木の再利用可否判定等、実際に読み直すバイト数とは無関係)にあると強く示唆される
+
+この結果をユーザーに報告し、**Phase 7u実装の全面revertを承認された。** `incremental_parser.h`/`.cpp`・`syntax_worker.cpp`はPhase 7t完了時点のコード(文字列ベース`ts_parser_parse_string_encoding()`)に戻し、`BufferSnapshotTextSource`関連の新規ファイル3点は削除した。詳細な計測値・今後の検討候補(tree-sitter内部実装の読解、バージョンアップ追跡等)は[`docs/issues/tree_sitter_incremental_parse_cost.md`](../issues/tree_sitter_incremental_parse_cost.md)に記録した。roadmap §7.11のDoD「1文字入力後の増分解析: ≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の対応方針は未定。
 
 ---
 

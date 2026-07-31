@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-30 (Phase 7s完了・push・CI green確認後、ユーザー選択で永続トークン列のデータ構造再設計(Phase 7t)を実装。`TokenPatch`/`applyTokenPatch()`/`reparseDelta()`を廃止し、可視範囲(+プリフェッチ余白)のみをカバーする`reparseRange()`へ全面置換した。ベンチマーク実測(Release): 5万行103ms→15.65ms(約6.6倍、DoD「≤50ms」達成)、50万行989ms→155.95ms(約6.4倍、DoD未達 — narrow window/full documentがほぼ同一コストになり、ボトルネックが`ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移ったと判明)。ローカルDebug/Release/ubsan全865件green・clang-tidy `src/`配下新規警告0まで確認済み・実アプリ視覚確認(小規模/25000行ファイルともプロセス生存確認)済み。**push済み(`b8bf882`/`802610b`)・CI green確認済み(run `30489212731`、1h47m35s)。** 次サブフェーズ候補は`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ)
+> **最終更新:** 2026-07-31 (Phase 7t push・CI green確認済み(`b8bf882`/`802610b`、run `30489212731`)後、ユーザー選択で`TSInput`コールバックAPI採用(Phase 7u)を実装したが、診断計測で明確な性能後退(旧文字列一括APIの公正な合計約175msに対し約300〜325ms、約1.8倍遅い)と判明し、ユーザー承認のもと全面revert。Phase 7t完了時点のコードに復元し(Release再ビルドで865/865 green確認)、発見内容は`docs/issues/tree_sitter_incremental_parse_cost.md`に記録した。§3.55参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達、次の対応方針は未定 — 次サブフェーズ候補は残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ・tree-sitter内部実装のさらなる調査)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -87,7 +87,8 @@
 | Phase 7r (追加言語対応 バッチ2: HTML/CSS/Shell/YAML/TOML/XML) | ✅ 完了 (push済み、CI green確認済み、§3.52参照) |
 | Phase 7s (追加言語対応 バッチ3: TypeScript/TSX/PHP/Markdown) | ✅ 完了 (push済み、CI green確認済み、§3.53参照) |
 | Phase 7t (可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達、push済み・CI green確認済み、§3.54参照) |
-| **次フェーズ選定 — `TSInput`コールバックAPI採用(大規模文書のDoD達成)/残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7u (`TSInput`コールバックAPI採用) | ❌ 実装完了後に全面revert (性能後退、Phase 7t状態に復元。§3.55参照) |
+| **次フェーズ選定 — 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ/tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1626,7 +1627,23 @@ Phase 7r/7s push・CI green確認後、ユーザーから次のPhaseとして**�
 
 **push・CI確認 (2026-07-29):** ユーザーの「push」指示でPhase 7t分の2コミット(`b8bf882`/`802610b`)を`origin/main`へpush。CI(run `30489212731`)が1h47m35sでsuccess完了したことを`gh run list`で確認した。
 
-**Phase 7tはpush済み・CI green確認済み。** 次フェーズは`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+**Phase 7tはpush済み・CI green確認済み。**
+
+### 3.55 Phase 7u (`TSInput`コールバックAPI採用) 実装完了後に全面revert (2026-07-31)
+
+Phase 7t完了後、ユーザーが次候補として`TSInput`コールバックAPI採用(推奨案)を選んだ。Phase 7tの実測(narrow window/full documentのコストがほぼ同一)から「`ts_parser_parse_string_encoding()`が毎回文書全体のテキスト実体化を要求すること自体がボトルネック」と仮説を立て、Plan Mode経由で承認を得て実装した。
+
+**実装内容:** `neomifes::syntax`に`TextChunk`/`TextSourceRead`/`TextSource`(関数ポインタ+payload)を新設し`IncrementalParser::reparseRange()`のシグネチャを文字列一括から差し替え。`neomifes::render`に`BufferSnapshotTextSource`(piece-table上を`kMaxChunkCodeUnits=4096`コード単位でキャップしながら遅延読み出す実装)を新設し、`SyntaxWorker::workerLoop()`から`BufferSnapshot::extract()`(文書全体materialization)を削除。テスト・ベンチマーク一式を新契約に追従させ、ローカルDebug/Release/ubsan全870テストgreen、clang-tidy新規警告0まで確認した。
+
+**しかし一時的な診断計測で、当初の仮説が誤りだったと判明した:**
+- `BufferSnapshotTextSource::read()`は50万行文書の増分再解析で**実際に1回・8192バイトしか呼ばれていない**(文書全体1億1500万バイト中) — 遅延読み込みメカニズム自体は設計通り完璧に動作
+- にもかかわらず`ts_parser_parse()`単体のコストは約300〜325ms(`ts_tree_edit()`は0.02〜0.05msで無視できる)
+- Phase 7tが除外していた`BufferSnapshot::extract()`のコストを別途計測すると**わずか19.07ms**であり、Phase 7tの実際のエンドツーエンド(公正な合計)は約175msだった
+- **Phase 7uの新方式(約300〜325ms)は、旧方式の公正な合計(約175ms)より約1.8倍遅い、明確な性能後退だった。** 真のボトルネックはテキスト実体化コストではなく、tree-sitterの`ts_parser_parse()`自身が保持木を使った再解析で内部的に払うコスト(実際に読み直すバイト数とは無関係)にあると強く示唆される
+
+この結果をAskUserQuestionで報告し、**Phase 7u実装の全面revertが選ばれた。** `git checkout`で`incremental_parser.h`/`.cpp`・`syntax_worker.cpp`等をPhase 7t完了時点のコードに戻し、`buffer_snapshot_text_source.h`/`.cpp`・`render_buffer_snapshot_text_source_test.cpp`の新規3ファイルを削除。revert後のRelease再ビルドで865/865テストgreenを確認(Phase 7t時点のテスト数と一致)。詳細な計測値・今後の検討候補は[`docs/issues/tree_sitter_incremental_parse_cost.md`](../issues/tree_sitter_incremental_parse_cost.md)に記録した。
+
+**roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の対応方針は未定。** 次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題あり)・ミニマップ・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。
 
 ---
 
@@ -1682,12 +1699,19 @@ Phase 7a〜7tは全てpush済み・CI green確認済み(Phase 7t: run `304892127
 **roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語: SQL/PowerShell/VB/VBS/BAT/INI
 は公式org不在のため対象外のまま)。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7tで
 小〜中規模文書では達成(5万行15.65ms)したが、大規模文書は未達のまま(50万行155.95ms、
-§3.54参照) — narrow window/full documentがほぼ同一コストになったことから、ボトルネックが
-`ts_parser_parse_string_encoding()`自体(文書サイズ比例のtree-sitter再解析コスト)へ移った
-と判明し、`TSInput`コールバックAPI採用という次サブフェーズへ意図的に据え置いている。**
+§3.54参照)。**
 
-**次フェーズは`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語対応バッチ4・
-ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
+**Phase 7u(`TSInput`コールバックAPI採用)を実装・全テストgreenまで確認したが、診断計測で
+`read()`の遅延読み込み自体は正しく動作している(1回・8192バイトのみ)にもかかわらず
+`ts_parser_parse()`自体が旧文字列一括API(`extract()`込みの公正な合計約175ms)より約1.8倍
+遅い(約300〜325ms)ことが判明し、明確な性能後退と確認された。ユーザー承認のもと全面
+revertし、Phase 7t完了時点のコードに戻した(§3.55参照、詳細は
+`docs/issues/tree_sitter_incremental_parse_cost.md`)。roadmap DoDは大規模文書で引き続き
+未達のまま、次の対応方針は未定 — 安易にTSInput的アプローチを再試行せず、まずtree-sitter
+自身の内部実装を読解してから設計すること。**
+
+**次フェーズは残り6言語対応バッチ4・ミニマップ・(未確定)tree-sitter内部実装のさらなる
+調査のいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

@@ -2133,4 +2133,28 @@ roadmap §7の残り候補(永続トークン列のデータ構造再設計/残�
 
 **次回:** Phase 7tはpush済み・CI green確認済み。次は`TSInput`コールバックAPI採用(大規模文書のDoD達成)・残り6言語対応バッチ4・ミニマップのいずれか、着手前にPlan Modeで詳細設計を起こすこと。
 
+## Session 65 (2026-07-31): Phase 7u — `TSInput`コールバックAPI採用 → 実装完了後に全面revert
+
+前セッション(Session 64、Phase 7t完了・push・CI green確認済み)の続き。ユーザーから「push」指示でPhase 7t分をpush、CI(run `30489212731`)のsuccess完了を`gh run list`で確認した後、AskUserQuestionで次候補(`TSInput`コールバックAPI採用/残り6言語対応バッチ4/ミニマップ)を提示し、**`TSInput`コールバックAPI採用(推奨案)**が選ばれた。
+
+**Plan Mode着手前調査:** tree-sitter公式ヘッダ(`tree_sitter/api.h`)を直接読解し`TSInput`/`ts_parser_parse()`の契約を確認。`document::BufferSnapshot::pieceView()`がこの`read()`実装の理想的な材料になると判明し、`neomifes::syntax`は`document::BufferSnapshot`型を直接知るべきでないという既存の層分離方針(`ReparseEdit`/`toReparseEdit()`の前例)に従い、`TextSource`/`TextChunk`(`neomifes::syntax`側の最小抽象)+`BufferSnapshotTextSource`(`neomifes::render`側の実装)という設計にした。
+
+**実装:** `IncrementalParser::reparseRange()`のシグネチャを`std::u16string_view text`から`TextSource source`(関数ポインタ+payload)へ全面置換し、`ts_parser_parse_string_encoding()`を`TSInput`経由の`ts_parser_parse()`へ切替。`SyntaxWorker::workerLoop()`から`BufferSnapshot::extract()`(文書全体materialization)を削除し`BufferSnapshotTextSource`(`kMaxChunkCodeUnits=4096`でキャップした遅延読み出し)経由に置換。単体テスト5件・既存テスト・ベンチマーク一式を新契約に追従させ、ローカルDebug/Release/ubsanの870テスト全てgreen、clang-tidy新規警告0(designated-initializer未使用の指摘を3箇所修正)まで確認した。
+
+**検証中に予想外の結果が判明:** ベンチマーク実測が旧方式とほぼ同水準(改善なし)だったため、一時的な診断計測(`std::chrono`によるタイミング分離計測、`read()`呼び出し回数/バイト数カウンタ)を追加して原因を調査した。
+
+- `BufferSnapshotTextSource::read()`は50万行文書の増分再解析で**実際に1回・8192バイトしか呼ばれていない**(文書全体1億1500万バイト中) — 遅延読み込みメカニズム自体は設計通り完璧に動作していた
+- `ts_tree_edit()`のコストは0.02〜0.05ms(無視できる)、`ts_parser_parse()`単体のコストは約300〜325msだった
+- Phase 7tが除外していた`BufferSnapshot::extract()`のコストを別途計測すると**わずか19.07ms**であり、Phase 7tの実際のエンドツーエンド(公正な合計)は約175msだった
+- **つまりPhase 7uの新方式(約300〜325ms)は、旧方式の公正な合計(約175ms)より約1.8倍遅い、明確な性能後退だった。** 真のボトルネックはテキスト実体化コストではなく、tree-sitterの`ts_parser_parse()`自身が保持木を使った再解析で内部的に払うコスト(実際に読み直すバイト数とは無関係)にあると強く示唆される — 当初の仮説は誤りだったと確定した
+
+この結果をAskUserQuestionでユーザーに報告し(「Phase 7uを全面revert」/「実装は残し正直にドキュメント化」/「さらに調査を続ける」の3択)、**全面revert(推奨案)が選ばれた。** `git checkout`で`incremental_parser.h`/`.cpp`・`syntax_worker.cpp`等をPhase 7t完了時点のコード(コミット`802610b`相当)に戻し、`buffer_snapshot_text_source.h`/`.cpp`・`render_buffer_snapshot_text_source_test.cpp`の新規3ファイルを削除した。revert後のRelease再ビルドで865/865テストgreen(Phase 7t時点のテスト数と一致)を確認した。
+
+**ドキュメント同期:**
+- 新規`docs/issues/tree_sitter_incremental_parse_cost.md`に、実施内容・実測値・結論・今後の検討候補(tree-sitter内部実装の読解、バージョンアップ追跡、増分再解析を諦めた設計案等)を詳細記録
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7u ❌全面revert」行を追加(次候補行を「7v〜」へ更新)、§7に新規「Phase 7u」小節を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.55(revert記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の対応方針は未定。次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。安易にTSInput的アプローチを再試行せず、`docs/issues/tree_sitter_incremental_parse_cost.md`の教訓(遅延読み込みの正しさを確認しても、tree-sitter内部の保持木依存コストは解消されない)を踏まえること。コミットはPhase 7u実装が一切残っていない(Phase 7t状態への復元のみの)ため、Issue doc新設分のみコミットが必要。
+
 <!-- 次セッションはここに追記 -->
