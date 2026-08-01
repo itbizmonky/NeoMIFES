@@ -5,6 +5,7 @@
 add_library(neomifes_app_input STATIC
     editor_input.cpp
     document_open.cpp
+    plugin_core_api_bridge.cpp
 )
 add_library(neomifes::app_input ALIAS neomifes_app_input)
 
@@ -24,6 +25,10 @@ target_link_libraries(neomifes_app_input
         # outline_bridge.h (Phase 7g) exposes syntax::OutlineNode in its
         # public signature - same reasoning as neomifes::search above.
         neomifes::syntax
+        # plugin_core_api_bridge.h (Phase 8b) exposes NeoMifesCoreApi/
+        # NeoMifesDocument (plugin_sdk.h) in its public signature - same
+        # reasoning as neomifes::search/neomifes::syntax above.
+        neomifes::plugin_sdk
     PRIVATE
         neomifes::compile_options
         neomifes::util

@@ -105,6 +105,40 @@ public:
     [[nodiscard]] LineNumber offsetToLine(TextPos pos) const;
     [[nodiscard]] TextPos    lineToOffset(LineNumber line) const;
 
+    // Returns line `line`'s text, EXCLUDING the trailing '\n' - same
+    // convention as RenderPipeline::extractLineText() (render_pipeline.cpp,
+    // Phase 7o). `line` is clamped the same way every other line query in
+    // this class already is (lineToOffset()/offsetToLine() delegate to
+    // LineIndex, which clamps out-of-range input - see line_index.cpp), so
+    // this method has no failure mode.
+    //
+    // Deliberately NOT shared with RenderPipeline::extractLineText(): that
+    // method reads through RenderPipeline's own m_cachedSnapshot member (a
+    // Phase 3c/ADR-010 perf optimization - "don't call snapshot() every
+    // frame", since it runs once per visible line on every repaint).
+    // Document has no per-frame call rate and no cached snapshot member of
+    // its own, so this takes a fresh snapshot() on every call - sharing an
+    // implementation across these two different performance contexts would
+    // add indirection without removing duplication that matters (CLAUDE.md
+    // rule 10).
+    [[nodiscard]] std::u16string lineText(LineNumber line) const;
+
+    // Converts a (line, column) pair to a TextPos (Phase 8b, for the
+    // NeoMifesCoreApi plugin bridge). `column` is a UTF-16 code-unit offset
+    // from the line's start (same convention as EditDelta::startColumn/
+    // newEndColumn above). Computed as lineToOffset(line) + column, clamped
+    // to length() so an out-of-range column never produces an out-of-range
+    // TextPos.
+    //
+    // Deliberately does NOT further clamp `column` to stay within *this
+    // line's own* bounds - e.g. against a multi-line document,
+    // (line=0, column=999) returns length() (the document's own end),
+    // silently spilling onto later lines rather than clamping to line 0's
+    // actual end. This is a minimal, documented boundary-clamp choice (only
+    // the document's own end is guaranteed), not a promise of per-line
+    // precision - see ADR-016.
+    [[nodiscard]] TextPos lineColumnToOffset(LineNumber line, std::uint32_t column) const;
+
 private:
     void ensureLineIndex() const;
 

@@ -1563,6 +1563,56 @@ private:
 
 **意図的にスコープ外とした項目:** `NeoMifesCoreApi`(`docs/issues/plugin_core_api_document_gap.md`参照)、`permissions`ビットフィールド+権限UI、Windows AppContainer/Job Objectサンドボックス、別プロセス実行+IPC、`manifest.json5`+Authenticode署名検証、マーケットプレースクライアント、`onDocumentChanged`+非同期ワーカー配線、`Ctrl+Shift+X`プラグイン管理UI、`core::CommandDispatcher`へのプラグインコマンド受け入れ、`src/app/main.cpp`への配線。詳細は`master_roadmap.md` §8.7参照。
 
+### 8.5 `NeoMifesCoreApi` ドキュメント操作ブリッジ (Phase 8b実装)
+
+§8.4が延期した`NeoMifesCoreApi`のうち、ドキュメント操作系4関数(`insertText`/`deleteRange`/`getLineCount`/`getLineText`)を実装した。`registerCommand`/`showToast`/ネットワーク・ファイルシステム系関数は、UI側の受け皿・`permissions`権限モデルがまだ無いため引き続きスコープ外(ADR-016参照)。
+
+**`document::Document`への追加API:**
+```cpp
+[[nodiscard]] std::u16string lineText(LineNumber line) const;
+[[nodiscard]] TextPos lineColumnToOffset(LineNumber line, std::uint32_t column) const;
+```
+`lineText()`は`RenderPipeline::extractLineText()`(Phase 7o)と実質同じロジックだが、意図的に実装を共有しない(前者は`m_cachedSnapshot`を使う毎フレーム最適化、後者は毎回`snapshot()`を取り直す低頻度呼び出し向け)。`lineColumnToOffset()`は`min(lineToOffset(line) + column, length())`という最小限のクランプのみ行い、範囲外`column`は行の境界ではなく文書全体の終端にクランプする(行内クランプは保証しない、詳細はADR-016)。
+
+**`plugin_sdk.h`への追加(C ABI):**
+```c
+#define NEOMIFES_CORE_API_VERSION 1u
+
+typedef struct NeoMifesDocument NeoMifesDocument;  // opaque
+
+typedef struct NeoMifesCoreApi {
+    unsigned int apiVersion;
+    void         (*insertText)(NeoMifesDocument* doc, const wchar_t* text, unsigned line, unsigned column);
+    void         (*deleteRange)(NeoMifesDocument* doc, unsigned lineStart, unsigned columnStart,
+                                unsigned lineEnd, unsigned columnEnd);
+    unsigned int (*getLineCount)(NeoMifesDocument* doc);
+    unsigned int (*getLineText)(NeoMifesDocument* doc, unsigned line, wchar_t* buffer, unsigned bufferLen);
+} NeoMifesCoreApi;
+
+typedef struct NeoMifesPluginContext {
+    void*                  userData;
+    const NeoMifesCoreApi* coreApi;  // Phase 8b: 非nullは PluginHost::load() が渡した場合のみ
+    NeoMifesDocument*      document; // 同上
+} NeoMifesPluginContext;
+```
+`NeoMifesPluginVTable`(`onLoad`/`onUnload`のシグネチャ)は無変更 — `coreApi`/`document`をcontextフィールド経由で渡す設計にすることで、Phase 8aの4サンプルプラグインとのソース互換性を維持した(ADR-016)。
+
+**レイヤリング(`neomifes::plugin`はDocument Engine非依存のまま):** `PluginHost::load(dllPath, coreApi = nullptr, document = nullptr)`は2つの生ポインタを`NeoMifesPluginContext`へ転送するだけで、`document::Document`型を一切知らない(CLAUDE.md §3、Plugin EngineはDocument Engineより下位)。実際に`NeoMifesDocument*`を`document::Document*`へ`reinterpret_cast`し本物のメソッドを呼ぶ実装は、`neomifes::document`/`neomifes::plugin_sdk`双方に依存できる`src/app/plugin_core_api_bridge.h`/`.cpp`(`neomifes_app_input`ターゲット、`document_open.h`/`outline_bridge.h`と同じ糊付け層パターン)に置いた:
+```cpp
+namespace neomifes::app {
+[[nodiscard]] const NeoMifesCoreApi* buildPluginCoreApi() noexcept;
+[[nodiscard]] NeoMifesDocument* toNeoMifesDocument(document::Document& document) noexcept;
+}
+```
+
+**`deleteRange`の反転レンジ正規化:** `PieceTree::eraseRange()`は`start>=end`のレンジを安全な no-op として扱う(メモリ破壊ではない)。プラグインの`(lineStart,columnStart)`→`(lineEnd,columnEnd)`が解決後に反転していた場合、ブリッジは`std::swap()`で正規化してから`Document::eraseRange()`へ渡す — 正規化しないと「意図した削除が黙って何も起きない」という挙動になるため。
+
+**`getLineText`の境界チェック付きコピー契約:** roadmapスケッチの`void`シグネチャから逸脱し、Win32スタイルの「収まらない分は切り詰めてnull終端、コピーした文字数を返す」契約にした(`GetWindowTextW`等と同型)。
+
+**実測検証:** 新規サンプルプラグイン`document_editing_plugin`(`onLoad`が`ctx->coreApi->insertText()`を実際に呼ぶ)を`tests/integration/plugin_document_editing_test.cpp`でロードし、実DLL境界を越えた往復が本物の`document::Document`を正しく変更することを実測で確認した(Debug/Release/ubsan全構成green)。
+
+**既知のギャップ(意図的、スコープ外):** `NeoMifesCoreApi`は権限モデルが無いため**セキュリティ境界ではない**(ロード済みの任意プラグインが無制限にドキュメントを編集できる)。プラグイン発の編集は`core::CommandDispatcher`/`UndoStack`を経由しないため`Ctrl+Z`で取り消せない。両方ともADR-016に明記。
+
 ---
 
 ## 9. Encoding Engine 詳細

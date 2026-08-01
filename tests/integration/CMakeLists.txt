@@ -206,3 +206,36 @@ set_tests_properties(plugin_load PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# plugin_document_editing_test - loads the REAL built document_editing_plugin
+# sample DLL (Phase 8b, ADR-016) via PluginHost::load(), passing a real
+# NeoMifesCoreApi (neomifes::app::buildPluginCoreApi()) bound to a real
+# document::Document, and asserts the plugin's onLoad actually mutated that
+# document through the C-ABI boundary - proof (not assumption, CLAUDE.md
+# rule 3) that the NeoMifesCoreApi round trip works end-to-end.
+add_executable(neomifes_plugin_document_editing_test
+    plugin_document_editing_test.cpp
+)
+
+target_link_libraries(neomifes_plugin_document_editing_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::plugin
+        neomifes::document
+        neomifes::app_input
+        GTest::gtest
+)
+
+set_target_properties(neomifes_plugin_document_editing_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    plugin_document_editing
+    COMMAND neomifes_plugin_document_editing_test $<TARGET_FILE:document_editing_plugin>
+)
+
+set_tests_properties(plugin_document_editing PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

@@ -60,7 +60,7 @@ roadmap §8 のスケッチは不透明な前方宣言ハンドルを想定し�
 - サンプル DLL 4種(`hello_plugin`/`hello_plugin_bad_api_version`/`crashing_plugin`/`throwing_plugin`、本リポジトリ初の`MODULE` CMake ターゲット)
 
 ### 実装しない(Phase 8b 以降へ)
-- `NeoMifesCoreApi`(insertText/deleteRange/getLineCount/getLineText/registerCommand/showToast/httpRequest/readPluginData/writePluginData)
+- `NeoMifesCoreApi`(insertText/deleteRange/getLineCount/getLineText/registerCommand/showToast/httpRequest/readPluginData/writePluginData) — **2026-08-02 更新:** このうち`insertText`/`deleteRange`/`getLineCount`/`getLineText`の4関数はPhase 8bで実装済み。詳細は[ADR-016](ADR-016-plugin-core-api-bridge.md)参照。残る`registerCommand`/`showToast`/`httpRequest`/`readPluginData`/`writePluginData`は引き続き未実装(ADR-016のスコープ外リスト参照)。
 - `permissions`ビットフィールド+権限 UI
 - Windows AppContainer・Job Object リソース制限・別プロセス実行+IPC(真のセキュリティ隔離)
 - `manifest.json5`パース/スキーマ検証・Authenticode 署名検証
@@ -73,7 +73,7 @@ roadmap §8 のスケッチは不透明な前方宣言ハンドルを想定し�
 
 - **真のセキュリティ隔離(AppContainer/別プロセス):** マーケットプレース等でユーザーが未検証のサードパーティプラグインを実行する運用が具体化した時点(同一プロセス内 SEH では意図的な悪意には対抗できないため、その時点で再設計必須)
 - **`apiVersion`の min/max 範囲判定:** 次に`NEOMIFES_PLUGIN_API_VERSION`を上げる際、破壊的変更かどうかが判明した時点
-- **`NeoMifesCoreApi`:** `docs/issues/plugin_core_api_document_gap.md`の完了条件(`Document`側の行+桁⇔オフセット変換 API の設計)を満たした時点
+- **`NeoMifesCoreApi`:** ~~`docs/issues/plugin_core_api_document_gap.md`の完了条件(`Document`側の行+桁⇔オフセット変換 API の設計)を満たした時点~~ → 2026-08-02、Phase 8bで満たされ`insertText`/`deleteRange`/`getLineCount`/`getLineText`を実装済み([ADR-016](ADR-016-plugin-core-api-bridge.md)参照)。`registerCommand`/`showToast`/ネットワーク・ファイルシステム系関数は引き続き未評価のまま。
 
 ## 参考
 - `docs/design/master_roadmap.md` §8

@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-01 (Phase 8a(プラグインエンジン最小限PoC)完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionでPhase 8b候補と残タスク(残り6言語バッチ4/tree-sitter内部実装調査)を提示し、**残り6言語対応バッチ4**が選ばれた。着手前の`gh api`直接確認(CLAUDE.mdルール3)で、想定より品質の低い状況が判明: **VB/VBScriptは調査した全候補がライセンス不明(license:null)で対象化不可**(`docs/issues/vb_vbscript_grammar_no_licensed_candidate.md`)、**SQL(`DerekStride/tree-sitter-sql`、243★)は`parser.c`未コミットでtree-sitter CLI(Node.js)の新規導入が必要**(`docs/issues/sql_grammar_needs_tree_sitter_cli.md`)なため次点。この状況をAskUserQuestionで再提示し、**PowerShell/INI/Batchの3言語のみ実装(推奨案)**が選ばれた(個人メンテナ文法、Phase 7n1/7r/7sの公式org文法とは品質階層が異なる旨を明記)。実機probe(通常ダンプ+`walkTree()`相当ロジック再現の2種類)で正確な期待値を取得し実装。ローカルDebug/Release/ubsan全905件green・clang-tidy新規警告0(既存パターンのみ確認)・実アプリ視覚確認(3言語ともプロセス生存確認)済み。roadmap §7.2必須23言語のうち21言語まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。§3.59参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
+> **最終更新:** 2026-08-02 (Phase 8a・7xのpush・CI green確認後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(NeoMifesCoreApi橋渡し設計/AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**NeoMifesCoreApi橋渡し設計(推奨案)**が選ばれた。Plan agentによる詳細設計+私自身による実ファイル検証(`document.h`/`.cpp`/`piece_tree.cpp`/`plugin_sdk.h`/`plugin_host.h`/`.cpp`等)で、`PieceTree::eraseRange()`が反転レンジ(start>end)を安全なno-opとして扱う(メモリ破壊ではなく正しさの問題)という重要な訂正を得た上でPlan Mode承認。`document::Document::lineText()`/`lineColumnToOffset()`新設、`plugin_sdk.h`へ`NeoMifesCoreApi`(insertText/deleteRange/getLineCount/getLineTextの4関数のみ)追加、`neomifes::plugin`はDocument Engine非依存のまま維持しブリッジ実装を`src/app/plugin_core_api_bridge.h`/`.cpp`に配置(CLAUDE.md §3レイヤリング)。新規サンプルプラグイン`document_editing_plugin`+統合テストで実DLL境界越しのCoreApi往復を実測検証。ローカルDebug/Release/ubsan全931件green・clang-tidy新規警告0(`std::copy_n`の`bugprone-suspicious-stringview-data-usage`を`.data()`→`.begin()`で解消)。ADR-016起票。§3.60参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -91,8 +91,9 @@
 | Phase 7v (ミニマップ、簡易版・スクロール追従型) | ✅ 完了 (実測avgFrameNs≈16.53ms・実アプリ視覚確認済み、§3.56参照) |
 | Phase 7w (ミニマップ「文書全体俯瞰型」拡張、遅延ポピュレーション方式) | ✅ 完了 (実測avgFrameNs≈16.50ms・実アプリ視覚確認済み、§3.57参照) |
 | Phase 8a (プラグインエンジン 最小限PoC: C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.58参照) |
-| Phase 7x (追加言語対応 バッチ4: PowerShell/Ini/Batch、個人メンテナ文法。SQL/VB/VBScriptは調査の上対象外) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.59参照) |
-| **次フェーズ選定 — `NeoMifesCoreApi`橋渡し設計 / AppContainerサンドボックス(Phase 8b〜) / tree-sitter内部実装調査 / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7x (追加言語対応 バッチ4: PowerShell/Ini/Batch、個人メンテナ文法。SQL/VB/VBScriptは調査の上対象外) | ✅ 完了 (push済み、CI green確認済み) |
+| Phase 8b (`NeoMifesCoreApi`橋渡し実装: insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.60参照) |
+| **次フェーズ選定 — AppContainerサンドボックス / `permissions`権限モデル / registerCommand・showToast / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1788,7 +1789,46 @@ Phase 8a完了後、ユーザーから「次のPhaseに進め」と指示され�
 
 **スコープ外(意図的、後続バッチへ):** SQL(`parser.c`未コミット)、VB/VBScript(ライセンス不明)、SAP ABAP(未調査継続)、新3言語の`extractOutline()`シンボル抽出ロジック本体。
 
-**Phase 7xはコミット済み、pushはユーザーの明示指示待ち。** roadmap §7.2必須23言語のうち21言語まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。次フェーズは`NeoMifesCoreApi`橋渡し設計/AppContainerサンドボックス(Phase 8b〜)/tree-sitter内部実装調査/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+**Phase 7xはpush済み・CI green確認済み。** roadmap §7.2必須23言語のうち21言語まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。
+
+---
+
+### 3.60 Phase 8b (`NeoMifesCoreApi`橋渡し実装) 完了記録 (2026-08-02)
+
+Phase 8a・7xのpush・CI green確認後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`NeoMifesCoreApi`橋渡し設計/AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**`NeoMifesCoreApi`橋渡し設計(推奨案)**が選ばれた — Phase 8aが着手前調査で明確化した唯一の必須前提条件(`docs/issues/plugin_core_api_document_gap.md`)であり、スコープが最も具体的に固まっていた。
+
+**着手前調査(Plan agentによる詳細設計+私自身による実ファイル検証、CLAUDE.mdルール3)で得た重要な訂正:**
+- `PieceTree::eraseRange()`(`piece_tree.cpp:522`)は`range.start >= end`ガードを持ち、**反転レンジ(start>end)を安全なno-opとして扱う**(メモリ破壊ではない)。当初「反転レンジは危険」という前提で計画していたが、Plan agentが実装を追跡してこれを発見・訂正した。ブリッジ層での正規化は安全性のためではなく、意図した削除が黙って起きないという正しさの問題への対処として行う。
+
+**設計方針の要点(詳細は[ADR-016](../decisions/ADR-016-plugin-core-api-bridge.md)参照):**
+- `document::Document`に`lineText(LineNumber)`/`lineColumnToOffset(LineNumber, uint32_t)`の2メソッドのみ追加。`RenderPipeline::extractLineText()`とは性能文脈の違い(毎フレーム vs. 低頻度呼び出し)を理由に実装を共有しない。
+- `plugin_sdk.h`に`NeoMifesCoreApi`(`insertText`/`deleteRange`/`getLineCount`/`getLineText`の4関数のみ)、独立した`NEOMIFES_CORE_API_VERSION`、`NeoMifesPluginContext`への`coreApi`/`document`フィールド追加。`NeoMifesPluginVTable`のシグネチャは無変更(Phase 8aの4サンプルプラグインとのソース互換性維持)。
+- **レイヤリング:** `neomifes::plugin`(`PluginHost`)は`document::Document`型を一切知らないまま据え置き(CLAUDE.md §3、Plugin EngineはDocument Engineより下位)、実際のブリッジ実装(`buildPluginCoreApi()`/`toNeoMifesDocument()`)は`neomifes::document`/`neomifes::plugin_sdk`双方に依存できる`src/app/plugin_core_api_bridge.h`/`.cpp`(`document_open.h`/`outline_bridge.h`と同じ糊付け層パターン)に配置。`PluginHost::load()`は`coreApi`/`document`のデフォルトnullptr引数2つを追加するのみで既存呼び出しは無改修。
+- `deleteRange`は解決後start>endならswapして正規化(上記訂正の直接的な対応、安全性のためではなく正しさのため)。
+- `getLineText`はWin32スタイルの境界チェック付きコピー契約(`unsigned`を返す、書き込んだ文字数、truncate・null終端)。roadmapスケッチの`void`から意図的に逸脱。
+
+**実装:** `document.h`/`.cpp`(2メソッド)、`plugin_sdk.h`(`NeoMifesCoreApi`構造体+context拡張)、新規`src/app/plugin_core_api_bridge.h`/`.cpp`、`plugin_host.h`/`.cpp`(`load()`シグネチャ拡張)、CMake配線4ファイル(`src/app/CMakeLists.txt`/ルート/`tests/unit`/`tests/integration`)、新規サンプルプラグイン`document_editing_plugin`。
+
+**テスト:** `document_document_test.cpp`に`DocumentLineTextTest`/`DocumentLineColumnToOffsetTest`各4〜5件、新規`app_plugin_core_api_bridge_test.cpp`(ヘッドレス、DLL不要、実`document::Document&`に対しC関数ポインタを直接呼ぶ、反転レンジ正規化の直接検証含む)、新規`tests/integration/plugin_document_editing_test.cpp`(実DLL+実`PluginHost`+実`document_editing_plugin.dll`でCoreApi往復を実測検証)。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全931件green**。
+- clang-tidy: `src/`3ファイル(`document.cpp`/`plugin_core_api_bridge.cpp`/`plugin_host.cpp`)は新規警告0(`WarningsAsErrors`)。ただし1件実際に修正: `std::copy_n(src.data(), ...)`が`bugprone-suspicious-stringview-data-usage`を検出したため`src.begin()`へ変更(意味は同一、null終端非保証の`.data()`呼び出しという誤検知リスクを回避)。テスト/サンプルプラグインの警告(整数リテラル小文字`u`サフィックス、グローバル変数命名)は全て既存ファイル(`plugin_load_test.cpp`等)と同一パターンであることを確認。
+- **実アプリ視覚確認は不要**(Phase 8aと同じ「main.cppに一切触れないヘッドレス変更」、正しさの証明は統合テストの実DLL経由往復で完結)。
+
+**完了条件:**
+- [x] `Document::lineText()`/`lineColumnToOffset()`実装+単体テスト
+- [x] `plugin_sdk.h`へ`NeoMifesCoreApi`追加(4関数)
+- [x] `PluginHost::load()`拡張(既存呼び出し無改修)
+- [x] ブリッジ実装(`src/app/plugin_core_api_bridge.h`/`.cpp`)+単体テスト
+- [x] 実DLL経由の往復を実証する統合テスト
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ADR-016起票
+- [x] `docs/issues/plugin_core_api_document_gap.md`完了条件4項目にチェック
+
+**スコープ外(意図的、後続サブフェーズへ):** `registerCommand`/`showToast`(UI側受け皿未整備)、`httpRequest`/`readPluginData`/`writePluginData`+`permissions`(権限モデル無し)、`onDocumentChanged`、`Ctrl+Shift+X`UI、`manifest.json5`+署名検証、マーケットプレース、AppContainer/Job Objectサンドボックス、`src/app/main.cpp`への配線、**プラグイン発の編集を`core::CommandDispatcher`/`UndoStack`経由にしてUndo可能にすること**(既知のギャップ、ADR-016に明記)。
+
+**Phase 8bはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス/`permissions`権限モデル/registerCommand・showToast/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
 ---
 
@@ -1873,7 +1913,7 @@ ubsan全865件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrame
 強調矩形を連続比例配分へ書き換えた。`main.cpp`は無変更(公開シグネチャ不変)。ローカル
 Debug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`実測
 (avgFrameNs≈16.50ms、Phase 7vベースラインと同水準)・実アプリでのミニマップ全体俯瞰表示+
-クリックジャンプ視覚確認済み。コミット済み、pushはユーザーの明示指示待ち。**
+クリックジャンプ視覚確認済み。push済み・CI green確認済み。**
 
 **続けてPhase 8a(プラグインエンジン 最小限PoC)を実装・完了した(§3.58参照)。roadmap §8の
 完全なv2.0ビジョン(サンドボックス・IPC・署名検証・マーケットプレース)は1PRには大きすぎる
@@ -1886,7 +1926,7 @@ Debug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`�
 (throw)双方の隔離を実測で確認(推測ではなく実証)。ADR-015起票済み。`NeoMifesCoreApi`・
 権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI配線は全て
 明示的に延期(`docs/issues/plugin_core_api_document_gap.md`)。ローカルDebug/Release/ubsan
-全green・clang-tidy新規警告0。コミット済み、pushはユーザーの明示指示待ち。**
+全green・clang-tidy新規警告0。push済み・CI green確認済み。**
 
 **続けてPhase 7x(追加言語対応バッチ4: PowerShell/Ini/Batch)を実装・完了した(§3.59参照)。
 AskUserQuestionで残り6言語バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)が選ばれた後、`gh api`
@@ -1899,11 +1939,27 @@ Phase 7n1/7r/7sの公式org文法とは品質階層が異なる旨を明記)。�
 `walkTree()`相当ロジック再現のトークンシミュレーション)で正確な期待値を取得して実装。
 ローカルDebug/Release/ubsan全905件green・clang-tidy新規警告0(既存パターンのみ確認)・
 実アプリ視覚確認(3言語ともプロセス生存確認)済み。roadmap §7.2必須23言語のうち21言語
-まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。コミット済み、pushはユーザーの明示指示待ち。**
+まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。push済み・CI green確認済み。**
 
-**次フェーズは`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)の
-いずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装の
-さらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。**
+**続けてPhase 8b(`NeoMifesCoreApi`橋渡し実装)を実装・完了した(§3.60参照)。AskUserQuestion
+で4候補(CoreApi橋渡し/AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)
+を提示し、**CoreApi橋渡し設計(推奨案)**が選ばれた。Plan agentによる詳細設計+実ファイル
+検証で重要な訂正を得た: `PieceTree::eraseRange()`は反転レンジ(start>end)を安全なno-opと
+して扱う(メモリ破壊ではなく正しさの問題)。`document::Document::lineText()`/
+`lineColumnToOffset()`新設、`plugin_sdk.h`へ`NeoMifesCoreApi`(insertText/deleteRange/
+getLineCount/getLineTextの4関数のみ、registerCommand/showToast/ネットワーク系は権限
+モデル無しのため引き続き延期)追加。`neomifes::plugin`はDocument Engine非依存のまま維持し
+(CLAUDE.md §3レイヤリング)、ブリッジ実装は`src/app/plugin_core_api_bridge.h`/`.cpp`
+(既存の`document_open.h`/`outline_bridge.h`と同じ糊付け層パターン)に配置。新規サンプル
+プラグイン`document_editing_plugin`+統合テストで実DLL境界越しのCoreApi往復を実測検証。
+ローカルDebug/Release/ubsan全931件green・clang-tidy新規警告0(`std::copy_n`の
+`bugprone-suspicious-stringview-data-usage`を`.data()`→`.begin()`で解消)。ADR-016起票済み。
+コミット済み、pushはユーザーの明示指示待ち。**
+
+**次フェーズはAppContainerサンドボックス/`permissions`権限モデル/registerCommand・
+showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。他の未着手候補
+としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLI
+ビルド依存導入検討も保留中。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

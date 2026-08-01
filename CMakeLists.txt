@@ -101,6 +101,11 @@ if(NEOMIFES_BUILD_TESTS)
     add_subdirectory(plugins/samples/hello_plugin_bad_api_version)
     add_subdirectory(plugins/samples/crashing_plugin)
     add_subdirectory(plugins/samples/throwing_plugin)
+    # document_editing_plugin (Phase 8b, ADR-016) - proves NeoMifesCoreApi's
+    # insertText round-trips through the DLL boundary into a real
+    # document::Document. tests/integration/plugin_document_editing_test.cpp
+    # is its only consumer, same "headless-only" reasoning as above.
+    add_subdirectory(plugins/samples/document_editing_plugin)
     add_subdirectory(tests)
 endif()
 

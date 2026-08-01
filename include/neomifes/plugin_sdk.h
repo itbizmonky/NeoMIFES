@@ -1,6 +1,7 @@
 #pragma once
 
-// NeoMIFES Plugin SDK - C ABI header (Phase 8a: minimal plugin host PoC).
+// NeoMIFES Plugin SDK - C ABI header (Phase 8a: minimal plugin host PoC;
+// Phase 8b: NeoMifesCoreApi document-manipulation bridge).
 //
 // STABLE, DISTRIBUTABLE contract between NeoMIFES.exe and third-party
 // plugin DLLs. Zero dependencies on any other NeoMIFES header (src/**) - a
@@ -13,16 +14,15 @@
 //     Phase 8 sub-phase).
 //   - NeoMifesPluginVTable: onLoad/onUnload only. NO onDocumentChanged
 //     (needs async worker + PostMessageW plumbing this PoC does not build).
-//   - NO NeoMifesCoreApi: the roadmap sketch's insertText/getLineText/...
-//     (expressed in terms of line+column) does not match
-//     document::Document's actual public API (no getLineText(), no
-//     line+column<->offset conversion) - designing that bridge properly is
-//     real work deferred to its own sub-phase (CLAUDE.md rule 3: no
-//     guessing). See docs/issues/plugin_core_api_document_gap.md.
 //   - NeoMifesPluginContext is a TRANSPARENT struct with a `userData`
 //     field, not the roadmap's opaque forward-declared handle - a common
 //     C-ABI idiom (cf. Win32 GWLP_USERDATA, libuv's void* data). Deliberate
 //     deviation, documented in ADR-015.
+//
+// Phase 8b adds NeoMifesCoreApi (insertText/deleteRange/getLineCount/
+// getLineText only - see that struct's own comment below for the full
+// contract, and ADR-016 for what is still deferred: registerCommand/
+// showToast/network+filesystem functions/permissions).
 //
 // apiVersion contract: NeoMifesPluginInfo::apiVersion must equal
 // NEOMIFES_PLUGIN_API_VERSION EXACTLY. neomifes::plugin::PluginHost::load()
@@ -41,12 +41,105 @@ extern "C" {
 
 #define NEOMIFES_PLUGIN_API_VERSION 1u
 
+// Phase 8b: independent from NEOMIFES_PLUGIN_API_VERSION on purpose - the
+// CoreApi surface below (insertText/deleteRange/getLineCount/getLineText
+// today, registerCommand/showToast/network functions in later sub-phases
+// per master_roadmap.md sec.8.3) is expected to grow on its own schedule,
+// separate from onLoad/onUnload/NeoMifesPluginInfo compatibility. Nothing
+// varies at version 1 yet (same as NEOMIFES_PLUGIN_API_VERSION when it was
+// first introduced - see ADR-015's "apiVersion strategy") - it exists so a
+// future plugin can read ctx->coreApi->apiVersion defensively before
+// calling a function that might not exist in an older host.
+#define NEOMIFES_CORE_API_VERSION 1u
+
+// Opaque handle for the live document a plugin callback was invoked
+// against. Never defined in this header (deliberately incomplete) - the
+// real type is neomifes::document::Document, reinterpret_cast to/from this
+// pointer type entirely inside src/app/plugin_core_api_bridge.cpp (this
+// repo's internal implementation, not part of the distributable SDK
+// contract). Plugin authors only ever pass this pointer through.
+typedef struct NeoMifesDocument NeoMifesDocument;
+
+// Document-manipulation functions available to a loaded plugin (Phase 8b).
+// See docs/decisions/ADR-016-plugin-core-api-bridge.md for the full design
+// rationale; master_roadmap.md sec.8.3 for the roadmap's fuller future
+// sketch (registerCommand/showToast/network functions - not implemented
+// yet, see that ADR's scope-out list).
+//
+// THREADING CONTRACT: every function here may be called ONLY from inside a
+// plugin callback (today: onLoad/onUnload - there is no onDocumentChanged
+// yet), which itself only ever runs synchronously on whichever thread
+// called PluginHost::load()/unload() (today: always the UI thread, since
+// nothing calls PluginHost from a background thread). Calling any of these
+// from any other thread, or after the callback that received `ctx` has
+// returned, is undefined behavior - neomifes::document::Document itself is
+// single-UI-thread-only (ADR-009) and none of these functions add
+// synchronization of their own.
+//
+// NOT A SECURITY BOUNDARY: a loaded plugin can already freely edit the
+// live document through this struct with no permission gating - see
+// ADR-016 (mirrors ADR-015's own "SEH trampoline is not a security
+// boundary" disclaimer, for the same underlying reason: same-process,
+// same-address-space execution).
+//
+// Text encoding: UTF-16 (wchar_t - matching this repo's internal
+// std::u16string convention on Windows, both are 16-bit code units).
+// `line`/`column` are UTF-16 code-unit positions, 0-based, same convention
+// as document::TextPos/LineNumber throughout this codebase. Out-of-range
+// line/column values are clamped, never a failure mode (see
+// neomifes::document::Document::lineColumnToOffset()'s doc comment for the
+// exact clamp rule) - deleteRange additionally normalizes a resolved
+// end-before-start pair by swapping the two rather than passing it through
+// as-is (an untrusted plugin's line/column input could otherwise silently
+// delete nothing at all - see ADR-016).
+typedef struct NeoMifesCoreApi {
+    unsigned int apiVersion;
+
+    // Inserts `text` (must be null-terminated - no length parameter) at
+    // (line, column). No-op if `doc` or `text` is NULL.
+    void (*insertText)(NeoMifesDocument* doc, const wchar_t* text, unsigned line, unsigned column);
+
+    // Deletes the half-open range from (lineStart, columnStart) to
+    // (lineEnd, columnEnd) (see this struct's own comment for the
+    // end-before-start normalization). No-op if `doc` is NULL.
+    void (*deleteRange)(NeoMifesDocument* doc, unsigned lineStart, unsigned columnStart,
+                        unsigned lineEnd, unsigned columnEnd);
+
+    // Returns 0 if `doc` is NULL. Saturates at UINT_MAX for a document with
+    // more lines than fit in a 32-bit `unsigned` (see ADR-016 for why the
+    // C ABI uses 32-bit line counts while document::Document itself uses
+    // 64-bit).
+    unsigned int (*getLineCount)(NeoMifesDocument* doc);
+
+    // Win32-style bounded copy: writes up to bufferLen-1 UTF-16 code units
+    // of line `line`'s text into `buffer`, always null-terminating when
+    // bufferLen >= 1, and returns the number of code units actually
+    // written (EXCLUDING the null terminator) - truncates safely, never
+    // overflows `buffer`. Returns 0 and writes nothing if `doc` or
+    // `buffer` is NULL, or if bufferLen == 0. Deliberate deviation from
+    // master_roadmap.md sec.8.3's `void`-returning sketch (no "tell me the
+    // required length" companion API for now - CLAUDE.md rule 10, see
+    // ADR-016).
+    unsigned int (*getLineText)(NeoMifesDocument* doc, unsigned line, wchar_t* buffer,
+                                unsigned bufferLen);
+} NeoMifesCoreApi;
+
 // Host-owned, plugin-writable. `userData` is a plain C-ABI idiom, not scope
 // creep toward a richer host<->plugin API. The host zero-initializes it
 // before calling onLoad and leaves it untouched between onLoad and
 // onUnload, so a plugin can round-trip an opaque token through it.
+//
+// `coreApi`/`document` (Phase 8b): non-owning, host-populated, both NULL
+// unless PluginHost::load() was called with non-null arguments for them
+// (both default to nullptr - see plugin_host.h). Delivered as context
+// fields rather than as extra parameters on
+// NeoMifesPluginVTable::onLoad/onUnload - see ADR-016 for why (keeps the
+// vtable itself, and every existing plugin's onLoad/onUnload signature,
+// unchanged).
 typedef struct NeoMifesPluginContext {
-    void* userData;
+    void*                  userData;
+    const NeoMifesCoreApi* coreApi;
+    NeoMifesDocument*      document;
 } NeoMifesPluginContext;
 
 typedef struct NeoMifesPluginInfo {

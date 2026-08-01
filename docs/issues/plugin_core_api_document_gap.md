@@ -2,8 +2,8 @@
 
 - **起票日:** 2026-08-01 (Phase 8a 実装中に判明)
 - **対象:** [`docs/design/master_roadmap.md`](../design/master_roadmap.md) §8(`NeoMifesCoreApi`スケッチ)、[`src/document/include/neomifes/document/document.h`](../../src/document/include/neomifes/document/document.h)
-- **優先度:** 中 (Phase 8b 着手時の必須前提条件)
-- **関連:** [ADR-015](../decisions/ADR-015-plugin-host-c-abi-seh.md)
+- **優先度:** ~~中 (Phase 8b 着手時の必須前提条件)~~ → **2026-08-02 解決済み**
+- **関連:** [ADR-015](../decisions/ADR-015-plugin-host-c-abi-seh.md)、[ADR-016](../decisions/ADR-016-plugin-core-api-bridge.md)
 
 ## 背景
 
@@ -30,7 +30,9 @@ Phase 8a は`NeoMifesCoreApi`自体を実装せず、DLL 読み込み+`onLoad`/`
 
 ## 完了条件 (Phase 8b着手時)
 
-- [ ] `Document`(またはブリッジ層)に行番号→テキスト取得APIが存在し、単体テストで検証済み
-- [ ] 行+桁→オフセット変換の文字コード契約(UTF-16コード単位/グラフェムクラスタ)がADRまたはSDKヘッダコメントで明記されている
-- [ ] `NeoMifesCoreApi`のスレッド安全性契約(呼び出し可能スレッド)が明記されている
-- [ ] `plugin_sdk.h`に`NeoMifesCoreApi`構造体が追加され、`PluginHost`経由でプラグインへ渡される
+- [x] `Document`(またはブリッジ層)に行番号→テキスト取得APIが存在し、単体テストで検証済み — `document::Document::lineText()`(`tests/unit/document_document_test.cpp`の`DocumentLineTextTest`スイート)
+- [x] 行+桁→オフセット変換の文字コード契約(UTF-16コード単位/グラフェムクラスタ)がADRまたはSDKヘッダコメントで明記されている — `document::Document::lineColumnToOffset()`(UTF-16コード単位、行内クランプはしない)、[ADR-016](../decisions/ADR-016-plugin-core-api-bridge.md)参照
+- [x] `NeoMifesCoreApi`のスレッド安全性契約(呼び出し可能スレッド)が明記されている — `plugin_sdk.h`の`NeoMifesCoreApi`コメント(プラグインコールバック実行中・そのコールバックを起動したスレッドからのみ)
+- [x] `plugin_sdk.h`に`NeoMifesCoreApi`構造体が追加され、`PluginHost`経由でプラグインへ渡される — `insertText`/`deleteRange`/`getLineCount`/`getLineText`の4関数のみ(`registerCommand`/`showToast`/ネットワーク系は引き続き未実装、ADR-016のスコープ外リスト参照)。`tests/integration/plugin_document_editing_test.cpp`が実DLL経由の往復を実証
+
+**2026-08-02完了。** 詳細は[ADR-016](../decisions/ADR-016-plugin-core-api-bridge.md)参照。

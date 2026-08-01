@@ -2296,4 +2296,43 @@ Plan agentの提案(バケット化純粋関数・行番号ベース色蓄積配
 
 **次回:** Phase 7xはローカル完了・コミット予定(push はユーザーの明示指示待ち)。roadmap §7.2必須23言語のうち21言語まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。次フェーズ候補は`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
 
+---
+
+## Session 70 (2026-08-02): 次のPhaseに進めよ → Phase 8b — `NeoMifesCoreApi`橋渡し実装
+
+前セッション(Session 69、Phase 8a・7xともにpush・CI green確認済み)の続き。ユーザーから「次のPhaseへ進め」と指示された。
+
+**フェーズ選定:** AskUserQuestionで4候補(`NeoMifesCoreApi`橋渡し設計/AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**`NeoMifesCoreApi`橋渡し設計(推奨案)**が選ばれた — Phase 8aが着手前調査で明確化した唯一の必須前提条件(`docs/issues/plugin_core_api_document_gap.md`)であり、スコープが最も具体的に固まっていた。
+
+**Plan Mode:** `document.h`/`.cpp`・`line_index.cpp`・`piece_table.cpp`・`plugin_sdk.h`・`plugin_host.h`/`.cpp`・`plugin_error.h`・`wchar_cast.h`・`hello_plugin`一式・`tests/integration/CMakeLists.txt`を自身で直接読解した上で、Plan agentへ詳細設計を委任。**Plan agentが実装を追跡して重要な訂正を発見:** 当初「`PieceTable::eraseRange()`は反転レンジ(start>end)に対して安全ではない」と想定していたが、実際は`PieceTree::eraseRange()`(`piece_tree.cpp:522`)が`range.start >= end`ガードを持ち、反転レンジを**安全なno-opとして無視する**(メモリ破壊ではない)。この訂正を踏まえ、ブリッジ層での正規化は「安全性のため」ではなく「意図した削除が黙って起きないという正しさのため」と設計根拠を修正した。
+
+**設計方針の要点(詳細は[ADR-016](../decisions/ADR-016-plugin-core-api-bridge.md)参照):**
+- `document::Document`に`lineText(LineNumber)`/`lineColumnToOffset(LineNumber, uint32_t)`の2メソッドのみ追加。`RenderPipeline::extractLineText()`(Phase 7o)とは性能文脈の違い(毎フレーム最適化 vs. 低頻度呼び出し)を理由に実装を共有しない判断にした。
+- `plugin_sdk.h`に`NeoMifesCoreApi`(`insertText`/`deleteRange`/`getLineCount`/`getLineText`の4関数のみ、`registerCommand`/`showToast`/ネットワーク・ファイルシステム系関数はUI受け皿・権限モデルが無いため引き続き延期)、独立した`NEOMIFES_CORE_API_VERSION`、`NeoMifesPluginContext`への`coreApi`/`document`フィールドを追加。`NeoMifesPluginVTable`のシグネチャは無変更(Phase 8aの4サンプルプラグインとのソース互換性維持)。
+- **レイヤリング判断:** CLAUDE.md §3のレイヤードアーキテクチャ図(Plugin EngineはDocument Engineより下位)に従い、`neomifes::plugin`(`PluginHost`)は`document::Document`型を一切知らないまま据え置いた。`PluginHost::load()`は`coreApi`/`document`のデフォルトnullptr引数2つを追加するのみ(既存4件のテスト呼び出しは無改修でコンパイル継続)。実際に`NeoMifesDocument*`を`document::Document*`へ`reinterpret_cast`するブリッジ実装(`buildPluginCoreApi()`/`toNeoMifesDocument()`)は、`neomifes::document`/`neomifes::plugin_sdk`双方に依存できる新規`src/app/plugin_core_api_bridge.h`/`.cpp`(既存の`document_open.h`/`outline_bridge.h`と同じ「エンジン間の糊付け層」パターン)に配置し、`neomifes::plugin`自体のCMake依存は無変更のまま保った。
+- `deleteRange`は解決後start>endならswapして正規化(前述の訂正の直接的な対応)。
+- `getLineText`はWin32スタイルの境界チェック付きコピー契約(`unsigned`を返す、書き込んだ文字数、truncate・null終端)。roadmapスケッチの`void`シグネチャから意図的に逸脱。
+
+**実装:** `document.h`/`.cpp`(2メソッド追加)、`plugin_sdk.h`(`NeoMifesCoreApi`構造体+context拡張)、新規`src/app/plugin_core_api_bridge.h`/`.cpp`、`plugin_host.h`/`.cpp`(`load()`シグネチャ拡張)、CMake配線4ファイル、新規サンプルプラグイン`document_editing_plugin`(`onLoad`が`ctx->coreApi->insertText()`を実際に呼ぶ)。
+
+**テスト:** `document_document_test.cpp`に`DocumentLineTextTest`/`DocumentLineColumnToOffsetTest`、新規`app_plugin_core_api_bridge_test.cpp`(ヘッドレス、DLL不要)、新規`tests/integration/plugin_document_editing_test.cpp`(実DLL+実`PluginHost`+実`document_editing_plugin.dll`でCoreApi往復を実測検証)。
+
+**エラーと修正:**
+- 新規ファイルを誤って`src/app/src/plugin_core_api_bridge.cpp`に置いたが、`src/app/`は他モジュールと異なり`.cpp`がディレクトリ直下に置かれる規約(既存の`document_open.cpp`/`editor_input.cpp`参照)だったため、CMake configureが「ソースファイルが見つからない」で失敗。`src/app/plugin_core_api_bridge.cpp`へ移動して解決。
+- 単体テストの初期実装で、行番号のみ大きくクランプされるケースの期待値を「文書末尾」と誤って想定していた(実際は`lineToOffset()`自身の既存クランプにより「最終行の開始位置」になる、`lineColumnToOffset()`の`column`側クランプとは非対称な挙動)。テストの期待値・テスト名を実際の挙動に合わせて修正。
+- clang-tidyが`std::copy_n(src.data(), copyLen, buffer)`(`src`は`std::wstring_view`)に対し`bugprone-suspicious-stringview-data-usage`を検出(`.data()`は長さ情報を伴わない呼び出しとして誤検知されるパターン)。`src.begin()`(イテレータ、意味は同一)へ変更して解消。
+
+**検証:** ローカル**Debug/Release/ubsan全931件green**。clang-tidy: `src/`3ファイル(`document.cpp`/`plugin_core_api_bridge.cpp`/`plugin_host.cpp`)は新規警告0(`WarningsAsErrors`)。テスト/サンプルプラグインの警告(整数リテラル小文字`u`サフィックス、グローバル変数命名)は`plugin_load_test.cpp`等の既存ファイルと同一パターンであることを確認済み。実アプリ視覚確認は不要と判断(main.cppに一切触れないヘッドレス変更、正しさの証明は統合テストの実DLL経由往復で完結、Phase 8aと同じ方針)。
+
+**ADR-016起票:** `docs/decisions/ADR-016-plugin-core-api-bridge.md`(opaque-handle+reinterpret_castパターン、context経由での引数受け渡し、レイヤリング判断、スレッド安全性契約、roadmapスケッチからの逸脱、「セキュリティ境界ではない」+Undo非対応という既知のギャップ)。ADR-015にも本ADRを指す訂正注記を追加。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「8b ✅完了」行を追加(次候補「8c〜」: AppContainerサンドボックス/`permissions`権限モデル/registerCommand・showToast)、§8に§8.8「実装後の確定事項」を新設
+- `docs/design/detailed_design.md`に新規§8.5「`NeoMifesCoreApi`ドキュメント操作ブリッジ」を追加
+- `docs/issues/plugin_core_api_document_gap.md`の完了条件4項目全てにチェックを入れ根拠を明記、優先度を解決済みに更新
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.60(完了記録)、§6推奨プロンプトを現状に合わせて更新(併せてPhase 7w/8a/7xの「pushはユーザーの明示指示待ち」という古い記述を「push済み・CI green確認済み」へ訂正)
+- `docs/decisions/README.md`にADR-016の行を追加
+
+**次回:** Phase 8bはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス/`permissions`権限モデル/registerCommand・showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
+
 <!-- 次セッションはここに追記 -->

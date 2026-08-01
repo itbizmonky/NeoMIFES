@@ -55,7 +55,21 @@ public:
     // genuine std::bad_alloc is allowed to propagate rather than being
     // swallowed (CLAUDE.md forbids catch(...); matches
     // OriginalBuffer::view()'s documented precedent).
-    [[nodiscard]] PluginExpected<void> load(const std::filesystem::path& dllPath);
+    //
+    // `coreApi`/`document` (Phase 8b): forwarded verbatim into the
+    // NeoMifesPluginContext handed to onLoad/onUnload - see plugin_sdk.h's
+    // NeoMifesPluginContext/NeoMifesCoreApi comments. Both default to
+    // nullptr so existing callers that only pass `dllPath` (e.g.
+    // tests/integration/plugin_load_test.cpp's four call sites) compile
+    // unchanged. This class deliberately never dereferences either
+    // pointer itself - doing so would require depending on
+    // neomifes::document, which the layering rule (CLAUDE.md sec.3)
+    // forbids for the Plugin Engine (see
+    // neomifes::app::buildPluginCoreApi()/toNeoMifesDocument(),
+    // src/app/plugin_core_api_bridge.h, for the actual implementation).
+    [[nodiscard]] PluginExpected<void> load(const std::filesystem::path& dllPath,
+                                             const NeoMifesCoreApi*      coreApi  = nullptr,
+                                             NeoMifesDocument*           document = nullptr);
 
     // Calls vtable->onUnload(ctx) (SEH-isolated) then frees the DLL
     // unconditionally, even if onUnload crashed (a stuck-but-still-mapped

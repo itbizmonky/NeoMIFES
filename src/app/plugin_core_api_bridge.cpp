@@ -1,0 +1,95 @@
+#include "neomifes/app/plugin_core_api_bridge.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <string_view>
+#include <utility>
+
+#include "neomifes/document/document.h"
+#include "neomifes/document/text_pos.h"
+#include "neomifes/util/wchar_cast.h"
+
+namespace neomifes::app {
+
+namespace {
+
+// Both directions of the opaque-handle idiom confined to this file - the
+// only place NeoMifesDocument* and document::Document* are ever equated
+// (see plugin_sdk.h's NeoMifesDocument comment).
+document::Document& toDocument(NeoMifesDocument* doc) noexcept {
+    return *reinterpret_cast<document::Document*>(doc);
+}
+
+void insertTextImpl(NeoMifesDocument* doc, const wchar_t* text, unsigned line, unsigned column) {
+    if (doc == nullptr || text == nullptr) {
+        return;
+    }
+    document::Document&     liveDocument = toDocument(doc);
+    const document::TextPos pos =
+        liveDocument.lineColumnToOffset(static_cast<document::LineNumber>(line), column);
+    liveDocument.insertText(pos, util::fromWstringView(std::wstring_view(text)));
+}
+
+void deleteRangeImpl(NeoMifesDocument* doc, unsigned lineStart, unsigned columnStart,
+                      unsigned lineEnd, unsigned columnEnd) {
+    if (doc == nullptr) {
+        return;
+    }
+    document::Document& liveDocument = toDocument(doc);
+    document::TextPos   startOffset  = liveDocument.lineColumnToOffset(
+        static_cast<document::LineNumber>(lineStart), columnStart);
+    document::TextPos endOffset = liveDocument.lineColumnToOffset(
+        static_cast<document::LineNumber>(lineEnd), columnEnd);
+    // Untrusted plugin input - a resolved end-before-start pair is
+    // normalized (swapped) rather than passed through as-is, since
+    // PieceTree::eraseRange() treats start>=end as a silent no-op (see
+    // ADR-016) rather than deleting what the caller evidently intended.
+    if (startOffset > endOffset) {
+        std::swap(startOffset, endOffset);
+    }
+    liveDocument.eraseRange(document::TextRange{.start = startOffset, .end = endOffset});
+}
+
+unsigned int getLineCountImpl(NeoMifesDocument* doc) {
+    if (doc == nullptr) {
+        return 0;
+    }
+    const std::uint64_t count = toDocument(doc).lineCount();
+    return static_cast<unsigned int>(
+        std::min<std::uint64_t>(count, std::numeric_limits<unsigned int>::max()));
+}
+
+unsigned int getLineTextImpl(NeoMifesDocument* doc, unsigned line, wchar_t* buffer,
+                              unsigned bufferLen) {
+    if (doc == nullptr || buffer == nullptr || bufferLen == 0) {
+        return 0;
+    }
+    const std::u16string text = toDocument(doc).lineText(static_cast<document::LineNumber>(line));
+    const std::size_t    copyLen =
+        std::min(text.size(), static_cast<std::size_t>(bufferLen) - 1);
+    const std::wstring_view src = util::toWstringView(text);
+    std::copy_n(src.begin(), copyLen, buffer);
+    buffer[copyLen] = L'\0';
+    return static_cast<unsigned int>(copyLen);
+}
+
+const NeoMifesCoreApi kCoreApi = {
+    .apiVersion   = NEOMIFES_CORE_API_VERSION,
+    .insertText   = &insertTextImpl,
+    .deleteRange  = &deleteRangeImpl,
+    .getLineCount = &getLineCountImpl,
+    .getLineText  = &getLineTextImpl,
+};
+
+}  // namespace
+
+const NeoMifesCoreApi* buildPluginCoreApi() noexcept {
+    return &kCoreApi;
+}
+
+NeoMifesDocument* toNeoMifesDocument(document::Document& document) noexcept {
+    return reinterpret_cast<NeoMifesDocument*>(&document);
+}
+
+}  // namespace neomifes::app

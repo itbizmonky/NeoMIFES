@@ -1,5 +1,7 @@
 #include "neomifes/document/document.h"
 
+#include <algorithm>
+
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/original_buffer.h"
 
@@ -106,6 +108,22 @@ LineNumber Document::offsetToLine(TextPos pos) const {
 TextPos Document::lineToOffset(LineNumber line) const {
     ensureLineIndex();
     return m_lineIndex.lineToOffset(line);
+}
+
+std::u16string Document::lineText(LineNumber line) const {
+    const TextPos    lineStart = lineToOffset(line);
+    const LineNumber nextLine  = line + 1;
+    const TextPos    lineEnd   = (nextLine < lineCount()) ? lineToOffset(nextLine) : length();
+    auto           snap = m_pieceTable.snapshot();
+    std::u16string text = snap->extract(TextRange{.start = lineStart, .end = lineEnd});
+    if (!text.empty() && text.back() == u'\n') {
+        text.pop_back();
+    }
+    return text;
+}
+
+TextPos Document::lineColumnToOffset(LineNumber line, std::uint32_t column) const {
+    return std::min(lineToOffset(line) + column, length());
 }
 
 }  // namespace neomifes::document

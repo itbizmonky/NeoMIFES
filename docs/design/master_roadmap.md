@@ -237,7 +237,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7x | 追加言語対応 バッチ4 (PowerShell/INI/Batch — 個人メンテナ文法、SQLはparser.c未コミットで対象外、VB/VBScriptはライセンス不明で恒久除外) | ✅ 完了 | §7 |
 | 7y〜 | tree-sitter内部実装のさらなる調査(50万行DoD未達の解消) / SQL文法のtree-sitter CLIビルド依存導入検討 | ⏭️ 次候補 (Phase 7、保留中) | §7 |
 | 8a | プラグインエンジン 最小限PoC (C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 | §8 |
-| 8b〜 | `NeoMifesCoreApi`橋渡し設計 / AppContainerサンドボックス (どちらを先行するかは着手前にユーザー確認) | ⏭️ 次候補 | §8 |
+| 8b | `NeoMifesCoreApi`橋渡し実装 (insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 | §8 |
+| 8c〜 | AppContainerサンドボックス / `permissions`権限モデル / registerCommand・showToast (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -1457,7 +1458,23 @@ typedef struct NeoMifesCoreApi {
 
 **SEH クラッシュ隔離の実測結果:** `crashing_plugin`(null ポインタ書き込みによる`EXCEPTION_ACCESS_VIOLATION`)・`throwing_plugin`(`std::runtime_error`の throw、ホストは`/EHsc`ビルドだが間接関数ポインタ経由の呼び出しのため捕捉可能)の両方について、Debug/Release(MSVC)・ubsan(clang-cl)の全構成で「プラグインの異常がホストプロセスをクラッシュさせない」ことを実測で確認した(推測ではなく`tests/integration/plugin_load_test.cpp`で証明、CLAUDE.mdルール3)。この SEH トランポリンは**セキュリティ境界ではない**(同一プロセス内のため意図的な悪意あるプラグインからは保護できない、真の隔離は Phase 8b 以降)。
 
-**次候補 (Phase 8b〜):** `NeoMifesCoreApi`橋渡し設計、または AppContainer サンドボックス — どちらを先行するかは着手前にユーザーへ確認する。
+**次候補 (Phase 8b〜):** ~~`NeoMifesCoreApi`橋渡し設計、または AppContainer サンドボックス — どちらを先行するかは着手前にユーザーへ確認する。~~ → `NeoMifesCoreApi`橋渡し設計が選ばれ、Phase 8bで完了(§8.8参照)。
+
+### 8.8 実装後の確定事項 (Phase 8b 完了、2026-08-02)
+
+§8.7 が延期した`NeoMifesCoreApi`のうち、ドキュメント操作系4関数(`insertText`/`deleteRange`/`getLineCount`/`getLineText`)を実装した。詳細は [ADR-016](../decisions/ADR-016-plugin-core-api-bridge.md) 参照。
+
+**実装した内容(§8.3 の C ABI 境界からの変更点):**
+- `document::Document`に`lineText(LineNumber)`/`lineColumnToOffset(LineNumber, uint32_t)`の2メソッドを新設(`RenderPipeline::extractLineText()`とは意図的に実装を共有せず、性能文脈の違いを理由に分離)。
+- `plugin_sdk.h`に`NeoMifesCoreApi`構造体(`insertText`/`deleteRange`/`getLineCount`/`getLineText`のみ、`registerCommand`/`showToast`/ネットワーク・ファイルシステム系関数は`permissions`モデルとUI側の受け皿が無いため引き続き延期)、独立した`NEOMIFES_CORE_API_VERSION`、`NeoMifesPluginContext`への`coreApi`/`document`フィールドを追加。
+- `NeoMifesPluginVTable`のシグネチャは無変更(`coreApi`/`document`はcontextフィールド経由で渡す設計、既存4サンプルプラグインとのソース互換性を維持)。
+- `neomifes::plugin::PluginHost`自体は`document::Document`型に一切依存させず(CLAUDE.md §3レイヤリング、Plugin EngineはDocument Engineより下位)、実際のブリッジ実装(`buildPluginCoreApi()`/`toNeoMifesDocument()`)は`src/app/`(document::/plugin_sdk::双方に依存できる既存の糊付け層、`document_open.h`/`outline_bridge.h`と同型)に配置。
+
+**実測による検証:** 新規サンプルプラグイン`document_editing_plugin`(`onLoad`が`ctx->coreApi->insertText()`を実際に呼ぶ)を新規統合テスト`tests/integration/plugin_document_editing_test.cpp`でロードし、実DLL境界を越えた`NeoMifesCoreApi`往復が本物の`document::Document`を正しく変更することを実測で確認した(推測ではなく証明、CLAUDE.mdルール3)。Debug/Release/ubsan全構成・全931件green。
+
+**既知のギャップ(意図的、次候補へ):** `NeoMifesCoreApi`は権限モデル(`permissions`)が無いため**セキュリティ境界ではなく**、ロード済みの任意プラグインが無制限にドキュメントを編集できる。プラグイン発の編集は`core::CommandDispatcher`/`UndoStack`を経由しないため`Ctrl+Z`で取り消せない。両方ともADR-016に明記の上、次候補として据え置いた。
+
+**次候補 (Phase 8c〜):** AppContainer サンドボックス / `permissions`権限モデル / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
 
 ---
 

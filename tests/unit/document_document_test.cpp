@@ -169,4 +169,55 @@ TEST(DocumentEditDeltaTest, UndoLikeEraseAfterInsertIsRecordedTheSameWay) {
     EXPECT_EQ(edits[0].newEndPos, 0u);
 }
 
+// Phase 8b: lineText()/lineColumnToOffset(), the NeoMifesCoreApi bridge's
+// only direct dependency on Document beyond the pre-existing
+// insertText()/eraseRange()/offsetToLine()/lineToOffset().
+TEST(DocumentLineTextTest, ReturnsFirstMiddleAndLastLineWithoutTrailingNewline) {
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    EXPECT_EQ(doc.lineText(0), u"line0");
+    EXPECT_EQ(doc.lineText(1), u"line1");
+    EXPECT_EQ(doc.lineText(2), u"line2");
+}
+
+TEST(DocumentLineTextTest, LastLineWithNoTrailingNewlineReturnsItsFullText) {
+    Document doc;
+    doc.insertText(0, u"only line, no trailing newline");
+    EXPECT_EQ(doc.lineText(0), u"only line, no trailing newline");
+}
+
+TEST(DocumentLineTextTest, EmptyDocumentReturnsEmptyString) {
+    const Document doc;
+    EXPECT_EQ(doc.lineText(0), u"");
+}
+
+TEST(DocumentLineTextTest, OutOfRangeLineClampsToTheLastLine) {
+    Document doc;
+    doc.insertText(0, u"line0\nline1");
+    EXPECT_EQ(doc.lineText(9999), doc.lineText(1));
+}
+
+TEST(DocumentLineColumnToOffsetTest, WithinLineAddsColumnToTheLinesStart) {
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");  // line1 starts at offset 6
+    EXPECT_EQ(doc.lineColumnToOffset(1, 3), 9u);
+}
+
+TEST(DocumentLineColumnToOffsetTest, ColumnOverrunClampsToDocumentEnd) {
+    Document doc;
+    doc.insertText(0, u"line0\nline1");
+    EXPECT_EQ(doc.lineColumnToOffset(0, 9999), doc.length());
+}
+
+TEST(DocumentLineColumnToOffsetTest, LineOverrunClampsViaLineToOffsetsOwnClamp) {
+    Document doc;
+    doc.insertText(0, u"line0\nline1");
+    EXPECT_EQ(doc.lineColumnToOffset(9999, 0), doc.lineToOffset(9999));
+}
+
+TEST(DocumentLineColumnToOffsetTest, EmptyDocumentReturnsZero) {
+    const Document doc;
+    EXPECT_EQ(doc.lineColumnToOffset(0, 0), 0u);
+}
+
 }  // namespace

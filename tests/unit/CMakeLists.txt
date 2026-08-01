@@ -54,6 +54,7 @@ add_executable(neomifes_unit_tests
     app_outline_bridge_test.cpp
     app_fold_bridge_test.cpp
     plugin_plugin_host_test.cpp
+    app_plugin_core_api_bridge_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
