@@ -2190,4 +2190,36 @@ roadmap §7の残り候補(永続トークン列のデータ構造再設計/残�
 
 **次回:** Phase 7vはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)・ミニマップ文書全体俯瞰型拡張・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。
 
+## Session 67 (2026-08-01): 次のPhaseへ進めよ → Phase 7w — ミニマップ「文書全体俯瞰型」拡張
+
+前セッション(Session 66、Phase 7v完了)の続き。ユーザーから「次のPhaseへ進め」と指示され、AskUserQuestionでroadmap §7の残り候補を提示し、**ミニマップ文書全体俯瞰型拡張(推奨案)**が選ばれた — Phase 7vが留保した唯一の後続候補。
+
+**Plan Mode着手前調査:** Plan agent(1体)に詳細設計を依頼する前に、着手前調査として最大の技術的障壁(可視範囲外の行の色情報をどう取得するか — `RenderPipeline::m_tokens`はPhase 7t以降「可視範囲+マージンのみ」しか保持しない設計)を特定した。3つの解決方式(遅延ポピュレーション/バックグラウンドフルパース+行サマリー配列/色なし密度表示)をAskUserQuestionで提示し、**「遅延ポピュレーション」(推奨案)**が選ばれた: 初期表示は全体グレー(未計算)、スクロールで実際に見た範囲だけ`m_tokens`経由で後から色を埋める。新規の全文書フルパースパイプライン(Phase 7a実測: 100万行で約6.6秒、DoD「≤5秒」未達)・`EditDelta`購読による差分更新(このコードベースには編集追従の仕組みが一件も存在しない)はいずれも不採用と判断した根拠を明記した上で、Plan agentへ詳細設計を依頼した。
+
+Plan agentの提案(バケット化純粋関数・行番号ベース色蓄積配列・`refreshDocumentCacheIfStale()`への統合・連続比例配分ヒットテスト)を受け取った後、Plan Modeのルール通り自身で`render_pipeline.h`/`.cpp`の該当箇所(`widenedVisibleLineRange()`、`drawMinimapLines()`の1:1ループ、`minimapLineBrush()`のm_tokensスイープ、`tokenBrush()`のswitch分岐、`refreshDocumentCacheIfStale()`の`m_tokens.clear()`位置、`ensureSyntaxTokensCoverVisibleRange()`、`Document::offsetToLine()`/`lineToOffset()`、`viewport_math.h`)を直接読解して技術的妥当性を検証し、全ての設計判断が実コードと整合していることを確認した上で最終プランを確定した。
+
+**設計方針の要点:**
+- ミニマップの窓を`[0, totalLines)`固定にし、`widenedVisibleLineRange()`をミニマップから完全に切り離した。`drawMinimap()`は元々`m_document->lineCount()`を直接呼んでいたため新規のクランプ/マージン計算は不要 — 結果として`widenedVisibleLineRange()`の呼び出し元は`computeDesiredTokenRange()`1箇所のみに戻った
+- `viewport_math.h`にバケット化の純粋関数2つ(`computeMinimapBucketCount()`/`minimapBucketStartLine()`)を追加。小規模文書では自動的にPhase 7vと同じ1行=1バケットへ縮退する(退行ではなく一般化)。代表行は各バケット独立計算(`(bucket * totalLines) / bucketCount`)で誤差蓄積を避けた
+- 色の蓄積は「行番号ベース」の`std::vector<MinimapLineColorState>`を新設し「バケット番号ベース」は不採用にした — バケット境界はリサイズ/編集の両方で変化する可変値であり、バケット番号キーだとリサイズのたびに過去の色情報が無意味になるため。`std::uint8_t`基底8値enumで100万行文書でも約1MB
+- 蓄積配列のクリア/リサイズは既存の`refreshDocumentCacheIfStale()`に統合し、新規の編集追従コードを書かなかった(1文字編集ごとに丸ごと再初期化、CLAUDE.mdルール10)
+- ヒットテスト/強調矩形を離散オフセット計算から「Y座標÷帯の高さ=行番号÷総行数」の連続比例配分へ書き換え、強調矩形に最小高さ`kMinHighlightHeightDips=2.0F`(未チューニング初期値)を追加
+- `main.cpp`は無変更(`hitTestMinimap()`/`minimapLineAtY()`/`applyAsyncSyntaxTokens()`いずれも公開シグネチャ不変)
+
+**実装:** `viewport_math.h`にバケット化関数2つ、`render_pipeline.h`に`MinimapLineColorState` enum・`classifyTokenKindForMinimap()`/`minimapBrushForState()`/`minimapLineSpan()`/`classifyLineForMinimap()`/`populateMinimapColorsForRequestedRange()`宣言・`m_minimapLineColors`/`m_minimapUnpopulatedBrush`メンバ追加、`render_pipeline.cpp`に実装本体(`minimapLineBrush()`全面書き換え・`drawMinimapLines()`/`drawMinimapViewportHighlight()`/`drawMinimap()`/`minimapLineAtY()`全面書き換え・`applyAsyncSyntaxTokens()`をヘッダのインライン定義から.cppへ移動)。実装完了後まずrender_pipelineライブラリ単体をビルドしてコンパイルエラーを早期検出してから、単体テスト・統合テストを追加する順序で進めた。
+
+**テスト:** `render_viewport_math_test.cpp`に10件追加(`ComputeMinimapBucketCountTest`×6、`MinimapBucketStartLineTest`×4)。`render_text_smoke_test.cpp`に7件追加(`MinimapOverviewTopOfStripResolvesNearLineZeroRegardlessOfTopLine`/`MinimapOverviewBottomOfStripResolvesNearLastLineRegardlessOfTopLine`/`MinimapRendersWithoutErrorOnLargeSyntheticDocument`/`MinimapRendersWithoutErrorWhenScrollingThroughSeveralDistinctRegions`/`ApplyAsyncSyntaxTokensDirectlyPopulatesWithoutCrashingNearDocumentBoundary`/`MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabledAfterFirstRender`/`MinimapWindowSurvivesResize`)、既存2件のコメントを新設計の理由に合わせて更新。clang-tidy個別実行で、当初1つのテスト(`MinimapOverviewWindowCoversWholeDocumentRegardlessOfTopLine`、top/bottom両方を1関数で検証)がcognitive complexity閾値(25)を26で単独超過する新規警告を検出したため、共有フィクスチャヘルパー`setUpScrolledMinimapOverviewFixture()`を新設し、top用/bottom用の2つの単一目的テストへ分割して解消した(既存の3件は分割前から存在するpre-existing警告と確認済み)。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全875件green**、clang-tidy新規警告0(上記の1件を除く、修正後は`src/`配下0・テストファイルの`misc-const-correctness`は既存パターンの継続)
+- **`--measure-frame`実測(Release、5万行合成文書スクロール300フレーム):** avgFrameNs≈16.50ms(Phase 7vの既存ベースライン「avgFrameNs≈16.53ms」と同水準) — バケット化ロジック追加による有意なフレーム時間の悪化なし
+- **実アプリ視覚確認:** `--open`で1454行の実C++ファイル(`render_pipeline.cpp`自身)を開き、PowerShell+.NET(`Graphics.CopyFromScreen`)でスクリーンショットを撮影。ミニマップ帯が文書全体を俯瞰表示すること(初回描画時に`m_lineHeightDips`未測定によるフォールバックで`computeDesiredTokenRange()`が文書全体を要求し、結果的に文書全体が一度に着色された — これはPhase 7t由来の既存フォールバック挙動であり新規の退行ではない)、強調矩形が現在可視範囲を示すことを確認。続けて`SetCursorPos`+`mouse_event`でミニマップ下端付近をクリックし、クリック前後のスクリーンショット比較でテキストエリアが文書末尾付近(`renderOnce()`関数)へジャンプし、強調矩形も追従することを確認した
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7w ✅完了」行を追加(次候補行を「7x〜」へ更新)、§7.4に「実装後の確定事項/変更点」小節を新設
+- `docs/design/detailed_design.md`に新規§10.24を追加。§10.23末尾に「凍結された歴史的記録である」旨の注記+§10.24への参照を追加(CLAUDE.md §11のドキュメント鮮度チェック)
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.57(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 7wはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題あり)・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。
+
 <!-- 次セッションはここに追記 -->

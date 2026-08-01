@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-07-31 (Phase 7u revert完了・ドキュメント同期commit(`aecd939`)のpush・CI green確認(run `30604893065`、success、1h46m35s)後、ユーザー選択でミニマップ(簡易版・スクロール追従型、Phase 7v)を実装・完了。roadmap §7.4の元スケッチから「文書全体俯瞰型」ではなく「まず簡易版を実装し実測後に拡張判断」方針をAskUserQuestionで確定。右側縦帯・シンタックス色反映・現在可視範囲の強調矩形・クリックジャンプ/ドラッグスクロールを実装、ローカルDebug/Release/ubsan全865件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.53ms、既存ベースラインと同水準)・実アプリでのクリックジャンプ視覚確認済み。§3.56参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず)、次の対応方針は未定)
+> **最終更新:** 2026-08-01 (Phase 7v(ミニマップ簡易版)完了後、ユーザー選択でミニマップ「文書全体俯瞰型」拡張(Phase 7w)を実装・完了。着手前調査で判明した最大の技術的障壁(可視範囲外の色情報取得)についてAskUserQuestionで3方式を提示し「遅延ポピュレーション」方式(推奨案)が選ばれた。行番号ベースの色蓄積配列(`std::vector<MinimapLineColorState>`)+`viewport_math.h`のバケット化純粋関数2つを新設、ミニマップの窓を`[0,totalLines)`固定化、ヒットテスト/強調矩形を連続比例配分へ書き換え。`main.cpp`は無変更。ローカルDebug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.50ms、Phase 7vベースラインと同水準)・実アプリでのミニマップ全体俯瞰表示+クリックジャンプ視覚確認済み。§3.57参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず)、次の対応方針は未定)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -89,7 +89,8 @@
 | Phase 7t (可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列を廃止) | ✅ 完了 (小〜中規模文書でDoD達成、大規模文書は未達、push済み・CI green確認済み、§3.54参照) |
 | Phase 7u (`TSInput`コールバックAPI採用) | ❌ 実装完了後に全面revert (性能後退、Phase 7t状態に復元。§3.55参照) |
 | Phase 7v (ミニマップ、簡易版・スクロール追従型) | ✅ 完了 (実測avgFrameNs≈16.53ms・実アプリ視覚確認済み、§3.56参照) |
-| **次フェーズ選定 — 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/ミニマップ文書全体俯瞰型拡張/tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7w (ミニマップ「文書全体俯瞰型」拡張、遅延ポピュレーション方式) | ✅ 完了 (実測avgFrameNs≈16.50ms・実アプリ視覚確認済み、§3.57参照) |
+| **次フェーズ選定 — 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1677,6 +1678,37 @@ Phase 7u revertのドキュメント同期commit(`aecd939`)のpush・CI green確
 
 ---
 
+### 3.57 Phase 7w (ミニマップ「文書全体俯瞰型」拡張) 完了記録 (2026-08-01)
+
+Phase 7v完了後、ユーザーから「次のPhaseへ進め」と指示された。roadmap §7の残り候補をAskUserQuestionで提示し、**ミニマップ文書全体俯瞰型拡張(推奨案)**が選ばれた。着手前調査で最大の技術的障壁(可視範囲外の行の色情報取得 — `m_tokens`はPhase 7t以降「可視範囲+マージンのみ」保持)を特定し、3方式をAskUserQuestionで提示、**「遅延ポピュレーション」(推奨案)**が選ばれた: 初期表示は全体グレー、スクロールで見た範囲だけ後から色を埋める。
+
+**設計方針の要点(Plan agentによる詳細設計を`render_pipeline.h`/`.cpp`の該当箇所を直接読解して自身で検証、詳細は`docs/design/master_roadmap.md` §7.4実装後の確定事項・`detailed_design.md` §10.24参照):**
+- ミニマップの窓を`[0, totalLines)`固定にし、`widenedVisibleLineRange()`をミニマップから完全に切り離した(唯一の呼び出し元が`computeDesiredTokenRange()`に戻った)
+- `viewport_math.h`にバケット化の純粋関数2つ(`computeMinimapBucketCount()`/`minimapBucketStartLine()`)を追加、小規模文書ではPhase 7vと同じ1行=1バケットへ自動的に縮退
+- 色の蓄積は「行番号ベース」の`std::vector<MinimapLineColorState>`(`std::uint8_t`基底8値enum、100万行でも約1MB)を新設 — バケット番号ベースは不採用(リサイズで無意味になるため)
+- 蓄積配列のクリア/リサイズは既存の`refreshDocumentCacheIfStale()`に統合、新規の編集追従コードは書かない(1文字編集ごとに丸ごと再初期化)
+- ヒットテスト/強調矩形を離散オフセット計算から「Y座標÷帯の高さ = 行番号÷総行数」の連続比例配分へ書き換え、強調矩形に最小高さ`kMinHighlightHeightDips=2.0F`を追加
+- `main.cpp`は無変更(公開シグネチャ不変)
+
+**検証:**
+- ローカル**Debug/Release/ubsan全875件green**、`render_viewport_math_test.cpp`に10件・`render_text_smoke_test.cpp`に7件追加。clang-tidy新規警告0(新設テスト1件がcognitive complexity閾値超過を単独で検出したため、共有フィクスチャヘルパーを使う2つの単一目的テストへ分割して解消)
+- **`--measure-frame`実測(Release、5万行合成文書スクロール300フレーム):** avgFrameNs≈16.50ms(Phase 7vの既存ベースライン「avgFrameNs≈16.53ms」と同水準) — バケット化ロジック追加による有意な悪化なし
+- **実アプリ視覚確認:** 1454行の実C++ファイル(`render_pipeline.cpp`自身)を`--open`で開き、ミニマップ帯が文書全体を俯瞰表示すること・強調矩形が現在可視範囲を示すことを確認。ミニマップ下端付近をクリックし、テキストエリアが文書末尾付近へジャンプし強調矩形も追従することをスクリーンショット比較で確認した
+
+**完了条件:**
+- [x] `viewport_math.h`: `computeMinimapBucketCount()`/`minimapBucketStartLine()`実装
+- [x] `render_pipeline.h`: `MinimapLineColorState`/新規宣言群/メンバ追加
+- [x] `render_pipeline.cpp`: バケット化描画・行番号ベース色蓄積・比例配分ヒットテストの実装
+- [x] 単体テスト10件+統合テスト7件追加
+- [x] ローカルDebug/Release/ubsan全875テストgreen、clang-tidy新規警告0
+- [x] `--measure-frame`実測+実アプリ視覚確認
+
+**スコープ外(意図的、後続フェーズへ):** バケット代表色の精度向上、複数言語混在の考慮、テーマ対応、小規模文書でのバー高さ上限キャップ、高速連続スクロール時の一時的誤書き込みの根本対処(世代番号)、フォールド行の特別扱い、密度表現の精緻化・表示トグル、Breadcrumb/Sticky scroll帯との重なり。
+
+**Phase 7wはコミット済み(次コミットで記録)、pushはユーザーの明示指示待ち。** 次フェーズは残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題あり)・tree-sitter内部実装のさらなる調査のいずれか、着手前にPlan Modeで詳細設計を起こすこと。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1746,11 +1778,23 @@ roadmap DoDは大規模文書で引き続き未達のまま、次の対応方針
 常に俯瞰表示するVSCode型ではなく、まず可視範囲+マージンのみを表示するスクロール追従型v1に
 留め、実測・実アプリ確認後に拡張判断する方針をユーザーが選択した。ローカルDebug/Release/
 ubsan全865件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.53ms、既存
-ベースラインと同水準)・実アプリでのクリックジャンプ視覚確認済み。コミット済み、pushは
-ユーザーの明示指示待ち。**
+ベースラインと同水準)・実アプリでのクリックジャンプ視覚確認済み。**
 
-**次フェーズは残り6言語対応バッチ4・ミニマップ文書全体俯瞰型拡張・(未確定)tree-sitter
-内部実装のさらなる調査のいずれか、着手前にPlan Modeで詳細設計を起こすこと。**
+**続けてPhase 7w(ミニマップ「文書全体俯瞰型」拡張)を実装・完了した(§3.57参照)。着手前
+調査で判明した最大の技術的障壁(可視範囲外の色情報取得 — `m_tokens`はPhase 7t以降「可視
+範囲+マージンのみ」保持)についてAskUserQuestionで3方式を提示し、**「遅延ポピュレーション」
+方式(推奨案)**が選ばれた: 初期表示は全体グレー、スクロールで見た範囲だけ後から色を埋める。
+行番号ベースの色蓄積配列(`std::vector<MinimapLineColorState>`、100万行でも約1MB)+
+`viewport_math.h`のバケット化純粋関数2つ(`computeMinimapBucketCount()`/
+`minimapBucketStartLine()`)を新設、ミニマップの窓を`[0,totalLines)`固定化、ヒットテスト/
+強調矩形を連続比例配分へ書き換えた。`main.cpp`は無変更(公開シグネチャ不変)。ローカル
+Debug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`実測
+(avgFrameNs≈16.50ms、Phase 7vベースラインと同水準)・実アプリでのミニマップ全体俯瞰表示+
+クリックジャンプ視覚確認済み。コミット済み、pushはユーザーの明示指示待ち。**
+
+**次フェーズは残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性
+課題あり)・(未確定)tree-sitter内部実装のさらなる調査のいずれか、着手前にPlan Modeで
+詳細設計を起こすこと。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

@@ -2522,6 +2522,88 @@ roadmapスケッチの「`D2D1_BITMAP_INTERPOLATION_MODE_LINEAR`によるGPUス�
 
 **スコープ外(意図的、後続フェーズへ):** 文書全体俯瞰表示(VSCode型、次候補として明示的に留保)、フォールドされている行のミニマップ内での特別扱い、密度表現の精緻化、テーマ対応、キーボードショートカットでのミニマップ表示/非表示トグル。
 
+> **本節は凍結された歴史的記録である。** 文書全体俯瞰表示はPhase 7wで実装済み — 最新のミニマップ設計は §10.24 を参照。`widenedVisibleLineRange()`/`drawMinimapLines()`/`drawMinimapViewportHighlight()`/`minimapLineAtY()`の実装はPhase 7wで全面的に書き換えられており、上記のコード例は当時のスナップショットとして残す。
+
+### 10.24 ミニマップ「文書全体俯瞰型」拡張 (Phase 7w実装)
+
+Phase 7v完了後、ユーザーが次候補としてミニマップ文書全体俯瞰型拡張(推奨案)を選んだ。着手前調査で判明した設計課題(可視範囲外の行の色情報取得)についてAskUserQuestionを提示し、**「遅延ポピュレーション」(推奨案)**が選ばれた: 初期表示は全体グレー(未計算)、スクロールで実際に見た範囲だけ後から色を埋める。新規ファイル・CMake変更なし、`viewport_math.h`/`render_pipeline.h`/`.cpp`への実装追加のみ。
+
+**バケット化の純粋関数(`viewport_math.h`):**
+```cpp
+[[nodiscard]] constexpr std::uint64_t computeMinimapBucketCount(
+    float availableHeightDips, float minRowHeightDips, std::uint64_t totalLines) noexcept;
+[[nodiscard]] constexpr std::uint64_t minimapBucketStartLine(
+    std::uint64_t bucket, std::uint64_t bucketCount, std::uint64_t totalLines) noexcept;
+```
+バケット数は「高さで収まる最大行数」と「総行数」の小さい方に丸める(`std::min`) — 小規模文書(総行数 ≤ 収容可能バケット数)では自動的にPhase 7vと同じ1行=1バケットへ縮退する(退行ではなく一般化)。`minRowHeightDips`は`drawMinimap()`が既に計算している`m_lineHeightDips / kMinimapScaleDivisor`をそのまま流用し、新しいマジックナンバーを追加していない。バケット代表行は`(bucket * totalLines) / bucketCount`という各バケット独立の整数演算で求める — 累積加算ループ(`running += totalLines/bucketCount`)だと端数の丸め誤差が蓄積してバケットごとにズレるが、この式は誤差が蓄積しない標準的な「N個をK個のグループへほぼ均等分配」イディオム。
+
+**行番号ベースの色蓄積配列(`render_pipeline.h`):**
+```cpp
+enum class MinimapLineColorState : std::uint8_t {
+    Unpopulated, PlainText, Keyword, Type, String, Number, Comment, Preprocessor,
+};
+std::vector<MinimapLineColorState> m_minimapLineColors;
+```
+バケット番号ベース(`std::vector`をバケット数でインデックス)ではなく行番号ベースを採用した。バケット境界はミニマップの物理高さ(リサイズで変化)と総行数(編集で変化)の両方に依存する可変値であり、バケット番号キーだとリサイズのたびに過去に取得した色情報が意味を失う。行番号キーなら色そのものは物理サイズに依存しない不変情報なのでリサイズ後も有効。`std::uint8_t`基底(`sizeof==1`)により100万行文書でも約1MBに収まり、Phase 7t/7uが解消した「`m_tokens`が文書全体を保持すると130〜200MB」という問題を再導入しない。バケット化ロジック(高さ依存)と蓄積配列(行番号依存)は完全に疎結合になる — 蓄積配列は「見た行の色」だけを覚え、バケット化は毎フレーム「今どの行を代表点として見るか」だけを決める。
+
+**蓄積配列の更新箇所(`refreshDocumentCacheIfStale()`/`applyAsyncSyntaxTokens()`):**
+```cpp
+// refreshDocumentCacheIfStale() — 既存のm_tokens.clear()/m_cachedOutline.clear()の直後
+m_minimapLineColors.assign(m_document->lineCount(), MinimapLineColorState::Unpopulated);
+
+// applyAsyncSyntaxTokens() — ヘッダのインライン定義から.cppへ実装を移動
+void RenderPipeline::applyAsyncSyntaxTokens(std::vector<syntax::Token> tokens) noexcept {
+    m_tokens = std::move(tokens);
+    m_lastRenderedFrameState.reset();
+    populateMinimapColorsForRequestedRange();
+}
+```
+蓄積配列のクリア/リサイズは既存のversion変化検知の一元窓口である`refreshDocumentCacheIfStale()`に統合し、新規の編集追従コードを一切書かなかった。1文字編集ごとに配列全体を丸ごと再初期化する、最もシンプルな設計を意図的に選んだ(CLAUDE.mdルール10)。`populateMinimapColorsForRequestedRange()`は`m_requestedTokenRange`(直前に`ensureSyntaxTokensCoverVisibleRange()`が設定した、リクエストしたバイトオフセット範囲)を`Document::offsetToLine()`で行範囲へ変換し、`m_tokens`を`drawTokensOnLine()`と同じ「ソート済みm_tokensへの単調tokenCursorスイープ」で走査して各行を分類する。**既知の限界:** 高速連続スクロールで複数リクエストが同時にin-flightになった場合、古いリクエストの応答が新しいリクエストの`m_requestedTokenRange`上書き後に届くと誤った行範囲へ一時的に色を書き込む可能性がある。これは`m_tokens`自体が既に抱える未対処の限界であり、世代番号付与などの本格対処(`SyntaxWorker`ペイロード変更を伴う)は別スコープ。次のリクエスト応答が届き次第、正しい値で自己修復する。
+
+**窓の切り離し(`widenedVisibleLineRange()`の意味変更):**
+```cpp
+void RenderPipeline::drawMinimap(ID2D1DeviceContext6& dc) noexcept {
+    // ...
+    const std::uint64_t totalLines = m_document->lineCount();
+    // 以前は widenedVisibleLineRange() の [windowStart, windowEnd) を使っていたが、
+    // Phase 7w では常に [0, totalLines) - totalLines をそのまま渡すだけ
+    drawMinimapLines(dc, left, heightDips, charWidthDips, totalLines);
+    drawMinimapViewportHighlight(dc, left, widthDips, heightDips, totalLines);
+}
+```
+`drawMinimap()`は元々`m_document->lineCount()`を直接呼んでいたため、新規のクランプ/マージン計算は不要だった。結果として`widenedVisibleLineRange()`の呼び出し元は`computeDesiredTokenRange()`(トークンリクエスト範囲の計算)1箇所のみに戻り、ミニマップ用途との混同が構造的に起こらなくなった。
+
+**ヒットテスト/強調矩形の連続比例配分化:**
+```cpp
+std::optional<document::LineNumber> RenderPipeline::minimapLineAtY(std::int32_t yPx) const noexcept {
+    // ...
+    const float yDip = std::clamp(static_cast<float>(yPx) / m_dpiScale, 0.0F, heightDips);
+    const auto  line = static_cast<LineNumber>((yDip / heightDips) * static_cast<float>(totalLines));
+    return std::min(line, static_cast<LineNumber>(totalLines - 1));
+}
+```
+`widenedVisibleLineRange()`依存の離散行オフセット計算から「Y座標 ÷ 帯の高さ = 行番号 ÷ 総行数」という連続的な比例配分へ書き換えた。`hitTestMinimap()`自体(X範囲チェック→`minimapLineAtY()`へ委譲)は無変更。強調矩形(`drawMinimapViewportHighlight()`)にも同じ比例配分を適用し、新規に最小高さ`kMinHighlightHeightDips=2.0F`(未チューニングの初期値)を導入した — 100万行文書で可視行50行程度だと矩形が`(50/1,000,000)*700px≈0.035px`相当になり実質不可視になるため(Win32スクロールバーのつまみが物理的に0pxまで縮まないのと同じ配慮)。
+
+**`main.cpp`は無変更。** `hitTestMinimap()`/`minimapLineAtY()`/`applyAsyncSyntaxTokens()`いずれも公開シグネチャを変更しなかったため、Phase 7t→7uで確立した「内部実装だけの差し替え」パターンがここでも成立した。
+
+**未計算行のブラシ:** `m_minimapUnpopulatedBrush`(RGB 55,55,55、背景色RGB 30,30,30に近い)を新設し、`m_minimapTextBrush`(着色トークンなし、RGB 110,110,110)と視覚的に区別した — 「まだ見ていない」と「見たが色付けする対象がなかった」を利用者が区別できるようにするため。シンタックスハイライトが無効な場合、`m_tokens`は永久に空のままで`applyAsyncSyntaxTokens()`自体が一度も呼ばれないため、ミニマップ全体が恒久的に「未計算」グレーのまま表示される(Phase 7v時点で既に「ハイライト無効時はミニマップ全体が単色グレーになる」という挙動だったことから連続しており新規の退行ではない)。
+
+**ベンチマーク実測 (Release、`--measure-frame`、5万行合成文書スクロール300フレーム):**
+
+| 指標 | 実測値 | Phase 7v既存ベースライン |
+|---|---|---|
+| avgFrameNs | 16,500,980ns (≈16.50ms) | ≈16.53ms |
+| p50FrameNs | 16,670,200ns (≈16.67ms) | ≈16.68ms |
+| p95FrameNs | 16,900,700ns (≈16.90ms) | ≈17.02ms |
+
+バケット化ロジック追加による有意なフレーム時間の悪化は確認されなかった(roadmap §7.11「ミニマップ描画: 60fps」目標と整合)。
+
+**テスト:** `tests/unit/render_viewport_math_test.cpp`に10件追加(`ComputeMinimapBucketCountTest`×6、`MinimapBucketStartLineTest`×4)。`tests/integration/render_text_smoke_test.cpp`に7件追加(`MinimapOverviewTopOfStripResolvesNearLineZeroRegardlessOfTopLine`/`MinimapOverviewBottomOfStripResolvesNearLastLineRegardlessOfTopLine`/`MinimapRendersWithoutErrorOnLargeSyntheticDocument`/`MinimapRendersWithoutErrorWhenScrollingThroughSeveralDistinctRegions`/`ApplyAsyncSyntaxTokensDirectlyPopulatesWithoutCrashingNearDocumentBoundary`/`MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabledAfterFirstRender`/`MinimapWindowSurvivesResize`)、既存2件のコメントを新設計に合わせて更新。ローカルDebug/Release/ubsan全875件green、clang-tidy新規警告0(初回`MinimapOverviewWindowCoversWholeDocumentRegardlessOfTopLine`が単独でcognitive complexity閾値超過を検出したため、共有フィクスチャヘルパー`setUpScrolledMinimapOverviewFixture()`を使う2つの単一目的テストへ分割して解消)。
+
+**実アプリ視覚確認:** 1454行の実C++ファイル(`render_pipeline.cpp`自身)を`--open`で開き、ミニマップ帯が文書全体を俯瞰表示すること(初回描画時に`m_lineHeightDips`未測定によるフォールバックで`computeDesiredTokenRange()`が文書全体を要求し、結果的に文書全体が一度に着色された)、強調矩形が現在可視範囲を示すことをスクリーンショットで確認。ミニマップ下端付近をクリックし、テキストエリアが文書末尾付近(`renderOnce()`関数)へジャンプし、強調矩形もクリック位置に追従することをクリック前後のスクリーンショット比較で確認した。
+
+**スコープ外(意図的、後続フェーズへ):** バケット代表色の精度向上(密度表現・複数行の集約統計)、複数言語混在時の考慮、テーマ対応、小規模文書でのバー高さ上限キャップ、高速連続スクロール時の古い応答による蓄積配列への一時的誤書き込みの根本対処(世代番号、`SyntaxWorker`ペイロード変更を伴う別スコープ)、フォールドされている行のミニマップ内での特別扱い、密度表現の精緻化・キーボードショートカットでの表示/非表示トグル、ミニマップ帯とBreadcrumb/Sticky scroll帯のY軸上の重なり。
+
 ---
 
 ## 11. ログ解析モード 詳細

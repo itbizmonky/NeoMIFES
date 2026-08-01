@@ -13,6 +13,7 @@
 
 #include <windows.h>
 
+#include <memory>
 #include <string>
 
 #include "neomifes/document/document.h"
@@ -882,11 +883,14 @@ TEST(RenderTextSmokeTest, MinimapRendersWithoutError) {
         << "render() with the minimap enabled failed: " << neomifes::render::describe(rendered.error());
 }
 
-// Phase 7v: pins the design decision that the minimap's window comes from
-// widenedVisibleLineRange() (visibleLineRange()/reservedTopHeightDips()), NOT
-// m_requestedTokenRange - that member stays unset whenever setLanguage() is
-// never called (ensureSyntaxTokensCoverVisibleRange()'s early return), which
-// would otherwise leave the minimap's window silently stuck at {0,0}.
+// Phase 7v/7w: pins the design decision that the minimap's window is
+// [0, totalLines) - m_document->lineCount() directly, NOT m_requestedTokenRange
+// - that member stays unset whenever setLanguage() is never called
+// (ensureSyntaxTokensCoverVisibleRange()'s early return), which would
+// otherwise leave the minimap's window silently stuck at {0,0}. With
+// highlighting off, m_minimapLineColors is populated but never gets past
+// Unpopulated (applyAsyncSyntaxTokens() is never called) - the whole strip
+// renders in the "not computed" gray, same as it did in Phase 7v.
 TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabled) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
@@ -989,11 +993,13 @@ TEST(RenderTextSmokeTest, MinimapLineAtYIgnoresHorizontalPositionDuringDrag) {
     EXPECT_TRUE(pipeline.minimapLineAtY(10).has_value());
 }
 
-// Phase 7v: at topLine=0 (the very start of the document), the minimap's
-// window (widenedVisibleLineRange()) necessarily starts at line 0 too (a
-// margin can't extend before the document start) - so a click at the very
-// top of the strip (y=0) must resolve to line 0, the same self-consistency
-// drawMinimapViewportHighlight()'s coordinate math relies on.
+// Phase 7w: the minimap's window is always [0, totalLines) regardless of
+// topLine (see MinimapOverviewWindowCoversWholeDocumentRegardlessOfTopLine
+// below for the direct regression test of that fact) - so a click at the
+// very top of the strip (y=0) must resolve to line 0 unconditionally, the
+// same self-consistency drawMinimapViewportHighlight()'s coordinate math
+// relies on. topLine is deliberately set to 0 here too, but that's now
+// incidental rather than load-bearing.
 TEST(RenderTextSmokeTest, HitTestMinimapAtWindowTopReturnsWindowStartLine) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
@@ -1046,10 +1052,13 @@ TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorWithFoldedRegions) {
         << neomifes::render::describe(rendered.error());
 }
 
-// Phase 7v: pins widenedVisibleLineRange()'s clamp near the document end -
-// scrolling near the last line must not push the minimap's window past
-// totalLines (the same clamp widenLineRangeWithMargin() already guarantees,
-// exercised here through the minimap's own hit-testing path).
+// Phase 7w: pins minimapLineAtY()'s own totalLines-1 clamp - in whole-
+// document-overview mode there is no windowed range to clamp against
+// (Phase 7v's widenLineRangeWithMargin()-derived clamp no longer applies
+// here), so this now exercises minimapLineAtY()'s direct
+// `std::min(line, totalLines - 1)` instead. topLine is set near the
+// document end for continuity with the original test, but (per Phase 7w)
+// no longer affects the minimap's own window at all.
 TEST(RenderTextSmokeTest, MinimapWindowClampsNearDocumentEnd) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
@@ -1086,6 +1095,238 @@ TEST(RenderTextSmokeTest, MinimapWindowClampsNearDocumentEnd) {
     const auto hit = pipeline.minimapLineAtY(5000);
     ASSERT_TRUE(hit.has_value());
     EXPECT_LE(*hit, 20U);
+}
+
+// Phase 7w: the single most important regression test for the "whole
+// document overview" redesign - Phase 7v's window tracked topLine (a click
+// near the strip's top always meant "near wherever we've scrolled to");
+// Phase 7w's window is always [0, totalLines) regardless of topLine. Split
+// into two single-assertion-pair tests (top/bottom) sharing a small fixture
+// helper, rather than one test checking both ends, to keep each TestBody's
+// cognitive complexity down - same shape as this file's other focused tests.
+[[nodiscard]] std::unique_ptr<RenderPipeline> setUpScrolledMinimapOverviewFixture(HWND hwnd, Document& doc) {
+    auto pipeline = std::make_unique<RenderPipeline>();
+    if (!pipeline->attach(hwnd).has_value()) {
+        return nullptr;
+    }
+    std::u16string content;
+    for (int i = 0; i < 100; ++i) {
+        content += u"line\n";
+    }
+    doc.insertText(0, content);
+    pipeline->setDocument(&doc);
+    pipeline->setTopLine(60);  // deep into the document, away from both ends
+    return pipeline;
+}
+
+TEST(RenderTextSmokeTest, MinimapOverviewTopOfStripResolvesNearLineZeroRegardlessOfTopLine) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    Document doc;
+    auto     pipeline = setUpScrolledMinimapOverviewFixture(window.get(), doc);
+    if (!pipeline) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment";
+    }
+
+    const auto rendered = pipeline->render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    const auto topHit = pipeline->minimapLineAtY(0);
+    ASSERT_TRUE(topHit.has_value());
+    EXPECT_LE(*topHit, 5U) << "a click at the very top of the strip must resolve near line 0, "
+                              "not near topLine (60)";
+}
+
+TEST(RenderTextSmokeTest, MinimapOverviewBottomOfStripResolvesNearLastLineRegardlessOfTopLine) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    Document doc;
+    auto     pipeline = setUpScrolledMinimapOverviewFixture(window.get(), doc);
+    if (!pipeline) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment";
+    }
+
+    const auto rendered = pipeline->render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    const auto bottomHit = pipeline->minimapLineAtY(10000);
+    ASSERT_TRUE(bottomHit.has_value());
+    EXPECT_GE(*bottomHit, 90U) << "a click at the very bottom of the strip must resolve near the "
+                                  "document's last line";
+}
+
+// Phase 7w: bucketed rendering with a document large enough that
+// computeMinimapBucketCount() actually caps the bucket count below
+// totalLines - primarily an ASan/UBSan boundary-safety check (bucket->line
+// mapping, minimapLineSpan()'s lineToOffset() calls) rather than a visual one.
+TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorOnLargeSyntheticDocument) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document      doc;
+    std::u16string content;
+    content.reserve(40000);
+    for (int i = 0; i < 5000; ++i) {
+        content += u"int line = 42; // comment\n";
+    }
+    doc.insertText(0, content);
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() on a 5,000-line document failed: " << neomifes::render::describe(rendered.error());
+}
+
+// Phase 7w: scrolling through several distinct regions triggers multiple
+// SyntaxWorker requests over the document's lifetime, each of which (once
+// delivered) calls populateMinimapColorsForRequestedRange() for a different
+// line range - confirms repeated partial writes into m_minimapLineColors
+// across several render() calls don't crash.
+TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorWhenScrollingThroughSeveralDistinctRegions) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document      doc;
+    std::u16string content;
+    for (int i = 0; i < 500; ++i) {
+        content += u"line\n";
+    }
+    doc.insertText(0, content);
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    for (const auto topLine : {0U, 100U, 250U, 400U, 50U}) {
+        pipeline.setTopLine(topLine);
+        const auto rendered = pipeline.render();
+        ASSERT_TRUE(rendered.has_value())
+            << "render() after scrolling to line " << topLine
+            << " failed: " << neomifes::render::describe(rendered.error());
+    }
+}
+
+// Phase 7w: exercises populateMinimapColorsForRequestedRange()'s
+// offsetToLine(m_requestedTokenRange.end) + 1 boundary arithmetic directly -
+// applyAsyncSyntaxTokens() is public and callable without going through the
+// SyntaxWorker's background thread (same "call it directly" approach
+// render_syntax_worker_test.cpp uses for the worker itself, just one layer
+// up). After a real render() has set m_requestedTokenRange (typically
+// covering the whole small document here), simulating the async response
+// arriving must not read/write past m_minimapLineColors's bounds under
+// ASan/UBSan.
+TEST(RenderTextSmokeTest, ApplyAsyncSyntaxTokensDirectlyPopulatesWithoutCrashingNearDocumentBoundary) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // Simulates the async parse response arriving - m_requestedTokenRange was
+    // already set by render()'s own ensureSyntaxTokensCoverVisibleRange()
+    // call above.
+    pipeline.applyAsyncSyntaxTokens({});
+
+    const auto secondRender = pipeline.render();
+    EXPECT_TRUE(secondRender.has_value())
+        << "render() after applyAsyncSyntaxTokens() failed: "
+        << neomifes::render::describe(secondRender.error());
+}
+
+// Phase 7w: extends Phase 7v's "highlighting disabled" smoke test across
+// several render() calls - since m_minimapLineColors is never populated past
+// Unpopulated in this mode (applyAsyncSyntaxTokens() is never called), this
+// confirms repeatedly drawing an all-"not computed" strip doesn't crash.
+TEST(RenderTextSmokeTest, MinimapRendersWithoutErrorWhenSyntaxHighlightingIsDisabledAfterFirstRender) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2\nline3\nline4\n");
+    pipeline.setDocument(&doc);
+    // setLanguage() deliberately never called.
+
+    for (int i = 0; i < 3; ++i) {
+        const auto rendered = pipeline.render();
+        ASSERT_TRUE(rendered.has_value())
+            << "render() #" << i << " with no language set failed: "
+            << neomifes::render::describe(rendered.error());
+    }
+}
+
+// Phase 7w: m_minimapLineColors is sized off m_document->lineCount(), not the
+// window's physical dimensions - but drawMinimapLines()'s bucket count DOES
+// depend on the strip's height (computeMinimapBucketCount()). Resizing after
+// an initial render() (so the bucket count for the next frame differs from
+// the first) must not crash.
+TEST(RenderTextSmokeTest, MinimapWindowSurvivesResize) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document      doc;
+    std::u16string content;
+    for (int i = 0; i < 200; ++i) {
+        content += u"line\n";
+    }
+    doc.insertText(0, content);
+    pipeline.setDocument(&doc);
+    pipeline.setLanguage(Language::Cpp);
+
+    const auto firstRender = pipeline.render();
+    ASSERT_TRUE(firstRender.has_value())
+        << "initial render() failed: " << neomifes::render::describe(firstRender.error());
+
+    const auto resized = pipeline.resize(400, 800, 1.0F);
+    ASSERT_TRUE(resized.has_value())
+        << "resize() failed: " << neomifes::render::describe(resized.error());
+
+    const auto secondRender = pipeline.render();
+    EXPECT_TRUE(secondRender.has_value())
+        << "render() after resize() failed: " << neomifes::render::describe(secondRender.error());
 }
 
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {

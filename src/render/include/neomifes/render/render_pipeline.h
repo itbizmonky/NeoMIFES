@@ -224,11 +224,13 @@ public:
     // trigger another re-parse) so the next render() isn't coarse-frame-
     // skipped (ADR-011): m_tokens isn't part of FrameState's comparison, so
     // without this, a token-only change could otherwise go undrawn until
-    // some unrelated state also changes.
-    void applyAsyncSyntaxTokens(std::vector<syntax::Token> tokens) noexcept {
-        m_tokens = std::move(tokens);
-        m_lastRenderedFrameState.reset();
-    }
+    // some unrelated state also changes. Phase 7w: also populates
+    // m_minimapLineColors for whatever line range m_requestedTokenRange
+    // covers (populateMinimapColorsForRequestedRange()) - see that method's
+    // comment for the "responses always reflect the most recently STARTED
+    // request" assumption this relies on, and its known limitation under
+    // rapid successive scrolling.
+    void applyAsyncSyntaxTokens(std::vector<syntax::Token> tokens) noexcept;
 
     // Converts a client-area point (device pixels, e.g. from
     // WM_LBUTTONDOWN's lParam) to the nearest document::TextPos, using the
@@ -256,22 +258,23 @@ public:
                                                                         std::int32_t yPx) noexcept;
 
     // Hit-tests a client-area point against the minimap strip (Phase 7v).
-    // Returns the window-relative logical line under `yPx` if `xPx` falls
-    // inside [minimapLeftDips(), right edge) - nullopt otherwise (click
-    // lands in the text area, or the strip is too narrow to draw at all).
-    // The entry point for a fresh WM_LBUTTONDOWN; drag continuation should
-    // call minimapLineAtY() instead (see that method's comment on why).
+    // Returns the logical line under `yPx` if `xPx` falls inside
+    // [minimapLeftDips(), right edge) - nullopt otherwise (click lands in
+    // the text area, or the strip is too narrow to draw at all). The entry
+    // point for a fresh WM_LBUTTONDOWN; drag continuation should call
+    // minimapLineAtY() instead (see that method's comment on why).
     // const/noexcept, unlike hitTest()/hitTestFoldMarker() - this never
     // touches m_layoutCache.
     [[nodiscard]] std::optional<document::LineNumber> hitTestMinimap(std::int32_t xPx,
                                                                       std::int32_t yPx) const noexcept;
-    // Y-only core of hitTestMinimap() - resolves `yPx` to a logical line
-    // inside widenedVisibleLineRange() without checking `xPx` at all. Once a
-    // minimap drag has started (main.cpp's isDraggingMinimap), every
-    // subsequent WM_MOUSEMOVE should keep tracking even if the cursor drifts
-    // outside the strip's X range - the same convention an ordinary Win32
-    // scrollbar thumb drag follows. hitTestMinimap() itself calls this after
-    // its own X check passes.
+    // Y-only core of hitTestMinimap() - resolves `yPx` to a logical line via
+    // direct proportion against the WHOLE document (line / totalLines ==
+    // yDip / heightDips, Phase 7w's "whole document overview" model), not
+    // any windowed/margined range. Once a minimap drag has started
+    // (main.cpp's isDraggingMinimap), every subsequent WM_MOUSEMOVE should
+    // keep tracking even if the cursor drifts outside the strip's X range -
+    // the same convention an ordinary Win32 scrollbar thumb drag follows.
+    // hitTestMinimap() itself calls this after its own X check passes.
     [[nodiscard]] std::optional<document::LineNumber> minimapLineAtY(std::int32_t yPx) const noexcept;
 
     // Exposed for the --measure-frame harness and integration tests to
@@ -359,12 +362,11 @@ private:
     [[nodiscard]] std::pair<document::LineNumber, document::LineNumber> visibleLineRange() const noexcept;
     // visibleLineRange() widened by one screenful of margin on each side
     // (viewport_math.h::widenLineRangeWithMargin(), Phase 7t - untuned
-    // starting point). Extracted (Phase 7v) from computeDesiredTokenRange()
-    // so drawMinimap()/hitTestMinimap()/minimapLineAtY() can share the same
-    // "window" of lines without going through m_requestedTokenRange - that
-    // member is left unset whenever syntax highlighting is off
-    // (ensureSyntaxTokensCoverVisibleRange()'s early return), which would
-    // make the minimap's window silently stuck at {0,0} in that state.
+    // starting point). Extracted (Phase 7v) from computeDesiredTokenRange().
+    // Phase 7w: the minimap no longer shares this - "whole document
+    // overview" mode reads m_document->lineCount() directly (its window has
+    // no margin/clamping concept at all, unlike the syntax-token prefetch
+    // window this still serves). Sole caller is now computeDesiredTokenRange().
     [[nodiscard]] std::pair<document::LineNumber, document::LineNumber> widenedVisibleLineRange() const noexcept;
     // The document::TextRange (code-unit space) syntax tokens should cover
     // right now - widenedVisibleLineRange(), converted to offsets via
@@ -445,10 +447,13 @@ private:
     // detect "too narrow to draw/hit-test" the same way.
     [[nodiscard]] float minimapLeftDips() const noexcept;
     // Draws the right-edge minimap strip: opaque background, then one
-    // FillRectangle per line in widenedVisibleLineRange() colored by
+    // FillRectangle per bucket in [0, totalLines) colored by
     // minimapLineBrush() (drawMinimapLines()), then a translucent highlight
     // over the rows visibleLineRange() currently covers
-    // (drawMinimapViewportHighlight()) - roadmap sec.7.4. Deliberately a
+    // (drawMinimapViewportHighlight()) - roadmap sec.7.4. Phase 7w: "whole
+    // document overview" - the strip always represents the ENTIRE document,
+    // not a window around topLine (see widenedVisibleLineRange()'s updated
+    // comment on why that member no longer serves this). Deliberately a
     // direct-primitive strip, not an offscreen bitmap scaled via
     // D2D1_BITMAP_INTERPOLATION_MODE_LINEAR (that sketch's own wording
     // contradicts itself: "draw at 1/8 scale" vs "GPU-scale a full-size
@@ -457,22 +462,72 @@ private:
     // sketches. No-op if the strip would collide with the gutter (see
     // minimapLeftDips()). Called from renderOnce() after drawStickyScroll().
     void drawMinimap(ID2D1DeviceContext6& dc) noexcept;
-    void drawMinimapLines(ID2D1DeviceContext6& dc, float left, document::LineNumber windowStart,
-                          document::LineNumber windowEnd, float rowHeightDips, float charWidthDips) noexcept;
-    void drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float left, float widthDips,
-                                      document::LineNumber windowStart, float rowHeightDips) noexcept;
-    // Color for line [lineStart, lineEnd)'s minimap bar: the first colored
-    // (tokenBrush() != nullptr) token overlapping the line, m_minimapTextBrush
-    // if the line has content but no colored token, or nullptr for a truly
-    // empty line (draw nothing). `tokenCursor` follows the same "monotonic
-    // sweep over sorted m_tokens" contract drawTokensOnLine() uses -
-    // drawMinimapLines() walks its window in ascending line order so this
-    // holds. Deliberately does not extract the line's actual text (no
-    // snapshot->extract() call) - only the line's length (from
-    // Document::lineToOffset() deltas) and its first colored token are
-    // needed, avoiding a string allocation per window line per frame.
-    [[nodiscard]] ID2D1SolidColorBrush* minimapLineBrush(document::TextPos lineStart, document::TextPos lineEnd,
-                                                          std::size_t& tokenCursor) noexcept;
+    void drawMinimapLines(ID2D1DeviceContext6& dc, float left, float heightDips, float charWidthDips,
+                          std::uint64_t totalLines) noexcept;
+    void drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float left, float widthDips, float heightDips,
+                                      std::uint64_t totalLines) noexcept;
+    // Phase 7w: per-line classification for the minimap's lazily-populated
+    // color cache (m_minimapLineColors) - a CLASSIFICATION (not a stored
+    // brush), so it survives device loss untouched; resolved to an actual
+    // brush at draw time via minimapBrushForState(). Mirrors tokenBrush()'s
+    // TokenKind grouping exactly (Keyword/Type/String/Number/Comment/
+    // Preprocessor get their own state, Text/Variable/Punctuation all
+    // collapse to PlainText) - std::uint8_t-based so 1,000,000 lines costs
+    // ~1MB (m_tokens itself deliberately stays windowed, Phase 7t/7u, to
+    // avoid the 130-200MB a full-document token vector would cost; this
+    // per-line summary is the cheap alternative that makes "whole document
+    // overview" affordable).
+    enum class MinimapLineColorState : std::uint8_t {
+        Unpopulated,  // never covered by applyAsyncSyntaxTokens() since the last document-version clear
+        PlainText,    // covered, has content, but no colored token overlaps it
+        Keyword,
+        Type,
+        String,
+        Number,
+        Comment,
+        Preprocessor,  // covered, first colored token's kind
+    };
+    [[nodiscard]] static MinimapLineColorState classifyTokenKindForMinimap(syntax::TokenKind kind) noexcept;
+    [[nodiscard]] ID2D1SolidColorBrush* minimapBrushForState(MinimapLineColorState state) noexcept;
+    // The [start, end) offset span of `line`'s own content, excluding its
+    // trailing '\n' - shared by drawMinimapLines()'s per-bucket lookup and
+    // populateMinimapColorsForRequestedRange()'s per-line classification
+    // loop (Phase 7w), same convention extractLineText() established
+    // (Phase 7o).
+    [[nodiscard]] document::TextRange minimapLineSpan(document::LineNumber line,
+                                                       std::uint64_t         totalLines) const noexcept;
+    // First colored token overlapping [lineStart, lineEnd) among the tokens
+    // m_tokens holds RIGHT NOW (valid only while populating -
+    // populateMinimapColorsForRequestedRange() calls this immediately after
+    // m_tokens has been replaced by applyAsyncSyntaxTokens() with tokens
+    // covering exactly the contiguous range being swept over, same
+    // monotonic-tokenCursor-sweep contract drawTokensOnLine() uses).
+    [[nodiscard]] MinimapLineColorState classifyLineForMinimap(document::TextPos lineStart,
+                                                                document::TextPos lineEnd,
+                                                                std::size_t&       tokenCursor) noexcept;
+    // Fills m_minimapLineColors for the line range m_requestedTokenRange
+    // covers, called from applyAsyncSyntaxTokens(). No-op if no request has
+    // ever been made, or m_minimapLineColors's size doesn't match the
+    // current document's line count (a stale response arriving after a
+    // version-triggered clear/resize - see refreshDocumentCacheIfStale()).
+    // Known limitation: under rapid successive scrolling, a stale response
+    // (started before, delivered after a newer request overwrote
+    // m_requestedTokenRange) can transiently populate the wrong line range;
+    // this self-heals once the newer request's own response arrives. Fixing
+    // this properly needs a generation counter on SyntaxWorker's request/
+    // response payload - out of scope here (m_tokens itself has the same
+    // unaddressed limitation already).
+    void populateMinimapColorsForRequestedRange() noexcept;
+    // Color for line `line`'s minimap bar: m_minimapLineColors[line]
+    // resolved to a brush (minimapBrushForState()), or nullptr for a truly
+    // empty line ([lineStart,lineEnd) empty - draw nothing, same convention
+    // Phase 7v established). Unlike Phase 7v's version, this does NOT sweep
+    // m_tokens directly - m_tokens only ever covers the visible+prefetch
+    // window (Phase 7t), never arbitrary bucket-sampled lines scattered
+    // across the whole document, so a per-frame m_tokens sweep is
+    // structurally the wrong tool here (Phase 7w).
+    [[nodiscard]] ID2D1SolidColorBrush* minimapLineBrush(document::LineNumber line, document::TextPos lineStart,
+                                                          document::TextPos lineEnd) noexcept;
     // Raw text of logical line `line` (no trailing '\n'), extracted from
     // m_cachedSnapshot. Caller must have already verified m_document/
     // m_cachedSnapshot are non-null (same precondition convention as this
@@ -629,6 +684,14 @@ private:
     // that request completes (see both functions' comments).
     std::optional<syntax::Language>                    m_language;
     std::vector<syntax::Token>                         m_tokens;
+    // Phase 7w: lazily-populated per-line minimap color cache (whole-
+    // document overview mode) - see MinimapLineColorState's comment.
+    // Resized/cleared to m_document->lineCount() * Unpopulated whenever
+    // refreshDocumentCacheIfStale() detects a document-version change (or a
+    // forced full reparse) - the simplest possible edit-tracking strategy
+    // (no EditDelta-based shifting, CLAUDE.md rule 10), same "wholesale
+    // invalidation" spirit as m_layoutCache.clear() just above it.
+    std::vector<MinimapLineColorState>                 m_minimapLineColors;
     // Phase 7h: symbol tree for Breadcrumb, recomputed alongside m_tokens
     // inside refreshDocumentCacheIfStale() - SYNCHRONOUSLY (not via
     // m_syntaxWorker), see that function's comment for why. Cleared whenever
@@ -696,6 +759,11 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_minimapBackgroundBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_minimapViewportBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_minimapTextBrush;
+    // Phase 7w: distinct dimmer gray for a line that has never been covered
+    // by an async syntax-token response yet ("not computed" placeholder) -
+    // visually distinguishable from m_minimapTextBrush (a line that WAS
+    // covered but had no colored token to show).
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_minimapUnpopulatedBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
     // Phase 4b8e: one fixed-pitch character's advance width, probed once
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()

@@ -4,6 +4,7 @@
 // area. Header-only, no Windows-SDK includes, so it stays unit-testable
 // without a live COM/device/DirectWrite stack (mirrors resize_math.h).
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 
@@ -38,6 +39,41 @@ namespace neomifes::render {
     const std::uint64_t remaining     = totalLines > visibleEnd ? totalLines - visibleEnd : 0;
     const std::uint64_t marginedEnd   = remaining > marginLines ? visibleEnd + marginLines : totalLines;
     return {marginedStart, marginedEnd};
+}
+
+// Phase 7w: minimap "whole document overview" bucketing math. A minimap
+// strip physically cannot draw one row per document line once totalLines
+// exceeds availableHeightDips/minRowHeightDips (e.g. 1,000,000 lines in a
+// 700-DIP-tall strip) - this caps the row count at whatever actually fits,
+// falling back to totalLines itself (one bucket per line, matching Phase
+// 7v's original 1:1 behavior exactly) whenever the document is small enough
+// that every line already gets its own row. minRowHeightDips is the SAME
+// derived value RenderPipeline::drawMinimap() already computes
+// (m_lineHeightDips / kMinimapScaleDivisor, roadmap sec.7.4's "1/8 scale") -
+// not a new guessed constant.
+[[nodiscard]] constexpr std::uint64_t computeMinimapBucketCount(
+    float availableHeightDips, float minRowHeightDips, std::uint64_t totalLines) noexcept {
+    if (availableHeightDips <= 0.0F || minRowHeightDips <= 0.0F || totalLines == 0) {
+        return 0;
+    }
+    const auto          maxByHeight     = static_cast<std::uint64_t>(availableHeightDips / minRowHeightDips);
+    const std::uint64_t bucketsByHeight = maxByHeight > 0 ? maxByHeight : 1;
+    return std::min(bucketsByHeight, totalLines);
+}
+
+// The first document line belonging to `bucket` (0-based) out of
+// `bucketCount` buckets spanning `totalLines` lines total. Integer
+// (bucket * totalLines) / bucketCount, computed independently per bucket
+// rather than via a running "+= totalLines/bucketCount" accumulation loop -
+// the latter would drift when totalLines isn't a clean multiple of
+// bucketCount, this doesn't (standard "partition N items into K
+// nearly-equal groups" idiom). bucket==0 always yields line 0;
+// bucket==bucketCount-1 always yields a line strictly less than totalLines
+// (given bucketCount>=1) - both properties RenderPipeline::drawMinimapLines()
+// relies on without re-checking.
+[[nodiscard]] constexpr std::uint64_t minimapBucketStartLine(
+    std::uint64_t bucket, std::uint64_t bucketCount, std::uint64_t totalLines) noexcept {
+    return bucketCount == 0 ? 0 : (bucket * totalLines) / bucketCount;
 }
 
 }  // namespace neomifes::render
