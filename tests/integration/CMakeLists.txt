@@ -171,3 +171,38 @@ set_tests_properties(frame_measure PROPERTIES
     LABELS "integration"
     TIMEOUT 60
 )
+
+# plugin_load_test - loads the REAL built hello_plugin/
+# hello_plugin_bad_api_version/crashing_plugin/throwing_plugin sample DLLs
+# (Phase 8a, ADR-015) via PluginHost::load(). First test in this codebase to
+# LoadLibraryW a sibling-built CMake artifact rather than spawning it as a
+# subprocess (contrast startup_measure_test.cpp/frame_measure_test.cpp,
+# which spawn NeoMIFES.exe as a child process instead).
+add_executable(neomifes_plugin_load_test
+    plugin_load_test.cpp
+)
+
+target_link_libraries(neomifes_plugin_load_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::plugin
+        GTest::gtest
+)
+
+set_target_properties(neomifes_plugin_load_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    plugin_load
+    COMMAND neomifes_plugin_load_test
+            $<TARGET_FILE:hello_plugin>
+            $<TARGET_FILE:hello_plugin_bad_api_version>
+            $<TARGET_FILE:crashing_plugin>
+            $<TARGET_FILE:throwing_plugin>
+)
+
+set_tests_properties(plugin_load PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

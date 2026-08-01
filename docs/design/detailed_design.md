@@ -1439,7 +1439,9 @@ private:
 
 ## 8. Plugin Host 詳細
 
-### 8.1 API v1 (概略)
+> ⚠️ **本節の§8.1〜§8.3はPhase 0時点のスケッチであり、Phase 8a(2026-08-01)実装時点でAPI形状が変わった。** `NmfsPluginApiV1`/`document_replace`等の設計は、実装時点で`document::Document`に対応するAPI(行番号→テキスト取得、行+桁→オフセット変換)が存在しないと判明したため採用されず、Phase 8bへ延期(`docs/issues/plugin_core_api_document_gap.md`、[ADR-015](../decisions/ADR-015-plugin-host-c-abi-seh.md)参照)。§8.2の`PluginHost`もクラス概形は近いが実際のメンバ構成は異なる。実装済みの内容は§8.4参照。
+
+### 8.1 API v1 (概略、Phase 0時点のスケッチ、Phase 8aでは未採用)
 
 ```cpp
 // C ABI: 本体 → プラグインへ渡す関数テーブル
@@ -1467,7 +1469,7 @@ struct NmfsPluginApiV1 {
 };
 ```
 
-### 8.2 ホットロード
+### 8.2 ホットロード (Phase 0時点のスケッチ、Phase 8aでは未採用)
 ```cpp
 class PluginHost {
 public:
@@ -1505,6 +1507,61 @@ private:
 
 } // namespace
 ```
+
+### 8.4 プラグインホスト 最小限PoC (Phase 8a実装)
+
+`docs/design/master_roadmap.md` §8 の完全な v2.0 ビジョン(サンドボックス・IPC・署名検証・マーケットプレース)は 1 PR には大きすぎるため、CLAUDE.md §7 の Phase 8 DoD「サンプル DLL 動作」に直接対応するスコープへ絞った(ADR-015参照)。DLL 読み込み+`onLoad`/`onUnload`呼び出し+SEH クラッシュ隔離のみを実装し、`NeoMifesCoreApi`・権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI 配線は全て後続サブフェーズへ明示的に延期した。
+
+**配布可能な C ABI ヘッダ (`include/neomifes/plugin_sdk.h`、本リポジトリ初のトップレベル`include/`):**
+```c
+#define NEOMIFES_PLUGIN_API_VERSION 1u
+
+typedef struct NeoMifesPluginContext {
+    void* userData;  // host-owned, plugin-writable idiom (cf. GWLP_USERDATA)
+} NeoMifesPluginContext;
+
+typedef struct NeoMifesPluginInfo {
+    const wchar_t* id;
+    const wchar_t* name;
+    const wchar_t* version;
+    const wchar_t* author;
+    unsigned int   apiVersion;
+} NeoMifesPluginInfo;
+
+typedef struct NeoMifesPluginVTable {
+    void (*onLoad)(NeoMifesPluginContext* ctx);
+    void (*onUnload)(NeoMifesPluginContext* ctx);
+} NeoMifesPluginVTable;
+
+__declspec(dllexport) const NeoMifesPluginInfo*   neomifes_plugin_info(void);
+__declspec(dllexport) const NeoMifesPluginVTable* neomifes_plugin_vtable(void);
+```
+
+**`neomifes::plugin::PluginHost` (`src/plugin/include/neomifes/plugin/plugin_host.h`):**
+```cpp
+class PluginHost {
+public:
+    [[nodiscard]] PluginExpected<void> load(const std::filesystem::path& dllPath);
+    [[nodiscard]] PluginExpected<void> unload() noexcept;
+    [[nodiscard]] bool isLoaded() const noexcept;
+    [[nodiscard]] void* contextUserData() const noexcept;  // テスト専用の内省
+private:
+    platform::ModuleHandle                 m_module;   // 既存・未使用だったRAIIラッパーを再利用
+    const NeoMifesPluginVTable*            m_vtable = nullptr;
+    std::unique_ptr<NeoMifesPluginContext> m_context;
+};
+```
+
+**設計上の要点:**
+- **`platform::ModuleHandle`(`handle_guard.h`)をそのまま再利用。** 新規HMODULE RAIIラッパーは書かない — `LoadLibraryW`/`FreeLibrary`に既に正確に対応済みだった(既存、未使用)。
+- **SEHトランポリン(`invokePluginCallbackSafe()`、`plugin_host.cpp`)は無条件`EXCEPTION_EXECUTE_HANDLER`を採用。** `original_buffer.cpp`の既存トランポリンが`EXCEPTION_IN_PAGE_ERROR`のみを捕捉する条件付きフィルタなのとは意図的に異なる設計(ADR-015参照)。ホストは`/EHsc`ビルドだが、`onLoad`/`onUnload`を間接関数ポインタ経由で呼ぶため、コンパイラが「throwしない」と静的に仮定できず、ハードウェア例外・C++例外(throwを含む)の両方を実測で捕捉できることを確認した(`plugin_load_test.cpp`の`IsolatesAHardwareFaultInOnLoadWithoutCrashingTheHost`/`IsolatesAThrownExceptionInOnLoadWithoutCrashingTheHost`)。
+- **`load()`は失敗時に部分状態を一切残さない。** apiVersion不一致・エクスポート解決失敗・`onLoad`のクラッシュ、いずれの場合も`isLoaded()`は必ず`false`になる(クラッシュ時はDLLを即座にアンロードし、状態不明なプラグインの`onUnload`は呼ばない)。
+- **`unload()`は`onUnload`がクラッシュしても無条件にDLLを解放する。** 「クラッシュしたが古いDLLがまだマップされたまま」より「DLLが消えている」方が確実に安全という判断。
+- **`apiVersion`は完全一致のみで判定。** min/max範囲は次にバージョンを上げる際に再検討(ADR-015)。
+
+**サンプルプラグイン (`plugins/samples/`、本リポジトリ初の`MODULE` CMakeターゲット):** `hello_plugin`(正規サンプル、`<neomifes/plugin_sdk.h>`以外への依存なし)、`hello_plugin_bad_api_version`(apiVersion不一致の拒否を検証)、`crashing_plugin`(`onLoad`でnullポインタ書き込み、SEH隔離のハードウェア例外側を実測検証)、`throwing_plugin`(`onLoad`で`std::runtime_error`をthrow、SEH隔離のC++例外側を実測検証)。
+
+**意図的にスコープ外とした項目:** `NeoMifesCoreApi`(`docs/issues/plugin_core_api_document_gap.md`参照)、`permissions`ビットフィールド+権限UI、Windows AppContainer/Job Objectサンドボックス、別プロセス実行+IPC、`manifest.json5`+Authenticode署名検証、マーケットプレースクライアント、`onDocumentChanged`+非同期ワーカー配線、`Ctrl+Shift+X`プラグイン管理UI、`core::CommandDispatcher`へのプラグインコマンド受け入れ、`src/app/main.cpp`への配線。詳細は`master_roadmap.md` §8.7参照。
 
 ---
 

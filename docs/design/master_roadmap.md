@@ -234,8 +234,9 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7u | `TSInput`コールバックAPI採用 (大規模文書のDoD達成を試行) | ❌ 全面revert (性能後退のため、`docs/issues/tree_sitter_incremental_parse_cost.md`参照) | §7 |
 | 7v | ミニマップ (簡易版・スクロール追従型、文書全体俯瞰は次候補) | ✅ 完了 | §7.4 |
 | 7w | ミニマップ「文書全体俯瞰型」拡張 (遅延ポピュレーション方式) | ✅ 完了 | §7.4 |
-| 7x〜 | 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / tree-sitter内部実装調査 | ⏭️ 次候補 | §7 |
-| 8 | プラグインエンジン + SDK + サンドボックス | 未着手 | §8 |
+| 7x〜 | 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / tree-sitter内部実装調査 | ⏭️ 次候補 (Phase 7、保留中) | §7 |
+| 8a | プラグインエンジン 最小限PoC (C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 | §8 |
+| 8b〜 | `NeoMifesCoreApi`橋渡し設計 / AppContainerサンドボックス (どちらを先行するかは着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -1424,6 +1425,23 @@ typedef struct NeoMifesCoreApi {
 ### 8.6 影響ファイル
 - **新規:** `src/plugin/{plugin_host.{h,cpp}, plugin_manifest.{h,cpp}, plugin_permission.{h,cpp}, plugin_sandbox.{h,cpp}, plugin_ipc.{h,cpp}}`、`src/marketplace/{client.{h,cpp}, catalog.{h,cpp}, installer.{h,cpp}}`、`include/neomifes/plugin_sdk.h`、`plugins/samples/` 5 種、`tests/integration/plugin_load_test.cpp`
 - **変更:** `src/app/main.cpp` (プラグインロード配線、`Ctrl+Shift+X`)、`src/core/command_dispatcher.cpp` (プラグイン Command 受入)、`CMakeLists.txt` (SDK ヘッダ配布、サンプルビルド)
+
+### 8.7 実装後の確定事項 (Phase 8a 完了、2026-08-01)
+
+上記 §8.1〜§8.6 は Phase 8 の完全な v2.0 ビジョンを規定しているが、CLAUDE.md §7 の Phase 8 DoD 自体は「サンプル DLL 動作」の一点のみである。着手前にユーザーへスコープ縮小案を提示し、**「最小限 PoC」**(DLL 読み込み+`onLoad`/`onUnload`呼び出し+SEH クラッシュ隔離のみ)が選ばれた。詳細は [ADR-015](../decisions/ADR-015-plugin-host-c-abi-seh.md) 参照。
+
+**スコープ縮小の理由:**
+- `NeoMifesCoreApi`(§8.3 の`insertText`/`getLineText`等)は、`document::Document`に行番号→テキスト取得 API・行+桁→オフセット変換 API が存在せず、そのままでは実装できないと着手前調査で判明した(`docs/issues/plugin_core_api_document_gap.md`)。
+- `permissions`ビットフィールド・AppContainer/Job Object サンドボックス・別プロセス IPC・`manifest.json5`+署名検証・マーケットプレースは、いずれも「DLL がロードできてコールバックが呼べる」という土台が無いまま設計すると推測実装になる(CLAUDE.mdルール3)。
+
+**実装した内容(§8.3 の C ABI 境界からの変更点):**
+- `NeoMifesPluginInfo`から`permissions`フィールドを削除(Phase 8b以降で追加)。`NeoMifesPluginVTable`は`onLoad`/`onUnload`のみ(`onDocumentChanged`は延期)。
+- `NeoMifesPluginContext`を、§8.3 スケッチの不透明ハンドルから`void* userData`を持つ透過的な構造体に変更(Win32 の`GWLP_USERDATA`と同種のC ABIイディオム、テストが`onLoad`/`onUnload`の実行を実DLL経由で観測するために必要)。
+- `NeoMifesCoreApi`自体を丸ごと延期(上記参照)。
+
+**SEH クラッシュ隔離の実測結果:** `crashing_plugin`(null ポインタ書き込みによる`EXCEPTION_ACCESS_VIOLATION`)・`throwing_plugin`(`std::runtime_error`の throw、ホストは`/EHsc`ビルドだが間接関数ポインタ経由の呼び出しのため捕捉可能)の両方について、Debug/Release(MSVC)・ubsan(clang-cl)の全構成で「プラグインの異常がホストプロセスをクラッシュさせない」ことを実測で確認した(推測ではなく`tests/integration/plugin_load_test.cpp`で証明、CLAUDE.mdルール3)。この SEH トランポリンは**セキュリティ境界ではない**(同一プロセス内のため意図的な悪意あるプラグインからは保護できない、真の隔離は Phase 8b 以降)。
+
+**次候補 (Phase 8b〜):** `NeoMifesCoreApi`橋渡し設計、または AppContainer サンドボックス — どちらを先行するかは着手前にユーザーへ確認する。
 
 ---
 

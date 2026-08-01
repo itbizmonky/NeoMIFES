@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-01 (Phase 7v(ミニマップ簡易版)完了後、ユーザー選択でミニマップ「文書全体俯瞰型」拡張(Phase 7w)を実装・完了。着手前調査で判明した最大の技術的障壁(可視範囲外の色情報取得)についてAskUserQuestionで3方式を提示し「遅延ポピュレーション」方式(推奨案)が選ばれた。行番号ベースの色蓄積配列(`std::vector<MinimapLineColorState>`)+`viewport_math.h`のバケット化純粋関数2つを新設、ミニマップの窓を`[0,totalLines)`固定化、ヒットテスト/強調矩形を連続比例配分へ書き換え。`main.cpp`は無変更。ローカルDebug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.50ms、Phase 7vベースラインと同水準)・実アプリでのミニマップ全体俯瞰表示+クリックジャンプ視覚確認済み。§3.57参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず)、次の対応方針は未定)
+> **最終更新:** 2026-08-01 (Phase 7w(ミニマップ文書全体俯瞰型)完了後、ユーザーが次のroadmapフェーズとして**Phase 8: プラグインエンジン**を選択。roadmap §8の完全なv2.0ビジョン(サンドボックス・IPC・署名検証・マーケットプレース)は1PRには大きすぎるためAskUserQuestionでスコープ縮小案を提示し、**「最小限PoC」**(DLL読み込み+`onLoad`/`onUnload`呼び出し+SEHクラッシュ隔離のみ)が選ばれた。既存・未使用だった`platform::ModuleHandle`を再利用、`plugin_sdk.h`(本リポジトリ初のトップレベル`include/`)+`neomifes::plugin::PluginHost`+サンプルDLL4種(`hello_plugin`/`hello_plugin_bad_api_version`/`crashing_plugin`/`throwing_plugin`、本リポジトリ初の`MODULE` CMakeターゲット)を新設。SEHトランポリンは無条件`EXCEPTION_EXECUTE_HANDLER`を採用し、ハードウェア例外・C++例外(throw)双方の隔離を実測で確認(推測ではなく`crashing_plugin`/`throwing_plugin`による実証)。ADR-015起票済み。`NeoMifesCoreApi`・権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI配線は全て明示的に延期(`docs/issues/plugin_core_api_document_gap.md`)。ローカルDebug/Release/ubsan全テストgreen・clang-tidy新規警告0。§3.58参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、Phase 8とは無関係の別課題)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -90,7 +90,8 @@
 | Phase 7u (`TSInput`コールバックAPI採用) | ❌ 実装完了後に全面revert (性能後退、Phase 7t状態に復元。§3.55参照) |
 | Phase 7v (ミニマップ、簡易版・スクロール追従型) | ✅ 完了 (実測avgFrameNs≈16.53ms・実アプリ視覚確認済み、§3.56参照) |
 | Phase 7w (ミニマップ「文書全体俯瞰型」拡張、遅延ポピュレーション方式) | ✅ 完了 (実測avgFrameNs≈16.50ms・実アプリ視覚確認済み、§3.57参照) |
-| **次フェーズ選定 — 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)/tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 8a (プラグインエンジン 最小限PoC: C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.58参照) |
+| **次フェーズ選定 — `NeoMifesCoreApi`橋渡し設計 / AppContainerサンドボックス(Phase 8b〜) / 残り6言語(SQL/PowerShell/VB/VBS/BAT/INI) / tree-sitter内部実装調査等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1709,6 +1710,46 @@ Phase 7v完了後、ユーザーから「次のPhaseへ進め」と指示され�
 
 ---
 
+### 3.58 Phase 8a (プラグインエンジン 最小限PoC) 完了記録 (2026-08-01)
+
+Phase 7w完了・push・CI green確認後、ユーザーから「次のPhaseへ進め」と指示された。roadmapの主要フェーズ候補(Phase 8プラグインエンジン/残り6言語バッチ4/tree-sitter内部実装調査)をAskUserQuestionで提示し、**Phase 8: プラグインエンジン(推奨案)**が選ばれた。
+
+`docs/design/master_roadmap.md` §8の完全なv2.0ビジョン(C ABI SDK・AppContainer/Job Objectサンドボックス・別プロセスIPC・`manifest.json5`+Authenticode署名検証・マーケットプレース基盤)は1PRには大きすぎるため(CLAUDE.mdルール8)、3つのスコープ案をAskUserQuestionで提示し、**「最小限PoC」(推奨案)**が選ばれた: DLL読み込み+`onLoad`/`onUnload`呼び出し+SEHクラッシュ隔離のみ、CoreApi・権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI配線は全て明示的に延期。CLAUDE.md §7のPhase 8 DoD自体が「サンプルDLL動作」の一点のみであることに直接対応するスコープ。
+
+**着手前調査で判明した重要な事実(Explore agent 2体並列 + 自身での直接検証):**
+- 本コードベースには`SHARED`/`MODULE`のCMakeターゲットが一つも存在しなかった(全モジュールSTATIC)
+- `neomifes::platform::ModuleHandle`(HMODULE用RAII、`handle_guard.h`)が既に存在し未使用だった — `LoadLibraryW`/`FreeLibrary`に正確に対応済み
+- `document::Document`に`getLineText()`や行+桁→オフセット変換が存在せず、roadmapスケッチの`NeoMifesCoreApi`はそのままでは実装できない → `docs/issues/plugin_core_api_document_gap.md`に記録し今回のスコープから除外
+
+**設計方針の要点(詳細は[ADR-015](../decisions/ADR-015-plugin-host-c-abi-seh.md)):**
+- C ABI(`extern "C"` + `__declspec(dllexport)`)+ `LoadLibraryW`/`GetProcAddress`(名前解決、序数解決はしない)を採用。COM(選択肢1)は2関数だけのために不釣り合いなセレモニー、別プロセスIPC(選択肢3)は1PRには大きすぎるとして却下
+- SEHトランポリン(`invokePluginCallbackSafe()`)は**無条件**`EXCEPTION_EXECUTE_HANDLER`を採用。`original_buffer.cpp`の既存トランポリンが`EXCEPTION_IN_PAGE_ERROR`のみを捕捉する条件付きフィルタなのとは意図的に異なる(プラグインは信頼できない外部コードのため)
+- **SEHクラッシュ隔離は「信頼性目的であり、セキュリティ境界ではない」ことを明記。** 同一プロセス内のため意図的な悪意あるプラグインからは保護できない、真の隔離はPhase 8b以降のAppContainer/別プロセススコープ
+- `NeoMifesPluginContext`をroadmapスケッチの不透明ハンドルから`void* userData`を持つ透過的な構造体に変更(Win32の`GWLP_USERDATA`と同種のイディオム)
+
+**実装:**
+- `include/neomifes/plugin_sdk.h`(本リポジトリ初のトップレベル`include/`)、`cmake/PluginSdk.cmake`(INTERFACE library)
+- `neomifes::plugin`モジュール: `PluginError`/`PluginErrorCode`/`PluginExpected<T>`(`render::RenderExpected<T>`と同じ`std::expected`パターン)、`PluginHost`(load/unload、ムーブ可能・コピー不可)
+- サンプルDLL4種(`plugins/samples/`、本リポジトリ初の`MODULE` CMakeターゲット): `hello_plugin`(正規サンプル)、`hello_plugin_bad_api_version`(apiVersion不一致検証)、`crashing_plugin`(nullポインタ書き込み、SEH隔離のハードウェア例外側を実測検証)、`throwing_plugin`(`std::runtime_error`のthrow、SEH隔離のC++例外側を実測検証)
+
+**検証:**
+- ローカル**Debug/Release/ubsan全テストgreen**(`plugin_load`統合テスト4件全て通過)、clang-tidy新規警告0(`src/plugin/*.cpp`は`src/.clang-tidy`の`WarningsAsErrors`込みで0警告、サンプルプラグイン/テストは警告修正3件、`crashing_plugin.cpp`の意図的なNullDereference検出1件は無修正のまま許容)
+- **SEHクラッシュ隔離の実測(推測ではなく実証、CLAUDE.mdルール3):** `IsolatesAHardwareFaultInOnLoadWithoutCrashingTheHost`/`IsolatesAThrownExceptionInOnLoadWithoutCrashingTheHost`がDebug/Release(MSVC)・ubsan(clang-cl)の全構成でgreen — ホストは`/EHsc`ビルドだが間接関数ポインタ経由の呼び出しのため、ハードウェア例外・C++例外(throw)双方をSEHが捕捉できることを確認した
+- 実アプリ視覚確認は対象外(`src/app/main.cpp`は一切変更していないヘッドレス変更、Phase 4aと同じ前例)
+
+**完了条件:**
+- [x] `plugin_sdk.h`+`PluginHost`実装
+- [x] サンプルDLL4種実装(正常系・apiVersion不一致・ハードウェア例外・C++例外)
+- [x] 単体テスト+統合テスト(SEHクラッシュ隔離の実測込み)
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ADR-015起票
+
+**スコープ外(意図的、Phase 8b以降へ):** `NeoMifesCoreApi`、`permissions`ビットフィールド+権限UI、Windows AppContainer/Job Objectサンドボックス、別プロセス実行+IPC、`manifest.json5`+Authenticode署名検証、マーケットプレースクライアント、`onDocumentChanged`+非同期ワーカー配線、`Ctrl+Shift+X`プラグイン管理UI、`core::CommandDispatcher`へのプラグインコマンド受け入れ、`src/app/main.cpp`への配線。
+
+**Phase 8aはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズは`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)のいずれか、着手前にユーザーへ確認すること。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -1792,9 +1833,23 @@ Debug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`�
 (avgFrameNs≈16.50ms、Phase 7vベースラインと同水準)・実アプリでのミニマップ全体俯瞰表示+
 クリックジャンプ視覚確認済み。コミット済み、pushはユーザーの明示指示待ち。**
 
-**次フェーズは残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性
-課題あり)・(未確定)tree-sitter内部実装のさらなる調査のいずれか、着手前にPlan Modeで
-詳細設計を起こすこと。**
+**続けてPhase 8a(プラグインエンジン 最小限PoC)を実装・完了した(§3.58参照)。roadmap §8の
+完全なv2.0ビジョン(サンドボックス・IPC・署名検証・マーケットプレース)は1PRには大きすぎる
+ためAskUserQuestionでスコープ縮小案を提示し、**「最小限PoC」**(DLL読み込み+`onLoad`/
+`onUnload`呼び出し+SEHクラッシュ隔離のみ)が選ばれた。既存・未使用だった
+`platform::ModuleHandle`を再利用、`plugin_sdk.h`(本リポジトリ初のトップレベル`include/`)+
+`neomifes::plugin::PluginHost`+サンプルDLL4種(`hello_plugin`/`hello_plugin_bad_api_version`/
+`crashing_plugin`/`throwing_plugin`、本リポジトリ初の`MODULE` CMakeターゲット)を新設。SEH
+トランポリンは無条件`EXCEPTION_EXECUTE_HANDLER`を採用し、ハードウェア例外・C++例外
+(throw)双方の隔離を実測で確認(推測ではなく実証)。ADR-015起票済み。`NeoMifesCoreApi`・
+権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI配線は全て
+明示的に延期(`docs/issues/plugin_core_api_document_gap.md`)。ローカルDebug/Release/ubsan
+全green・clang-tidy新規警告0。コミット済み、pushはユーザーの明示指示待ち。**
+
+**次フェーズは`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)の
+いずれか、着手前にユーザーへ確認すること。他の未着手候補として残り6言語対応バッチ4
+(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題あり)・tree-sitter内部実装の
+さらなる調査も保留中。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

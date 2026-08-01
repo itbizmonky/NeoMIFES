@@ -72,6 +72,12 @@ include(Sanitizers)
 # runtime dependency of the app itself, not just of tests/bench.
 include(Dependencies)
 
+# neomifes::plugin_sdk (Phase 8a, ADR-015) - the C-ABI header both
+# src/plugin/ (the host) and plugins/samples/**/ (sample plugin DLLs) link
+# against. Included before add_subdirectory(src) since src/plugin/CMakeLists.txt
+# depends on it.
+include(PluginSdk)
+
 if(NEOMIFES_BUILD_TESTS)
     # TestDependencies.cmake fetches GoogleTest/benchmark - test-only, so
     # stays gated (an app-only configure must not fetch these).
@@ -85,6 +91,16 @@ endif()
 add_subdirectory(src)
 
 if(NEOMIFES_BUILD_TESTS)
+    # plugins/samples/{hello_plugin,hello_plugin_bad_api_version,
+    # crashing_plugin,throwing_plugin} (Phase 8a, ADR-015) - this repo's
+    # first SHARED/MODULE CMake targets. Gated behind NEOMIFES_BUILD_TESTS:
+    # tests/integration/plugin_load_test.cpp is their only consumer right
+    # now (PluginHost is not wired into NeoMIFES.exe itself yet - see
+    # ADR-015's deferred list).
+    add_subdirectory(plugins/samples/hello_plugin)
+    add_subdirectory(plugins/samples/hello_plugin_bad_api_version)
+    add_subdirectory(plugins/samples/crashing_plugin)
+    add_subdirectory(plugins/samples/throwing_plugin)
     add_subdirectory(tests)
 endif()
 

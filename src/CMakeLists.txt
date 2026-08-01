@@ -10,6 +10,12 @@ add_subdirectory(util)
 # CMake resolves target_link_libraries() across subdirectories regardless.
 add_subdirectory(encoding)
 add_subdirectory(platform)
+# neomifes_plugin (Phase 8a, ADR-015) currently depends only on
+# neomifes::platform (ModuleHandle) and the top-level neomifes::plugin_sdk
+# INTERFACE target (cmake/PluginSdk.cmake) - NOT on document::/core::/
+# render:: (NeoMifesCoreApi, which would bridge those, is explicitly
+# deferred to a later sub-phase).
+add_subdirectory(plugin)
 add_subdirectory(document)
 # neomifes_syntax (Phase 7a, ADR-014) depends on neomifes::document (TextRange/
 # TextPos only) and links the tree-sitter/tree-sitter-cpp-grammar targets

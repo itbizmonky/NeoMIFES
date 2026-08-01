@@ -20,6 +20,7 @@
 | [ADR-012](ADR-012-phase4a-editor-core-scope.md) | Phase 4a は Command/Undo/Selection のヘッドレス基盤のみを実装し、UI配線・圧縮/ディスクスワップ・矩形選択を延期する | Accepted |
 | [ADR-013](ADR-013-json-library.md) | JSON 入出力ライブラリに nlohmann/json を採用する | Accepted |
 | [ADR-014](ADR-014-syntax-engine-tree-sitter.md) | 構文解析エンジンに tree-sitter を採用する (ADR-003 を置き換え) | Accepted |
+| [ADR-015](ADR-015-plugin-host-c-abi-seh.md) | プラグインホストは C ABI + LoadLibraryW + 無条件 SEH トランポリンで実装し、CoreApi・サンドボックス・署名検証を Phase 8b 以降へ延期する | Accepted |
 
 ## 運用ルール
 

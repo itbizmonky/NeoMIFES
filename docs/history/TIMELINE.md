@@ -2222,4 +2222,39 @@ Plan agentの提案(バケット化純粋関数・行番号ベース色蓄積配
 
 **次回:** Phase 7wはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補は残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題あり)・(未確定)tree-sitter内部実装のさらなる調査、着手前にPlan Modeで詳細設計を起こすこと。
 
+---
+
+## Session 68 (2026-08-01): pushせよ → 次のPhaseへ進めよ → Phase 8a — プラグインエンジン 最小限PoC
+
+前セッション(Session 67、Phase 7w完了)の続き。ユーザーから「pushせよ」と指示され、`git push origin main`実行(`aecd939..314e23c`)、CI実行開始(run `30682938103`)。続けて「次のPhaseへ進め」と指示された。
+
+**フェーズ選定:** AskUserQuestionでroadmapの主要フェーズ候補(Phase 8プラグインエンジン/残り6言語バッチ4/tree-sitter内部実装調査)を提示し、**Phase 8: プラグインエンジン(推奨案)**が選ばれた — roadmap §8はPhase 7完了まで完全未着手のまま残っていた最大の未着手主要フェーズ。
+
+**スコープ縮小の判断:** `docs/design/master_roadmap.md` §8の完全なv2.0ビジョン(C ABI SDK・Windows AppContainer/Job Objectサンドボックス・別プロセス実行+IPC・`manifest.json5`+Authenticode署名検証・マーケットプレース連携基盤)は1PRには大きすぎる(CLAUDE.mdルール8「1PR=1責務」、Phase 7が23サブフェーズに分割された前例と不整合)。着手前にExplore agent 2体を並列実行し、本コードベースには`SHARED`/`MODULE`のCMakeターゲットが一つも存在しないこと(全モジュールSTATIC)、`neomifes::platform::ModuleHandle`(HMODULE用RAII)が既に用意され未使用であること、`document::Document`に`getLineText()`や行+桁→オフセット変換が存在せずroadmapスケッチの`NeoMifesCoreApi`がそのままでは実装できないことを確認した。この状況をAskUserQuestionで提示し、**「最小限PoC」(推奨案)**が選ばれた: CLAUDE.mdのPhase 8欄自体のDoDである「サンプルDLL動作」に直接対応するスコープに絞り、CoreApi・権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI配線は全て後続サブフェーズへ明示的に延期する。
+
+**Plan Mode:** Plan agentが`handle_guard.h`(ModuleHandle実在確認)・`original_buffer.cpp`(SEHトランポリンの実装パターン)・`render_error.h`(RenderExpectedパターン)・`tests/integration/CMakeLists.txt`(`$<TARGET_FILE:...>`パターン)・各`CMakeLists.txt`・`docs/decisions/README.md`(ADR番号)を直接読んで検証し、SEHによるクラッシュ隔離が実際にハードウェア例外・C++例外の双方を捕捉できるかを「未検証」と正直に明記した上で、実装時に本物のクラッシュ用/例外送出用サンプルプラグインで実測検証する方針をテスト計画に組み込んだ(CLAUDE.mdルール3)。プラン承認後、実装に着手した。
+
+**設計方針の要点(詳細は[ADR-015](../decisions/ADR-015-plugin-host-c-abi-seh.md)):**
+- C ABI(`extern "C"` + `__declspec(dllexport)`)+ `LoadLibraryW`/`GetProcAddress`を採用。既存`ModuleHandle`をそのまま再利用、新規HMODULE RAIIラッパーは書かない
+- SEHトランポリン(`invokePluginCallbackSafe()`)は無条件`EXCEPTION_EXECUTE_HANDLER`を採用。`original_buffer.cpp`の既存トランポリンが`EXCEPTION_IN_PAGE_ERROR`のみを捕捉する条件付きフィルタなのとは意図的に異なる設計(プラグインは信頼できない外部コード)
+- `NeoMifesPluginContext`をroadmapスケッチの不透明ハンドルから`void* userData`を持つ透過的な構造体へ変更(Win32の`GWLP_USERDATA`と同種のC ABIイディオム)。統合テストが`onLoad`/`onUnload`の実行を実DLL経由で観測するために必要
+- エラー型は`render::RenderExpected<T>`と同じ`std::expected`パターンを`neomifes::plugin`独自に新設(`PluginError`/`PluginExpected<T>`、モジュール間の逆依存を避ける)
+- サンプルプラグインは4種: `hello_plugin`(正常系)、`hello_plugin_bad_api_version`(apiVersion不一致)に加え、**`crashing_plugin`(ハードウェア例外)と`throwing_plugin`(C++例外throw)を新設し、SEHクラッシュ隔離が実際に機能することを実測で証明**(設計判断の正しさを裏付ける唯一の方法)
+- `load()`は失敗時に部分状態を一切残さない(クラッシュ時はDLLを即座にアンロードし、状態不明なプラグインの`onUnload`は呼ばない)。`unload()`は`onUnload`がクラッシュしても無条件にDLLを解放する
+
+**実装:** `include/neomifes/plugin_sdk.h`(本リポジトリ初のトップレベル`include/`)、`cmake/PluginSdk.cmake`(INTERFACE library)、`neomifes::plugin`モジュール(`plugin_error.h/.cpp`、`plugin_host.h/.cpp`)、サンプルDLL4種(`plugins/samples/`、本リポジトリ初の`MODULE` CMakeターゲット)。CMake側で`src/plugin/CMakeLists.txt`が`neomifes::platform`を`PRIVATE`リンクしていたところ、`plugin_host.h`(PUBLICヘッダ)が`handle_guard.h`を`#include`するため`PUBLIC`へ変更する必要が生じた(private data memberの型でもcontaining classが公開ヘッダにある場合は所有モジュールのincludeパスをPUBLICに晒す必要がある、という一般化可能な教訓)。
+
+**テスト:** `tests/unit/plugin_plugin_host_test.cpp`(7件、`isApiVersionCompatible()`境界値+`PluginHost`のDLL非依存状態遷移)、`tests/integration/plugin_load_test.cpp`(4件、4サンプルDLLのパスをargv経由で受け取るカスタム`main()`)。後者のうち`IsolatesAHardwareFaultInOnLoadWithoutCrashingTheHost`/`IsolatesAThrownExceptionInOnLoadWithoutCrashingTheHost`がSEH隔離の実測的証明。
+
+**検証:** ローカルDebug/Release/ubsan全green(`plugin_load`統合テスト4件全て通過、ホストは`/EHsc`ビルドだが間接関数ポインタ経由の呼び出しのためハードウェア例外・C++例外双方をSEHが捕捉できることを実測確認)。clang-tidy個別実行で、大文字リテラルサフィックス(`u`→`U`)3件・未命名パラメータ7件を修正(`[[maybe_unused]]`付きで命名、MSVCの`C4100`実警告を`/W4 /WX`下で誘発しないよう配慮)、`crashing_plugin.cpp`の意図的なNullDereference検出1件は無修正のまま許容、`plugin_load_test.cpp`の4グローバル変数への警告8件は既存`startup_measure_test.cpp`の`g_neomifesExePath`と同型のパターンとして許容(修正不要と判断)。
+
+**ADR-015起票:** `docs/decisions/ADR-015-plugin-host-c-abi-seh.md`(C ABI+LoadLibraryW採用根拠、SEHは信頼性目的でありセキュリティ境界ではない旨の明記、apiVersion完全一致戦略、延期スコープ一覧)。`docs/issues/plugin_core_api_document_gap.md`(`NeoMifesCoreApi`実装に必要な`Document`側APIギャップの記録)も新設。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「8a ✅完了」行を追加(次候補「8b〜」: `NeoMifesCoreApi`橋渡し設計 or AppContainerサンドボックス)、§8に§8.7「実装後の確定事項」を新設、§8.1/8.2に「Phase 8aでは未採用」の鮮度注記
+- `docs/design/detailed_design.md` §8に鮮度警告バナー追加(§8.1/8.2はPhase 0時点のスケッチ、Phase 8aでは未採用)、新規§8.4「プラグインホスト 最小限PoC (Phase 8a実装)」を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.58(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 8aはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補は`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)のいずれか、着手前にユーザーへ確認すること。他の未着手候補として残り6言語対応バッチ4・tree-sitter内部実装調査も保留中。
+
 <!-- 次セッションはここに追記 -->

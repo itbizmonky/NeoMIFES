@@ -53,6 +53,7 @@ add_executable(neomifes_unit_tests
     app_syntax_language_test.cpp
     app_outline_bridge_test.cpp
     app_fold_bridge_test.cpp
+    plugin_plugin_host_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -66,6 +67,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::core
         neomifes::search
         neomifes::syntax
+        neomifes::plugin
         neomifes::app_input
         neomifes::ui
         GTest::gtest
