@@ -2257,4 +2257,43 @@ Plan agentの提案(バケット化純粋関数・行番号ベース色蓄積配
 
 **次回:** Phase 8aはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補は`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)のいずれか、着手前にユーザーへ確認すること。他の未着手候補として残り6言語対応バッチ4・tree-sitter内部実装調査も保留中。
 
+---
+
+## Session 69 (2026-08-01): 次のPhaseに進めよ → Phase 7x — 追加言語対応バッチ4 (PowerShell/Ini/Batch)
+
+前セッション(Session 68、Phase 8a完了・push・CI green確認済み)の続き。ユーザーから「次のPhaseに進め」と指示された。
+
+**フェーズ選定:** AskUserQuestionでPhase 8b候補(`NeoMifesCoreApi`橋渡し設計/AppContainerサンドボックス)と残タスク(残り6言語バッチ4/tree-sitter内部実装調査)を提示し、**残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)**が選ばれた — Phase 7n1/7rで「公式org不在・コミュニティ文法のみ」として一度対象外にした経緯があり、現在の状態を再確認する必要があった。
+
+**着手前調査で判明した想定より品質の低い状況:** `gh api`によるGitHub直接確認(CLAUDE.mdルール3、記憶からの推測ではない)の結果:
+- **VB/VBScript:** 調査した全候補(`CodeAnt-AI/tree-sitter-vb-dotnet`26★を含む)が`license: null`(ライセンス不明)で対象化不可。他のVB6/VBA/VBScript候補は全て0〜4★の個人リポジトリで同様にライセンス不明
+- **SQL:** `DerekStride/tree-sitter-sql`(243★・MIT・アクティブ)が最有力候補だが、`src/`ディレクトリに`parser.c`がコミットされておらず`scanner.c`のみ。`grammar.js`から`tree-sitter generate`(tree-sitter CLI、Node.js依存)で生成する必要があり、ADR-014が確立した「生成済みparser.cを直接参照する」前提が崩れる — 本プロジェクト初のNode.js/tree-sitter CLIビルド依存の追加になり、スコープが大きすぎる
+- **PowerShell/INI/Batch:** 既存パターン(FetchContent+`SOURCE_SUBDIR "does-not-exist"`)でビルド可能な候補が見つかった(`airbus-cert/tree-sitter-powershell`81★MIT、`justinmk/tree-sitter-ini`36★Apache-2.0、`wharflab/tree-sitter-batch`13★MIT)。ただし全て個人メンテナのリポジトリで、Phase 7n1/7r/7s(全てtree-sitter/またはtree-sitter-grammars/org配下)より一段低い品質階層と判断した
+
+この状況をAskUserQuestionで再提示し、**PowerShell/INI/Batchの3言語のみ実装(推奨案)**が選ばれた。VB/VBScriptは恒久除外(`docs/issues/vb_vbscript_grammar_no_licensed_candidate.md`)、SQLは新規ビルド依存の導入コストが高いため別途検討(`docs/issues/sql_grammar_needs_tree_sitter_cli.md`)として本バッチのスコープから外した。
+
+**Plan Mode:** Explore不要と判断し、既存の`cmake/Dependencies.cmake`・`src/syntax/src/syntax_internal.h`・`syntax.h`/`.cpp`・`incremental_parser.cpp`・`outline.cpp`・`syntax_language.h`・CMakeLists.txt群を自身で直接読んで現状パターンを確認した上でPlan Modeへ入り、詳細プランを作成・承認を得た。
+
+**設計方針の要点:**
+- PowerShellの`scanner.c`著作権表示が"Copyright (c) Microsoft Corporation"だったことを実ファイル確認で発見 — 個人org配下でも実装の出自自体の信頼度は高い一因と判断
+- PowerShellはリリースタグが無かったため`GIT_TAG`にコミットSHA(`e7bd348c`)を直接指定(`GIT_SHALLOW FALSE`、shallow cloneと特定コミット指定の組み合わせを避けるため)
+- **実機probe2種類**を実装前に実行: (1)通常のtree-sitterノードダンプ、(2)`syntax_internal.h`の`walkTree()`/`isAtomicNode()`/`classifyLeaf()`/`classifyAnonymousLeaf()`ロジックを再現した独立probeプログラムでトークンシミュレーションを行い、単体テストの期待値(トークン数・種別・UTF-16範囲)を実測から直接導出した(手計算トレースではない)
+- PowerShellの`$true`/`$false`/`$null`が独立したブール/null型ノードではなく通常の`variable`ノードとして現れる(自動変数として扱う言語仕様)ことを実機確認し、`comparison_operator`(`-gt`/`-lt`等)は`-and`/`-or`(無名トークン、Punctuation色)との視覚的一貫性を優先して意図的にテーブル未登録のままにした
+- INIの`section_name`・Batchの`echo_off`(いずれも非leaf)をテーブル登録し、区切り文字だけが着色され本体テキストが欠落するパターン(Phase 7n1のRust `line_comment`以来の確立済み対処)を回避
+
+**実装:** `cmake/Dependencies.cmake`(3grammar FetchContentブロック)、`src/syntax/CMakeLists.txt`(3grammarリンク)、`syntax_internal.h`(`namedLeafKindsForPowerShell()`/`ForIni()`/`ForBatch()`+`tsLanguageFor()`拡張)、`syntax.h`/`.cpp`(`Language` enum拡張+`parseX()`×3+`parse()`ディスパッチャ拡張)、`incremental_parser.cpp`/`outline.cpp`(switch拡張)、`syntax_language.h`(`.ps1`/`.psm1`/`.psd1`/`.ini`/`.bat`/`.cmd`)。
+
+**テスト:** `syntax_syntax_test.cpp`に`SyntaxParsePowerShellTest`/`SyntaxParseIniTest`/`SyntaxParseBatchTest`各4件+`SyntaxParseDispatcherTest`3件、`app_syntax_language_test.cpp`に拡張子認識3件(+既存の`.ps1`未対応前提テストを是正)、`syntax_outline_test.cpp`に空`SymbolTable`確認1件、`syntax_incremental_parser_test.cpp`にIni増分再解析1件。
+
+**検証:** ローカルDebug/Release/ubsan全905件green。clang-tidy個別実行で、テストファイル群に多数の警告が出たが、全て「整数リテラルの小文字`u`サフィックス」というPhase 7a以来ファイル全体で一貫している既存スタイル、または`syntax_incremental_parser_test.cpp`の`modernize-use-ranges`4件は自分が変更していない既存コード行(追加した`using`宣言による行番号シフトのみ)であることを1件ずつ確認し、新規パターンではないと判断した(`src/syntax/*.cpp`は0警告)。実アプリ視覚確認は`--open`引数でPowerShell/Ini/Batchサンプルファイルを開き、プロセスが2秒後もクラッシュせず生存していることを確認する軽量スモークテストで実施(3言語とも問題なし)。
+
+**Issue doc新設:** `docs/issues/sql_grammar_needs_tree_sitter_cli.md`(SQL対応の技術的障壁と将来案A/B/C)、`docs/issues/vb_vbscript_grammar_no_licensed_candidate.md`(VB/VBScriptライセンス不在の記録と再評価条件)。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「7x ✅完了」行を追加(次候補「7y〜」: tree-sitter内部実装調査/SQL文法ビルド依存導入検討)、§7.2実装状況を21/23言語に更新、§7に「実装後の確定事項」小節を新設
+- `docs/design/detailed_design.md`に新規§10.25「追加言語対応 バッチ4」を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.59(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** Phase 7xはローカル完了・コミット予定(push はユーザーの明示指示待ち)。roadmap §7.2必須23言語のうち21言語まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。次フェーズ候補は`NeoMifesCoreApi`橋渡し設計、またはAppContainerサンドボックス(Phase 8b〜)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
+
 <!-- 次セッションはここに追記 -->

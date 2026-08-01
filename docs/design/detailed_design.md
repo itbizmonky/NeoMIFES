@@ -2661,6 +2661,52 @@ std::optional<document::LineNumber> RenderPipeline::minimapLineAtY(std::int32_t 
 
 **スコープ外(意図的、後続フェーズへ):** バケット代表色の精度向上(密度表現・複数行の集約統計)、複数言語混在時の考慮、テーマ対応、小規模文書でのバー高さ上限キャップ、高速連続スクロール時の古い応答による蓄積配列への一時的誤書き込みの根本対処(世代番号、`SyntaxWorker`ペイロード変更を伴う別スコープ)、フォールドされている行のミニマップ内での特別扱い、密度表現の精緻化・キーボードショートカットでの表示/非表示トグル、ミニマップ帯とBreadcrumb/Sticky scroll帯のY軸上の重なり。
 
+### 10.25 追加言語対応 バッチ4 (PowerShell / Ini / Batch、Phase 7x実装)
+
+Phase 8a(プラグインエンジン最小限PoC)完了後、ユーザーが次候補として残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)を選んだ。着手前の`gh api`直接確認(CLAUDE.mdルール3)で、Phase 7n1/7rが「公式org不在」として一括対象外にした6言語の実際の状況を個別に再調査し、想定より品質階層の異なる結果が判明した。**本バッチは Phase 7n1/7r/7s(いずれも tree-sitter/ または tree-sitter-grammars/ org 配下)と異なり、個人メンテナのリポジトリを採用した初めての言語バッチである。**
+
+**採用した文法(GitHub API/raw contentで直接確認、CLAUDE.mdルール3):**
+
+| 言語 | リポジトリ | 版 | ライセンス | scanner.c |
+|---|---|---|---|---|
+| PowerShell | `airbus-cert/tree-sitter-powershell` | コミット`e7bd348c`(リリースタグ無し) | MIT | あり |
+| Ini | `justinmk/tree-sitter-ini` | `v1.4.0` | Apache-2.0 | なし |
+| Batch | `wharflab/tree-sitter-batch` | `v0.11.1` | MIT | なし |
+
+VB/VBScriptは調査した全候補(`CodeAnt-AI/tree-sitter-vb-dotnet`26★含む)が`license: null`のため恒久除外。SQL(`DerekStride/tree-sitter-sql`、243★・MIT)は`src/`に`parser.c`が未コミットで`grammar.js`から`tree-sitter generate`(Node.js CLI)が必要 — ADR-014が確立した「生成済みparser.cを直接参照する」前提が崩れるため、本プロジェクト初のビルド依存追加になる。次点として次サブフェーズで再検討する。
+
+**`namedLeafKindsForPowerShell()`(実機probeで確認した文法固有の挙動、`syntax_internal.h`):**
+```cpp
+{"comment", TokenKind::Comment},
+{"decimal_integer_literal", TokenKind::Number},
+{"variable", TokenKind::Variable},                  // $var と $true/$false/$null の両方を兼ねる
+{"expandable_string_literal", TokenKind::String},    // 非leaf(補間時)でも登録により丸ごとString化
+{"verbatim_string_characters", TokenKind::String},   // 単一引用符 '...'
+{"function_name", TokenKind::Variable},
+{"command_name", TokenKind::Variable},               // コマンドレット呼び出し名 (Function種別が無いため)
+{"generic_token", TokenKind::Variable},               // 裸引数(Bashの"word"と同じバケット)
+```
+PowerShellは`$true`/`$false`/`$null`を専用のブール/null型ノードとしてではなく、通常の`variable`ノードとして表現する(自動変数として扱う言語仕様、実機probeで確認)。`comparison_operator`(`-gt`/`-lt`等)は意図的にテーブル未登録のまま — `-and`/`-or`が無名トークンとして現れ`classifyAnonymousLeaf()`により自然にPunctuation色になるため、`comparison_operator`(名前付きノードで`-gt`をラップ)も同じ色に揃えることで、同じカテゴリの演算子が文法上の偶然でノード名の有無によって別色になる不整合を避けた。`command_argument_sep`(コマンドと引数の間の空白)は独自の無名リーフノードとして現れ(ほとんどの言語は空白にノードを持たない)、`classifyAnonymousLeaf()`により意図せずPunctuation色になる — データ欠落ではなく無害な副次効果として許容。
+
+**`namedLeafKindsForIni()`/`namedLeafKindsForBatch()`の非leafノード登録:**
+```cpp
+// Ini
+{"section_name", TokenKind::Type},   // 非leaf([name])、登録により"["/"]"含め丸ごとType化
+// Batch
+{"echo_off", TokenKind::Preprocessor},  // 非leaf(@echo off)、唯一の子は"@"のみ
+{"set_keyword", TokenKind::Keyword},    // "set"専用の名前付きleaf(無名alphaトークンではない)
+{"goto_stmt", TokenKind::Keyword},      // "goto target"全体が単一leaf(さらなる分解なし)
+```
+登録しない場合、区切り文字だけが着色され本体テキストがトークンストリームから欠落する既知のパターン(Phase 7n1のRust `line_comment`以来の確立済み対処)を踏襲した。
+
+**probe手法:** 通常のノードダンプに加え、`syntax_internal.h`の`walkTree()`/`isAtomicNode()`/`classifyLeaf()`/`classifyAnonymousLeaf()`ロジックを再現した独立probeプログラムを実装前に作成し、単体テストの期待値(トークン数・種別・UTF-16範囲)を実測から直接導出した(手計算によるトレースではなく、実際の判定ロジックの実行結果)。
+
+**テスト:** `syntax_syntax_test.cpp`に`SyntaxParsePowerShellTest`/`SyntaxParseIniTest`/`SyntaxParseBatchTest`各4件+`SyntaxParseDispatcherTest`3件、`app_syntax_language_test.cpp`に拡張子認識3件、`syntax_outline_test.cpp`に空`SymbolTable`確認1件、`syntax_incremental_parser_test.cpp`にIni増分再解析1件を追加。ローカルDebug/Release/ubsan全905件green。clang-tidy新規警告0 — テストファイル群に多数の警告が出たが、全て「整数リテラルの小文字`u`サフィックス」というPhase 7a以来ファイル全体で一貫している既存スタイル、または`syntax_incremental_parser_test.cpp`の`modernize-use-ranges`4件は自分が変更していない既存コード行(追加した`using`宣言により行番号がシフトしただけ)であることを1件ずつ確認した。
+
+**実アプリ視覚確認:** `--open`引数でPowerShell/Ini/Batchサンプルファイルを開き、プロセスが2秒後もクラッシュせず生存していることを確認する軽量スモークテストで実施(過去のセッションで確立した代替検証方針を踏襲)。3言語とも問題なし。
+
+**スコープ外(意図的、後続バッチへ):** SQL(`parser.c`未コミット、tree-sitter CLI/Node.js依存の新規導入が必要)、VB/VBScript(ライセンス不明の文法しか存在せず恒久除外)、SAP ABAP(未調査のまま継続保留)、新3言語の`extractOutline()`シンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。
+
 ---
 
 ## 11. ログ解析モード 詳細

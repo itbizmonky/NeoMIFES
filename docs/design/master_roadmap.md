@@ -234,7 +234,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7u | `TSInput`コールバックAPI採用 (大規模文書のDoD達成を試行) | ❌ 全面revert (性能後退のため、`docs/issues/tree_sitter_incremental_parse_cost.md`参照) | §7 |
 | 7v | ミニマップ (簡易版・スクロール追従型、文書全体俯瞰は次候補) | ✅ 完了 | §7.4 |
 | 7w | ミニマップ「文書全体俯瞰型」拡張 (遅延ポピュレーション方式) | ✅ 完了 | §7.4 |
-| 7x〜 | 残り6言語 (SQL/PowerShell/VB/VBS/BAT/INI、公式org不在で信頼性課題) / tree-sitter内部実装調査 | ⏭️ 次候補 (Phase 7、保留中) | §7 |
+| 7x | 追加言語対応 バッチ4 (PowerShell/INI/Batch — 個人メンテナ文法、SQLはparser.c未コミットで対象外、VB/VBScriptはライセンス不明で恒久除外) | ✅ 完了 | §7 |
+| 7y〜 | tree-sitter内部実装のさらなる調査(50万行DoD未達の解消) / SQL文法のtree-sitter CLIビルド依存導入検討 | ⏭️ 次候補 (Phase 7、保留中) | §7 |
 | 8a | プラグインエンジン 最小限PoC (C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 | §8 |
 | 8b〜 | `NeoMifesCoreApi`橋渡し設計 / AppContainerサンドボックス (どちらを先行するかは着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
@@ -894,7 +895,7 @@ v2.0 大幅拡張: **ミニマップ、Breadcrumb、Sticky scroll、Indent guide
 ### 7.2 対応言語 (Phase 7 の一次スコープ、要件定義書 §6 対応)
 必須: C / C++ / TypeScript / JavaScript / Python / Java / Go / Rust / PHP / HTML / CSS / JSON / XML / YAML / SQL / Markdown / PowerShell / VB / VBS / BAT / Shell / INI / TOML / **SAP ABAP** (P1 対応)
 
-> **実装状況 (2026-07-29、Phase 7s完了時点):** ✅ 完了18言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)・TypeScript/Tsx/PHP/Markdown(7s)。TypeScriptは`.ts`/`.tsx`で2つの独立した完全な文法(`typescript`/`tsx`)を使い分ける設計にし、PHPは`php`のみ採用(`php_only`は埋め込み専用で対象外)、Markdownはブロック文法(`tree-sitter-markdown`)のみ採用(`tree-sitter-markdown-inline`は言語注入機構が本コードベースに無いため対象外、段落内の強調/リンク等は無彩色のまま)。残り6言語(SQL/PowerShell/VB/VBS/BAT/INI)+SAP ABAP(P1)は、tree-sitter公式org(`tree-sitter/`)・準公式org(`tree-sitter-grammars/`)配下に存在せずコミュニティ文法のみ(信頼度の問題)のため引き続き未着手。
+> **実装状況 (2026-08-01、Phase 7x完了時点):** ✅ 完了21言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)・TypeScript/Tsx/PHP/Markdown(7s)・PowerShell/Ini/Batch(7x)。TypeScriptは`.ts`/`.tsx`で2つの独立した完全な文法(`typescript`/`tsx`)を使い分ける設計にし、PHPは`php`のみ採用(`php_only`は埋め込み専用で対象外)、Markdownはブロック文法(`tree-sitter-markdown`)のみ採用(`tree-sitter-markdown-inline`は言語注入機構が本コードベースに無いため対象外、段落内の強調/リンク等は無彩色のまま)。PowerShell/Ini/Batchは`tree-sitter/`・`tree-sitter-grammars/`両org不在の個人メンテナ文法(`airbus-cert/tree-sitter-powershell`・`justinmk/tree-sitter-ini`・`wharflab/tree-sitter-batch`)を実地調査の上で採用 — 詳細は§7実装後の確定事項(7x)参照。**残りSQL・VB・VBScript・SAP ABAP(P1)は恒久的または当面の対象外:** SQL(`DerekStride/tree-sitter-sql`)は`src/`に`parser.c`が未コミットで`tree-sitter generate`(Node.js CLI)が必要、本プロジェクト初のビルド依存追加になるため次点(Phase 7yで再検討)。VB/VBScriptは調査した全候補がライセンス不明(`license: null`)のため恒久除外。SAP ABAPは未調査のまま継続保留。
 
 ### 7.3 データ構造・アルゴリズム
 
@@ -991,6 +992,21 @@ Phase 7v完了後、ユーザーが次候補としてミニマップ文書全体
 - **実アプリ視覚確認:** 1454行の実C++ファイル(`render_pipeline.cpp`自身)を開き、ミニマップ帯が文書全体を俯瞰表示すること(初回描画時に`m_lineHeightDips`未測定によるフォールバックで文書全体が一度に着色された)、強調矩形が現在可視範囲を示すこと、ミニマップ下端クリックで文書末尾付近へジャンプし強調矩形も追従することをスクリーンショット比較で確認
 
 **スコープ外(意図的、後続フェーズへ):** バケット代表色の精度向上、複数言語混在の考慮、テーマ対応、小規模文書でのバー高さ上限キャップ、高速連続スクロール時の古い応答による蓄積配列への一時的誤書き込みの根本対処(`SyntaxWorker`ペイロードへの世代番号追加、別スコープ)、フォールド行のミニマップ内特別扱い、密度表現の精緻化・表示トグル、Breadcrumb/Sticky scroll帯との重なり。詳細は`detailed_design.md` §10.24参照。
+
+### 実装後の確定事項/変更点 (2026-08-01、Phase 7x完了 — 追加言語対応 バッチ4)
+
+Phase 8a(プラグインエンジン最小限PoC)完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionでPhase 8b候補と残タスク(残り6言語バッチ4/tree-sitter内部実装調査)を提示し、**残り6言語対応バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)**が選ばれた — Phase 7n1/7rで「公式org不在・コミュニティ文法のみ」として一度対象外にした経緯があり、現在の状態を`gh api`で再確認する必要があった。
+
+- **`gh api`によるGitHub直接確認(CLAUDE.mdルール3、記憶からの推測ではない)で、想定より品質の低い状況が判明した。** VB/VBScriptは調査した全候補(`CodeAnt-AI/tree-sitter-vb-dotnet`26★含む)が`license: null`(ライセンス不明)で対象化不可。SQL(`DerekStride/tree-sitter-sql`、243★・MIT・アクティブ)は最有力候補だが`src/`に`parser.c`がコミットされておらず`scanner.c`のみ — `grammar.js`から`tree-sitter generate`(tree-sitter CLI、Node.js依存)で生成する必要があり、ADR-014が確立した「生成済みparser.cを直接参照する」前提が崩れる。PowerShell(`airbus-cert/tree-sitter-powershell`、81★・MIT)・INI(`justinmk/tree-sitter-ini`、36★・Apache-2.0)・Batch(`wharflab/tree-sitter-batch`、13★・MIT)は既存パターンでビルド可能な候補が見つかった
+- **この状況をAskUserQuestionで提示し、PowerShell/INI/Batchの3言語のみ実装(推奨案)が選ばれた。** VB/VBScriptはライセンス不明のため恒久除外、SQLは新規ビルド依存(Node.js/tree-sitter CLI)の導入コストが高いため別途検討(Phase 7y以降)として本バッチのスコープから外した
+- **PowerShellの`scanner.c`の著作権表示が"Copyright (c) Microsoft Corporation"だったことを実ファイル確認で発見した。** 個人メンテナのGitHub org配下だが、実装の出自(PowerShell本家のトークナイザ由来と見られる)自体の信頼度は高いと判断した一因になった。PowerShellはリリースタグが無かったため、`GIT_TAG`にコミットSHA(`e7bd348c`)を直接指定した(`GIT_SHALLOW FALSE`、shallow cloneと特定コミット指定の組み合わせを避けるため)
+- **実機probe(2種類、通常のノードダンプ+`walkTree()`相当ロジックを再現したトークンシミュレーション)を実装前に行い、正確な期待値を得た。** PowerShellは`$true`/`$false`/`$null`が独立したブール/null型ノードではなく通常の`variable`ノードとして現れる(PowerShell自体がこれらを自動変数として扱う言語仕様)ことを確認し、`comparison_operator`(`-gt`/`-lt`等)を意図的にテーブル未登録のままにした — `-and`/`-or`が無名トークンとして現れ`classifyAnonymousLeaf()`で自然にPunctuation色になるため、`comparison_operator`も同じ色に揃えて一貫性を保つ判断
+- **PowerShellの`command_argument_sep`(コマンドと引数の間の空白)が独自の無名リーフノードとして現れることを実機確認した。** ほとんどの言語は空白にノードを持たないが、この文法は明示的にノード化しており、`classifyAnonymousLeaf()`により意図せずPunctuation色になる(データ欠落ではなく無害な副次効果として許容)
+- **INI/Batchの一部ノード(INIの`section_name`、Batchの`echo_off`)は非leaf(複数の子を持つ)だが、テーブルに登録することで`isAtomicNode()`が全体を1トークンとして扱う設計にした。** 登録しない場合、区切り文字(`[`/`]`や`@`)だけが着色され本体テキストがトークンストリームから欠落する既知のパターン(Phase 7n1のRust `line_comment`以来の確立済み対処)を踏襲
+- **実アプリ視覚確認は`--open`引数でPowerShell/INI/Batchサンプルファイルを開き、プロセスが2秒後もクラッシュせず生存していることを確認する軽量スモークテストで実施した。** 3言語とも問題なし
+- **ローカルDebug/Release/ubsan全905件green、clang-tidy新規警告0を確認した。** テストファイル群(`syntax_syntax_test.cpp`/`syntax_outline_test.cpp`/`syntax_incremental_parser_test.cpp`)には警告が多数出たが、全て「整数リテラルの小文字`u`サフィックス」というPhase 7a以来ファイル全体で一貫している既存スタイル、または私が変更していない既存コード行(自分の追加した`using`宣言により行番号がシフトしただけ)であることを1件ずつ確認し、新規パターンではないと判断した
+
+**スコープ外(意図的、後続バッチへ):** SQL(`parser.c`未コミット、tree-sitter CLI/Node.js依存の新規導入が必要)、VB/VBScript(ライセンス不明の文法しか存在せず恒久除外)、SAP ABAP(未調査のまま継続保留)、新3言語の`extractOutline()`シンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.25参照。
 
 ### 7.5 Breadcrumb (v2.0 新規)
 

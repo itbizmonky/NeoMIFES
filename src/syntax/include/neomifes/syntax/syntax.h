@@ -69,10 +69,21 @@ struct Token {
 // multi-directory grammar repo this project has wired up) because
 // tree-sitter-typescript hosts two independent, complete grammars used by
 // file extension (.ts vs .tsx), not a "pick one" ambiguity - see
-// Dependencies.cmake's Phase 7s comment.
+// Dependencies.cmake's Phase 7s comment. Phase 7x added PowerShell/Ini/Batch
+// (batch 4) - unlike every prior batch, these three grammars come from
+// individual-maintainer repos rather than the tree-sitter/ or
+// tree-sitter-grammars/ orgs (roadmap sec.7.2's remaining SQL/VB/VBScript
+// were investigated but excluded: SQL's only viable candidate has no
+// committed parser.c, requiring a new build-time dependency; VB/VBScript's
+// candidates all lack a clear license - see master_roadmap.md sec.7
+// "実装後の確定事項" for the full investigation). Batch is named after the
+// grammar's own repo/package name (wharflab/tree-sitter-batch), matching
+// Shell's "named after language family, not grammar package" precedent -
+// roadmap sec.7.2 calls this language "BAT", but an all-caps C++ enumerator
+// reads poorly, so the more conventional "Batch" spelling was chosen.
 enum class Language {
     Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Css, Shell, Yaml, Toml, Xml,
-    TypeScript, Tsx, Php, Markdown
+    TypeScript, Tsx, Php, Markdown, PowerShell, Ini, Batch
 };
 
 // Parses `text` as C++ and returns a flat, left-to-right, non-overlapping
@@ -138,10 +149,20 @@ enum class Language {
 // Same contract as parseCpp(), for Markdown (tree-sitter-markdown v0.5.3, block-level grammar only).
 [[nodiscard]] std::vector<Token> parseMarkdown(std::u16string_view text);
 
+// Same contract as parseCpp(), for PowerShell (airbus-cert/tree-sitter-powershell, commit e7bd348c).
+[[nodiscard]] std::vector<Token> parsePowerShell(std::u16string_view text);
+
+// Same contract as parseCpp(), for INI (justinmk/tree-sitter-ini v1.4.0).
+[[nodiscard]] std::vector<Token> parseIni(std::u16string_view text);
+
+// Same contract as parseCpp(), for Batch (wharflab/tree-sitter-batch v0.11.1).
+[[nodiscard]] std::vector<Token> parseBatch(std::u16string_view text);
+
 // Thin dispatcher over parseCpp()/parsePython()/parseC()/parseJavaScript()/
 // parseJava()/parseGo()/parseRust()/parseJson()/parseHtml()/parseCss()/
 // parseShell()/parseYaml()/parseToml()/parseXml()/parseTypeScript()/
-// parseTsx()/parsePhp()/parseMarkdown(). Kept alongside the individual
+// parseTsx()/parsePhp()/parseMarkdown()/parsePowerShell()/parseIni()/
+// parseBatch(). Kept alongside the individual
 // functions (rather than replacing them) so existing callers/tests that
 // only care about one language can keep calling it directly, and so
 // per-language expected-output tests stay easy to write (Phase 7b/7c

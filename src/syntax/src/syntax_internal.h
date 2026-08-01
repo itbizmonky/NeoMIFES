@@ -57,6 +57,12 @@ extern "C" const TSLanguage* tree_sitter_tsx(void);
 extern "C" const TSLanguage* tree_sitter_php(void);
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" const TSLanguage* tree_sitter_markdown(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_powershell(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_ini(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_batch(void);
 
 // Phase 7n1: single Language -> TSLanguage* mapping shared by syntax.cpp,
 // incremental_parser.cpp, and outline.cpp - previously each of the first two
@@ -103,6 +109,12 @@ extern "C" const TSLanguage* tree_sitter_markdown(void);
             return tree_sitter_php();
         case Language::Markdown:
             return tree_sitter_markdown();
+        case Language::PowerShell:
+            return tree_sitter_powershell();
+        case Language::Ini:
+            return tree_sitter_ini();
+        case Language::Batch:
+            return tree_sitter_batch();
     }
     return tree_sitter_cpp();  // unreachable (all enumerators handled above)
 }
@@ -510,6 +522,110 @@ using LeafKindTable = std::unordered_map<std::string_view, TokenKind>;
 [[nodiscard]] inline const LeafKindTable& namedLeafKindsForMarkdown() {
     static const LeafKindTable table{
         {"language", TokenKind::Type},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7x) against real tree-sitter-
+// powershell output (airbus-cert/tree-sitter-powershell, commit
+// e7bd348c, ADR-015's Phase 7x scope - a community grammar, not from the
+// tree-sitter/ or tree-sitter-grammars/ orgs, see Dependencies.cmake's
+// comment). Two grammar-specific findings from the probe:
+//  - `$true`/`$false`/`$null` are NOT distinct boolean/null node types -
+//    PowerShell treats them as automatic *variables* syntactically, and the
+//    probe confirms they parse as plain "variable" nodes indistinguishable
+//    from "$name"/"$num" - so they get Variable's color, not Keyword's (an
+//    accepted, grammar-driven simplification, not a probe oversight).
+//  - "expandable_string_literal" (double-quoted, e.g. "Hello, $who!") is a
+//    genuine leaf when it contains no interpolation, but gains a nested
+//    "variable" child when it does (verified with both cases) - registering
+//    it here makes isAtomicNode() treat it as atomic in EITHER case (this
+//    table's membership test, not just the child-count-0 test), so an
+//    interpolated variable inside a string is colored uniformly as String
+//    rather than getting its own nested Variable token. Same trade-off
+//    class as this table's Rust/TOML precedents (see namedLeafKindsForRust()/
+//    namedLeafKindsForToml() comments above).
+// "comparison_operator" (wraps "-gt"/"-lt" etc.) is deliberately NOT
+// registered: the probe shows "-and"/"-or" appear as bare ANONYMOUS tokens
+// at the same syntax level (not wrapped in a named node), which
+// classifyAnonymousLeaf() already colors as Punctuation (leading '-' fails
+// its all-alphabetic check) - leaving comparison_operator unregistered lets
+// it fall through to the same Punctuation coloring via descent, keeping
+// "-gt"/"-lt"/"-and"/"-or" visually consistent instead of splitting them
+// across two different colors depending on which the grammar happened to
+// wrap in a named node.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForPowerShell() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},
+        {"decimal_integer_literal", TokenKind::Number},
+        {"variable", TokenKind::Variable},  // covers $var AND $true/$false/$null - see comment above
+        {"expandable_string_literal", TokenKind::String},  // non-leaf when interpolated - see comment above
+        {"verbatim_string_characters", TokenKind::String},  // single-quoted 'literal'
+        {"function_name", TokenKind::Variable},
+        {"command_name", TokenKind::Variable},  // cmdlet/command invocation name (no Function TokenKind exists)
+        {"generic_token", TokenKind::Variable},  // bareword command argument (same bucket as Bash's "word")
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7x) against real tree-sitter-ini
+// output (justinmk/tree-sitter-ini v1.4.0, a community grammar - see
+// Dependencies.cmake's comment). "section_name" wraps the anonymous "["/"]"
+// delimiters plus a "text" child (children=3, not a true leaf) - registering
+// it here makes the WHOLE "[section]" span (brackets included) atomic and
+// colored as one Type token, rather than descending and losing the bracket
+// delimiters to Punctuation while only the inner text gets colored. This
+// grammar distinguishes setting_name (the key) from setting_value (the
+// value) as separate node types - unlike tree-sitter-yaml's single shared
+// "string_scalar" for both (see namedLeafKindsForYaml()'s comment above),
+// so key and value get genuinely different colors here rather than a forced
+// uniform one.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForIni() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},  // covers both ';' and '#' comment delimiters (both probed)
+        {"section_name", TokenKind::Type},  // non-leaf ([name]) - see comment above
+        {"setting_name", TokenKind::Variable},
+        {"setting_value", TokenKind::String},
+    };
+    return table;
+}
+
+// Verified via a standalone probe (Phase 7x) against real tree-sitter-batch
+// output (wharflab/tree-sitter-batch v0.11.1, a community grammar - see
+// Dependencies.cmake's comment). Several grammar-specific findings:
+//  - "echo_off" (the "@echo off" header line) has only ONE actual child (the
+//    anonymous "@"), leaving "echo off" itself uncovered by any node -
+//    registering "echo_off" here makes the whole "@echo off" span atomic
+//    and colored as one Preprocessor token (matching this table's existing
+//    convention for other source/directive boundary markers, e.g. PHP's
+//    php_tag), instead of coloring only the "@" and leaving "echo off"
+//    unstyled.
+//  - "set_keyword" (the literal "set" in `set VAR=value`) and "goto_stmt"
+//    (the ENTIRE "goto target" span, itself a genuine leaf with no further
+//    decomposition - confirmed via probe on both "goto mylabel" and
+//    "goto :eof") are dedicated NAMED node types, not anonymous alphabetic
+//    tokens - classifyAnonymousLeaf()'s generic "alphabetic anonymous token
+//    -> Keyword" rule does NOT apply to named nodes, so both need explicit
+//    table entries to be colored as Keyword at all (otherwise they default
+//    to Text).
+//  - "comparison_op" (e.g. "==" inside an `if` comparison) is a genuine
+//    leaf but deliberately left unregistered - no TokenKind bucket fits it
+//    cleanly (not quite Keyword, not quite Punctuation since it bypasses
+//    classifyAnonymousLeaf() by being a named node), an accepted minor gap
+//    of the same class as this table's CSS plain_value/HTML raw_text
+//    precedents.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForBatch() {
+    static const LeafKindTable table{
+        {"echo_off", TokenKind::Preprocessor},  // non-leaf ("@echo off") - see comment above
+        {"comment", TokenKind::Comment},  // covers both "REM" and "::" comment syntaxes (both probed)
+        {"set_keyword", TokenKind::Keyword},
+        {"variable_name", TokenKind::Variable},  // declared name in `set VAR=...`
+        {"assignment_literal", TokenKind::String},  // the value literal in `set VAR=value`
+        {"command_name", TokenKind::Variable},  // invoked command name, e.g. "echo" (no Function TokenKind exists)
+        {"variable_reference", TokenKind::Variable},  // %VAR% expansion
+        {"label", TokenKind::Type},  // :label definition
+        {"string", TokenKind::String},  // quoted literal, e.g. in `if "%VAR%"=="hello"`
+        {"goto_stmt", TokenKind::Keyword},  // whole "goto target" span - see comment above
     };
     return table;
 }

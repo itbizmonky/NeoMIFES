@@ -476,6 +476,65 @@ target_include_directories(tree-sitter-markdown-grammar PRIVATE
     "${tree-sitter-markdown_SOURCE_DIR}/tree-sitter-markdown/src")
 target_link_libraries(tree-sitter-markdown-grammar PRIVATE tree-sitter)
 
+# ---- tree-sitter-powershell grammar (Phase 7x) -----------------------------
+# airbus-cert/tree-sitter-powershell - コミュニティ文法(公式tree-sitter/org
+# 配下ではない)、GitHub API直接確認済み(MIT、81スター、アクティブ)。
+# リリースタグが無いためコミットSHAをGIT_TAGに直接指定(FetchContentは任意
+# refを受け付ける、既存タグ指定と機構的に同一)。scanner.cは
+# tree_sitter/parser.h + <wctype.h>のみに依存し相対include問題なし
+# (実ファイル確認済み)。
+FetchContent_Declare(
+    tree-sitter-powershell
+    GIT_REPOSITORY https://github.com/airbus-cert/tree-sitter-powershell.git
+    GIT_TAG        e7bd348c49fdfd5c853a146a670965ba516a6239
+    GIT_SHALLOW    FALSE  # shallow cloneは特定コミットSHA指定と組み合わせ不可な場合がある
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-powershell)
+
+add_library(tree-sitter-powershell-grammar STATIC
+    "${tree-sitter-powershell_SOURCE_DIR}/src/parser.c"
+    "${tree-sitter-powershell_SOURCE_DIR}/src/scanner.c"
+)
+target_include_directories(tree-sitter-powershell-grammar PRIVATE "${tree-sitter-powershell_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-powershell-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-ini grammar (Phase 7x) ------------------------------------
+# justinmk/tree-sitter-ini。GitHub API直接確認済み(Apache-2.0、36スター)。
+# scanner.cなし(parser.cのみ)。
+FetchContent_Declare(
+    tree-sitter-ini
+    GIT_REPOSITORY https://github.com/justinmk/tree-sitter-ini.git
+    GIT_TAG        v1.4.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-ini)
+
+add_library(tree-sitter-ini-grammar STATIC
+    "${tree-sitter-ini_SOURCE_DIR}/src/parser.c"
+)
+target_include_directories(tree-sitter-ini-grammar PRIVATE "${tree-sitter-ini_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-ini-grammar PRIVATE tree-sitter)
+
+# ---- tree-sitter-batch grammar (Phase 7x) ----------------------------------
+# wharflab/tree-sitter-batch。GitHub API直接確認済み(MIT、13スター、早期
+# 段階だがプッシュ最新)。scanner.cなし(parser.cのみ)。
+FetchContent_Declare(
+    tree-sitter-batch
+    GIT_REPOSITORY https://github.com/wharflab/tree-sitter-batch.git
+    GIT_TAG        v0.11.1
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  "does-not-exist"
+)
+FetchContent_MakeAvailable(tree-sitter-batch)
+
+add_library(tree-sitter-batch-grammar STATIC
+    "${tree-sitter-batch_SOURCE_DIR}/src/parser.c"
+)
+target_include_directories(tree-sitter-batch-grammar PRIVATE "${tree-sitter-batch_SOURCE_DIR}/src")
+target_link_libraries(tree-sitter-batch-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -502,12 +561,14 @@ target_link_libraries(tree-sitter-markdown-grammar PRIVATE tree-sitter)
 # tree-sitter-{c,javascript,java,go,rust,json}-grammar (Phase 7n1) are too.
 # tree-sitter-{html,css,bash,yaml,toml,xml}-grammar (Phase 7r) are too.
 # tree-sitter-{typescript,tsx,php,markdown}-grammar (Phase 7s) are too.
+# tree-sitter-{powershell,ini,batch}-grammar (Phase 7x) are too.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
 foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar
         tree-sitter-c-grammar tree-sitter-javascript-grammar tree-sitter-java-grammar tree-sitter-go-grammar
         tree-sitter-rust-grammar tree-sitter-json-grammar tree-sitter-html-grammar tree-sitter-css-grammar
         tree-sitter-bash-grammar tree-sitter-yaml-grammar tree-sitter-toml-grammar tree-sitter-xml-grammar
-        tree-sitter-typescript-grammar tree-sitter-tsx-grammar tree-sitter-php-grammar tree-sitter-markdown-grammar)
+        tree-sitter-typescript-grammar tree-sitter-tsx-grammar tree-sitter-php-grammar tree-sitter-markdown-grammar
+        tree-sitter-powershell-grammar tree-sitter-ini-grammar tree-sitter-batch-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

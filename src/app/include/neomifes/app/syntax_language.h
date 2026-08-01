@@ -23,7 +23,8 @@ namespace neomifes::app {
 // .c as C, .js/.mjs/.cjs as JavaScript, .java as Java, .go as Go, .rs as
 // Rust, .json as JSON, .html/.htm as HTML, .css as CSS, .sh/.bash as Shell,
 // .yaml/.yml as YAML, .toml as TOML, .xml as XML, .ts/.mts/.cts as
-// TypeScript, .tsx as TSX, .php as PHP, and .md/.markdown as Markdown,
+// TypeScript, .tsx as TSX, .php as PHP, .md/.markdown as Markdown,
+// .ps1/.psm1/.psd1 as PowerShell, .ini as Ini, and .bat/.cmd as Batch,
 // case-insensitively; nullopt for anything else. This is the single gate
 // neomifes::render::RenderPipeline::setLanguage()'s
 // argument is built from. Shebang-line detection (a Python script with no
@@ -98,6 +99,15 @@ namespace neomifes::app {
     }
     if (ext == L".md" || ext == L".markdown") {
         return syntax::Language::Markdown;
+    }
+    if (ext == L".ps1" || ext == L".psm1" || ext == L".psd1") {
+        return syntax::Language::PowerShell;
+    }
+    if (ext == L".ini") {
+        return syntax::Language::Ini;
+    }
+    if (ext == L".bat" || ext == L".cmd") {
+        return syntax::Language::Batch;
     }
     return std::nullopt;
 }

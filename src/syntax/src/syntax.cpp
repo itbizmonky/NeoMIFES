@@ -11,16 +11,19 @@ namespace {
 using detail::LeafKindTable;
 using detail::makeParser;
 using detail::namedLeafKindsForBash;
+using detail::namedLeafKindsForBatch;
 using detail::namedLeafKindsForC;
 using detail::namedLeafKindsForCpp;
 using detail::namedLeafKindsForCss;
 using detail::namedLeafKindsForGo;
 using detail::namedLeafKindsForHtml;
+using detail::namedLeafKindsForIni;
 using detail::namedLeafKindsForJava;
 using detail::namedLeafKindsForJavaScript;
 using detail::namedLeafKindsForJson;
 using detail::namedLeafKindsForMarkdown;
 using detail::namedLeafKindsForPhp;
+using detail::namedLeafKindsForPowerShell;
 using detail::namedLeafKindsForPython;
 using detail::namedLeafKindsForRust;
 using detail::namedLeafKindsForToml;
@@ -122,6 +125,18 @@ std::vector<Token> parseMarkdown(std::u16string_view text) {
     return parseWithLanguage(text, detail::tree_sitter_markdown(), namedLeafKindsForMarkdown());
 }
 
+std::vector<Token> parsePowerShell(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_powershell(), namedLeafKindsForPowerShell());
+}
+
+std::vector<Token> parseIni(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_ini(), namedLeafKindsForIni());
+}
+
+std::vector<Token> parseBatch(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_batch(), namedLeafKindsForBatch());
+}
+
 std::vector<Token> parse(std::u16string_view text, Language language) {
     switch (language) {
         case Language::Cpp:
@@ -160,6 +175,12 @@ std::vector<Token> parse(std::u16string_view text, Language language) {
             return parsePhp(text);
         case Language::Markdown:
             return parseMarkdown(text);
+        case Language::PowerShell:
+            return parsePowerShell(text);
+        case Language::Ini:
+            return parseIni(text);
+        case Language::Batch:
+            return parseBatch(text);
     }
     return {};  // unreachable (all Language enumerators handled above)
 }

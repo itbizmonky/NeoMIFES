@@ -253,4 +253,12 @@ TEST(SyntaxOutlineTest, NewPhase7sLanguagesProduceNoNodesWithoutCrashingOrMisrou
     EXPECT_TRUE(extractOutline(u"# Heading\n\nSome text.\n", Language::Markdown).empty());
 }
 
+// Phase 7x: same safe-degradation contract extended to PowerShell/Ini/Batch
+// (see outline.cpp's emptySymbolTable() comment).
+TEST(SyntaxOutlineTest, NewPhase7xLanguagesProduceNoNodesWithoutCrashingOrMisroutingGrammar) {
+    EXPECT_TRUE(extractOutline(u"function Foo {\n}\n", Language::PowerShell).empty());
+    EXPECT_TRUE(extractOutline(u"[section]\nkey=value\n", Language::Ini).empty());
+    EXPECT_TRUE(extractOutline(u"set VAR=hi\necho %VAR%\n", Language::Batch).empty());
+}
+
 }  // namespace

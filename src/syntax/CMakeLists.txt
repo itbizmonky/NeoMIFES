@@ -34,6 +34,9 @@ target_link_libraries(neomifes_syntax
         tree-sitter-tsx-grammar
         tree-sitter-php-grammar
         tree-sitter-markdown-grammar
+        tree-sitter-powershell-grammar
+        tree-sitter-ini-grammar
+        tree-sitter-batch-grammar
 )
 
 set_target_properties(neomifes_syntax PROPERTIES

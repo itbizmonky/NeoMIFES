@@ -18,6 +18,7 @@ namespace {
 using neomifes::syntax::IncrementalParser;
 using neomifes::syntax::Language;
 using neomifes::syntax::parseCpp;
+using neomifes::syntax::parseIni;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
 using neomifes::syntax::parseTypeScript;
@@ -391,6 +392,19 @@ TEST(SyntaxIncrementalParserTest, TypeScriptSingleCharacterInsertMatchesFullRepa
     const std::u16string newText = u"const x = 12;\n";  // '2' inserted right after '1' (pos 11)
     const ReparseEdit    edit    = buildEdit(oldText, newText, 11, 11, 12);
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseTypeScript(newText));
+}
+
+// Phase 7x: proves the incremental path also works for one of this batch's
+// new languages, not just Cpp/Python/Rust/Yaml/TypeScript (Phase 7n1/7r/7s
+// precedent above) - reuses the same ReparsingSession/oracle pattern.
+TEST(SyntaxIncrementalParserTest, IniSingleCharacterInsertMatchesFullReparse) {
+    ReparsingSession      parser(Language::Ini);
+    const std::u16string oldText = u"key=1\n";
+    (void)parser.reparse(oldText, {});
+
+    const std::u16string newText = u"key=12\n";  // '2' inserted right after '1' (pos 5)
+    const ReparseEdit    edit    = buildEdit(oldText, newText, 5, 5, 6);
+    EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseIni(newText));
 }
 
 // Phase 7t: reparseRange()'s partial-range contract ("returns a sorted

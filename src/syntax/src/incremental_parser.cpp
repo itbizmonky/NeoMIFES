@@ -59,6 +59,12 @@ using detail::tsLanguageFor;
             return detail::namedLeafKindsForPhp();
         case Language::Markdown:
             return detail::namedLeafKindsForMarkdown();
+        case Language::PowerShell:
+            return detail::namedLeafKindsForPowerShell();
+        case Language::Ini:
+            return detail::namedLeafKindsForIni();
+        case Language::Batch:
+            return detail::namedLeafKindsForBatch();
     }
     return detail::namedLeafKindsForCpp();  // unreachable (all enumerators handled above)
 }

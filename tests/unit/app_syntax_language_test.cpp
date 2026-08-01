@@ -44,12 +44,13 @@ TEST(DetectLanguageTest, WorksWithFullAbsolutePath) {
 TEST(DetectLanguageTest, RejectsNonRecognizedExtensions) {
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.txt")), std::nullopt);
     // .md/.ts were rejected here before Phase 7s added Markdown/TypeScript
+    // support, and .ps1/.ini/.bat before Phase 7x added PowerShell/Ini/Batch
     // support (see RecognizesAllMarkdownExtensions/RecognizesAllTypeScript
-    // Extensions below) - .sql/.ps1 remain unrecognized (no trusted
-    // tree-sitter grammar wired up, see Dependencies.cmake's Phase 7r/7s
-    // comments on why SQL/PowerShell were excluded).
+    // Extensions/RecognizesAllPowerShellExtensions below) - .sql remains
+    // unrecognized (no committed parser.c for the only viable candidate
+    // grammar, see Dependencies.cmake's Phase 7x comment and
+    // master_roadmap.md sec.7 "実装後の確定事項").
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.sql")), std::nullopt);
-    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ps1")), std::nullopt);
 }
 
 TEST(DetectLanguageTest, RejectsFileNameWithNoExtension) {
@@ -153,6 +154,24 @@ TEST(DetectLanguageTest, RecognizesAllMarkdownExtensions) {
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.md")), Language::Markdown);
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.markdown")), Language::Markdown);
     EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.MD")), Language::Markdown);
+}
+
+TEST(DetectLanguageTest, RecognizesAllPowerShellExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ps1")), Language::PowerShell);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.psm1")), Language::PowerShell);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.psd1")), Language::PowerShell);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.PS1")), Language::PowerShell);
+}
+
+TEST(DetectLanguageTest, RecognizesIniExtension) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.ini")), Language::Ini);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.INI")), Language::Ini);
+}
+
+TEST(DetectLanguageTest, RecognizesAllBatchExtensions) {
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.bat")), Language::Batch);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.cmd")), Language::Batch);
+    EXPECT_EQ(detectLanguage(std::filesystem::path(L"foo.BAT")), Language::Batch);
 }
 
 }  // namespace

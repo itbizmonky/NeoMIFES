@@ -106,6 +106,9 @@ const SymbolTable& symbolTableFor(Language language) {
         case Language::Tsx:
         case Language::Php:
         case Language::Markdown:
+        case Language::PowerShell:
+        case Language::Ini:
+        case Language::Batch:
             return emptySymbolTable();
     }
     return symbolTableForCpp();  // unreachable (all enumerators handled above)

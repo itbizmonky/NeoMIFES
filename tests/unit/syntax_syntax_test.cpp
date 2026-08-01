@@ -11,16 +11,19 @@ namespace {
 
 using neomifes::syntax::Language;
 using neomifes::syntax::parse;
+using neomifes::syntax::parseBatch;
 using neomifes::syntax::parseC;
 using neomifes::syntax::parseCpp;
 using neomifes::syntax::parseCss;
 using neomifes::syntax::parseGo;
 using neomifes::syntax::parseHtml;
+using neomifes::syntax::parseIni;
 using neomifes::syntax::parseJava;
 using neomifes::syntax::parseJavaScript;
 using neomifes::syntax::parseJson;
 using neomifes::syntax::parseMarkdown;
 using neomifes::syntax::parsePhp;
+using neomifes::syntax::parsePowerShell;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
 using neomifes::syntax::parseShell;
@@ -1301,6 +1304,151 @@ TEST(SyntaxParseDispatcherTest, ParseWithPhpLanguageMatchesParsePhp) {
 TEST(SyntaxParseDispatcherTest, ParseWithMarkdownLanguageMatchesParseMarkdown) {
     const std::u16string source = u"# Heading\n";
     EXPECT_EQ(parse(source, Language::Markdown), parseMarkdown(source));
+}
+
+// Phase 7x (batch 4: PowerShell/Ini/Batch). Every expectation below was
+// computed by a standalone probe that replicates walkTree()/isAtomicNode()/
+// classifyLeaf() against the real grammars (CLAUDE.md rule 3), not
+// hand-traced from the grammar's node-types.json.
+
+TEST(SyntaxParsePowerShellTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parsePowerShell(u"").empty());
+}
+
+TEST(SyntaxParsePowerShellTest, ClassifiesCommentVariableAssignmentAndString) {
+    const std::u16string source = u"# comment\n$name = \"Hi\"\n";
+    const std::vector<Token> tokens = parsePowerShell(source);
+    ASSERT_EQ(tokens.size(), 4u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    EXPECT_EQ(tokens[0].range.start, 0u);
+    EXPECT_EQ(tokens[0].range.end, 9u);
+    EXPECT_EQ(tokens[1].kind, TokenKind::Variable);     // $name
+    EXPECT_EQ(tokens[2].kind, TokenKind::Punctuation);  // = (assignement_operator's anon child)
+    EXPECT_EQ(tokens[3].kind, TokenKind::String);       // "Hi"
+    EXPECT_EQ(tokens[3].range.start, 18u);
+    EXPECT_EQ(tokens[3].range.end, 22u);
+}
+
+TEST(SyntaxParsePowerShellTest, ClassifiesNumberFunctionNameAndCommandName) {
+    const std::u16string source = u"$num = 42\nfunction Foo {\n}\nWrite-Host $num\n";
+    const std::vector<Token> tokens = parsePowerShell(source);
+    ASSERT_EQ(tokens.size(), 10u);
+    EXPECT_EQ(tokens[2].kind, TokenKind::Number);    // 42 (decimal_integer_literal)
+    EXPECT_EQ(tokens[3].kind, TokenKind::Keyword);   // function (anonymous alphabetic token)
+    EXPECT_EQ(tokens[4].kind, TokenKind::Variable);  // Foo (function_name)
+    EXPECT_EQ(tokens[7].kind, TokenKind::Variable);  // Write-Host (command_name)
+    // command_argument_sep wraps the space between a command and its
+    // argument as its own anonymous " " leaf node (a real PowerShell
+    // grammar quirk, confirmed via probe - most languages have no node for
+    // whitespace at all). classifyAnonymousLeaf() colors it Punctuation
+    // like any other non-alphabetic anonymous token, an incidental but
+    // harmless side effect.
+    EXPECT_EQ(tokens[8].kind, TokenKind::Punctuation);
+    EXPECT_EQ(tokens[9].kind, TokenKind::Variable);  // $num
+}
+
+TEST(SyntaxParsePowerShellTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parsePowerShell(u"$x = \"unterminated");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParsePowerShellTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source = u"$num = 42\nfunction Foo {\n}\nWrite-Host $num\n";
+    const std::vector<Token> tokens = parsePowerShell(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseIniTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseIni(u"").empty());
+}
+
+TEST(SyntaxParseIniTest, ClassifiesSectionKeyValueAndComment) {
+    const std::u16string source = u"; comment\n[a]\nk=v\n";
+    const std::vector<Token> tokens = parseIni(source);
+    ASSERT_EQ(tokens.size(), 5u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);
+    // section_name's range extends through the section header's trailing
+    // newline (confirmed via probe, a real tree-sitter-ini grammar choice,
+    // not a probe artifact).
+    EXPECT_EQ(tokens[1].kind, TokenKind::Type);  // [a]
+    EXPECT_EQ(tokens[1].range.start, 10u);
+    EXPECT_EQ(tokens[1].range.end, 14u);
+    EXPECT_EQ(tokens[2].kind, TokenKind::Variable);     // k (setting_name)
+    EXPECT_EQ(tokens[3].kind, TokenKind::Punctuation);  // =
+    EXPECT_EQ(tokens[4].kind, TokenKind::String);       // v (setting_value)
+}
+
+TEST(SyntaxParseIniTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseIni(u"[unterminated");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseIniTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source = u"; comment\n[a]\nk=v\n";
+    const std::vector<Token> tokens = parseIni(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseBatchTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseBatch(u"").empty());
+}
+
+TEST(SyntaxParseBatchTest, ClassifiesSetKeywordVariableAndCommandName) {
+    const std::u16string source = u"set VAR=hi\necho %VAR%\n";
+    const std::vector<Token> tokens = parseBatch(source);
+    ASSERT_EQ(tokens.size(), 6u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Keyword);      // set (set_keyword)
+    EXPECT_EQ(tokens[1].kind, TokenKind::Variable);     // VAR (variable_name)
+    EXPECT_EQ(tokens[2].kind, TokenKind::Punctuation);  // =
+    EXPECT_EQ(tokens[3].kind, TokenKind::String);       // hi (assignment_literal)
+    EXPECT_EQ(tokens[4].kind, TokenKind::Variable);     // echo (command_name)
+    EXPECT_EQ(tokens[5].kind, TokenKind::Variable);     // %VAR% (variable_reference)
+}
+
+TEST(SyntaxParseBatchTest, ClassifiesCommentLabelAndGotoStatement) {
+    const std::u16string source = u"REM note\n:top\ngoto top\n";
+    const std::vector<Token> tokens = parseBatch(source);
+    ASSERT_EQ(tokens.size(), 3u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);  // REM note
+    EXPECT_EQ(tokens[1].kind, TokenKind::Type);     // :top (label)
+    // goto_stmt is a genuine leaf spanning the WHOLE "goto top" text (no
+    // further decomposition into a separate keyword + target - confirmed
+    // via probe on both "goto <label>" and "goto :eof" forms).
+    EXPECT_EQ(tokens[2].kind, TokenKind::Keyword);
+    EXPECT_EQ(tokens[2].range.start, 14u);
+    EXPECT_EQ(tokens[2].range.end, 22u);
+}
+
+TEST(SyntaxParseBatchTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseBatch(u"if \"a\"==");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseBatchTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source = u"set VAR=hi\necho %VAR%\n";
+    const std::vector<Token> tokens = parseBatch(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithPowerShellLanguageMatchesParsePowerShell) {
+    const std::u16string source = u"$x = 1\n";
+    EXPECT_EQ(parse(source, Language::PowerShell), parsePowerShell(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithIniLanguageMatchesParseIni) {
+    const std::u16string source = u"[a]\nk=v\n";
+    EXPECT_EQ(parse(source, Language::Ini), parseIni(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithBatchLanguageMatchesParseBatch) {
+    const std::u16string source = u"echo hi\n";
+    EXPECT_EQ(parse(source, Language::Batch), parseBatch(source));
 }
 
 }  // namespace
