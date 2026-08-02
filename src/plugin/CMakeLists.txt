@@ -1,6 +1,7 @@
 add_library(neomifes_plugin STATIC
     src/plugin_error.cpp
     src/plugin_host.cpp
+    src/plugin_sandbox.cpp
 )
 add_library(neomifes::plugin ALIAS neomifes_plugin)
 

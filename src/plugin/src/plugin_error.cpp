@@ -17,6 +17,7 @@ namespace {
         case PluginErrorCode::NotLoaded:          return "NotLoaded";
         case PluginErrorCode::OnLoadCrashed:      return "OnLoadCrashed";
         case PluginErrorCode::OnUnloadCrashed:    return "OnUnloadCrashed";
+        case PluginErrorCode::SandboxSetupFailed: return "SandboxSetupFailed";
     }
     return "Unknown";
 }
@@ -58,7 +59,8 @@ std::string describe(const PluginError& err) {
     std::string result = "code=";
     result += codeName(err.code);
 
-    if (err.code == PluginErrorCode::LoadLibraryFailed || err.code == PluginErrorCode::MissingExport) {
+    if (err.code == PluginErrorCode::LoadLibraryFailed || err.code == PluginErrorCode::MissingExport ||
+        err.code == PluginErrorCode::SandboxSetupFailed) {
         std::array<char, 32> errBuf{};
         const int errLen = std::snprintf(errBuf.data(), errBuf.size(), " win32Error=%lu",
                                          static_cast<unsigned long>(err.win32Error));

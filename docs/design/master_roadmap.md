@@ -238,7 +238,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7y〜 | tree-sitter内部実装のさらなる調査(50万行DoD未達の解消) / SQL文法のtree-sitter CLIビルド依存導入検討 | ⏭️ 次候補 (Phase 7、保留中) | §7 |
 | 8a | プラグインエンジン 最小限PoC (C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 | §8 |
 | 8b | `NeoMifesCoreApi`橋渡し実装 (insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 | §8 |
-| 8c〜 | AppContainerサンドボックス / `permissions`権限モデル / registerCommand・showToast (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
+| 8c | Job Objectによるプラグイン資源制限 (`ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 | §8, §17.1 |
+| 8d〜 | AppContainerサンドボックス / `permissions`権限モデル / registerCommand・showToast (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -1474,7 +1475,19 @@ typedef struct NeoMifesCoreApi {
 
 **既知のギャップ(意図的、次候補へ):** `NeoMifesCoreApi`は権限モデル(`permissions`)が無いため**セキュリティ境界ではなく**、ロード済みの任意プラグインが無制限にドキュメントを編集できる。プラグイン発の編集は`core::CommandDispatcher`/`UndoStack`を経由しないため`Ctrl+Z`で取り消せない。両方ともADR-016に明記の上、次候補として据え置いた。
 
-**次候補 (Phase 8c〜):** AppContainer サンドボックス / `permissions`権限モデル / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
+**次候補 (Phase 8c〜):** ~~AppContainer サンドボックス / `permissions`権限モデル / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。~~ → AppContainerサンドボックスが選ばれたが、着手前調査で既存の同一プロセス内アーキテクチャへ後付け不可能と判明(別プロセス+IPC全面再設計が必須、ADR-015が一度却下した規模)。Job Object資源制限のみへ縮小し、Phase 8cで完了(§8.9参照)。
+
+### 8.9 実装後の確定事項 (Phase 8c 完了、2026-08-02)
+
+§17.1「レベル2」(Job Objectでリソース制限)を実装した。詳細は[ADR-017](../decisions/ADR-017-plugin-job-object-sandbox.md)参照。
+
+**実装した内容(§17.1のスケッチからの変更点):**
+- 「メモリ・CPU 時間・ハンドル数の上限」のうち、実際に有効化したのは`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみ。メモリ/CPU時間制限は、プラグインが現状ホストと同一プロセスで動作するため「プラグインだけ」を対象にできず、プロセス全体(ホスト本体含む)へ適用すると本プロジェクトの中核価値「10GBファイル対応」と衝突すると判明したため意図的に見送った。ハンドル数上限はそもそもWin32 Job Object APIに該当する`LimitFlags`ビットが存在しないと判明した(roadmapスケッチ自体が実装不可能な項目を含んでいた)。
+- 新規`neomifes::plugin::ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)。`PluginHost::load()`からは自動フックしない(既存の共有テストバイナリを汚染する副作用が判明したため、独立APIとして設計)。
+
+**実測による検証:** `tests/integration/plugin_sandbox_test.cpp`で、サンドボックス化後に子プロセス生成(`CreateProcessW`)が失敗し、かつ呼び出し元プロセス自身は生存し続けることをローカル実機(Debug/Release/ubsan全構成)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**次候補 (Phase 8d〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `permissions`権限モデル / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
 
 ---
 
@@ -2303,17 +2316,18 @@ neomifes.showToast("Inserted!")
 
 ### 17.1 プラグインサンドボックス (§8.3 参照、詳細)
 
-**レベル 1 (デフォルト):** 同プロセス内 SEH 隔離 + 権限マニフェスト検証
+**レベル 1 (デフォルト):** ✅ Phase 8a完了。同プロセス内 SEH 隔離 + 権限マニフェスト検証
 - クラッシュ隔離のみ、悪意あるプラグインは制限しきれない
-- 起動時に「未署名プラグインのロードを許可しますか」ダイアログ
+- 起動時に「未署名プラグインのロードを許可しますか」ダイアログ(権限マニフェスト自体は未実装)
 
-**レベル 2 (高危険度権限):** Job Object でリソース制限
-- Network 権限を要求するプラグイン全て
-- メモリ・CPU 時間・ハンドル数の上限
+**レベル 2 (高危険度権限):** ✅ Phase 8c完了(ADR-017)。Job Object でリソース制限
+- ~~Network 権限を要求するプラグイン全て~~ → 権限モデルが無いため全プラグインへ一律適用
+- ~~メモリ・CPU 時間・ハンドル数の上限~~ → 実装したのは`ActiveProcessLimit=1`のみ。メモリ/CPU時間はプロセス全体(ホスト含む)を巻き込むため意図的に見送り、ハンドル数上限は該当するWin32 APIが存在しないと判明(詳細はADR-017)
 
-**レベル 3 (Phase 8b、将来検討):** Windows AppContainer で完全隔離
+**レベル 3 (Phase 8d〜、将来検討):** Windows AppContainer で完全隔離
 - Capability に基づく細粒度権限
 - ファイルシステムアクセスは Broker 経由
+- **Phase 8c着手前調査で判明: 既存の同一プロセス内`LoadLibraryW`アーキテクチャへ後付け不可能。別プロセス+IPC全面再設計(ADR-015が一度却下した規模)が前提となる。真に必要になった時点(マーケットプレース等で未検証サードパーティプラグインの実運用が具体化)で再評価する(ADR-015/016/017共通の再評価条件)。**
 
 ### 17.2 Code signing / SBOM
 

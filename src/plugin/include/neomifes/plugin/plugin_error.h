@@ -23,6 +23,11 @@ enum class PluginErrorCode : std::uint8_t {
     NotLoaded,           // unload() called while nothing is loaded
     OnLoadCrashed,       // SEH caught a fault/exception inside vtable->onLoad
     OnUnloadCrashed,     // SEH caught a fault/exception inside vtable->onUnload
+    SandboxSetupFailed,  // Phase 8c: CreateJobObjectW/SetInformationJobObject/
+                         // AssignProcessToJobObject failed inside
+                         // ensureProcessSandboxed() (win32Error set) - see
+                         // plugin_sandbox.h/ADR-017. Non-fatal to plugin
+                         // loading itself.
 };
 
 struct PluginError {

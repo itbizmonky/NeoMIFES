@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-02 (Phase 8a・7xのpush・CI green確認後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(NeoMifesCoreApi橋渡し設計/AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**NeoMifesCoreApi橋渡し設計(推奨案)**が選ばれた。Plan agentによる詳細設計+私自身による実ファイル検証(`document.h`/`.cpp`/`piece_tree.cpp`/`plugin_sdk.h`/`plugin_host.h`/`.cpp`等)で、`PieceTree::eraseRange()`が反転レンジ(start>end)を安全なno-opとして扱う(メモリ破壊ではなく正しさの問題)という重要な訂正を得た上でPlan Mode承認。`document::Document::lineText()`/`lineColumnToOffset()`新設、`plugin_sdk.h`へ`NeoMifesCoreApi`(insertText/deleteRange/getLineCount/getLineTextの4関数のみ)追加、`neomifes::plugin`はDocument Engine非依存のまま維持しブリッジ実装を`src/app/plugin_core_api_bridge.h`/`.cpp`に配置(CLAUDE.md §3レイヤリング)。新規サンプルプラグイン`document_editing_plugin`+統合テストで実DLL境界越しのCoreApi往復を実測検証。ローカルDebug/Release/ubsan全931件green・clang-tidy新規警告0(`std::copy_n`の`bugprone-suspicious-stringview-data-usage`を`.data()`→`.begin()`で解消)。ADR-016起票。§3.60参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
+> **最終更新:** 2026-08-02 (Phase 8b完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/registerCommand・showToast実装/SQL文法対応)を提示し、**AppContainerサンドボックス(推奨案)**が選ばれた。着手前調査(Explore agent + Microsoft Learn直接確認)で、AppContainerは既存の同一プロセス内`LoadLibraryW`アーキテクチャへ後付け不可能(プロセス生成時にのみ付与できるトークン機構であり、別プロセス+IPC全面再設計が前提、ADR-015が一度却下した規模)と判明。この状況を再提示し、**「Job Object資源制限のみに縮小」(推奨案)**が選ばれた。プロセス全体を巻き込むメモリ/CPU時間制限は「10GBファイル対応」という中核価値と衝突するため意図的に見送り、`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみを採用。新規`ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)、`PluginHost::load()`へは自動フックしない設計(共有テストバイナリ汚染の発見)。専用統合テストで、サンドボックス化後の子プロセス生成失敗+呼び出し元プロセスの生存継続を実機確認(Debug/Release/ubsan全932件green)。ADR-017起票。§3.61参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -92,8 +92,9 @@
 | Phase 7w (ミニマップ「文書全体俯瞰型」拡張、遅延ポピュレーション方式) | ✅ 完了 (実測avgFrameNs≈16.50ms・実アプリ視覚確認済み、§3.57参照) |
 | Phase 8a (プラグインエンジン 最小限PoC: C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.58参照) |
 | Phase 7x (追加言語対応 バッチ4: PowerShell/Ini/Batch、個人メンテナ文法。SQL/VB/VBScriptは調査の上対象外) | ✅ 完了 (push済み、CI green確認済み) |
-| Phase 8b (`NeoMifesCoreApi`橋渡し実装: insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.60参照) |
-| **次フェーズ選定 — AppContainerサンドボックス / `permissions`権限モデル / registerCommand・showToast / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 8b (`NeoMifesCoreApi`橋渡し実装: insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 (push済み、CI green確認済み) |
+| Phase 8c (Job Objectによるプラグイン資源制限: `ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.61参照) |
+| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / `permissions`権限モデル / registerCommand・showToast / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1828,7 +1829,45 @@ Phase 8a・7xのpush・CI green確認後、ユーザーから「次のPhaseに�
 
 **スコープ外(意図的、後続サブフェーズへ):** `registerCommand`/`showToast`(UI側受け皿未整備)、`httpRequest`/`readPluginData`/`writePluginData`+`permissions`(権限モデル無し)、`onDocumentChanged`、`Ctrl+Shift+X`UI、`manifest.json5`+署名検証、マーケットプレース、AppContainer/Job Objectサンドボックス、`src/app/main.cpp`への配線、**プラグイン発の編集を`core::CommandDispatcher`/`UndoStack`経由にしてUndo可能にすること**(既知のギャップ、ADR-016に明記)。
 
-**Phase 8bはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス/`permissions`権限モデル/registerCommand・showToast/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+**Phase 8bはpush済み・CI green確認済み。**
+
+---
+
+### 3.61 Phase 8c (Job Objectによるプラグイン資源制限) 完了記録 (2026-08-02)
+
+Phase 8b完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/registerCommand・showToast実装/SQL文法対応)を提示し、**AppContainerサンドボックス(推奨案)**が選ばれた。
+
+**着手前調査(Explore agent + Microsoft Learn直接確認、CLAUDE.mdルール3)で判明した重大な事実:** AppContainerは既存の「同一プロセス内`LoadLibraryW`」アーキテクチャへ後付けできない。AppContainerはプロセス生成時にのみ付与できるセキュリティトークン機構であり、既に起動済みの通常プロセスへ遡って適用するWin32 APIは存在しない。適用にはプラグインを別プロセスとして起動し直す必要があり、これは`PluginHost`の全面再設計・`NeoMifesCoreApi`のRPC化・本リポジトリに現状ゼロのIPC基盤の新規構築を意味する — まさにADR-015が「Phase 8aのスコープを大幅に超える」として一度却下した「選択肢3(別プロセス+IPC)」そのものである。
+
+この状況を再提示し、**「Job Object資源制限のみに縮小」(推奨案)**が選ばれた — master_roadmap.md §17.1の3段階モデルのうち「レベル2」(Job Objectでリソース制限)のみを実装し、「レベル3」(AppContainer完全隔離)は据え置く。
+
+**さらなる着手前調査(Plan agent + 自分自身によるMicrosoft Learn直接検証)で判明した制約:** プラグインは現状ホストと同一プロセスで動作するため、「プラグインだけ」のメモリ・CPU使用量を個別に計測する手段が無い。プロセス全体(ホスト本体+ロード中の全プラグイン)にメモリ/CPU時間の上限を掛けると、**本プロジェクトが掲げる中核価値「10GBファイル対応」と正面衝突する**(Phase 7aの実測: 100万行の完全tree-sitter再解析で約6.6秒のCPU時間、という正当な処理中にOSがプロセスごと強制終了しかねない)。このため実際に安全に有効化できるJob Object制限は`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみと判断した(ハンドル数上限は該当するWin32 APIが存在しないとも判明)。
+
+**設計方針の要点(詳細は[ADR-017](../decisions/ADR-017-plugin-job-object-sandbox.md)参照):**
+- 新規`neomifes::plugin::ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)。冪等・プロセス生存中1回のみ実行(C++11 magic static)。`platform::KernelHandle`を新規デリータ無しで再利用。
+- `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`は採用しない(自己登録構成では利益が無くリスクのみ)。
+- **`PluginHost::load()`へは自動フックしない。** `AssignProcessToJobObject`は片道操作であり、本リポジトリの約40個の単体テストファイルが1つの`neomifes_unit_tests.exe`プロセスに同居するため、自動フックすると無関係な失敗系テストがそのテストバイナリ全体の子プロセス起動能力を永久に奪う副作用が生じることを発見した。
+- 失敗は非致命的だが必ず観測可能(新規`PluginErrorCode::SandboxSetupFailed`)にし、黙って握り潰さない。
+
+**実装:** `plugin_sandbox.h`/`.cpp`(新規)、`plugin_error.h`/`.cpp`(`SandboxSetupFailed`追加)、`src/plugin/CMakeLists.txt`、新規`tests/integration/plugin_sandbox_test.cpp`(専用exe、既存テストバイナリへの片道汚染を避けるため)。
+
+**実測検証(Plan Mode段階ではMicrosoft Learnの文面からの推定に留まっていたが、実装フェーズで実機により裏付けられた、CLAUDE.mdルール3):** サンドボックス化後に`CreateProcessW`を試みると失敗し、かつ**呼び出し元プロセス自身は生存し続けて後続のアサーションを実行できる**ことをローカル実機(Debug/Release/ubsan全構成)で確認した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全932件green**。
+- clang-tidy: `src/plugin/`3ファイルは新規警告0(1件実際に修正: `SandboxState`の集成体初期化に`modernize-use-designated-initializers`を検出、`.status=`/`.jobHandle=`形式へ変更)。テストファイルの`bugprone-unchecked-optional-access`も、既存の確立済みパターン(`ASSERT_TRUE`直後に名前付きローカルへ束縛)で解消。
+- **実アプリ視覚確認は不要**(Phase 8a/8bと同じ「main.cppに一切触れないヘッドレス変更」)。
+
+**完了条件:**
+- [x] `ensureProcessSandboxed()`/`queryActiveJobLimits()`実装
+- [x] `PluginErrorCode::SandboxSetupFailed`追加
+- [x] 専用統合テスト(ラウンドトリップ検証/冪等性/子プロセス生成失敗+自プロセス生存の実機証明)
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ADR-017起票
+
+**スコープ外(意図的、後続サブフェーズへ):** AppContainer本体(別プロセス+IPC全面再設計が前提)、メモリ/CPU時間/ハンドル数のJob Object制限(プロセス全体を巻き込むため不採用)、`permissions`マニフェスト・署名検証・マーケットプレース、`registerCommand`/`showToast`、`Ctrl+Shift+X`UI、`src/app/main.cpp`への配線、Phase 11(LSP)着手時の`ActiveProcessLimit`見直し(Git統合/libgit2は子プロセスを起動しないため無衝突と確認済み)。
+
+**Phase 8cはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`permissions`権限モデル/registerCommand・showToast/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
 ---
 
@@ -1954,12 +1993,27 @@ getLineCount/getLineTextの4関数のみ、registerCommand/showToast/ネット�
 プラグイン`document_editing_plugin`+統合テストで実DLL境界越しのCoreApi往復を実測検証。
 ローカルDebug/Release/ubsan全931件green・clang-tidy新規警告0(`std::copy_n`の
 `bugprone-suspicious-stringview-data-usage`を`.data()`→`.begin()`で解消)。ADR-016起票済み。
-コミット済み、pushはユーザーの明示指示待ち。**
+push済み・CI green確認済み。**
 
-**次フェーズはAppContainerサンドボックス/`permissions`権限モデル/registerCommand・
-showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。他の未着手候補
-としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLI
-ビルド依存導入検討も保留中。**
+**続けてPhase 8c(Job Objectによるプラグイン資源制限)を実装・完了した(§3.61参照)。
+AskUserQuestionでAppContainerサンドボックス(推奨案)が選ばれたが、着手前調査(Explore
+agent + Microsoft Learn直接確認)でAppContainerは既存の同一プロセス内`LoadLibraryW`
+アーキテクチャへ後付け不可能(別プロセス+IPC全面再設計が前提、ADR-015が一度却下した規模)
+と判明。再提示し**「Job Object資源制限のみに縮小」(推奨案)**が選ばれた。プロセス全体を
+巻き込むメモリ/CPU時間制限は「10GBファイル対応」という中核価値と衝突するため見送り、
+`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみを採用。新規
+`ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)、
+`PluginHost::load()`へは自動フックしない設計(約40個の単体テストが1プロセスに同居する
+共有テストバイナリを、片道操作である`AssignProcessToJobObject`が汚染する副作用を発見した
+ため)。専用統合テストで、サンドボックス化後の子プロセス生成失敗+呼び出し元プロセスの
+生存継続を実機確認。ローカルDebug/Release/ubsan全932件green・clang-tidy新規警告0
+(`SandboxState`の集成体初期化に`modernize-use-designated-initializers`を検出・修正)。
+ADR-017起票済み。コミット済み、pushはユーザーの明示指示待ち。**
+
+**次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/
+`permissions`権限モデル/registerCommand・showToast(UI側受け皿の設計)のいずれか、
+着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査
+(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

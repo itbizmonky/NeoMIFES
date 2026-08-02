@@ -239,3 +239,35 @@ set_tests_properties(plugin_document_editing PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# plugin_sandbox_test - exercises the real Windows Job Object sandboxing
+# (Phase 8c, ADR-017): AssignProcessToJobObject is a one-way, permanent
+# operation for the life of a process, so this MUST be its own dedicated
+# executable - mixing it into any other test binary would permanently
+# strip that binary's ability to spawn child processes for every test
+# that runs after it, for the rest of that process's life.
+add_executable(neomifes_plugin_sandbox_test
+    plugin_sandbox_test.cpp
+)
+
+target_link_libraries(neomifes_plugin_sandbox_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::plugin
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_plugin_sandbox_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    plugin_sandbox
+    COMMAND neomifes_plugin_sandbox_test
+)
+
+set_tests_properties(plugin_sandbox PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

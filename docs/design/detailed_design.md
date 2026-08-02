@@ -1613,6 +1613,30 @@ namespace neomifes::app {
 
 **既知のギャップ(意図的、スコープ外):** `NeoMifesCoreApi`は権限モデルが無いため**セキュリティ境界ではない**(ロード済みの任意プラグインが無制限にドキュメントを編集できる)。プラグイン発の編集は`core::CommandDispatcher`/`UndoStack`を経由しないため`Ctrl+Z`で取り消せない。両方ともADR-016に明記。
 
+### 8.6 Job Objectによるプラグイン資源制限 (Phase 8c実装)
+
+§17.1「レベル2」(Job Objectでリソース制限)を実装した。当初ユーザーはAppContainer(§17.1「レベル3」)を選んだが、着手前調査で**既存の同一プロセス内`LoadLibraryW`アーキテクチャへは後付け不可能**と判明した(AppContainerはプロセス生成時にのみ付与できるトークン機構であり、既存プロセスへ遡って適用するWin32 APIが存在しない)。別プロセス+IPC全面再設計(ADR-015が一度却下した規模)が前提となるため、Job Object資源制限のみへスコープを縮小した。詳細は[ADR-017](../decisions/ADR-017-plugin-job-object-sandbox.md)参照。
+
+**新規`neomifes::plugin::ensureProcessSandboxed()`/`queryActiveJobLimits()` (`src/plugin/plugin_sandbox.h`/`.cpp`):**
+```cpp
+[[nodiscard]] PluginExpected<void> ensureProcessSandboxed() noexcept;
+[[nodiscard]] std::optional<JOBOBJECT_BASIC_LIMIT_INFORMATION> queryActiveJobLimits() noexcept;
+```
+冪等・プロセス生存中1回のみ実行(C++11 magic static)。無名Job Objectを作成し、`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみを設定した上で、呼び出し元プロセス自身(`GetCurrentProcess()`)を自己登録する。`platform::KernelHandle`(既存、`HandleGuard<HANDLE, CloseHandleDeleter, nullptr>`)を新規デリータ無しでそのまま再利用。
+
+**実装したのは`ActiveProcessLimit=1`のみ:**
+- **メモリ/CPU時間制限は意図的に見送った。** プラグインは現状ホストと同一プロセスで動作するため、プロセス全体(ホスト本体含む)に上限が掛かる。Phase 7aの実測(100万行の完全tree-sitter再解析で約6.6秒のCPU時間)のような正当な処理中に、本プロジェクトの中核価値「10GBファイル対応」と衝突してプロセスごと強制終了しかねないと判断した。
+- **ハンドル数上限は該当するWin32 APIが存在しない**と判明した(`JOBOBJECT_BASIC_LIMIT_INFORMATION`/`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`のいずれにもハンドル数を表す`LimitFlags`ビットが無い、roadmapスケッチ自体が実装不可能な項目を含んでいた)。
+- `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`も設定しない。本設計は自プロセスが自ら作成したJobへ自己登録する構成であり、同フラグ本来のユースケース(別コントローラプロセスの道連れ終了)が存在せず、有効化すると自己終了リスクだけが増える。
+
+**`PluginHost::load()`へは自動フックしない。** `AssignProcessToJobObject`は片道操作(Win32に「Jobから外れる」APIは無い)であり、本リポジトリの約40個の単体テストファイルが1つの`neomifes_unit_tests.exe`プロセスに同居するため、自動フックすると無関係な失敗系テストがそのテストバイナリ全体の子プロセス起動能力を永久に奪ってしまう。独立APIとし、実際の呼び出し(将来`main.cpp`が起動時に1回)はPhase 8a/8bと同じくスコープ外とした。
+
+**実測検証:** 新規`tests/integration/plugin_sandbox_test.cpp`(専用exe、`AssignProcessToJobObject`の片道性のため既存テストバイナリへ混在させない)で、`ensureProcessSandboxed()`成功後に`CreateProcessW`が失敗し、かつ**呼び出し元プロセス自身は生存し続けて後続のアサーションを実行できる**ことをローカル実機(Debug/Release/ubsan全構成)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**失敗は非致命的だが必ず観測可能:** `AssignProcessToJobObject`は、呼び出し元が既にネスト不可のJobへ所属している環境(一部のCI/コンテナ/ターミナルラッパー)で失敗しうる。`PluginExpected<void>`(新規`PluginErrorCode::SandboxSetupFailed`)を通じて必ず観測可能にし、失敗時もプラグインロード自体は継続できる設計にした(`outline.cpp`の空`SymbolTable`と同じ安全な劣化)。
+
+**既知のギャップ・将来の再評価:** AppContainer本体(§17.1レベル3)は引き続き未実装。`ActiveProcessLimit=1`はroadmap §11.2(LSP統合、言語サーバーを子プロセスとして起動)着手時に緩和が必要になる(§11.1のGit統合はlibgit2をリンクライブラリとして使うため無衝突と確認済み)。
+
 ---
 
 ## 9. Encoding Engine 詳細

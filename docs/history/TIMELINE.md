@@ -2335,4 +2335,44 @@ Plan agentの提案(バケット化純粋関数・行番号ベース色蓄積配
 
 **次回:** Phase 8bはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス/`permissions`権限モデル/registerCommand・showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
 
+---
+
+## Session 71 (2026-08-02): 次のPhaseに進めよ → Phase 8c — Job Objectによるプラグイン資源制限 (ADR-017)
+
+前セッション(Session 70、Phase 8b完了・push・CI green確認済み)の続き。ユーザーから「次のPhaseに進め」と指示された。
+
+**フェーズ選定:** AskUserQuestionで4候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/registerCommand・showToast実装/SQL文法対応)を提示し、**AppContainerサンドボックス(推奨案)**が選ばれた。
+
+**着手前調査で判明した重大な事実(Explore agent + Microsoft Learn直接確認、CLAUDE.mdルール3):** AppContainerは既存の「同一プロセス内`LoadLibraryW`」アーキテクチャへ後付けできない。AppContainerはプロセス生成時にのみ付与できるセキュリティトークン機構(`CreateAppContainerProfile()`+`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`+`CreateProcess()`)であり、既に起動済みの通常プロセスへ遡って適用するWin32 APIは存在しない。適用するには、プラグインを別プロセスとして起動し直す必要があり、これは`PluginHost`の全面再設計・`NeoMifesCoreApi`のRPC化・本リポジトリに現状ゼロのIPC基盤の新規構築を意味する — まさにADR-015が「Phase 8aのスコープを大幅に超える」として一度却下した「選択肢3(別プロセス+IPC)」そのものである。両ADRとも「真の隔離の再評価はマーケットプレース等で未検証サードパーティプラグインの実運用が具体化した時点」(roadmap上Phase 12出荷後)としている。
+
+この状況を再提示し、**「Job Object資源制限のみに縮小」(推奨案)**が選ばれた — master_roadmap.md §17.1の3段階モデルのうち「レベル2」のみを実装し「レベル3」(AppContainer)は据え置く。
+
+**Plan Mode:** Plan agentへ詳細設計を委任する前に自分自身でMicrosoft Learnを直接確認(`JOBOBJECT_BASIC_LIMIT_INFORMATION`/`JOBOBJECT_EXTENDED_LIMIT_INFORMATION`/`CreateJobObjectW`の各仕様)。**判明した制約:** プラグインは現状ホストと同一プロセスで動作するため、「プラグインだけ」のメモリ・CPU使用量を個別に計測する手段が無い。プロセス全体(ホスト本体+ロード中の全プラグイン)にメモリ/CPU時間の上限を掛けると、**本プロジェクトが掲げる中核価値「10GBファイル対応」と正面衝突する**(Phase 7aの実測: 100万行の完全tree-sitter再解析で約6.6秒のCPU時間、という正当な処理中にOSがプロセスごと強制終了しかねない)。ハンドル数上限は該当するWin32 APIのビットが存在しないとも判明した(roadmapスケッチ自体が実装不可能な項目を含んでいた)。このため実際に安全に有効化できる制限は`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみと判断した。
+
+Plan agentへ設計を委任し、その報告を検証する過程で以下を自分で発見・修正した: Plan agentが「実測検証済み」と過大に主張していた箇所(実際にはドキュメント調査に基づく推定に過ぎなかった)をCLAUDE.mdルール3に従い指摘し、「実装フェーズで初めて実機検証する」という正確な表現に訂正した上でPlan Modeを完了させた。
+
+**設計方針の要点(詳細は[ADR-017](../decisions/ADR-017-plugin-job-object-sandbox.md)参照):**
+- 新規`neomifes::plugin::ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)。冪等・プロセス生存中1回のみ実行(C++11 magic static)。`platform::KernelHandle`(既存、`HandleGuard<HANDLE, CloseHandleDeleter, nullptr>`)を新規デリータ無しで再利用(Phase 8aが`ModuleHandle`を再利用した前例に倣う)。
+- `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`は採用しない — 自己登録構成(ホスト自身が作成したJobへ自分自身を登録)では、同フラグ本来のユースケース(別コントローラプロセスの道連れ終了)が存在せず、有効化すると自己終了リスクだけが増える。
+- **`PluginHost::load()`へは自動フックしない。** `AssignProcessToJobObject`は片道操作(Win32に「Jobから外れる」APIは無い)であり、本リポジトリの約40個の単体テストファイルが1つの`neomifes_unit_tests.exe`プロセスに同居するため、自動フックすると既存の失敗系テスト(`plugin_plugin_host_test.cpp`の`LoadOfNonexistentPathFailsWithLoadLibraryFailed`)が走った瞬間、そのテストバイナリプロセス全体が以後二度と子プロセスを起動できなくなるという、無関係なテストへの重大な副作用を発見した。独立APIとし、実際の呼び出し(将来`main.cpp`が起動時に1回)はPhase 8a/8bと同じくスコープ外とした。
+- 失敗は非致命的だが必ず観測可能(新規`PluginErrorCode::SandboxSetupFailed`)にし、黙って握り潰さない。
+
+**実装:** `plugin_sandbox.h`/`.cpp`(新規)、`plugin_error.h`/`.cpp`(`SandboxSetupFailed`追加)、`src/plugin/CMakeLists.txt`、新規`tests/integration/plugin_sandbox_test.cpp`(専用exe、既存テストバイナリへの片道汚染を避けるため)。
+
+**実測検証(Plan Mode段階ではMicrosoft Learnの文面+コミュニティ報告からの推定に留まっていたが、実装フェーズで実機により裏付けられた、CLAUDE.mdルール3):** `ChildProcessCreationFailsOnceSandboxedAndCallerSurvives`テストで、サンドボックス化後に`CreateProcessW`を試みると失敗し、かつ**呼び出し元プロセス自身は生存し続けて後続のアサーションを実行できる**ことをローカル実機(Debug/Release/ubsan全構成)で確認した。
+
+**clang-tidy検出・修正:** `SandboxState`(集成体)の初期化で`modernize-use-designated-initializers`を検出(4箇所)。共通の失敗ケースを`sandboxSetupFailure()`ヘルパーへ抽出し、`.status=`/`.jobHandle=`形式の指定初期化子へ統一して解消。テストファイルでは`bugprone-unchecked-optional-access`を検出、既存の確立済みパターン(`ASSERT_TRUE`直後に名前付きローカル`limitsValue`へ束縛)で解消。
+
+**検証:** ローカル**Debug/Release/ubsan全932件green**。`src/plugin/`の変更3ファイルはclang-tidy新規警告0(`WarningsAsErrors`)。実アプリ視覚確認は不要と判断(main.cppに一切触れないヘッドレス変更、Phase 8a/8bと同じ方針)。
+
+**ADR-017起票:** `docs/decisions/ADR-017-plugin-job-object-sandbox.md`(メモリ/CPU時間制限を採用しない理由、`KILL_ON_JOB_CLOSE`を採用しない理由、`ActiveProcessLimit=1`のみを採用する理由と実測裏付け、`load()`へ自動フックしない理由、roadmap §11.2(LSP)との将来的な衝突の明記)。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「8c ✅完了」行を追加(次候補「8d〜」)、§17.1の3段階モデルを実装状況に合わせて更新、§8に§8.9「実装後の確定事項」を新設
+- `docs/design/detailed_design.md`に新規§8.6「Job Objectによるプラグイン資源制限」を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.61(完了記録)、§6推奨プロンプトを現状に合わせて更新(併せてPhase 8bの「pushはユーザーの明示指示待ち」という古い記述を「push済み・CI green確認済み」へ訂正)
+- `docs/decisions/README.md`にADR-017の行を追加
+
+**次回:** Phase 8cはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`permissions`権限モデル/registerCommand・showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
+
 <!-- 次セッションはここに追記 -->
