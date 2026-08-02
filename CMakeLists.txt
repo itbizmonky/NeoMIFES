@@ -106,6 +106,12 @@ if(NEOMIFES_BUILD_TESTS)
     # document::Document. tests/integration/plugin_document_editing_test.cpp
     # is its only consumer, same "headless-only" reasoning as above.
     add_subdirectory(plugins/samples/document_editing_plugin)
+    # permission_denied_plugin (Phase 8d, ADR-018) - proves an
+    # undeclared-permission plugin gets a NULL-gated NeoMifesCoreApi and
+    # crashes safely (SEH-isolated) if it calls through it anyway.
+    # tests/integration/plugin_document_editing_test.cpp is its only
+    # consumer, same "headless-only" reasoning as above.
+    add_subdirectory(plugins/samples/permission_denied_plugin)
     add_subdirectory(tests)
 endif()
 

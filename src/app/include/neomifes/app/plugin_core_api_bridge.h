@@ -26,13 +26,22 @@ class Document;
 
 namespace neomifes::app {
 
-// A single, stateless, process-lifetime instance of NeoMifesCoreApi's
-// function pointers - safe to share across every loaded plugin/document,
-// since every function it points to takes the NeoMifesDocument* it
-// operates on as an explicit argument rather than capturing shared mutable
-// state. Pass the result straight to PluginHost::load()'s `coreApi`
-// parameter.
-[[nodiscard]] const NeoMifesCoreApi* buildPluginCoreApi() noexcept;
+// Two stateless, process-lifetime NeoMifesCoreApi instances, chosen by
+// `grantedPermissions` (Phase 8d): the full 4-function struct if
+// NEOMIFES_PLUGIN_PERMISSION_DOCUMENT is set, or one whose 4 function
+// pointers are all NULL otherwise (see plugin_sdk.h's NeoMifesCoreApi
+// comment for what happens when a plugin calls a NULL one anyway). Safe to
+// share across every loaded plugin/document, since every function it
+// points to takes the NeoMifesDocument* it operates on as an explicit
+// argument rather than capturing shared mutable state.
+//
+// Signature matches neomifes::plugin::PluginHost::CoreApiFactory exactly
+// (unsigned int -> const NeoMifesCoreApi*, noexcept) - pass the function
+// itself, not a call result, to PluginHost::load()'s `coreApiFactory`
+// parameter (e.g. `host.load(path, neomifes::app::buildPluginCoreApi,
+// doc)`), since load() must invoke it AFTER learning the plugin's declared
+// permissions.
+[[nodiscard]] const NeoMifesCoreApi* buildPluginCoreApi(unsigned int grantedPermissions) noexcept;
 
 // The other half of the opaque-handle idiom this bridge's .cpp uses
 // internally (reinterpret_cast, both directions, confined to that one

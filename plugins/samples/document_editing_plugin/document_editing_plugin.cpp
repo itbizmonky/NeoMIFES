@@ -11,11 +11,14 @@
 namespace {
 
 const NeoMifesPluginInfo kInfo = {
-    .id         = L"com.neomifes.samples.document_editing_plugin",
-    .name       = L"Document Editing Plugin",
-    .version    = L"0.1.0",
-    .author     = L"NeoMIFES",
-    .apiVersion = NEOMIFES_PLUGIN_API_VERSION,
+    .id          = L"com.neomifes.samples.document_editing_plugin",
+    .name        = L"Document Editing Plugin",
+    .version     = L"0.1.0",
+    .author      = L"NeoMIFES",
+    .apiVersion  = NEOMIFES_PLUGIN_API_VERSION,
+    // Phase 8d: required for insertText below to be non-NULL - see
+    // neomifes::app::buildPluginCoreApi().
+    .permissions = NEOMIFES_PLUGIN_PERMISSION_DOCUMENT,
 };
 
 void onLoad(NeoMifesPluginContext* ctx) {

@@ -8,9 +8,10 @@
 // std::thread + PostMessageW pattern; "load a DLL and call two functions"
 // has no async need yet).
 //
-// See ADR-015 for what is deferred: permissions, AppContainer/Job Object
-// sandboxing, separate-process IPC, manifest.json5 + Authenticode
-// verification, marketplace, onDocumentChanged, NeoMifesCoreApi.
+// See ADR-015 for what is deferred: AppContainer/Job Object sandboxing,
+// separate-process IPC, manifest.json5 + Authenticode verification,
+// marketplace, onDocumentChanged, NeoMifesCoreApi. See ADR-018 for the
+// self-declared `permissions` bitfield (Phase 8d).
 
 #include <neomifes/plugin_sdk.h>
 
@@ -56,20 +57,35 @@ public:
     // swallowed (CLAUDE.md forbids catch(...); matches
     // OriginalBuffer::view()'s documented precedent).
     //
-    // `coreApi`/`document` (Phase 8b): forwarded verbatim into the
-    // NeoMifesPluginContext handed to onLoad/onUnload - see plugin_sdk.h's
-    // NeoMifesPluginContext/NeoMifesCoreApi comments. Both default to
-    // nullptr so existing callers that only pass `dllPath` (e.g.
+    // Phase 8d: called at most once per load() call, AFTER
+    // neomifes_plugin_info() has been resolved and read (permissions are
+    // only known then) - receives info->permissions and returns the
+    // (possibly permission-gated) NeoMifesCoreApi to hand the plugin. A raw
+    // function pointer, not std::function: this is not a hot path (called
+    // once per load, contrast Phase 7u's TSInput::read - called hundreds of
+    // times per parse, the actual reason THAT one avoided std::function),
+    // and neomifes::app::buildPluginCoreApi already has exactly this
+    // signature, so callers just pass the function name directly (e.g.
+    // `host.load(path, neomifes::app::buildPluginCoreApi, doc)`).
+    using CoreApiFactory = const NeoMifesCoreApi* (*)(unsigned int grantedPermissions) noexcept;
+
+    // `coreApi`/`document` (Phase 8b, `coreApiFactory` reshaped in Phase
+    // 8d): `document` is forwarded verbatim into the NeoMifesPluginContext
+    // handed to onLoad/onUnload - see plugin_sdk.h's NeoMifesPluginContext
+    // comment. `coreApiFactory` is invoked once info->permissions is known
+    // (see CoreApiFactory's own comment above) and ITS result is what gets
+    // forwarded as context->coreApi. Both default to nullptr so existing
+    // callers that only pass `dllPath` (e.g.
     // tests/integration/plugin_load_test.cpp's four call sites) compile
-    // unchanged. This class deliberately never dereferences either
-    // pointer itself - doing so would require depending on
-    // neomifes::document, which the layering rule (CLAUDE.md sec.3)
-    // forbids for the Plugin Engine (see
+    // unchanged. This class deliberately never dereferences `document`
+    // itself, nor does it know what permission bits mean - doing so would
+    // require depending on neomifes::document, which the layering rule
+    // (CLAUDE.md sec.3) forbids for the Plugin Engine (see
     // neomifes::app::buildPluginCoreApi()/toNeoMifesDocument(),
     // src/app/plugin_core_api_bridge.h, for the actual implementation).
     [[nodiscard]] PluginExpected<void> load(const std::filesystem::path& dllPath,
-                                             const NeoMifesCoreApi*      coreApi  = nullptr,
-                                             NeoMifesDocument*           document = nullptr);
+                                             CoreApiFactory     coreApiFactory = nullptr,
+                                             NeoMifesDocument*  document       = nullptr);
 
     // Calls vtable->onUnload(ctx) (SEH-isolated) then frees the DLL
     // unconditionally, even if onUnload crashed (a stuck-but-still-mapped
@@ -84,10 +100,17 @@ public:
     // comment). Returns nullptr if not loaded.
     [[nodiscard]] void* contextUserData() const noexcept;
 
+    // Test/diagnostic introspection (Phase 8d): the loaded plugin's
+    // self-declared NeoMifesPluginInfo::permissions, or
+    // NEOMIFES_PLUGIN_PERMISSION_NONE if nothing is loaded. Same "expose
+    // internal state for assertions" role as contextUserData() above.
+    [[nodiscard]] unsigned int grantedPermissions() const noexcept;
+
 private:
     platform::ModuleHandle                 m_module;
     const NeoMifesPluginVTable*            m_vtable = nullptr;  // non-owning: valid only while m_module is loaded
     std::unique_ptr<NeoMifesPluginContext> m_context;
+    unsigned int                           m_grantedPermissions = 0;
 };
 
 }  // namespace neomifes::plugin

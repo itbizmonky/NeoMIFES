@@ -49,16 +49,18 @@ PluginHost& PluginHost::operator=(PluginHost&& other) noexcept {
     if (this != &other) {
         const auto result = unload();  // best-effort teardown of *this*'s prior state
         (void)result;
-        m_module       = std::move(other.m_module);
-        m_vtable       = other.m_vtable;
-        m_context      = std::move(other.m_context);
-        other.m_vtable = nullptr;
+        m_module             = std::move(other.m_module);
+        m_vtable             = other.m_vtable;
+        m_context            = std::move(other.m_context);
+        m_grantedPermissions = other.m_grantedPermissions;
+        other.m_vtable             = nullptr;
+        other.m_grantedPermissions = 0;
     }
     return *this;
 }
 
 PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath,
-                                       const NeoMifesCoreApi* coreApi, NeoMifesDocument* document) {
+                                       CoreApiFactory coreApiFactory, NeoMifesDocument* document) {
     if (isLoaded()) {
         return std::unexpected(PluginError{.code = PluginErrorCode::AlreadyLoaded});
     }
@@ -94,6 +96,13 @@ PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath,
             .code = PluginErrorCode::ApiVersionMismatch, .reportedApiVersion = info->apiVersion});
     }
 
+    // Phase 8d: coreApiFactory is invoked here (not before) because
+    // info->permissions is only known now - see CoreApiFactory's own
+    // comment (plugin_host.h) for why this couldn't be built by the caller
+    // ahead of time.
+    const NeoMifesCoreApi* coreApi =
+        coreApiFactory != nullptr ? coreApiFactory(info->permissions) : nullptr;
+
     auto context       = std::make_unique<NeoMifesPluginContext>();
     context->userData = nullptr;
     context->coreApi  = coreApi;
@@ -107,9 +116,10 @@ PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath,
         return std::unexpected(PluginError{.code = PluginErrorCode::OnLoadCrashed});
     }
 
-    m_module  = std::move(module);
-    m_vtable  = vtable;
-    m_context = std::move(context);
+    m_module             = std::move(module);
+    m_vtable             = vtable;
+    m_context            = std::move(context);
+    m_grantedPermissions = info->permissions;
     return {};
 }
 
@@ -124,6 +134,7 @@ PluginExpected<void> PluginHost::unload() noexcept {
     m_vtable = nullptr;
     m_context.reset();
     m_module.reset();  // FreeLibrary
+    m_grantedPermissions = 0;
 
     if (crashed) {
         return std::unexpected(PluginError{.code = PluginErrorCode::OnUnloadCrashed});
@@ -133,6 +144,10 @@ PluginExpected<void> PluginHost::unload() noexcept {
 
 void* PluginHost::contextUserData() const noexcept {
     return m_context ? m_context->userData : nullptr;
+}
+
+unsigned int PluginHost::grantedPermissions() const noexcept {
+    return m_grantedPermissions;
 }
 
 }  // namespace neomifes::plugin

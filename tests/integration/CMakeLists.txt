@@ -209,10 +209,13 @@ set_tests_properties(plugin_load PROPERTIES
 
 # plugin_document_editing_test - loads the REAL built document_editing_plugin
 # sample DLL (Phase 8b, ADR-016) via PluginHost::load(), passing a real
-# NeoMifesCoreApi (neomifes::app::buildPluginCoreApi()) bound to a real
+# NeoMifesCoreApi factory (neomifes::app::buildPluginCoreApi) bound to a real
 # document::Document, and asserts the plugin's onLoad actually mutated that
 # document through the C-ABI boundary - proof (not assumption, CLAUDE.md
-# rule 3) that the NeoMifesCoreApi round trip works end-to-end.
+# rule 3) that the NeoMifesCoreApi round trip works end-to-end. Also loads
+# permission_denied_plugin (Phase 8d, ADR-018) to prove the inverse: a
+# plugin without NEOMIFES_PLUGIN_PERMISSION_DOCUMENT gets a NULL-gated
+# CoreApi and crashes safely (SEH-isolated) if it calls through it anyway.
 add_executable(neomifes_plugin_document_editing_test
     plugin_document_editing_test.cpp
 )
@@ -232,7 +235,9 @@ set_target_properties(neomifes_plugin_document_editing_test PROPERTIES
 
 add_test(
     NAME    plugin_document_editing
-    COMMAND neomifes_plugin_document_editing_test $<TARGET_FILE:document_editing_plugin>
+    COMMAND neomifes_plugin_document_editing_test
+            $<TARGET_FILE:document_editing_plugin>
+            $<TARGET_FILE:permission_denied_plugin>
 )
 
 set_tests_properties(plugin_document_editing PROPERTIES

@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-02 (Phase 8b完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/registerCommand・showToast実装/SQL文法対応)を提示し、**AppContainerサンドボックス(推奨案)**が選ばれた。着手前調査(Explore agent + Microsoft Learn直接確認)で、AppContainerは既存の同一プロセス内`LoadLibraryW`アーキテクチャへ後付け不可能(プロセス生成時にのみ付与できるトークン機構であり、別プロセス+IPC全面再設計が前提、ADR-015が一度却下した規模)と判明。この状況を再提示し、**「Job Object資源制限のみに縮小」(推奨案)**が選ばれた。プロセス全体を巻き込むメモリ/CPU時間制限は「10GBファイル対応」という中核価値と衝突するため意図的に見送り、`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみを採用。新規`ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)、`PluginHost::load()`へは自動フックしない設計(共有テストバイナリ汚染の発見)。専用統合テストで、サンドボックス化後の子プロセス生成失敗+呼び出し元プロセスの生存継続を実機確認(Debug/Release/ubsan全932件green)。ADR-017起票。§3.61参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
+> **最終更新:** 2026-08-02 (Phase 8c完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`permissions`権限モデル/`registerCommand`・`showToast`実装/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`permissions`権限モデル(推奨案)**が選ばれた。着手前調査で、roadmap §8.3の`permissions`原案5カテゴリ(Network/Filesystem/Subprocess/Registry/Clipboard)はいずれも対応するCoreApi関数が未実装でゲート対象が無いと判明したため、新規`NEOMIFES_PLUGIN_PERMISSION_DOCUMENT`を追加してPhase 8b実装済みの4関数(insertText/deleteRange/getLineCount/getLineText)のみを実際にゲートした。enforcementはroadmap自身が示した「権限が無ければ関数ポインタをNULLにする」方式を採用し、既存のSEHクラッシュ隔離(Phase 8a)がそのまま捕捉するため新規エラーコードは不要だった。`PluginHost::load()`の`coreApi`引数を、権限判明後に呼び出す`CoreApiFactory`関数ポインタへ変更。新規サンプル`permission_denied_plugin`でNULL関数ポインタ経由のクラッシュ隔離を実機確認(Debug/Release/ubsan全934件green)。`manifest.json5`・署名検証・確認ダイアログは発見/インストール機構が無いため見送り。ADR-018起票。§3.62参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -90,11 +90,12 @@
 | Phase 7u (`TSInput`コールバックAPI採用) | ❌ 実装完了後に全面revert (性能後退、Phase 7t状態に復元。§3.55参照) |
 | Phase 7v (ミニマップ、簡易版・スクロール追従型) | ✅ 完了 (実測avgFrameNs≈16.53ms・実アプリ視覚確認済み、§3.56参照) |
 | Phase 7w (ミニマップ「文書全体俯瞰型」拡張、遅延ポピュレーション方式) | ✅ 完了 (実測avgFrameNs≈16.50ms・実アプリ視覚確認済み、§3.57参照) |
-| Phase 8a (プラグインエンジン 最小限PoC: C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.58参照) |
+| Phase 8a (プラグインエンジン 最小限PoC: C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 (push済み、CI green確認済み) |
 | Phase 7x (追加言語対応 バッチ4: PowerShell/Ini/Batch、個人メンテナ文法。SQL/VB/VBScriptは調査の上対象外) | ✅ 完了 (push済み、CI green確認済み) |
 | Phase 8b (`NeoMifesCoreApi`橋渡し実装: insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 (push済み、CI green確認済み) |
 | Phase 8c (Job Objectによるプラグイン資源制限: `ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.61参照) |
-| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / `permissions`権限モデル / registerCommand・showToast / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 8d (`permissions`権限モデル: 自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.62参照) |
+| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / registerCommand・showToast / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1869,6 +1870,42 @@ Phase 8b完了後、ユーザーから「次のPhaseに進め」と指示され�
 
 **Phase 8cはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`permissions`権限モデル/registerCommand・showToast/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
+### 3.62 Phase 8d (`permissions`権限モデル) 完了記録 (2026-08-02)
+
+Phase 8c完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`permissions`権限モデル/`registerCommand`・`showToast`実装/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`permissions`権限モデル(推奨案)**が選ばれた — ADR-015/016/017が3フェーズ連続で「権限モデルが無いため実装できない」と明記してきた前提条件であり、ADR-016は特に「真の権限ゲートはPhase 8のサブフェーズとして別途必要になる」と名指しで予告していた。
+
+**着手前調査(master_roadmap.md §8全体・plugin_sdk.h・plugin_host.h/.cpp・plugin_core_api_bridge.h/.cpp・ADR-015/016/017全文・全5サンプルプラグイン・tests/integration/CMakeLists.txtを直接読解、CLAUDE.mdルール3)で判明した重大な事実:** roadmap §8.3が示す`permissions`ビットフィールドの原案は`Network | Filesystem | Subprocess | Registry | Clipboard`の5カテゴリのみで構成されており、`Document`(文書読み書き)は含まれていない。ところが実際にPhase 8bで実装済みの`NeoMifesCoreApi`(`insertText`/`deleteRange`/`getLineCount`/`getLineText`)は完全にドキュメント操作のみであり、Network/Filesystem/Subprocess/Registry/Clipboardに対応するCoreApi関数は1つも存在しない。roadmap原案のカテゴリをそのまま実装しても、ゲートする対象が何も無い「意味のないビットフィールド」になってしまうと判明した。
+
+**設計方針の要点(詳細は[ADR-018](../decisions/ADR-018-plugin-permission-model.md)参照):**
+- roadmap原案の5カテゴリはいずれも未使用の予約ビットとしてそのまま残し、新規`NEOMIFES_PLUGIN_PERMISSION_DOCUMENT`を追加してこれのみ実際にゲートする。
+- enforcementはroadmap自身が示していた「権限が無ければ関数ポインタをNULLにする」方式を採用。NULL関数ポインタ経由の呼び出しはPhase 8aの既存SEHトランポリンがそのまま捕捉し`OnLoadCrashed`として報告するため、新規`PluginErrorCode`は追加不要と判明した。
+- `manifest.json5`+Authenticode署名検証+確認ダイアログは全て見送った。プラグインの発見・インストールディレクトリ構造自体が本コードベースに存在せず、マニフェストファイルを置く場所が無いため。
+- `PluginHost::load()`の`coreApi`引数を、事前構築済みの`const NeoMifesCoreApi*`から、権限を受け取ってCoreApiを構築する関数ポインタ(`CoreApiFactory`)へ変更した。`permissions`は`load()`が`neomifes_plugin_info()`を呼んで初めて判明するため、呼び出し元が事前に`coreApi`を構築する従来の設計では手遅れだったため。生の関数ポインタを採用(`std::function`不要、Phase 7uの「非ホットパスでも軽量な形を優先」判断とは独立に、`app::buildPluginCoreApi`自身が既にstatelessなため関数名をそのまま渡せる)。
+- Job Object制限(ADR-017、`ActiveProcessLimit=1`)は`permissions`実装後もroadmap §17.1原案の「Network権限連動」へ移行せず、全プラグイン一律適用のまま据え置いた(自己申告は信頼できないため、緩和による利益が無くリスクだけが増える)。
+
+**実装:** `include/neomifes/plugin_sdk.h`(6権限マクロ+`NeoMifesPluginInfo::permissions`)、`src/plugin/include/neomifes/plugin/plugin_host.h`/`.cpp`(`CoreApiFactory`型+`grantedPermissions()`)、`src/app/include/neomifes/app/plugin_core_api_bridge.h`/`.cpp`(`buildPluginCoreApi(unsigned int)`+`kFullCoreApi`/`kDocumentDeniedCoreApi`)、新規`plugins/samples/permission_denied_plugin/`(`NEOMIFES_PLUGIN_PERMISSION_NONE`宣言+`insertText`無条件呼び出し)、既存5サンプルプラグインへ`.permissions`フィールド明示追加、`tests/unit/app_plugin_core_api_bridge_test.cpp`(既存20テスト更新+新規2テスト)、`tests/integration/plugin_document_editing_test.cpp`(新規テストケース1件+`grantedPermissions()`検証)、`tests/integration/plugin_load_test.cpp`(`grantedPermissions()`検証1行)。
+
+**実測検証:** `PluginWithoutDocumentPermissionCrashesOnNullInsertTextAndLeavesDocumentUntouched`で、`permission_denied_plugin`がNULL関数ポインタ経由でクラッシュし`OnLoadCrashed`として隔離され、かつ文書が一切変更されないことをローカル実機(Debug/Release/ubsan全934件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**検証時に発見・修正した落とし穴:** ubsan(clang-cl)ビルドで`kDocumentDeniedCoreApi`の集成体初期化(`.apiVersion`のみ設定、他4フィールドを暗黙0埋め)が`-Wmissing-designated-field-initializers`(`/WX`)でエラーになった。MSVCはこの省略を許容するがclang-clは全フィールド明示を要求する差異と判明 — 全4関数ポインタフィールドに`nullptr`を明示することで解消した。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全934件green**。
+- clang-tidy: `src/plugin/`/`src/app/`配下は新規警告0。テストファイルの警告(非const globalパスvar・整数リテラル大文字suffix)はPhase 8a/8bから既に許容されてきた既存パターンの新規インスタンスであり、新規カテゴリではない。
+- **実アプリ視覚確認は不要**(Phase 8a〜8cと同じ「main.cppに一切触れないヘッドレス変更」)。
+
+**完了条件:**
+- [x] `NEOMIFES_PLUGIN_PERMISSION_*`6マクロ+`NeoMifesPluginInfo::permissions`追加
+- [x] `PluginHost::load()`の`CoreApiFactory`化+`grantedPermissions()`追加
+- [x] `buildPluginCoreApi(unsigned int)`の権限ゲート実装
+- [x] `permission_denied_plugin`サンプル新設+実機クラッシュ隔離の実測検証
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ADR-018起票
+
+**スコープ外(意図的、後続サブフェーズへ):** `manifest.json5`パース、Authenticode署名検証、未署名プラグインの確認ダイアログ、`registerCommand`/`showToast`/`httpRequest`/`readPluginData`/`writePluginData`(まだ存在しないCoreApi関数、対応する予約ビットは未エンフォース)、Job Object制限の権限連動化、`src/app/main.cpp`への配線、`plugin_manifest.{h,cpp}`(読み込む対象ファイル形式が無いため未作成)。
+
+**Phase 8dはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/registerCommand・showToast/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2010,10 +2047,28 @@ agent + Microsoft Learn直接確認)でAppContainerは既存の同一プロセ�
 (`SandboxState`の集成体初期化に`modernize-use-designated-initializers`を検出・修正)。
 ADR-017起票済み。コミット済み、pushはユーザーの明示指示待ち。**
 
+**続けてPhase 8d(`permissions`権限モデル)を実装・完了した(§3.62参照)。AskUserQuestionで
+`permissions`権限モデル(推奨案)が選ばれた。着手前調査でroadmap §8.3の`permissions`原案
+5カテゴリ(Network/Filesystem/Subprocess/Registry/Clipboard)はいずれも対応するCoreApi関数
+が未実装でゲート対象が無いと判明したため、新規`NEOMIFES_PLUGIN_PERMISSION_DOCUMENT`を
+追加してPhase 8b実装済みの4関数(insertText/deleteRange/getLineCount/getLineText)のみを
+実際にゲートした。enforcementはroadmap自身が示した「権限が無ければ関数ポインタをNULLに
+する」方式を採用し、Phase 8aの既存SEHクラッシュ隔離がそのまま捕捉するため新規エラー
+コードは不要だった。`PluginHost::load()`の`coreApi`引数を、`neomifes_plugin_info()`で権限
+が判明した後に呼び出す`CoreApiFactory`関数ポインタへ変更(従来は呼び出し元が事前に
+`coreApi`を構築していたため手遅れだった)。新規サンプル`permission_denied_plugin`
+(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`insertText`を無条件呼び出し)でNULL関数
+ポインタ経由のクラッシュ隔離を実機確認。`manifest.json5`・Authenticode署名検証・確認
+ダイアログはプラグイン発見/インストール機構が無いため見送り。Job Object制限(ADR-017)は
+自己申告を信頼できないため権限連動化せず全プラグイン一律適用のまま据え置いた。ローカル
+Debug/Release/ubsan全934件green・clang-tidy新規警告0(ubsan/clang-clビルドで
+`-Wmissing-designated-field-initializers`を検出・4関数ポインタ全てへの明示的`nullptr`で
+解消)。ADR-018起票済み。コミット済み、pushはユーザーの明示指示待ち。**
+
 **次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/
-`permissions`権限モデル/registerCommand・showToast(UI側受け皿の設計)のいずれか、
-着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査
-(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。**
+registerCommand・showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。
+他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法の
+tree-sitter CLIビルド依存導入検討も保留中。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

@@ -58,6 +58,9 @@ TEST(PluginLoadTest, LoadsRunsOnLoadAndOnUnloadOnTheRealSampleDll) {
         << "load failed: " << neomifes::plugin::describe(loadResult.error());
     EXPECT_TRUE(host.isLoaded());
     EXPECT_NE(host.contextUserData(), nullptr);  // onLoad ran
+    // Phase 8d: hello_plugin.cpp declares NEOMIFES_PLUGIN_PERMISSION_NONE -
+    // confirms the (unused-by-this-plugin) permission read-through works.
+    EXPECT_EQ(host.grantedPermissions(), static_cast<unsigned int>(NEOMIFES_PLUGIN_PERMISSION_NONE));
 
     const auto secondLoad = host.load(fs::path{g_helloPluginPath});
     ASSERT_FALSE(secondLoad.has_value());

@@ -10,11 +10,12 @@
 namespace {
 
 const NeoMifesPluginInfo kInfo = {
-    .id         = L"com.neomifes.samples.hello_plugin_bad_api_version",
-    .name       = L"Hello Plugin (Bad API Version)",
-    .version    = L"0.1.0",
-    .author     = L"NeoMIFES",
-    .apiVersion = NEOMIFES_PLUGIN_API_VERSION + 1000U,  // deliberately wrong
+    .id          = L"com.neomifes.samples.hello_plugin_bad_api_version",
+    .name        = L"Hello Plugin (Bad API Version)",
+    .version     = L"0.1.0",
+    .author      = L"NeoMIFES",
+    .apiVersion  = NEOMIFES_PLUGIN_API_VERSION + 1000U,  // deliberately wrong
+    .permissions = NEOMIFES_PLUGIN_PERMISSION_NONE,
 };
 
 void onLoad([[maybe_unused]] NeoMifesPluginContext* ctx) {}

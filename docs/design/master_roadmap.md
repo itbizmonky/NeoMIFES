@@ -239,7 +239,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 8a | プラグインエンジン 最小限PoC (C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 | §8 |
 | 8b | `NeoMifesCoreApi`橋渡し実装 (insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 | §8 |
 | 8c | Job Objectによるプラグイン資源制限 (`ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 | §8, §17.1 |
-| 8d〜 | AppContainerサンドボックス / `permissions`権限モデル / registerCommand・showToast (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
+| 8d | `permissions`権限モデル (自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 | §8, §17.1 |
+| 8e〜 | AppContainerサンドボックス / registerCommand・showToast / 大規模文書の性能DoD再挑戦 / SQL文法対応 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -1487,7 +1488,20 @@ typedef struct NeoMifesCoreApi {
 
 **実測による検証:** `tests/integration/plugin_sandbox_test.cpp`で、サンドボックス化後に子プロセス生成(`CreateProcessW`)が失敗し、かつ呼び出し元プロセス自身は生存し続けることをローカル実機(Debug/Release/ubsan全構成)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
 
-**次候補 (Phase 8d〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `permissions`権限モデル / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
+**次候補 (Phase 8d〜):** ~~AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `permissions`権限モデル / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。~~ → `permissions`権限モデルが選ばれ、Phase 8dで完了(§8.10参照)。
+
+### 8.10 実装後の確定事項 (Phase 8d 完了、2026-08-02)
+
+`permissions`自己申告ビットフィールド + NULL関数ポインタ・ゲートを実装した。詳細は[ADR-018](../decisions/ADR-018-plugin-permission-model.md)参照。
+
+**実装した内容(§8.3のスケッチからの変更点):**
+- §8.3スケッチの5カテゴリ(`Network`/`Filesystem`/`Subprocess`/`Registry`/`Clipboard`)はいずれも対応するCoreApi関数が未実装のため、実効性の無い予約ビットとしてそのまま残した。実際にゲートしたのは新規追加した`NEOMIFES_PLUGIN_PERMISSION_DOCUMENT`のみ(スケッチには無いカテゴリ、Phase 8bで実装済みの`insertText`/`deleteRange`/`getLineCount`/`getLineText`4関数に対応)。
+- enforcementはスケッチが示した通り「権限が無ければ関数ポインタをNULLにする」方式を採用し、新規エラーコードは追加しなかった — NULL経由の呼び出しはPhase 8aの既存SEHトランポリンがそのまま捕捉し`OnLoadCrashed`として報告する。
+- `manifest.json5`+Authenticode署名検証+確認ダイアログは全て見送った。プラグインの発見・インストールディレクトリ構造自体が本コードベースに存在せず、マニフェストファイルを置く場所が無いため。
+
+**実測による検証:** `tests/integration/plugin_document_editing_test.cpp`の新規テストで、新設サンプル`permission_denied_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`insertText`を無条件呼び出し)がNULL関数ポインタ経由でクラッシュし、`OnLoadCrashed`として報告され、かつ文書が一切変更されないことをローカル実機(Debug/Release/ubsan全934件green)で確認した。
+
+**次候補 (Phase 8e〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
 
 ---
 
@@ -2316,15 +2330,15 @@ neomifes.showToast("Inserted!")
 
 ### 17.1 プラグインサンドボックス (§8.3 参照、詳細)
 
-**レベル 1 (デフォルト):** ✅ Phase 8a完了。同プロセス内 SEH 隔離 + 権限マニフェスト検証
+**レベル 1 (デフォルト):** ✅ Phase 8a完了(SEH隔離)+Phase 8d完了(ADR-018、権限)。同プロセス内 SEH 隔離 + `permissions`自己申告ビットフィールド
 - クラッシュ隔離のみ、悪意あるプラグインは制限しきれない
-- 起動時に「未署名プラグインのロードを許可しますか」ダイアログ(権限マニフェスト自体は未実装)
+- ~~権限マニフェスト検証~~ → マニフェストファイル(プラグイン発見・インストール機構が無い)ではなく、プラグイン自身の`NeoMifesPluginInfo::permissions`を自己申告として読むのみ。署名検証・未署名プラグインの確認ダイアログは未実装のまま(詳細はADR-018)
 
 **レベル 2 (高危険度権限):** ✅ Phase 8c完了(ADR-017)。Job Object でリソース制限
-- ~~Network 権限を要求するプラグイン全て~~ → 権限モデルが無いため全プラグインへ一律適用
+- ~~Network 権限を要求するプラグイン全て~~ → 権限モデル(Phase 8d)が実装された後も、自己申告を信頼できないため引き続き全プラグインへ一律適用(ADR-018)
 - ~~メモリ・CPU 時間・ハンドル数の上限~~ → 実装したのは`ActiveProcessLimit=1`のみ。メモリ/CPU時間はプロセス全体(ホスト含む)を巻き込むため意図的に見送り、ハンドル数上限は該当するWin32 APIが存在しないと判明(詳細はADR-017)
 
-**レベル 3 (Phase 8d〜、将来検討):** Windows AppContainer で完全隔離
+**レベル 3 (Phase 8e〜、将来検討):** Windows AppContainer で完全隔離
 - Capability に基づく細粒度権限
 - ファイルシステムアクセスは Broker 経由
 - **Phase 8c着手前調査で判明: 既存の同一プロセス内`LoadLibraryW`アーキテクチャへ後付け不可能。別プロセス+IPC全面再設計(ADR-015が一度却下した規模)が前提となる。真に必要になった時点(マーケットプレース等で未検証サードパーティプラグインの実運用が具体化)で再評価する(ADR-015/016/017共通の再評価条件)。**

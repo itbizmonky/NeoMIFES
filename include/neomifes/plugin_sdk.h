@@ -1,7 +1,8 @@
 #pragma once
 
 // NeoMIFES Plugin SDK - C ABI header (Phase 8a: minimal plugin host PoC;
-// Phase 8b: NeoMifesCoreApi document-manipulation bridge).
+// Phase 8b: NeoMifesCoreApi document-manipulation bridge; Phase 8d:
+// self-declared permissions bitfield).
 //
 // STABLE, DISTRIBUTABLE contract between NeoMIFES.exe and third-party
 // plugin DLLs. Zero dependencies on any other NeoMIFES header (src/**) - a
@@ -9,9 +10,8 @@
 //
 // Phase 8a trims docs/design/master_roadmap.md sec.8.3's full sketch (see
 // ADR-015 for what is deferred and why):
-//   - NeoMifesPluginInfo: id/name/version/author/apiVersion only. NO
-//     `permissions` bitfield (sandboxing/permission model is a later
-//     Phase 8 sub-phase).
+//   - NeoMifesPluginInfo: id/name/version/author/apiVersion only at first
+//     (permissions added in Phase 8d, see below).
 //   - NeoMifesPluginVTable: onLoad/onUnload only. NO onDocumentChanged
 //     (needs async worker + PostMessageW plumbing this PoC does not build).
 //   - NeoMifesPluginContext is a TRANSPARENT struct with a `userData`
@@ -23,6 +23,12 @@
 // getLineText only - see that struct's own comment below for the full
 // contract, and ADR-016 for what is still deferred: registerCommand/
 // showToast/network+filesystem functions/permissions).
+//
+// Phase 8d adds NeoMifesPluginInfo::permissions (self-declared bitfield,
+// see NEOMIFES_PLUGIN_PERMISSION_* below) and gates NeoMifesCoreApi's 4
+// functions on NEOMIFES_PLUGIN_PERMISSION_DOCUMENT - see ADR-018 for the
+// full design (what is/isn't a security boundary, why manifest.json5 +
+// signature verification are still deferred).
 //
 // apiVersion contract: NeoMifesPluginInfo::apiVersion must equal
 // NEOMIFES_PLUGIN_API_VERSION EXACTLY. neomifes::plugin::PluginHost::load()
@@ -51,6 +57,33 @@ extern "C" {
 // future plugin can read ctx->coreApi->apiVersion defensively before
 // calling a function that might not exist in an older host.
 #define NEOMIFES_CORE_API_VERSION 1u
+
+// Phase 8d: self-declared capability request bitfield (NeoMifesPluginInfo::
+// permissions below). Matches master_roadmap.md sec.8.3's original 5-category
+// sketch (Network/Filesystem/Subprocess/Registry/Clipboard) for future
+// naming stability, PLUS a new NEOMIFES_PLUGIN_PERMISSION_DOCUMENT bit not
+// in that sketch - see ADR-018 for why: the sketch's 5 categories don't
+// cover the ONE capability that actually exists today (NeoMifesCoreApi's
+// document-editing functions), so gating only those 5 would gate nothing at
+// all yet. Only NEOMIFES_PLUGIN_PERMISSION_DOCUMENT is actually enforced
+// anywhere in this header today (see NeoMifesCoreApi's own comment below);
+// the other 5 are reserved placeholders with no corresponding CoreApi
+// function to gate - declaring them costs nothing and avoids renaming
+// later once httpRequest/readPluginData/writePluginData etc. exist.
+//
+// SELF-DECLARED, NOT VERIFIED: the host trusts this value as reported by
+// the plugin's own neomifes_plugin_info() export - there is no manifest
+// file, no signature check, no user-consent dialog yet (all deferred, see
+// ADR-018). This is NOT a defense against a malicious plugin (which could
+// simply declare NEOMIFES_PLUGIN_PERMISSION_DOCUMENT unconditionally) - see
+// NeoMifesCoreApi's "NOT A SECURITY BOUNDARY" comment, unchanged by this.
+#define NEOMIFES_PLUGIN_PERMISSION_NONE       0x00000000u
+#define NEOMIFES_PLUGIN_PERMISSION_DOCUMENT   0x00000001u  // gates insertText/deleteRange/getLineCount/getLineText below
+#define NEOMIFES_PLUGIN_PERMISSION_NETWORK    0x00000002u  // reserved - no CoreApi function exists yet to gate
+#define NEOMIFES_PLUGIN_PERMISSION_FILESYSTEM 0x00000004u  // reserved
+#define NEOMIFES_PLUGIN_PERMISSION_SUBPROCESS 0x00000008u  // reserved
+#define NEOMIFES_PLUGIN_PERMISSION_REGISTRY   0x00000010u  // reserved
+#define NEOMIFES_PLUGIN_PERMISSION_CLIPBOARD  0x00000020u  // reserved
 
 // Opaque handle for the live document a plugin callback was invoked
 // against. Never defined in this header (deliberately incomplete) - the
@@ -81,6 +114,17 @@ typedef struct NeoMifesDocument NeoMifesDocument;
 // ADR-016 (mirrors ADR-015's own "SEH trampoline is not a security
 // boundary" disclaimer, for the same underlying reason: same-process,
 // same-address-space execution).
+//
+// PERMISSION-GATED (Phase 8d): all 4 functions below are NULL unless the
+// plugin declared NEOMIFES_PLUGIN_PERMISSION_DOCUMENT in its
+// NeoMifesPluginInfo::permissions (see neomifes::app::buildPluginCoreApi()).
+// A plugin that calls one anyway crashes on a null-pointer call - caught by
+// PluginHost's existing unconditional SEH trampoline (Phase 8a) and
+// reported as PluginErrorCode::OnLoadCrashed, so no new error code was
+// needed for this. This is still not a security boundary against a
+// malicious plugin (see this struct's own comment above and
+// NEOMIFES_PLUGIN_PERMISSION_DOCUMENT's comment) - it only prevents
+// ACCIDENTAL use by a plugin that never declared it needed document access.
 //
 // Text encoding: UTF-16 (wchar_t - matching this repo's internal
 // std::u16string convention on Windows, both are 16-bit code units).
@@ -148,6 +192,10 @@ typedef struct NeoMifesPluginInfo {
     const wchar_t* version;
     const wchar_t* author;
     unsigned int   apiVersion;
+    // Phase 8d: bitwise OR of NEOMIFES_PLUGIN_PERMISSION_* above,
+    // self-declared by the plugin. See those macros' own comment for what
+    // this does and does not provide.
+    unsigned int   permissions;
 } NeoMifesPluginInfo;
 
 typedef struct NeoMifesPluginVTable {

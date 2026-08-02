@@ -74,7 +74,7 @@ unsigned int getLineTextImpl(NeoMifesDocument* doc, unsigned line, wchar_t* buff
     return static_cast<unsigned int>(copyLen);
 }
 
-const NeoMifesCoreApi kCoreApi = {
+const NeoMifesCoreApi kFullCoreApi = {
     .apiVersion   = NEOMIFES_CORE_API_VERSION,
     .insertText   = &insertTextImpl,
     .deleteRange  = &deleteRangeImpl,
@@ -82,10 +82,28 @@ const NeoMifesCoreApi kCoreApi = {
     .getLineText  = &getLineTextImpl,
 };
 
+// Phase 8d: returned instead of kFullCoreApi when the plugin didn't declare
+// NEOMIFES_PLUGIN_PERMISSION_DOCUMENT - all 4 function pointers explicitly
+// nullptr. A plugin calling e.g. ctx->coreApi->insertText(...) anyway
+// crashes on a null-pointer call, caught by PluginHost's existing
+// unconditional SEH trampoline (OnLoadCrashed) - see
+// plugins/samples/permission_denied_plugin/. Every field is listed
+// explicitly (not left to designated-initializer zero-fill) because
+// clang-cl's -Wmissing-designated-field-initializers (enabled under this
+// repo's ubsan preset, /WX) rejects the omitted-field form MSVC accepts.
+const NeoMifesCoreApi kDocumentDeniedCoreApi = {
+    .apiVersion   = NEOMIFES_CORE_API_VERSION,
+    .insertText   = nullptr,
+    .deleteRange  = nullptr,
+    .getLineCount = nullptr,
+    .getLineText  = nullptr,
+};
+
 }  // namespace
 
-const NeoMifesCoreApi* buildPluginCoreApi() noexcept {
-    return &kCoreApi;
+const NeoMifesCoreApi* buildPluginCoreApi(unsigned int grantedPermissions) noexcept {
+    return (grantedPermissions & NEOMIFES_PLUGIN_PERMISSION_DOCUMENT) != 0U ? &kFullCoreApi
+                                                                             : &kDocumentDeniedCoreApi;
 }
 
 NeoMifesDocument* toNeoMifesDocument(document::Document& document) noexcept {

@@ -12,11 +12,12 @@
 namespace {
 
 const NeoMifesPluginInfo kInfo = {
-    .id         = L"com.neomifes.samples.crashing_plugin",
-    .name       = L"Crashing Plugin",
-    .version    = L"0.1.0",
-    .author     = L"NeoMIFES",
-    .apiVersion = NEOMIFES_PLUGIN_API_VERSION,
+    .id          = L"com.neomifes.samples.crashing_plugin",
+    .name        = L"Crashing Plugin",
+    .version     = L"0.1.0",
+    .author      = L"NeoMIFES",
+    .apiVersion  = NEOMIFES_PLUGIN_API_VERSION,
+    .permissions = NEOMIFES_PLUGIN_PERMISSION_NONE,
 };
 
 void onLoad([[maybe_unused]] NeoMifesPluginContext* ctx) {

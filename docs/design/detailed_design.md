@@ -1639,6 +1639,42 @@ namespace neomifes::app {
 
 ---
 
+### 8.7 permissions権限モデル (Phase 8d実装)
+
+`permissions`自己申告ビットフィールド + NULL関数ポインタ・ゲートを実装した。詳細は[ADR-018](../decisions/ADR-018-plugin-permission-model.md)参照。
+
+**`include/neomifes/plugin_sdk.h`への追加:**
+```c
+#define NEOMIFES_PLUGIN_PERMISSION_NONE       0x00000000u
+#define NEOMIFES_PLUGIN_PERMISSION_DOCUMENT   0x00000001u  // 実際にゲートするのはこのビットのみ
+#define NEOMIFES_PLUGIN_PERMISSION_NETWORK    0x00000002u  // 予約(対応するCoreApi関数が未実装)
+#define NEOMIFES_PLUGIN_PERMISSION_FILESYSTEM 0x00000004u  // 予約
+#define NEOMIFES_PLUGIN_PERMISSION_SUBPROCESS 0x00000008u  // 予約
+#define NEOMIFES_PLUGIN_PERMISSION_REGISTRY   0x00000010u  // 予約
+#define NEOMIFES_PLUGIN_PERMISSION_CLIPBOARD  0x00000020u  // 予約
+```
+`NeoMifesPluginInfo`へ`unsigned int permissions`フィールドを追加(自己申告、検証機構は無し)。§8.3のroadmap原案5カテゴリ(Network/Filesystem/Subprocess/Registry/Clipboard)は対応するCoreApi関数(`httpRequest`等)が未実装のため予約ビットのまま、Phase 8bで実装済みの`NeoMifesCoreApi`4関数(`insertText`/`deleteRange`/`getLineCount`/`getLineText`)に対応する`Document`カテゴリを新規追加してこれのみ実際にゲートする。
+
+**enforcementはNULL関数ポインタ方式:** `neomifes::app::buildPluginCoreApi(unsigned int grantedPermissions)`が`Document`ビットの有無で「4関数全て実装済み」(`kFullCoreApi`)と「4関数全てNULL」(`kDocumentDeniedCoreApi`)のどちらかを返す。NULL関数ポインタ経由の呼び出しはPhase 8aの既存SEHトランポリンがそのまま捕捉し`PluginErrorCode::OnLoadCrashed`として報告するため、新規エラーコードは追加していない。
+
+**`PluginHost::load()`のシグネチャ変更:**
+```cpp
+using CoreApiFactory = const NeoMifesCoreApi* (*)(unsigned int grantedPermissions) noexcept;
+
+[[nodiscard]] PluginExpected<void> load(const std::filesystem::path& dllPath,
+                                         CoreApiFactory     coreApiFactory = nullptr,
+                                         NeoMifesDocument*  document       = nullptr);
+```
+`permissions`は`load()`が`neomifes_plugin_info()`を呼んで初めて判明するため、事前構築済みの`const NeoMifesCoreApi*`ではなく、権限を受け取ってCoreApiを構築する関数ポインタを渡す形へ変更した。`load()`内部で`info->permissions`を読んだ直後に`coreApiFactory(info->permissions)`を呼び出す。`app::buildPluginCoreApi`は`load()`の`coreApiFactory`引数と完全に一致するシグネチャを持つため、呼び出し元は関数名をそのまま渡せる(`host.load(path, neomifes::app::buildPluginCoreApi, doc)`)。新規`PluginHost::grantedPermissions() const noexcept -> unsigned int`アクセサ(テスト/診断用、`contextUserData()`と同じ役割)も追加した。
+
+**実測検証:** 新規サンプル`plugins/samples/permission_denied_plugin/`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`insertText`を無条件呼び出し)を用いた`tests/integration/plugin_document_editing_test.cpp`の新規テストケースで、NULL関数ポインタ経由のクラッシュが`OnLoadCrashed`として隔離され、かつ文書が一切変更されないことをローカル実機(Debug/Release/ubsan全934件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**セキュリティ境界としての限界:** プラグインは同一プロセス・同一アドレス空間で実行されるため(ADR-015)、`permissions`フィールドの値を偽って自己申告することを技術的に防ぐ手段は無い。悪意あるプラグインへの対策ではなく、透明性の下地と事故的誤用への多層防御を提供するのみ(ADR-016/ADR-017と同じ「セキュリティ境界ではない」免責が引き続き適用される)。Job Object制限(ADR-017、`ActiveProcessLimit=1`)は`permissions`実装後もroadmap §17.1原案の「Network権限連動」へは移行せず、全プラグイン一律適用のまま据え置いた(自己申告を信頼できない以上、緩和による利益が無くリスクだけが増えるため)。
+
+**既知のギャップ・将来の再評価:** `manifest.json5`パース・Authenticode署名検証・未署名プラグインの確認ダイアログは全て未実装(プラグイン発見・インストールディレクトリ構造自体が無いため)。`Network`/`Filesystem`/`Subprocess`/`Registry`/`Clipboard`ビットは対応するCoreApi関数が実装される時点で初めてエンフォース対象になる。
+
+---
+
 ## 9. Encoding Engine 詳細
 
 > **凍結された歴史的記録:** 本節はPhase 6着手前(basic_design.md起草時)に書かれた速記スケッチであり、§9.3で確定した実装とは判定アルゴリズム(§9.1、Phase 6aでは未着手)・不正シーケンス処理方針(§9.2、「U+FFFD置換」ではなく「拒否」を採用)の両方で内容が食い違う。最新情報は§9.3を参照すること。
