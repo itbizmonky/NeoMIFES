@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-02 (Phase 8d完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`registerCommand`・`showToast`実装/AppContainerサンドボックス/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`registerCommand`・`showToast`実装(推奨案)**が選ばれた。着手前調査で、`showToast`(onLoad/onUnload中の同期呼び出しのみで既存スレッド契約に収まる)と`registerCommand`(コールバックを保存し後で安全に呼び出す新しい契約が必要)の実装難易度が非対称と判明したため再提示し、**「showToastのみ、ヘッドレス実装(推奨案)」**が選ばれた。新規`ui::ToastState`(ヘッダオンリー、「現在表示すべきメッセージ1件」のみ保持する純粋状態クラス)を新設、`NeoMifesCoreApi::showToast`は権限ゲートしない(既存5予約カテゴリのいずれも合致せず新カテゴリの推測導入を避けた)。`PluginHost::load()`に`toastSink`パラメータ追加、`NEOMIFES_CORE_API_VERSION`を2へ引き上げ(初のCoreApi実成長)。新規サンプル`toast_plugin`でNULL非ゲートのshowToast往復を実機確認(Debug/Release/ubsan全942件green)。`registerCommand`・実Win32トーストウィジェット・`main.cpp`配線は次サブフェーズへ延期。ADR-019起票。§3.63参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
+> **最終更新:** 2026-08-03 (Phase 8e完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(tree-sitter内部実装調査(50万行DoD再挑戦)/`registerCommand`実装/AppContainerサンドボックス/SQL文法対応)を提示し、**tree-sitter内部実装調査(推奨案)**が選ばれた。背景エージェントによるvendored tree-sitter source(`parser.c`等)の直接読解で、`ts_parser_parse()`のメインループが文書全体をオートマトンで歩くことが構造的に必須と判明(根本原因の特定)。唯一の未検証の回避策`ts_parser_set_included_ranges()`について、Plan Modeで「実装前に使い捨てprobeで実機検証する(Stage A)」→「結果次第で実装(Stage B正)/記録して終了(Stage B負)」という2段階計画を策定・ユーザー承認を得た。実機probe(`probe_included_ranges.cpp`、コミットなし)で検証した結果、**正しさ(複数行コメント/生文字列の途中から窓が始まると誤分類が広範囲に伝播)・再利用実効性(近接スクロールの80%重複窓ですら`reuse_node`が1件も観測されず`reuse=0`)のいずれも不成立と判明し、Stage B負(不採用・本番コード変更なし)と結論**。`docs/issues/tree_sitter_incremental_parse_cost.md`に根本原因の特定+probe実測結果+完了条件チェックを追記。§3.64参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の有望な方向性は無し(issue doc「今後の検討候補」参照)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -96,7 +96,8 @@
 | Phase 8c (Job Objectによるプラグイン資源制限: `ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.61参照) |
 | Phase 8d (`permissions`権限モデル: 自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.62参照) |
 | Phase 8e (showToast ヘッドレス実装: `ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.63参照) |
-| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / registerCommand / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| tree-sitter内部実装調査 (根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証) | ✅ 完了・**不採用と結論** (本番コード変更なし、issue doc更新のみコミット、§3.64参照) |
+| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / registerCommand / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1942,6 +1943,31 @@ Phase 8d完了後、ユーザーから「次のPhaseに進め」と指示され�
 
 **Phase 8eはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
+### 3.64 tree-sitter内部実装調査 (根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証、不採用) 完了記録 (2026-08-03)
+
+Phase 8e完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(tree-sitter内部実装調査(50万行DoD再挑戦)/`registerCommand`実装/AppContainerサンドボックス/SQL文法対応)を提示し、**tree-sitter内部実装調査(推奨案)**が選ばれた — `docs/issues/tree_sitter_incremental_parse_cost.md`の「今後の検討候補」筆頭だった「tree-sitter自身のソースを読み根本原因を特定する」に対応。
+
+**根本原因の特定(背景エージェント、vendored tree-sitter source直接引用):** `ts_parser_parse()`のメインループ(`parser.c` 2127-2182)は文書の先頭からEOFまでオートマトンを歩くことが構造的に必須。個々のステップは`ts_parser__reuse_node()`で軽いが、ステップ数自体が文書サイズに比例するため`TSInput.read()`がほぼ呼ばれなくても(Phase 7uの謎はこれで説明がつく)コストは消えない。`ts_tree_edit()`(O(edit depth))・木のバランシング(再利用済み部分木をスキップ)はいずれも無関係と確認。tree-sitterアーキテクチャそのものの構造的限界であり、NeoMIFES側の使い方の問題ではないと確認できた。
+
+**唯一の未検証の回避策`ts_parser_set_included_ranges()`について、Plan Mode(Explore不要、既存コード読解+専用Plan agent1件)で2段階計画を策定:** Stage A(使い捨てprobeで正しさ・再利用実効性・粗いタイミングを実機検証)→ Stage B(正: 検証成功なら本実装+ベンチマーク、負: 失敗ならissue docに記録して終了)。合成C++文書(namespace包囲+ネスト深いif/for、複数行コメント・生文字列・6段ネストを注入、約338万バイト)に対する`probe_included_ranges.cpp`(`/MDd`、`tree-sitter.lib`+`tree-sitter-cpp-grammar.lib`へ直接リンク、コミットなし)で検証した。
+
+**Stage A結果 — 両基準とも不成立:**
+- **正しさ(Q1):** クリーンな境界・メソッド本体途中・深いネスト途中は軽微なズレのみ(境界近傍限定)。**しかし複数行`/* */`コメント・生文字列リテラルの途中から窓が始まると、字句解析器の内部状態(「コメント/文字列の続きを読んでいる」)を引き継げず、その内容がコードとして誤解析され、誤分類が窓の広い範囲(ミスマッチ341〜344/340〜343)に伝播した。** 実運用のスクロールでは頻出する現実的なケース。
+- **再利用の実効性(Q2):** 全文書解析→編集→窓解析→(編集なし)近接スクロール窓(80%重複)→(編集なし)大ジャンプ窓、をTSLoggerで`reuse_node`/`cant_reuse_node_*`ログ収集。**本来もっとも再利用が働くはずの近接スクロール窓(W2)ですら`reuse_node`が1件も観測されず(`reuse=0`)、想定していた「重複部分は再利用される」という仮説が実測で覆った。**
+- **タイミング(Q3):** 窓解析自体は数msと高速だが、Q2の通り再利用ではなく単に「窓の外を歩かない」ことの効果と考えられ、Q1の破綻により無意味。
+
+**結論: `ts_parser_set_included_ranges()`は単一言語ファイルの任意窓(スクロール追従)への適用を不採用と判断。本番コード(`src/syntax/`・`src/render/`)は一切変更していない。** `docs/issues/tree_sitter_incremental_parse_cost.md`に根本原因の特定・probe実測結果の詳細・完了条件チェック更新・新たな検討候補(小さな文脈プレフィックスを窓の前に追加する緩和策、未検証)を追記した。
+
+**このセッションで変更したファイルはドキュメントのみ(`docs/issues/tree_sitter_incremental_parse_cost.md`)。** probe(`probe_included_ranges.cpp`とビルド生成物)はスクラッチパッド上の使い捨てで実行後削除済み、コミットしていない(CLAUDE.mdルール3の既存規律通り)。
+
+**完了条件:**
+- [x] `ts_parser_parse()`の保持木依存コストの根本原因を特定
+- [x] `ts_parser_set_included_ranges()`を実機probeで検証(正しさ・再利用実効性)
+- [x] 検証結果に基づき不採用と判断、issue docへ記録
+- [ ] roadmap §7.11 DoD「1文字入力後の増分解析≤50ms」(大規模文書)の達成 — 引き続き未達、有望な次の方向性は現時点で無し
+
+**コミット1件(ドキュメントのみ)、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2249,6 +2275,20 @@ clang-tidy実行時に明示ループへの書き換えが必要になる前提�
 コードレビューで代替する運用を継続する(§3.43参照)。**修飾キー無しのマウス操作(クリック・
 ドラッグ)は合成可能なので、視覚確認が必要な場面ではまずマウス操作だけで完結する経路が
 無いか検討すること(§3.44参照)。**
+
+**続けてtree-sitter内部実装調査(根本原因特定 + `ts_parser_set_included_ranges()`実機probe
+検証)を実施し、不採用と結論した(§3.64参照)。** 背景エージェントによるvendored tree-sitter
+sourceの直接読解で、`ts_parser_parse()`のメインループが文書全体をオートマトンで歩くことが
+構造的に必須という根本原因を特定。唯一の未検証の回避策`ts_parser_set_included_ranges()`
+について、Plan Modeで「実装前に使い捨てprobeで実機検証(Stage A)→結果次第で実装/記録して
+終了(Stage B)」という2段階計画を策定・承認を得た。実機probeの結果、**正しさ(複数行コメント・
+生文字列の途中から窓が始まると誤分類が広範囲に伝播)・再利用実効性(近接スクロールの80%
+重複窓ですら`reuse_node`が1件も観測されず`reuse=0`)のいずれも不成立と判明**。本番コード
+(`src/syntax/`・`src/render/`)は一切変更せず、`docs/issues/tree_sitter_incremental_parse_cost.md`
+に根本原因・probe実測結果・新たな検討候補(文脈プレフィックス緩和策、未検証)を追記した。
+**roadmap DoD「1文字入力後の増分解析≤50ms」(大規模文書)は引き続き未達のまま、現時点で
+有望な次の方向性は無い — 安易に再挑戦せず、issue docの「今後の検討候補」を踏まえて
+着手判断すること。**
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

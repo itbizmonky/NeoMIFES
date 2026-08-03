@@ -2438,4 +2438,26 @@ Phase 8d(`permissions`権限モデル、ADR-018)のコミット・タスク整�
 
 **次回:** Phase 8eはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
 
+## Session 74 (2026-08-03): 次のPhaseに進めよ → tree-sitter内部実装調査 — 根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証 (不採用)
+
+Phase 8e(showToastヘッドレス実装、ADR-019)完了・コミット済み後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(tree-sitter内部実装調査(50万行DoD再挑戦)/`registerCommand`実装/AppContainerサンドボックス/SQL文法対応)を提示し、**tree-sitter内部実装調査(推奨案)**が選ばれた — `docs/issues/tree_sitter_incremental_parse_cost.md`の「今後の検討候補」筆頭だった「tree-sitter自身のソースを読み根本原因を特定する」に対応する。
+
+**根本原因の特定(背景の`general-purpose`エージェント、vendored tree-sitter source `build/debug/_deps/tree-sitter-src/lib/src/{parser.c,subtree.c,tree.c,get_changed_ranges.c,stack.c,reusable_node.h}`を直接引用):** `ts_parser_parse()`のメインループ(`parser.c` 2127-2182、`do{ for(version...){ while(active) advance() } } while(version_count!=0)`)は呼び出しごとに文書の先頭からEOFまでオートマトンを歩くことが構造的に必須。個々のステップは`ts_parser__reuse_node()`(`parser.c` 753-836)で軽いが、ステップ数自体が「文書サイズ÷平均再利用チャンクサイズ」に比例するため、`TSInput.read()`がほぼ呼ばれなくても(Phase 7uが1回8192バイトしか読まなかったのに300ms超かかった理由の説明がこれで付く)、ループ自体のコストは消えない。`ts_tree_edit()`(`subtree.c` 633-786、O(edit depth)、実測0.02〜0.05msと整合)・木のバランシング(`parser.c` 1873-1928、再利用済み部分木を明示的にスキップ)はいずれも無関係と確認できた。これはtree-sitterの`ts_parser_parse()`アーキテクチャそのものの構造的限界であり、NeoMIFES側の使い方の誤りではないと確認できた。
+
+**唯一の未検証の回避策`ts_parser_set_included_ranges()`(`api.h` 241-267)について、Plan Mode(Explore agent不要・既存コード直読+専用Plan agent1件で設計検討)で2段階計画を策定・ユーザー承認を得た:** Stage A(本番コード変更ゼロ、使い捨てprobeで正しさ・再利用実効性・粗いタイミングを実機検証)→ Stage B(正: 検証成功なら`IncrementalParser::reparseRange()`への実装+新規ベンチマークで実証、負: 失敗なら`docs/issues/`へ記録して終了)。専用Plan agentが`ts_parser__has_included_range_difference()`(`parser.c` 740-806、`old_tree`と今回のparseの`included_ranges`差分に重なるノードは再利用不可)・`TSRange.start_point`/`end_point`がゼロ埋め不可(`lexer.c`実測)・既存コードの`widenLineRangeWithMargin()`が常に行境界に揃った窓を渡す既存保証、を事前に特定した。
+
+**Stage A実機probe(`probe_included_ranges.cpp`、`/MDd`、`tree-sitter.lib`+`tree-sitter-cpp-grammar.lib`へ直接リンク、スクラッチパッド上の使い捨てでコミットなし):** 合成C++文書(namespace包囲+ネスト深いif/for、複数行コメント・生文字列・6段ネストブロックを既知オフセットに注入、約338万バイト・4000クラス)に対し検証した結果:
+
+- **Q1(正しさ):** クリーンな境界・メソッド本体途中・深いネスト途中から始まる窓は軽微なズレのみ(境界近傍、ミスマッチ0〜6/1665〜1691)。**しかし複数行`/* */`コメント・生文字列リテラル(`R"(...)"`)の途中から窓が始まると、字句解析器の内部状態を引き継げず、その内容がコードとして誤解析され、誤分類が窓の広い範囲(ミスマッチ341〜344/340〜343、リーフ数自体が343→1249へ激増)に伝播した。**
+- **Q2(再利用の実効性):** 全文書解析→編集→窓1で解析(4.93ms)→(編集なしで)窓2(窓1と80%重複、近接スクロール想定、4.02ms)→(編集なしで)窓3(大ジャンプ、Ctrl+End相当、15.68ms)、をTSLoggerで`reuse_node`/`cant_reuse_node_*`集計。**本来もっとも再利用が働くはずの窓2(近接スクロール、編集なし)ですら`reuse_node`が1件も観測されず(3シナリオ全てreuse=0)、想定していた「重複部分は再利用される」という仮説が実測で覆った。**
+- **Q3(粗いタイミング):** 窓解析自体は今回の合成文書における全文書再解析(12.56ms)より高速(4〜16ms)だったが、Q2の通り再利用ではなく単に「窓の外を歩かない」ことの効果と考えられ、Q1の破綻により採否判断には無意味と判断した。
+
+**結論: Stage B(負) — `ts_parser_set_included_ranges()`を単一言語ファイルの任意窓(スクロール追従)へ適用する設計は不採用と判断し、本番コード(`src/syntax/`・`src/render/`)は一切変更しなかった。**
+
+**ドキュメント同期:**
+- `docs/issues/tree_sitter_incremental_parse_cost.md`に新セクション追記(根本原因の特定・Stage A実機probe結果の詳細な表・結論・新たな検討候補「文脈プレフィックス緩和策」(未検証)・完了条件チェックボックス2件をチェック)
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.64(完了記録)、§6推奨プロンプトを現状に合わせて更新
+
+**次回:** コミット1件(ドキュメントのみ)予定、pushはユーザーの明示指示待ち。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)/SQL文法のtree-sitter CLIビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。roadmap DoD「1文字入力後の増分解析≤50ms」(大規模文書)は引き続き未達のまま、現時点で有望な次の方向性は無い。
+
 <!-- 次セッションはここに追記 -->
