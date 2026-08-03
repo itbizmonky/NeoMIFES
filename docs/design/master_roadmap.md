@@ -241,7 +241,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 8c | Job Objectによるプラグイン資源制限 (`ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 | §8, §17.1 |
 | 8d | `permissions`権限モデル (自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 | §8, §17.1 |
 | 8e | showToast ヘッドレス実装 (`ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 | §8 |
-| 8f〜 | AppContainerサンドボックス / registerCommand / 大規模文書の性能DoD再挑戦 / SQL文法対応 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
+| 8f | registerCommand ヘッドレス実装 (`ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 | §8 |
+| 8g〜 | AppContainerサンドボックス / 大規模文書の性能DoD再挑戦 / SQL文法対応 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -1515,7 +1516,20 @@ typedef struct NeoMifesCoreApi {
 
 **実測による検証:** `tests/integration/plugin_toast_test.cpp`で、新規サンプル`toast_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`showToast`を呼び出し)がNULL関数ポインタ経由のクラッシュを起こさず、`ui::ToastState`が実際に更新されることをローカル実機(Debug/Release/ubsan全942件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
 
-**次候補 (Phase 8f〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
+**次候補 (Phase 8f〜):** ~~AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。~~ → tree-sitter内部実装調査(不採用と結論)を経て`registerCommand`実装が選ばれ、Phase 8fで完了(§8.12参照)。
+
+### 8.12 実装後の確定事項 (Phase 8f 完了、2026-08-03)
+
+`NeoMifesCoreApi::registerCommand`をヘッドレスな`ui::PluginCommandRegistry`状態層のみで実装した。詳細は[ADR-020](../decisions/ADR-020-plugin-register-command.md)参照。
+
+**実装した内容(§8.3のスケッチからの変更点):**
+- スケッチの`registerCommand(ctx, id, callback)`に`title`引数を追加した(`CommandDescriptor::title`が表示に必須の非オプショナルフィールドであるため、スケッチが`CommandDescriptor`確定前に書かれたための逸脱)。
+- SEH保護された遅延呼び出し機構は新規に書かず、Phase 8aの既存`invokePluginCallbackSafe`を無名namespaceから公開昇格して再利用した(コールバックシグネチャが`onLoad`/`onUnload`と完全に同じため)。
+- `ui::CommandPalette`への実行時登録API・`main.cpp`配線・プラグインunload時の登録済みコマンド自動クリーンアップは全て次サブフェーズへ延期した。`PluginHost`が今も`main.cpp`へ配線されていないため(Phase 8a〜8eと同じ「ヘッドレスのみ」方針)、実際にパレットへ供給する仕組みは今回は作らなかった。
+
+**実測による検証:** `tests/integration/plugin_command_test.cpp`で、新規サンプル`command_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつコマンドを登録し、後から実行されたコールバックが`showToast`を呼ぶ)の遅延呼び出しが正しく`ctx->coreApi`まで到達すること、および新規サンプル`crashing_command_plugin`(登録したコマンドのコールバックが意図的にクラッシュ)の実行が`load()`/`unload()`の呼び出しスタック外でもSEHトランポリンで隔離されることをローカル実機(Debug/Release/ubsan全956件green)で確認した。**プラグインunload後にstaleなコマンドを呼び出す自動テストは、ubsanプリセット(AddressSanitizer)が実際のヒープuse-after-freeを正しく検出・報告したため削除した** — ASanが本来の役目を正しく果たした結果であり、`registerCommand`実装の不具合ではない(詳細はADR-020参照)。
+
+**次候補 (Phase 8g〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
 
 ---
 
@@ -2352,7 +2366,7 @@ neomifes.showToast("Inserted!")
 - ~~Network 権限を要求するプラグイン全て~~ → 権限モデル(Phase 8d)が実装された後も、自己申告を信頼できないため引き続き全プラグインへ一律適用(ADR-018)
 - ~~メモリ・CPU 時間・ハンドル数の上限~~ → 実装したのは`ActiveProcessLimit=1`のみ。メモリ/CPU時間はプロセス全体(ホスト含む)を巻き込むため意図的に見送り、ハンドル数上限は該当するWin32 APIが存在しないと判明(詳細はADR-017)
 
-**レベル 3 (Phase 8f〜、将来検討):** Windows AppContainer で完全隔離
+**レベル 3 (Phase 8g〜、将来検討):** Windows AppContainer で完全隔離
 - Capability に基づく細粒度権限
 - ファイルシステムアクセスは Broker 経由
 - **Phase 8c着手前調査で判明: 既存の同一プロセス内`LoadLibraryW`アーキテクチャへ後付け不可能。別プロセス+IPC全面再設計(ADR-015が一度却下した規模)が前提となる。真に必要になった時点(マーケットプレース等で未検証サードパーティプラグインの実運用が具体化)で再評価する(ADR-015/016/017共通の再評価条件)。**

@@ -5,12 +5,24 @@
 #include <array>
 
 #include "neomifes/document/document.h"
+#include "neomifes/ui/plugin_command_registry.h"
 #include "neomifes/ui/toast_state.h"
 
 namespace neomifes::app {
 namespace {
 
 using document::Document;
+
+// registerCommand test helpers - the callback that (Phase 8f) proves a
+// registered command's deferred invocation reaches ctx->coreApi correctly.
+void recordingCommandCallback(NeoMifesPluginContext* ctx) {
+    if (ctx == nullptr || ctx->coreApi == nullptr || ctx->toastSink == nullptr) {
+        return;
+    }
+    ctx->coreApi->showToast(ctx->toastSink, L"ran");
+}
+
+void noopCommandCallback(NeoMifesPluginContext* /*ctx*/) {}
 
 TEST(PluginCoreApiBridgeTest, InsertTextInsertsAtTheGivenLineAndColumn) {
     Document doc;
@@ -195,6 +207,80 @@ TEST(PluginCoreApiBridgeTest, ShowToastIsANoOpWhenMessageIsNull) {
     neomifes::ui::ToastState toast;
     buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE)->showToast(toNeoMifesToastSink(toast), nullptr);
     EXPECT_FALSE(toast.isVisible());
+}
+
+TEST(PluginCoreApiBridgeTest, RegisterCommandAddsToTheRegistryEvenWithoutDocumentPermission) {
+    // NEOMIFES_PLUGIN_PERMISSION_NONE - registerCommand is never
+    // permission-gated (see plugin_sdk.h's registerCommand comment, Phase
+    // 8f), same reasoning as showToast above.
+    neomifes::ui::PluginCommandRegistry registry;
+    const NeoMifesCoreApi*              api = buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE);
+    NeoMifesPluginContext                ctx{};
+    ctx.coreApi         = api;
+    ctx.commandRegistry = toNeoMifesCommandRegistry(registry);
+
+    api->registerCommand(&ctx, L"sample.greet", L"Sample Greeting", &noopCommandCallback);
+
+    ASSERT_EQ(registry.commands().size(), 1U);
+    EXPECT_EQ(registry.commands()[0].id, u"sample.greet");
+    EXPECT_EQ(registry.commands()[0].title, u"Sample Greeting");
+}
+
+TEST(PluginCoreApiBridgeTest, RegisteredCommandsActionInvokesTheCallbackWithFullContext) {
+    // Proves the deferred action() closure genuinely reaches ctx->coreApi
+    // later, not just at registration time.
+    neomifes::ui::ToastState      toast;
+    neomifes::ui::PluginCommandRegistry registry;
+    const NeoMifesCoreApi*        api = buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE);
+    NeoMifesPluginContext          ctx{};
+    ctx.coreApi         = api;
+    ctx.toastSink       = toNeoMifesToastSink(toast);
+    ctx.commandRegistry = toNeoMifesCommandRegistry(registry);
+
+    api->registerCommand(&ctx, L"sample.greet", L"Sample Greeting", &recordingCommandCallback);
+    ASSERT_EQ(registry.commands().size(), 1U);
+
+    registry.commands()[0].action();
+    EXPECT_TRUE(toast.isVisible());
+    EXPECT_EQ(toast.message(), u"ran");
+}
+
+TEST(PluginCoreApiBridgeTest, RegisterCommandIsANoOpWhenCtxIsNull) {
+    buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE)
+        ->registerCommand(nullptr, L"sample.greet", L"Sample Greeting", &noopCommandCallback);
+}
+
+TEST(PluginCoreApiBridgeTest, RegisterCommandIsANoOpWhenCommandRegistryIsNull) {
+    NeoMifesPluginContext ctx{};
+    ctx.coreApi = buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE);
+    ctx.coreApi->registerCommand(&ctx, L"sample.greet", L"Sample Greeting", &noopCommandCallback);
+}
+
+TEST(PluginCoreApiBridgeTest, RegisterCommandIsANoOpWhenIdIsNull) {
+    neomifes::ui::PluginCommandRegistry registry;
+    NeoMifesPluginContext                ctx{};
+    ctx.coreApi         = buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE);
+    ctx.commandRegistry = toNeoMifesCommandRegistry(registry);
+    ctx.coreApi->registerCommand(&ctx, nullptr, L"Sample Greeting", &noopCommandCallback);
+    EXPECT_TRUE(registry.commands().empty());
+}
+
+TEST(PluginCoreApiBridgeTest, RegisterCommandIsANoOpWhenTitleIsNull) {
+    neomifes::ui::PluginCommandRegistry registry;
+    NeoMifesPluginContext                ctx{};
+    ctx.coreApi         = buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE);
+    ctx.commandRegistry = toNeoMifesCommandRegistry(registry);
+    ctx.coreApi->registerCommand(&ctx, L"sample.greet", nullptr, &noopCommandCallback);
+    EXPECT_TRUE(registry.commands().empty());
+}
+
+TEST(PluginCoreApiBridgeTest, RegisterCommandIsANoOpWhenCallbackIsNull) {
+    neomifes::ui::PluginCommandRegistry registry;
+    NeoMifesPluginContext                ctx{};
+    ctx.coreApi         = buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE);
+    ctx.commandRegistry = toNeoMifesCommandRegistry(registry);
+    ctx.coreApi->registerCommand(&ctx, L"sample.greet", L"Sample Greeting", nullptr);
+    EXPECT_TRUE(registry.commands().empty());
 }
 
 }  // namespace

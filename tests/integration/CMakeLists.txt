@@ -308,3 +308,40 @@ set_tests_properties(plugin_toast PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# plugin_command_test - loads the REAL built command_plugin/
+# crashing_command_plugin sample DLLs (Phase 8f, ADR-020) via
+# PluginHost::load(), passing a real ui::PluginCommandRegistry bound
+# through toNeoMifesCommandRegistry(). Proves NeoMifesCoreApi::
+# registerCommand's deferred callback (invoked LATER, outside load()'s own
+# call stack - simulating "the user ran the command from the palette")
+# reaches ctx->coreApi correctly, that a crash inside such a callback is
+# still SEH-isolated, and that invoking a stale entry after unload() does
+# not crash this test process (though it is documented UB, not guaranteed
+# safe - see plugin_sdk.h's threading-contract comment).
+add_executable(neomifes_plugin_command_test
+    plugin_command_test.cpp
+)
+
+target_link_libraries(neomifes_plugin_command_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::plugin
+        neomifes::ui
+        neomifes::app_input
+        GTest::gtest
+)
+
+set_target_properties(neomifes_plugin_command_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    plugin_command
+    COMMAND neomifes_plugin_command_test $<TARGET_FILE:command_plugin> $<TARGET_FILE:crashing_command_plugin>
+)
+
+set_tests_properties(plugin_command PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

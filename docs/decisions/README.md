@@ -25,6 +25,7 @@
 | [ADR-017](ADR-017-plugin-job-object-sandbox.md) | プラグインの資源制限は Windows Job Object の JOB_OBJECT_LIMIT_ACTIVE_PROCESS=1 のみを有効化し、メモリ/CPU時間制限と AppContainer 化は見送る | Accepted |
 | [ADR-018](ADR-018-plugin-permission-model.md) | プラグインの permissions は自己申告ビットフィールド + NULL 関数ポインタ・ゲートで実装し、マニフェスト検証・署名検証・確認ダイアログは見送る | Accepted |
 | [ADR-019](ADR-019-plugin-show-toast-headless.md) | NeoMifesCoreApi::showToast はヘッドレスな ui::ToastState 状態層のみ実装し、registerCommand と実UIウィジェットは延期する | Accepted |
+| [ADR-020](ADR-020-plugin-register-command.md) | NeoMifesCoreApi::registerCommand は既存SEHトランポリンを再利用したヘッドレスな ui::PluginCommandRegistry 状態層のみ実装し、CommandPalette への実配線とunload時自動クリーンアップは延期する | Accepted |
 
 ## 運用ルール
 

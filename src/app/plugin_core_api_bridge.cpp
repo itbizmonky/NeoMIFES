@@ -8,6 +8,9 @@
 
 #include "neomifes/document/document.h"
 #include "neomifes/document/text_pos.h"
+#include "neomifes/plugin/plugin_host.h"
+#include "neomifes/ui/command_descriptor.h"
+#include "neomifes/ui/plugin_command_registry.h"
 #include "neomifes/ui/toast_state.h"
 #include "neomifes/util/wchar_cast.h"
 
@@ -88,13 +91,42 @@ void showToastImpl(NeoMifesToastSink* sink, const wchar_t* message) {
     toToastState(sink).show(util::fromWstringView(std::wstring_view(message)));
 }
 
+// Both directions of the opaque-handle idiom confined to this file, same
+// pattern as toDocument()/toToastState() above (Phase 8f).
+ui::PluginCommandRegistry& toCommandRegistry(NeoMifesCommandRegistry* registry) noexcept {
+    return *reinterpret_cast<ui::PluginCommandRegistry*>(registry);
+}
+
+void registerCommandImpl(NeoMifesPluginContext* ctx, const wchar_t* id, const wchar_t* title,
+                          void (*callback)(NeoMifesPluginContext*)) {
+    if (ctx == nullptr || ctx->commandRegistry == nullptr || id == nullptr || title == nullptr ||
+        callback == nullptr) {
+        return;
+    }
+    toCommandRegistry(ctx->commandRegistry)
+        .registerCommand(ui::CommandDescriptor{
+            .id              = std::u16string(util::fromWstringView(std::wstring_view(id))),
+            .title           = std::u16string(util::fromWstringView(std::wstring_view(title))),
+            .keybindingLabel = u"",
+            .action =
+                [callback, ctx]() {
+                    bool crashed = false;
+                    neomifes::plugin::invokePluginCallbackSafe(callback, ctx, crashed);
+                    // Not surfaced further - no error-toast/log UI exists
+                    // yet for a command that crashed when run (see
+                    // plugin_sdk.h's threading-contract comment).
+                },
+        });
+}
+
 const NeoMifesCoreApi kFullCoreApi = {
-    .apiVersion   = NEOMIFES_CORE_API_VERSION,
-    .insertText   = &insertTextImpl,
-    .deleteRange  = &deleteRangeImpl,
-    .getLineCount = &getLineCountImpl,
-    .getLineText  = &getLineTextImpl,
-    .showToast    = &showToastImpl,
+    .apiVersion      = NEOMIFES_CORE_API_VERSION,
+    .insertText      = &insertTextImpl,
+    .deleteRange     = &deleteRangeImpl,
+    .getLineCount    = &getLineCountImpl,
+    .getLineText     = &getLineTextImpl,
+    .showToast       = &showToastImpl,
+    .registerCommand = &registerCommandImpl,
 };
 
 // Phase 8d: returned instead of kFullCoreApi when the plugin didn't declare
@@ -102,19 +134,20 @@ const NeoMifesCoreApi kFullCoreApi = {
 // are explicitly nullptr. A plugin calling e.g. ctx->coreApi->insertText(...)
 // anyway crashes on a null-pointer call, caught by PluginHost's existing
 // unconditional SEH trampoline (OnLoadCrashed) - see
-// plugins/samples/permission_denied_plugin/. showToast is deliberately
-// identical to kFullCoreApi's (Phase 8e: never permission-gated, see
-// plugin_sdk.h's showToast comment). Every field is listed explicitly (not
-// left to designated-initializer zero-fill) because clang-cl's
-// -Wmissing-designated-field-initializers (enabled under this repo's ubsan
-// preset, /WX) rejects the omitted-field form MSVC accepts.
+// plugins/samples/permission_denied_plugin/. showToast/registerCommand are
+// deliberately identical to kFullCoreApi's (Phase 8e/8f: never
+// permission-gated, see plugin_sdk.h's own comments). Every field is
+// listed explicitly (not left to designated-initializer zero-fill) because
+// clang-cl's -Wmissing-designated-field-initializers (enabled under this
+// repo's ubsan preset, /WX) rejects the omitted-field form MSVC accepts.
 const NeoMifesCoreApi kDocumentDeniedCoreApi = {
-    .apiVersion   = NEOMIFES_CORE_API_VERSION,
-    .insertText   = nullptr,
-    .deleteRange  = nullptr,
-    .getLineCount = nullptr,
-    .getLineText  = nullptr,
-    .showToast    = &showToastImpl,
+    .apiVersion      = NEOMIFES_CORE_API_VERSION,
+    .insertText      = nullptr,
+    .deleteRange     = nullptr,
+    .getLineCount    = nullptr,
+    .getLineText     = nullptr,
+    .showToast       = &showToastImpl,
+    .registerCommand = &registerCommandImpl,
 };
 
 }  // namespace
@@ -130,6 +163,10 @@ NeoMifesDocument* toNeoMifesDocument(document::Document& document) noexcept {
 
 NeoMifesToastSink* toNeoMifesToastSink(ui::ToastState& toastState) noexcept {
     return reinterpret_cast<NeoMifesToastSink*>(&toastState);
+}
+
+NeoMifesCommandRegistry* toNeoMifesCommandRegistry(ui::PluginCommandRegistry& registry) noexcept {
+    return reinterpret_cast<NeoMifesCommandRegistry*>(&registry);
 }
 
 }  // namespace neomifes::app

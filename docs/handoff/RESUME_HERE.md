@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-03 (Phase 8e完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(tree-sitter内部実装調査(50万行DoD再挑戦)/`registerCommand`実装/AppContainerサンドボックス/SQL文法対応)を提示し、**tree-sitter内部実装調査(推奨案)**が選ばれた。背景エージェントによるvendored tree-sitter source(`parser.c`等)の直接読解で、`ts_parser_parse()`のメインループが文書全体をオートマトンで歩くことが構造的に必須と判明(根本原因の特定)。唯一の未検証の回避策`ts_parser_set_included_ranges()`について、Plan Modeで「実装前に使い捨てprobeで実機検証する(Stage A)」→「結果次第で実装(Stage B正)/記録して終了(Stage B負)」という2段階計画を策定・ユーザー承認を得た。実機probe(`probe_included_ranges.cpp`、コミットなし)で検証した結果、**正しさ(複数行コメント/生文字列の途中から窓が始まると誤分類が広範囲に伝播)・再利用実効性(近接スクロールの80%重複窓ですら`reuse_node`が1件も観測されず`reuse=0`)のいずれも不成立と判明し、Stage B負(不採用・本番コード変更なし)と結論**。`docs/issues/tree_sitter_incremental_parse_cost.md`に根本原因の特定+probe実測結果+完了条件チェックを追記。§3.64参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま、次の有望な方向性は無し(issue doc「今後の検討候補」参照)
+> **最終更新:** 2026-08-03 (tree-sitter内部実装調査(不採用と結論)完了・コミット・push・CI green確認(run `30787211256`)後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで3候補(registerCommand実装/AppContainerサンドボックス/SQL文法対応)を提示し、**registerCommand実装(推奨案)**が選ばれた — ADR-019(Phase 8e)が延期した唯一の残項目。着手前調査(Explore agent+専用Plan agent)で、`ui::CommandPalette::create()`が`std::vector<CommandDescriptor>`を1回しか受け取れないこと、Phase 8aの既存SEHトランポリン(`invokePluginCallbackSafe`)が`registerCommand`のコールバックシグネチャと完全に同じ形で再利用可能なこと、`registerCommandImpl()`の実装案に実際のコンパイルエラー(`fromWstringView()`の`u16string_view`を`explicit`な`u16string`コンストラクタへdesignated initializer経由で暗黙変換しようとしていた)を実装前に検出したことが判明。新規`ui::PluginCommandRegistry`(ヘッダオンリー、既存`ui::CommandDescriptor`をそのまま再利用)を新設し、既存SEHトランポリンを公開昇格して再利用、`NEOMIFES_CORE_API_VERSION`を3へ引き上げ。新規サンプル`command_plugin`/`crashing_command_plugin`で遅延呼び出し+クラッシュ隔離を実機確認(Debug/Release/ubsan全956件green)。**実装中の発見:** 「unload後のstaleなコマンド呼び出しが安全か」を検証する統合テストを当初書いたが、ubsanプリセット(ASan)が実際のヒープuse-after-freeを正しく検出し確実に失敗した(ASanが本来の役目を果たした結果であり不具合ではない) — このテストは削除し、代わりに`plugin_sdk.h`のスレッド契約コメントへ「SEHは可能性を減らすが安全性を保証しない」という正確な記述を追加した。`ui::CommandPalette`への実配線・`main.cpp`配線・unload時自動クリーンアップは次サブフェーズへ延期。ADR-020起票。§3.65参照。
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -93,11 +93,12 @@
 | Phase 8a (プラグインエンジン 最小限PoC: C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 (push済み、CI green確認済み) |
 | Phase 7x (追加言語対応 バッチ4: PowerShell/Ini/Batch、個人メンテナ文法。SQL/VB/VBScriptは調査の上対象外) | ✅ 完了 (push済み、CI green確認済み) |
 | Phase 8b (`NeoMifesCoreApi`橋渡し実装: insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 (push済み、CI green確認済み) |
-| Phase 8c (Job Objectによるプラグイン資源制限: `ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.61参照) |
-| Phase 8d (`permissions`権限モデル: 自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.62参照) |
-| Phase 8e (showToast ヘッドレス実装: `ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.63参照) |
-| tree-sitter内部実装調査 (根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証) | ✅ 完了・**不採用と結論** (本番コード変更なし、issue doc更新のみコミット、§3.64参照) |
-| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / registerCommand / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 8c (Job Objectによるプラグイン資源制限: `ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 (push済み、CI green確認済み、§3.61参照) |
+| Phase 8d (`permissions`権限モデル: 自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 (push済み、CI green確認済み、§3.62参照) |
+| Phase 8e (showToast ヘッドレス実装: `ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 (push済み、CI green確認済み、§3.63参照) |
+| tree-sitter内部実装調査 (根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証) | ✅ 完了・**不採用と結論** (本番コード変更なし、push済み・CI green確認済み(run `30787211256`)、§3.64参照) |
+| Phase 8f (registerCommand ヘッドレス実装: `ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.65参照) |
+| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1966,7 +1967,43 @@ Phase 8e完了後、ユーザーから「次のPhaseに進め」と指示され�
 - [x] 検証結果に基づき不採用と判断、issue docへ記録
 - [ ] roadmap §7.11 DoD「1文字入力後の増分解析≤50ms」(大規模文書)の達成 — 引き続き未達、有望な次の方向性は現時点で無し
 
-**コミット1件(ドキュメントのみ)、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+**コミット1件(ドキュメントのみ)、push済み・CI green確認済み(run `30787211256`)。**
+
+### 3.65 Phase 8f (registerCommand ヘッドレス実装) 完了記録 (2026-08-03)
+
+tree-sitter内部実装調査完了・コミット・push・CI green確認後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで3候補(registerCommand実装/AppContainerサンドボックス/SQL文法対応)を提示し、**registerCommand実装(推奨案)**が選ばれた — ADR-019(Phase 8e)が意図的に延期した唯一の残項目であり、ADR-019自身が「次に着手すべきタイミング」として名指しした条件(`ui::CommandPalette`への実行時登録API相当の設計・SEH保護された遅延呼び出し機構の設計確定)に直接対応する。
+
+**着手前調査(Explore agent + 専用Plan agentによる詳細検証、CLAUDE.mdルール3)で判明した重大な事実:** `ui::CommandPalette::create()`は`std::vector<CommandDescriptor>`を1回だけ受け取り、以後追加する手段が無い。Phase 8aの既存SEHトランポリン(`invokePluginCallbackSafe`)のシグネチャが`registerCommand`のコールバックと完全に同じ形(`void (*)(NeoMifesPluginContext*)`)であることが判明し、新規トランポリンを書かず公開昇格して再利用できると分かった。**Plan agentのレビューで、`registerCommandImpl()`実装案に実際のコンパイルエラーを実装前に検出した**(`util::fromWstringView()`が返す`u16string_view`を`CommandDescriptor::id`/`title`(所有権を持つ`u16string`)へdesignated initializer経由で暗黙変換しようとしていたが、`std::basic_string`の`StringViewLike`コンストラクタは`explicit`のためcopy-initializationでは使えない — 既存コード6箇所が全て明示的な`std::u16string(...)`直接初期化を踏襲していたことも確認した)。
+
+**設計方針の要点(詳細は[ADR-020](../decisions/ADR-020-plugin-register-command.md)参照):**
+- 新規`ui::PluginCommandRegistry`(`src/ui/include/neomifes/ui/plugin_command_registry.h`、ヘッダオンリー)。既存`ui::CommandDescriptor`をそのまま格納する(新規エントリ型を発明しない、将来`ui::CommandPalette`への実配線が容易になる)。重複id登録は許容する(既存`CommandPalette::m_commands`自体に重複排除ロジックが無いことに合わせた意図的な単純化)。
+- SEH保護された遅延呼び出し機構は新規に書かず、`invokePluginCallbackSafe`(Phase 8a、`plugin_host.cpp`の無名namespace内)を`neomifes::plugin`名前空間の公開関数へ昇格して再利用した(本体は無変更)。
+- `registerCommand`のシグネチャはroadmap §8.3スケッチから`title`引数を追加して逸脱した(`CommandDescriptor::title`が表示に必須のため)。`showToast(sink, message)`とは逆に`ctx`を第一引数に取る(`callback`は後で`ctx`と共に再実行される必要があるため)。
+- `registerCommand`は権限ゲートしない(常に非NULL)。`showToast`と同じ論法 — 登録自体は低リスク、実際の権限境界は`callback`が後で`ctx->coreApi`を呼ぶ時点でそのまま働く。
+- `NEOMIFES_CORE_API_VERSION`を`2u`→`3u`へ引き上げた。`PluginHost::load()`に`commandRegistry`パラメータ追加(既存の`document`/`toastSink`と同じ扱い)。`neomifes_app_input`が新たに`neomifes::plugin`をPRIVATEリンクする。
+
+**実装:** `include/neomifes/plugin_sdk.h`(`NeoMifesPluginContext`前方宣言・`NeoMifesCommandRegistry`不透明ハンドル・`registerCommand`・`commandRegistry`・バージョン更新・スレッド契約コメント拡張)、`src/plugin/include/neomifes/plugin/plugin_host.h`/`.cpp`(`invokePluginCallbackSafe`公開昇格・`commandRegistry`パラメータ)、`src/app/include/neomifes/app/plugin_core_api_bridge.h`/`.cpp`(`toNeoMifesCommandRegistry()`+`registerCommandImpl()`)、`src/app/CMakeLists.txt`(`neomifes::plugin`をPRIVATE追加)、新規`plugins/samples/command_plugin/`+`plugins/samples/crashing_command_plugin/`、`tests/unit/ui_plugin_command_registry_test.cpp`(新規)、`tests/unit/app_plugin_core_api_bridge_test.cpp`(新規7テスト)、`tests/integration/plugin_command_test.cpp`(新規)。
+
+**実測検証:** `PluginCommandTest.RegisterCommandAddsToTheRegistryAndDeferredInvocationReachesCoreApi`で、`command_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`宣言)が登録したコマンドを後から実行(`registry.commands()[0].action()`)した際に`ctx->coreApi->showToast`まで正しく到達することを実機確認。`PluginCommandTest.InvokingACrashingRegisteredCommandDoesNotCrashTheHostProcess`で、`crashing_command_plugin`の登録済みコマンド実行中のクラッシュが`load()`/`unload()`の呼び出しスタック外でもSEHトランポリンで隔離されることを実機確認(Debug/Release/ubsan全956件green)。
+
+**重要な発見(実装中):** 当初「プラグインunload後にstaleな登録済みコマンドを呼んでもプロセスが生存すること」を検証する統合テストを書いたが、`ubsan`プリセット(AddressSanitizer)で実行すると確実に失敗した。`PluginHost::unload()`が`NeoMifesPluginContext`を実際に解放するため、staleな`action()`呼び出しは真のヒープuse-after-freeであり、**ASanがこれを正しく検出・報告した** — ASanが本来の役目を果たした結果であり`registerCommand`実装の不具合ではない。Debug/Release環境では解放領域が未再利用のため「たまたま」再現せずテストが通ってしまう、ビルド構成依存の不安定なテストになると判明したため、このテストケースは削除し、代わりに`plugin_sdk.h`のスレッド契約コメントへ「SEHトランポリンはクラッシュの可能性を減らすが安全性を保証しない」という正確な記述を追加するに留めた。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全956件green**。
+- clang-tidy: `src/plugin/`/`src/app/`/`src/ui/`/`plugins/samples/command_plugin/`/`plugins/samples/crashing_command_plugin/`配下は新規警告0(`crashing_command_plugin.cpp`の`clang-analyzer-core.NullDereference`は既存`crashing_plugin.cpp`と全く同じ意図的パターン、新規カテゴリではない)。既存パターンの警告(非const globalパスvar・整数リテラル大文字suffix)はPhase 8a〜8eから継続する既知の許容パターン。
+- **実アプリ視覚確認は不要**(Phase 8a〜8eと同じ「main.cppに一切触れないヘッドレス変更」)。
+
+**完了条件:**
+- [x] `ui::PluginCommandRegistry`実装
+- [x] `NeoMifesCoreApi::registerCommand`実装(権限ゲート無し、既存SEHトランポリン再利用)
+- [x] `PluginHost::load()`への`commandRegistry`パラメータ追加
+- [x] `command_plugin`/`crashing_command_plugin`サンプル新設+実機往復・クラッシュ隔離の実測検証
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ADR-020起票
+
+**スコープ外(意図的、後続サブフェーズへ):** `ui::CommandPalette`への実配線、`src/app/main.cpp`への配線、プラグインunload時の登録済みコマンド自動クリーンアップ(所有権追跡機構が必要)、プラグイン自身が能動的に呼べる`unregisterCommand`相当のCoreApi関数、コマンドの重複id検出・拒否。
+
+**Phase 8fはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
 ---
 
@@ -2289,6 +2326,26 @@ sourceの直接読解で、`ts_parser_parse()`のメインループが文書全�
 **roadmap DoD「1文字入力後の増分解析≤50ms」(大規模文書)は引き続き未達のまま、現時点で
 有望な次の方向性は無い — 安易に再挑戦せず、issue docの「今後の検討候補」を踏まえて
 着手判断すること。**
+
+**続けてPhase 8f(registerCommandヘッドレス実装)を実装・完了した(§3.65参照)。** ADR-019
+(Phase 8e)が延期した唯一の残項目。新規`ui::PluginCommandRegistry`(ヘッダオンリー、既存
+`ui::CommandDescriptor`をそのまま格納)を新設し、Phase 8aの既存SEHトランポリン
+(`invokePluginCallbackSafe`)を公開昇格して再利用した(コールバックシグネチャが
+`onLoad`/`onUnload`と完全に同じ形だったため新規トランポリンは書いていない)。Plan agent
+のレビューで`registerCommandImpl()`実装案の実際のコンパイルエラー(`fromWstringView()`の
+`u16string_view`を`explicit`な`u16string`へdesignated initializer経由で暗黙変換しようと
+していた)を実装前に検出・修正した。`registerCommand`は`showToast`と同じ論法で権限ゲート
+しない。新規サンプル`command_plugin`/`crashing_command_plugin`で、遅延呼び出しが
+`ctx->coreApi`まで正しく到達すること・`load()`/`unload()`外で起きるクラッシュもSEH
+隔離されることを実機確認した(Debug/Release/ubsan全956件green)。**重要な発見:**
+「unload後のstaleなコマンド呼び出しが安全か」を検証する統合テストを当初書いたが、ubsan
+プリセット(AddressSanitizer)が実際のヒープuse-after-freeを正しく検出し確実に失敗した
+(ASanが本来の役目を果たした結果であり実装の不具合ではない) — このテストは削除し、
+`plugin_sdk.h`のスレッド契約コメントへ「SEHは可能性を減らすが安全性を保証しない」という
+正確な記述を追加するに留めた。`ui::CommandPalette`への実配線・`main.cpp`配線・unload時
+自動クリーンアップは次サブフェーズへ延期。**Phase 8fはコミット済み、pushはユーザーの
+明示指示待ち。次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/
+SQL文法のtree-sitter CLIビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。**
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

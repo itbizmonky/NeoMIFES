@@ -36,6 +36,12 @@ target_link_libraries(neomifes_app_input
     PRIVATE
         neomifes::compile_options
         neomifes::util
+        # plugin_core_api_bridge.cpp (Phase 8f) calls
+        # neomifes::plugin::invokePluginCallbackSafe() to run a
+        # registerCommand callback - only used inside the .cpp (never in
+        # plugin_core_api_bridge.h's public signatures), so PRIVATE, same
+        # reasoning as neomifes::util above.
+        neomifes::plugin
 )
 
 set_target_properties(neomifes_app_input PROPERTIES

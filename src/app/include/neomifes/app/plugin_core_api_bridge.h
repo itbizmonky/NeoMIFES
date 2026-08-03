@@ -26,6 +26,7 @@ class Document;
 
 namespace neomifes::ui {
 class ToastState;
+class PluginCommandRegistry;
 }  // namespace neomifes::ui
 
 namespace neomifes::app {
@@ -57,5 +58,10 @@ namespace neomifes::app {
 // NeoMifesToastSink/ui::ToastState (Phase 8e). Pass the result to
 // PluginHost::load()'s `toastSink` parameter.
 [[nodiscard]] NeoMifesToastSink* toNeoMifesToastSink(ui::ToastState& toastState) noexcept;
+
+// Same opaque-handle idiom as toNeoMifesDocument() above, for
+// NeoMifesCommandRegistry/ui::PluginCommandRegistry (Phase 8f). Pass the
+// result to PluginHost::load()'s `commandRegistry` parameter.
+[[nodiscard]] NeoMifesCommandRegistry* toNeoMifesCommandRegistry(ui::PluginCommandRegistry& registry) noexcept;
 
 }  // namespace neomifes::app

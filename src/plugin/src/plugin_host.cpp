@@ -6,8 +6,6 @@
 
 namespace neomifes::plugin {
 
-namespace {
-
 // SEH trampoline around a single plugin callback invocation. Unlike
 // OriginalBuffer's page-fault-specific filter (EXCEPTION_IN_PAGE_ERROR
 // only - see original_buffer.cpp), this filter is UNCONDITIONAL
@@ -21,7 +19,9 @@ namespace {
 // restriction on __try/__except mixed with object unwinding) - `fn`/`ctx`
 // are raw pointers and `crashed` is a caller-owned out-parameter, so this
 // is trivially satisfied. Free function (not a PluginHost member) since it
-// needs no PluginHost internals.
+// needs no PluginHost internals - public (Phase 8f, see plugin_host.h) so
+// callers invoking a plugin callback OUTSIDE the load()/unload() window
+// (e.g. a registerCommand callback) can reuse it.
 void invokePluginCallbackSafe(void (*fn)(NeoMifesPluginContext*), NeoMifesPluginContext* ctx,
                               bool& crashed) noexcept {
     crashed = false;
@@ -31,8 +31,6 @@ void invokePluginCallbackSafe(void (*fn)(NeoMifesPluginContext*), NeoMifesPlugin
         crashed = true;
     }
 }
-
-}  // namespace
 
 bool isApiVersionCompatible(unsigned int reportedApiVersion) noexcept {
     return reportedApiVersion == NEOMIFES_PLUGIN_API_VERSION;
@@ -60,7 +58,8 @@ PluginHost& PluginHost::operator=(PluginHost&& other) noexcept {
 }
 
 PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath, CoreApiFactory coreApiFactory,
-                                       NeoMifesDocument* document, NeoMifesToastSink* toastSink) {
+                                       NeoMifesDocument* document, NeoMifesToastSink* toastSink,
+                                       NeoMifesCommandRegistry* commandRegistry) {
     if (isLoaded()) {
         return std::unexpected(PluginError{.code = PluginErrorCode::AlreadyLoaded});
     }
@@ -103,11 +102,12 @@ PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath, Core
     const NeoMifesCoreApi* coreApi =
         coreApiFactory != nullptr ? coreApiFactory(info->permissions) : nullptr;
 
-    auto context        = std::make_unique<NeoMifesPluginContext>();
-    context->userData  = nullptr;
-    context->coreApi   = coreApi;
-    context->document  = document;
-    context->toastSink = toastSink;
+    auto context               = std::make_unique<NeoMifesPluginContext>();
+    context->userData         = nullptr;
+    context->coreApi          = coreApi;
+    context->document         = document;
+    context->toastSink        = toastSink;
+    context->commandRegistry  = commandRegistry;
 
     bool crashed = false;
     invokePluginCallbackSafe(vtable->onLoad, context.get(), crashed);

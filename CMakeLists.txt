@@ -117,6 +117,14 @@ if(NEOMIFES_BUILD_TESTS)
     # PERMISSION_DOCUMENT. tests/integration/plugin_toast_test.cpp is its
     # only consumer, same "headless-only" reasoning as above.
     add_subdirectory(plugins/samples/toast_plugin)
+    # command_plugin/crashing_command_plugin (Phase 8f, ADR-020) - prove
+    # NeoMifesCoreApi::registerCommand's deferred SEH-protected invocation
+    # round-trips correctly (command_plugin) and safely isolates a crash
+    # invoked outside PluginHost::load()'s own call stack
+    # (crashing_command_plugin). tests/integration/plugin_command_test.cpp
+    # is their only consumer, same "headless-only" reasoning as above.
+    add_subdirectory(plugins/samples/command_plugin)
+    add_subdirectory(plugins/samples/crashing_command_plugin)
     add_subdirectory(tests)
 endif()
 

@@ -2460,4 +2460,37 @@ Phase 8e(showToastヘッドレス実装、ADR-019)完了・コミット済み後
 
 **次回:** コミット1件(ドキュメントのみ)予定、pushはユーザーの明示指示待ち。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)/SQL文法のtree-sitter CLIビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。roadmap DoD「1文字入力後の増分解析≤50ms」(大規模文書)は引き続き未達のまま、現時点で有望な次の方向性は無い。
 
+**追記(同セッション内):** 「pushせよ」の指示で、蓄積していたPhase 8b〜8e+本ドキュメントコミット計5件を`git push origin main`で送信。CI(run `30787211256`)success確認済み(2h1m11s)。
+
+## Session 75 (2026-08-03): 次のPhaseに進めよ → Phase 8f — registerCommand ヘッドレス実装 (ADR-020)
+
+tree-sitter内部実装調査完了・コミット・push・CI green確認後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで3候補(registerCommand実装/AppContainerサンドボックス/SQL文法対応)を提示し、**registerCommand実装(推奨案)**が選ばれた — ADR-019(Phase 8e)が意図的に延期した唯一の残項目であり、ADR-019自身が「次に着手すべきタイミング」として名指しした条件(`ui::CommandPalette`への実行時登録API相当の設計・SEH保護された遅延呼び出し機構の設計確定)に直接対応する。
+
+**Plan Mode:** Explore agent 1体で`ui::CommandPalette`/`ui::CommandDescriptor`/`PluginHost`/`plugin_sdk.h`/`plugin_core_api_bridge`のレイヤリングを調査し、`CommandPalette::create()`が`std::vector<CommandDescriptor>`を1回だけ受け取り以後追加する手段が無いこと、Phase 8aの既存SEHトランポリン(`invokePluginCallbackSafe`)のシグネチャが`registerCommand`のコールバックと完全に同じ形であることを確認。続けて専用Plan agentへ設計検証を依頼し、**`registerCommandImpl()`実装案に実際のコンパイルエラーがあることを実装前に検出した**(`util::fromWstringView()`が返す`u16string_view`を`CommandDescriptor::id`/`title`(所有権を持つ`u16string`)へdesignated initializer経由で暗黙変換しようとしていたが、`std::basic_string`の`StringViewLike`コンストラクタは`explicit`のためcopy-initializationでは使えない — 既存コード6箇所(`find_bar.cpp`/`command_palette.cpp`/`goto_line_bar.cpp`/`grep_bar.cpp`/`codepage_convert.cpp`×2)が全て明示的な`std::u16string(...)`直接初期化を踏襲していたことも確認)。また`NeoMifesCoreApi`が`NeoMifesPluginContext*`を引数に取る初のケースであり、`NeoMifesPluginContext`の前方宣言が`plugin_sdk.h`に必要という機械的だが必須の追加漏れも検出した。
+
+**設計方針の要点(詳細は[ADR-020](../decisions/ADR-020-plugin-register-command.md)参照):**
+- 新規`ui::PluginCommandRegistry`(`src/ui/include/neomifes/ui/plugin_command_registry.h`、ヘッダオンリー、Phase 8eの`ui::ToastState`と同じ純粋状態クラスパターン)。既存`ui::CommandDescriptor`をそのまま格納する — 新規エントリ型を発明せず、将来`ui::CommandPalette`への実配線が`registry.commands()`をそのまま供給するだけで済むようにした。重複id登録は許容する(既存`CommandPalette::m_commands`自体に重複排除ロジックが無いことに合わせた意図的な単純化)。
+- SEH保護された遅延呼び出し機構は新規に書かず、`invokePluginCallbackSafe`(Phase 8a、`plugin_host.cpp`の無名namespace内)を`neomifes::plugin`名前空間の公開関数へ昇格して再利用した(本体は無変更)。`registerCommandImpl()`が構築するラムダは`callback`/`ctx`のみを値キャプチャし、ラムダ自体には`__try`/`__except`を書かないためMSVCの制約に抵触しない。
+- `registerCommand`のシグネチャはroadmap §8.3スケッチから`title`引数を追加して逸脱した。`showToast(sink, message)`とは逆に`ctx`を第一引数に取る(`callback`は後で`ctx`と共に再実行される必要があるため)。
+- `registerCommand`は権限ゲートしない(常に非NULL)。`showToast`と同じ論法 — 登録自体は低リスク、実際の権限境界は`callback`が後で`ctx->coreApi`を呼ぶ時点でそのまま働く。
+- プラグインunload時の登録済みコマンド自動クリーンアップは意図的にスコープ外とした。所有権追跡機構が必要だが、`main.cpp`が今も`PluginHost`を一切使っておらず「複数プラグイン同時ロード/アンロード」という具体的要求がまだ無い状態で先行実装するのはCLAUDE.mdルール3/10に反すると判断した。
+
+**実装:** `include/neomifes/plugin_sdk.h`(`NeoMifesPluginContext`前方宣言・`NeoMifesCommandRegistry`不透明ハンドル・`registerCommand`・`commandRegistry`・バージョン`3u`更新・スレッド契約コメント拡張)、`src/plugin/include/neomifes/plugin/plugin_host.h`/`.cpp`(`invokePluginCallbackSafe`公開昇格・`commandRegistry`パラメータ)、`src/app/include/neomifes/app/plugin_core_api_bridge.h`/`.cpp`(`toNeoMifesCommandRegistry()`+`registerCommandImpl()`)、`src/app/CMakeLists.txt`(`neomifes::plugin`をPRIVATE追加)、新規`plugins/samples/command_plugin/`+`plugins/samples/crashing_command_plugin/`、`tests/unit/ui_plugin_command_registry_test.cpp`(新規)、`tests/unit/app_plugin_core_api_bridge_test.cpp`(新規7テスト)、`tests/integration/plugin_command_test.cpp`(新規)。
+
+**実測検証:** `command_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`宣言)が登録したコマンドを後から実行した際に`ctx->coreApi->showToast`まで正しく到達すること、`crashing_command_plugin`の登録済みコマンド実行中のクラッシュが`load()`/`unload()`の呼び出しスタック外でもSEHトランポリンで隔離されることをローカル実機(Debug/Release/ubsan全956件green)で確認した。
+
+**重要な発見(実装中):** 当初「プラグインunload後にstaleな登録済みコマンドを呼んでもプロセスが生存すること」を検証する統合テストを書いたが、`ubsan`プリセット(AddressSanitizer)で実行すると確実に失敗した。`PluginHost::unload()`が`NeoMifesPluginContext`を実際に解放するため、staleな`action()`呼び出しは真のヒープuse-after-freeであり、**ASanがこれを正しく検出・報告した** — ASanが本来の役目を果たした結果であり実装の不具合ではない。Debug/Release環境では解放領域が未再利用のため「たまたま」再現せずテストが通ってしまう、ビルド構成依存の不安定なテストになると判明したため、このテストケースは削除し、代わりに`plugin_sdk.h`のスレッド契約コメントへ「SEHトランポリンはクラッシュの可能性を減らすが安全性を保証しない」という正確な記述を追加するに留めた。
+
+**検証:** ローカル**Debug/Release/ubsan全956件green**。`src/plugin/`/`src/app/`/`src/ui/`/`plugins/samples/command_plugin/`/`plugins/samples/crashing_command_plugin/`配下は新規clang-tidy警告0(`crashing_command_plugin.cpp`の`clang-analyzer-core.NullDereference`は既存`crashing_plugin.cpp`と全く同じ意図的パターン)。実アプリ視覚確認は不要(main.cppに一切触れないヘッドレス変更、Phase 8a〜8eと同じ方針)。
+
+**ADR-020起票:** `docs/decisions/ADR-020-plugin-register-command.md`(`title`引数追加の逸脱・`ctx`第一引数の非対称性・既存SEHトランポリン再利用の理由・権限ゲートしない理由・unload時自動クリーンアップを見送った理由とSEHの正確な安全性の位置づけを記載)。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「8f ✅完了」行を追加(次候補「8g〜」)、§8に新規§8.12「実装後の確定事項」、§17.1レベル3の参照フェーズ番号を更新
+- `docs/design/detailed_design.md`に新規§8.9「registerCommandヘッドレス実装」を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表(Phase 8c〜8e/tree-sitter調査の「push済み」ステータスも合わせて訂正)、新規§3.65(完了記録)、§6推奨プロンプトを現状に合わせて更新
+- `docs/decisions/README.md`にADR-020の行を追加
+
+**次回:** Phase 8fはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/SQL文法のtree-sitter CLIビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+
 <!-- 次セッションはここに追記 -->

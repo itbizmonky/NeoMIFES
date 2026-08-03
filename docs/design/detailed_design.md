@@ -1704,7 +1704,40 @@ private:
 
 **実測検証:** 新規サンプル`plugins/samples/toast_plugin/`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`showToast`を呼び出し)を用いた`tests/integration/plugin_toast_test.cpp`で、権限が無くても`showToast`が機能し`ui::ToastState`が実際に更新されることをローカル実機(Debug/Release/ubsan全942件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
 
-**既知のギャップ・将来の再評価:** `registerCommand`(`ui::CommandPalette`に実行時登録APIが用意された時点、およびSEH保護された遅延コールバック呼び出し機構の設計が固まった時点)、実Win32トーストウィジェット+`main.cpp`配線(`PluginHost`が初めて`main.cpp`へ配線されるサブフェーズ、まだ日程未定)。
+**既知のギャップ・将来の再評価:** `registerCommand`はPhase 8fで実装済み(§8.9参照)。残るギャップは実Win32トーストウィジェット+`main.cpp`配線(`PluginHost`が初めて`main.cpp`へ配線されるサブフェーズ、まだ日程未定)。
+
+### 8.9 registerCommand ヘッドレス実装 (Phase 8f実装)
+
+`NeoMifesCoreApi::registerCommand`をヘッドレスな`ui::PluginCommandRegistry`状態層のみで実装した。詳細は[ADR-020](../decisions/ADR-020-plugin-register-command.md)参照。
+
+**新規`ui::PluginCommandRegistry` (`src/ui/include/neomifes/ui/plugin_command_registry.h`、ヘッダオンリー):**
+```cpp
+class PluginCommandRegistry {
+public:
+    void registerCommand(CommandDescriptor descriptor);  // append, no de-dup
+    void unregisterCommand(std::u16string_view id) noexcept;  // removes ALL matching id
+    [[nodiscard]] const std::vector<CommandDescriptor>& commands() const noexcept;
+private:
+    std::vector<CommandDescriptor> m_commands;
+};
+```
+既存の`ui::CommandDescriptor`(`ui::CommandPalette`自身が保持する型と全く同じ)をそのまま格納する設計にした。Win32/plugin_sdk非依存(Phase 8eの`ui::ToastState`と同じ純粋状態クラスパターン)。将来`ui::CommandPalette`への実配線サブフェーズが来た際、`registry.commands()`をそのまま供給するだけで済む。
+
+**SEH保護された遅延呼び出し機構は新規に作らず、Phase 8aの既存トランポリンを再利用した。** `invokePluginCallbackSafe`(`plugin_host.cpp`)を無名namespaceから`neomifes::plugin`名前空間の公開関数へ昇格(本体は無変更) — シグネチャ(`void (*fn)(NeoMifesPluginContext*)`)が`registerCommand`のコールバックと完全に同じ形だったため。`plugin_core_api_bridge.cpp`の`registerCommandImpl()`が構築する`CommandDescriptor::action`ラムダは`callback`/`ctx`のみを値キャプチャし、`invokePluginCallbackSafe(callback, ctx, crashed)`を呼ぶだけ — ラムダ自体には`__try`/`__except`を書かないため、MSVCの制約(`__try`/`__except`と非トリビアルデストラクタを持つローカルの同居禁止)に抵触しない。
+
+**`registerCommand`のシグネチャはroadmap §8.3スケッチから`title`引数を追加して逸脱した。** `CommandDescriptor::title`が表示に必須の非オプショナルフィールドであるため。`showToast(sink, message)`とは逆に`ctx`を第一引数に取る(`registerCommand(ctx, id, title, callback)`) — `callback`は後で`ctx`と共に再実行される必要があり、`ctx`自体を保持しなければ他の能力面(`coreApi`/`document`/`toastSink`)へ一切アクセスできないコールバックになってしまうため。
+
+**`registerCommand`は権限ゲートしない(常に非NULL)。** `showToast`と同じ論法 — コマンド登録自体はデータの読み書きを一切伴わず、実際の権限境界は登録された`callback`が後で`ctx->coreApi`(既に権限ゲート済み)を呼ぶ時点でそのまま働く。
+
+**`NEOMIFES_CORE_API_VERSION`を`2u`→`3u`へ引き上げた。** `registerCommand`フィールド追加に伴う意図通りのインクリメント。
+
+**`PluginHost::load()`に`NeoMifesCommandRegistry* commandRegistry = nullptr`を追加した(既存の`document`/`toastSink`パラメータと全く同じ扱い)。** 新規不透明ハンドル`NeoMifesCommandRegistry`は`NeoMifesToastSink`と同じパターン。`neomifes_app_input`が新たに`neomifes::plugin`をPRIVATEリンクする(`registerCommandImpl()`が`invokePluginCallbackSafe`のシンボル解決に必要、公開ヘッダには一切現れないためPRIVATEで十分)。
+
+**実測検証:** 新規サンプル`plugins/samples/command_plugin/`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつコマンドを登録、後から実行されたコールバックが`showToast`を呼ぶ)と`plugins/samples/crashing_command_plugin/`(登録したコマンドのコールバックが意図的にクラッシュ)を用いた`tests/integration/plugin_command_test.cpp`で、遅延呼び出しが`ctx->coreApi`まで正しく到達すること、および`load()`/`unload()`の呼び出しスタック外で起きるクラッシュもSEHトランポリンで隔離されることをローカル実機(Debug/Release/ubsan全956件green)で確認した。
+
+**重要な設計知見(実装中に判明):** プラグインunload後に古い(stale)登録済みコマンドを呼び出すシナリオを検証する統合テストを当初作成したが、`ubsan`プリセット(AddressSanitizer)で実行すると確実に失敗した — `PluginHost::unload()`が`NeoMifesPluginContext`を実際に解放するため、staleな`action()`を呼ぶことは真のヒープuse-after-freeであり、ASanがこれを正しく検出・報告したことが原因。これはASanが本来の役目を果たした結果であり実装の不具合ではないが、CLAUDE.mdの品質ゲート(ASan/UBSanクラッシュ0)を満たすにはASanの検出を覆い隠すことになりかねないため、このテストは削除した。「unload後のstale呼び出しは未定義動作であり、SEHトランポリンはクラッシュの可能性を減らすが安全性を保証しない」という事実は`plugin_sdk.h`のスレッド契約コメントに明記するに留めた(詳細はADR-020)。
+
+**既知のギャップ・将来の再評価:** `ui::CommandPalette`への実行時登録配線・`main.cpp`配線・プラグインunload時の登録済みコマンド自動クリーンアップ(所有権追跡機構が必要、`PluginHost`が`main.cpp`へ配線され「複数プラグイン同時ロード」が具体的要求になった時点で再評価)。
 
 ---
 
