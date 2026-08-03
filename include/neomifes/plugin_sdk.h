@@ -2,7 +2,8 @@
 
 // NeoMIFES Plugin SDK - C ABI header (Phase 8a: minimal plugin host PoC;
 // Phase 8b: NeoMifesCoreApi document-manipulation bridge; Phase 8d:
-// self-declared permissions bitfield).
+// self-declared permissions bitfield; Phase 8e: showToast, headless -
+// registerCommand deferred, see ADR-019).
 //
 // STABLE, DISTRIBUTABLE contract between NeoMIFES.exe and third-party
 // plugin DLLs. Zero dependencies on any other NeoMIFES header (src/**) - a
@@ -51,12 +52,14 @@ extern "C" {
 // CoreApi surface below (insertText/deleteRange/getLineCount/getLineText
 // today, registerCommand/showToast/network functions in later sub-phases
 // per master_roadmap.md sec.8.3) is expected to grow on its own schedule,
-// separate from onLoad/onUnload/NeoMifesPluginInfo compatibility. Nothing
-// varies at version 1 yet (same as NEOMIFES_PLUGIN_API_VERSION when it was
-// first introduced - see ADR-015's "apiVersion strategy") - it exists so a
-// future plugin can read ctx->coreApi->apiVersion defensively before
-// calling a function that might not exist in an older host.
-#define NEOMIFES_CORE_API_VERSION 1u
+// separate from onLoad/onUnload/NeoMifesPluginInfo compatibility. It
+// exists so a future plugin can read ctx->coreApi->apiVersion defensively
+// before calling a function that might not exist in an older host.
+//
+// Phase 8e: bumped 1 -> 2, the first actual growth of this struct
+// (showToast added below) - a plugin checking this value can now tell
+// whether showToast exists before calling it.
+#define NEOMIFES_CORE_API_VERSION 2u
 
 // Phase 8d: self-declared capability request bitfield (NeoMifesPluginInfo::
 // permissions below). Matches master_roadmap.md sec.8.3's original 5-category
@@ -93,11 +96,18 @@ extern "C" {
 // contract). Plugin authors only ever pass this pointer through.
 typedef struct NeoMifesDocument NeoMifesDocument;
 
-// Document-manipulation functions available to a loaded plugin (Phase 8b).
-// See docs/decisions/ADR-016-plugin-core-api-bridge.md for the full design
-// rationale; master_roadmap.md sec.8.3 for the roadmap's fuller future
-// sketch (registerCommand/showToast/network functions - not implemented
-// yet, see that ADR's scope-out list).
+// Opaque handle for the toast-notification sink a plugin callback was
+// invoked against (Phase 8e). Same "never defined here, reinterpret_cast
+// entirely inside src/app/plugin_core_api_bridge.cpp" idiom as
+// NeoMifesDocument above - the real type is neomifes::ui::ToastState.
+typedef struct NeoMifesToastSink NeoMifesToastSink;
+
+// Document-manipulation functions available to a loaded plugin (Phase 8b),
+// plus showToast (Phase 8e, a different, ungated capability - see its own
+// comment below). See docs/decisions/ADR-016-plugin-core-api-bridge.md and
+// ADR-019-plugin-show-toast-headless.md for the full design rationale;
+// master_roadmap.md sec.8.3 for the roadmap's fuller future sketch
+// (registerCommand/network functions - not implemented yet).
 //
 // THREADING CONTRACT: every function here may be called ONLY from inside a
 // plugin callback (today: onLoad/onUnload - there is no onDocumentChanged
@@ -166,6 +176,21 @@ typedef struct NeoMifesCoreApi {
     // ADR-016).
     unsigned int (*getLineText)(NeoMifesDocument* doc, unsigned line, wchar_t* buffer,
                                 unsigned bufferLen);
+
+    // Displays `message` via `sink` (Phase 8e). No-op if `sink` or
+    // `message` is NULL. UNLIKE the 4 functions above, this is NEVER
+    // permission-gated - always non-NULL regardless of the plugin's
+    // declared permissions (see ADR-019): none of the
+    // NEOMIFES_PLUGIN_PERMISSION_* categories above semantically cover
+    // "display a message" (it reads/writes no document data), and adding
+    // a new category for one low-risk display-only function would be
+    // speculative (CLAUDE.md rule 3) - revisit once more UI-facing
+    // functions exist and a real shared category emerges. Fits the same
+    // synchronous, onLoad/onUnload-only threading contract as the other
+    // functions here - no new contract needed (contrast a hypothetical
+    // registerCommand, which would need one; see ADR-019 for why that is
+    // deferred).
+    void (*showToast)(NeoMifesToastSink* sink, const wchar_t* message);
 } NeoMifesCoreApi;
 
 // Host-owned, plugin-writable. `userData` is a plain C-ABI idiom, not scope
@@ -173,17 +198,18 @@ typedef struct NeoMifesCoreApi {
 // before calling onLoad and leaves it untouched between onLoad and
 // onUnload, so a plugin can round-trip an opaque token through it.
 //
-// `coreApi`/`document` (Phase 8b): non-owning, host-populated, both NULL
-// unless PluginHost::load() was called with non-null arguments for them
-// (both default to nullptr - see plugin_host.h). Delivered as context
-// fields rather than as extra parameters on
-// NeoMifesPluginVTable::onLoad/onUnload - see ADR-016 for why (keeps the
-// vtable itself, and every existing plugin's onLoad/onUnload signature,
-// unchanged).
+// `coreApi`/`document` (Phase 8b), `toastSink` (Phase 8e): non-owning,
+// host-populated, all NULL unless PluginHost::load() was called with
+// non-null arguments for them (all default to nullptr - see
+// plugin_host.h). Delivered as context fields rather than as extra
+// parameters on NeoMifesPluginVTable::onLoad/onUnload - see ADR-016 for
+// why (keeps the vtable itself, and every existing plugin's
+// onLoad/onUnload signature, unchanged).
 typedef struct NeoMifesPluginContext {
     void*                  userData;
     const NeoMifesCoreApi* coreApi;
     NeoMifesDocument*      document;
+    NeoMifesToastSink*     toastSink;
 } NeoMifesPluginContext;
 
 typedef struct NeoMifesPluginInfo {

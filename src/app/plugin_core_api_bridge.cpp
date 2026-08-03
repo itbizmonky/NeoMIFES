@@ -8,6 +8,7 @@
 
 #include "neomifes/document/document.h"
 #include "neomifes/document/text_pos.h"
+#include "neomifes/ui/toast_state.h"
 #include "neomifes/util/wchar_cast.h"
 
 namespace neomifes::app {
@@ -74,29 +75,46 @@ unsigned int getLineTextImpl(NeoMifesDocument* doc, unsigned line, wchar_t* buff
     return static_cast<unsigned int>(copyLen);
 }
 
+// Both directions of the opaque-handle idiom confined to this file, same
+// pattern as toDocument() above (Phase 8e).
+ui::ToastState& toToastState(NeoMifesToastSink* sink) noexcept {
+    return *reinterpret_cast<ui::ToastState*>(sink);
+}
+
+void showToastImpl(NeoMifesToastSink* sink, const wchar_t* message) {
+    if (sink == nullptr || message == nullptr) {
+        return;
+    }
+    toToastState(sink).show(util::fromWstringView(std::wstring_view(message)));
+}
+
 const NeoMifesCoreApi kFullCoreApi = {
     .apiVersion   = NEOMIFES_CORE_API_VERSION,
     .insertText   = &insertTextImpl,
     .deleteRange  = &deleteRangeImpl,
     .getLineCount = &getLineCountImpl,
     .getLineText  = &getLineTextImpl,
+    .showToast    = &showToastImpl,
 };
 
 // Phase 8d: returned instead of kFullCoreApi when the plugin didn't declare
-// NEOMIFES_PLUGIN_PERMISSION_DOCUMENT - all 4 function pointers explicitly
-// nullptr. A plugin calling e.g. ctx->coreApi->insertText(...) anyway
-// crashes on a null-pointer call, caught by PluginHost's existing
+// NEOMIFES_PLUGIN_PERMISSION_DOCUMENT - the 4 document function pointers
+// are explicitly nullptr. A plugin calling e.g. ctx->coreApi->insertText(...)
+// anyway crashes on a null-pointer call, caught by PluginHost's existing
 // unconditional SEH trampoline (OnLoadCrashed) - see
-// plugins/samples/permission_denied_plugin/. Every field is listed
-// explicitly (not left to designated-initializer zero-fill) because
-// clang-cl's -Wmissing-designated-field-initializers (enabled under this
-// repo's ubsan preset, /WX) rejects the omitted-field form MSVC accepts.
+// plugins/samples/permission_denied_plugin/. showToast is deliberately
+// identical to kFullCoreApi's (Phase 8e: never permission-gated, see
+// plugin_sdk.h's showToast comment). Every field is listed explicitly (not
+// left to designated-initializer zero-fill) because clang-cl's
+// -Wmissing-designated-field-initializers (enabled under this repo's ubsan
+// preset, /WX) rejects the omitted-field form MSVC accepts.
 const NeoMifesCoreApi kDocumentDeniedCoreApi = {
     .apiVersion   = NEOMIFES_CORE_API_VERSION,
     .insertText   = nullptr,
     .deleteRange  = nullptr,
     .getLineCount = nullptr,
     .getLineText  = nullptr,
+    .showToast    = &showToastImpl,
 };
 
 }  // namespace
@@ -108,6 +126,10 @@ const NeoMifesCoreApi* buildPluginCoreApi(unsigned int grantedPermissions) noexc
 
 NeoMifesDocument* toNeoMifesDocument(document::Document& document) noexcept {
     return reinterpret_cast<NeoMifesDocument*>(&document);
+}
+
+NeoMifesToastSink* toNeoMifesToastSink(ui::ToastState& toastState) noexcept {
+    return reinterpret_cast<NeoMifesToastSink*>(&toastState);
 }
 
 }  // namespace neomifes::app

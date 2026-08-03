@@ -24,6 +24,10 @@ namespace neomifes::document {
 class Document;
 }  // namespace neomifes::document
 
+namespace neomifes::ui {
+class ToastState;
+}  // namespace neomifes::ui
+
 namespace neomifes::app {
 
 // Two stateless, process-lifetime NeoMifesCoreApi instances, chosen by
@@ -48,5 +52,10 @@ namespace neomifes::app {
 // file - see plugin_sdk.h's NeoMifesDocument comment). Pass the result to
 // PluginHost::load()'s `document` parameter.
 [[nodiscard]] NeoMifesDocument* toNeoMifesDocument(document::Document& document) noexcept;
+
+// Same opaque-handle idiom as toNeoMifesDocument() above, for
+// NeoMifesToastSink/ui::ToastState (Phase 8e). Pass the result to
+// PluginHost::load()'s `toastSink` parameter.
+[[nodiscard]] NeoMifesToastSink* toNeoMifesToastSink(ui::ToastState& toastState) noexcept;
 
 }  // namespace neomifes::app

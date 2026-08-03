@@ -5,6 +5,7 @@
 #include <array>
 
 #include "neomifes/document/document.h"
+#include "neomifes/ui/toast_state.h"
 
 namespace neomifes::app {
 namespace {
@@ -174,6 +175,26 @@ TEST(PluginCoreApiBridgeTest, BuildPluginCoreApiWithUnrelatedPermissionBitsStill
     ASSERT_NE(api, nullptr);
     EXPECT_EQ(api->apiVersion, NEOMIFES_CORE_API_VERSION);
     EXPECT_EQ(api->insertText, nullptr);
+}
+
+TEST(PluginCoreApiBridgeTest, ShowToastSetsTheSinksMessageEvenWithoutDocumentPermission) {
+    // NEOMIFES_PLUGIN_PERMISSION_NONE - showToast is never permission-gated
+    // (see plugin_sdk.h's showToast comment, Phase 8e), unlike the 4
+    // document functions above.
+    neomifes::ui::ToastState toast;
+    buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE)->showToast(toNeoMifesToastSink(toast), L"hello");
+    EXPECT_TRUE(toast.isVisible());
+    EXPECT_EQ(toast.message(), u"hello");
+}
+
+TEST(PluginCoreApiBridgeTest, ShowToastIsANoOpWhenSinkIsNull) {
+    buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE)->showToast(nullptr, L"hello");
+}
+
+TEST(PluginCoreApiBridgeTest, ShowToastIsANoOpWhenMessageIsNull) {
+    neomifes::ui::ToastState toast;
+    buildPluginCoreApi(NEOMIFES_PLUGIN_PERMISSION_NONE)->showToast(toNeoMifesToastSink(toast), nullptr);
+    EXPECT_FALSE(toast.isVisible());
 }
 
 }  // namespace

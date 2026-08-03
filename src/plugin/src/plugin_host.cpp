@@ -59,8 +59,8 @@ PluginHost& PluginHost::operator=(PluginHost&& other) noexcept {
     return *this;
 }
 
-PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath,
-                                       CoreApiFactory coreApiFactory, NeoMifesDocument* document) {
+PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath, CoreApiFactory coreApiFactory,
+                                       NeoMifesDocument* document, NeoMifesToastSink* toastSink) {
     if (isLoaded()) {
         return std::unexpected(PluginError{.code = PluginErrorCode::AlreadyLoaded});
     }
@@ -103,10 +103,11 @@ PluginExpected<void> PluginHost::load(const std::filesystem::path& dllPath,
     const NeoMifesCoreApi* coreApi =
         coreApiFactory != nullptr ? coreApiFactory(info->permissions) : nullptr;
 
-    auto context       = std::make_unique<NeoMifesPluginContext>();
-    context->userData = nullptr;
-    context->coreApi  = coreApi;
-    context->document = document;
+    auto context        = std::make_unique<NeoMifesPluginContext>();
+    context->userData  = nullptr;
+    context->coreApi   = coreApi;
+    context->document  = document;
+    context->toastSink = toastSink;
 
     bool crashed = false;
     invokePluginCallbackSafe(vtable->onLoad, context.get(), crashed);

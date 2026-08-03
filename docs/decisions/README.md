@@ -24,6 +24,7 @@
 | [ADR-016](ADR-016-plugin-core-api-bridge.md) | NeoMifesCoreApi はドキュメント操作4関数のみを src/app/ のブリッジ層で実装し、neomifes::plugin 自体は Document Engine に依存させない | Accepted |
 | [ADR-017](ADR-017-plugin-job-object-sandbox.md) | プラグインの資源制限は Windows Job Object の JOB_OBJECT_LIMIT_ACTIVE_PROCESS=1 のみを有効化し、メモリ/CPU時間制限と AppContainer 化は見送る | Accepted |
 | [ADR-018](ADR-018-plugin-permission-model.md) | プラグインの permissions は自己申告ビットフィールド + NULL 関数ポインタ・ゲートで実装し、マニフェスト検証・署名検証・確認ダイアログは見送る | Accepted |
+| [ADR-019](ADR-019-plugin-show-toast-headless.md) | NeoMifesCoreApi::showToast はヘッドレスな ui::ToastState 状態層のみ実装し、registerCommand と実UIウィジェットは延期する | Accepted |
 
 ## 運用ルール
 

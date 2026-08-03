@@ -112,6 +112,11 @@ if(NEOMIFES_BUILD_TESTS)
     # tests/integration/plugin_document_editing_test.cpp is its only
     # consumer, same "headless-only" reasoning as above.
     add_subdirectory(plugins/samples/permission_denied_plugin)
+    # toast_plugin (Phase 8e, ADR-019) - proves NeoMifesCoreApi::showToast
+    # round-trips into a real ui::ToastState without NEOMIFES_PLUGIN_
+    # PERMISSION_DOCUMENT. tests/integration/plugin_toast_test.cpp is its
+    # only consumer, same "headless-only" reasoning as above.
+    add_subdirectory(plugins/samples/toast_plugin)
     add_subdirectory(tests)
 endif()
 

@@ -2406,6 +2406,36 @@ Plan agentへの委任は行わず、自分自身で`plugin_host.h`/`.cpp`・`pl
 - `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.62(完了記録)、§6推奨プロンプトを現状に合わせて更新(併せてPhase 8aの「pushはユーザー指示待ち」という古い記述を「push済み」へ訂正)
 - `docs/decisions/README.md`にADR-018の行を追加
 
-**次回:** Phase 8dはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`・`showToast`(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
+**次回:** Phase 8dはローカル完了・コミット済み(push はユーザーの明示指示待ち)。次フェーズは`registerCommand`・`showToast`実装が選ばれ、本セッション内で継続着手した(下記Session参照)。
+
+## Session 73 (2026-08-02): 次のPhaseに進めよ → Phase 8e — showToast ヘッドレス実装 (ADR-019)
+
+Phase 8d(`permissions`権限モデル、ADR-018)のコミット・タスク整理を終えたところで、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`registerCommand`・`showToast`実装/AppContainerサンドボックス/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`registerCommand`・`showToast`実装(推奨案)**が選ばれた — ADR-016/017/018が3フェーズ連続で「UI側の受け皿が無いため実装できない」と明記してきた前提条件であり、Phase 8dで権限モデルが整った今、新規CoreApi機能を最初から権限ビットでゲートできる状態になった。
+
+**Plan Mode:** Explore agent 1体で`master_roadmap.md` §8.3全体・`plugin_sdk.h`・`plugin_host.h`/`.cpp`・`plugin_core_api_bridge.h`/`.cpp`・既存UIコマンド機構(`ui::CommandDescriptor`/`ui::CommandPalette`/`core::CommandDispatcher`)・トースト/通知UIの有無・ADR-015〜018全文・`neomifes::plugin`のレイヤリング境界を調査。**判明した重大な事実:** `showToast`と`registerCommand`は実装の重さが本質的に異なる。roadmapスケッチの`showToast(ctx, message)`は`onLoad`/`onUnload`中に同期的に1回呼ばれるだけで完結し既存のスレッド契約の範囲内に収まる一方、`registerCommand(ctx, id, callback)`は「コールバックを保存し、後で安全に呼び出す」という既存のスレッド契約が明示的に禁止しているパターンを必要とし、新しい安全性契約の策定・SEH保護された遅延呼び出し機構・`ui::CommandPalette`への実行時コマンド登録API(現状`create()`時に渡された`std::vector<CommandDescriptor>`を後から追加する手段が無い)が必要になると判明した。さらに、本コードベースにはトースト/通知UIが一切存在せず(3箇所のコメントで「no error-toast UI exists in this codebase」と明記)、`PluginHost`は未だかつて`main.cpp`/`wWinMain`へ配線されたことが無いことも確認した。
+
+この状況をAskUserQuestionで再提示し、**「showToastのみ、ヘッドレス実装(推奨案)」**が選ばれた — `registerCommand`は別サブフェーズへ先送りし、実UIウィジェットではなくテストで検証可能な最小限のトースト状態クラスを新設する方針に確定。
+
+**設計方針の要点(詳細は[ADR-019](../decisions/ADR-019-plugin-show-toast-headless.md)参照):**
+- 新規`ui::ToastState`(`src/ui/include/neomifes/ui/toast_state.h`、ヘッダオンリー)。「現在表示すべきメッセージ1件」だけを保持する最小限の設計。実際のWin32ポップアップウィンドウ(自動消滅タイマー等)は将来`main.cpp`が本クラスの実インスタンスを保持し描画する段階で新設する、明示的なスコープ外。
+- `showToast`は権限ゲートしない(常に非NULL)。roadmap原案の5予約カテゴリのいずれも「トースト表示」に意味的に合致せず、低リスクな表示専用機能に新カテゴリを推測導入しない判断。
+- `NEOMIFES_CORE_API_VERSION`を`1u`→`2u`へ引き上げた(Phase 8b導入時「バージョン1では何も変化していない」と明記していた通り、今回が初めてCoreApi構造体に実際にフィールドが追加される変更)。
+- `PluginHost::load()`に`NeoMifesToastSink* toastSink = nullptr`を追加(既存の`document`パラメータと全く同じ扱い)。新規不透明ハンドル`NeoMifesToastSink`は`NeoMifesDocument`と同じパターン。`neomifes::plugin`は引き続き`neomifes::document`/`neomifes::ui`のいずれにも依存しない(レイヤリング規則、ADR-016)。
+
+**実装:** `include/neomifes/plugin_sdk.h`(`NeoMifesToastSink`+`showToast`+`toastSink`+バージョン更新)、`src/plugin/include/neomifes/plugin/plugin_host.h`/`.cpp`(`toastSink`パラメータ)、`src/app/include/neomifes/app/plugin_core_api_bridge.h`/`.cpp`(`toNeoMifesToastSink()`+`showToastImpl()`)、`src/app/CMakeLists.txt`(`neomifes::ui`をPUBLIC追加)、新規`plugins/samples/toast_plugin/`、`tests/unit/ui_toast_state_test.cpp`(新規)、`tests/unit/app_plugin_core_api_bridge_test.cpp`(新規3テスト)、`tests/integration/plugin_toast_test.cpp`(新規)。
+
+**実測検証:** `PluginShowToastSetsTheRealToastStateThroughTheDllBoundary`で、`toast_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`宣言)が権限無しで`showToast`を呼び出し`ui::ToastState`が実際に更新されることをローカル実機(Debug/Release/ubsan全942件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**検証:** ローカル**Debug/Release/ubsan全942件green**。`src/plugin/`/`src/app/`/`plugins/samples/toast_plugin/`配下は新規警告0。新規テストファイルで`misc-const-correctness`を1件検出・修正(`ToastState toast;` → `const ToastState toast;`)。実アプリ視覚確認は不要(main.cppに一切触れないヘッドレス変更、Phase 8a〜8dと同じ方針)。
+
+**ADR-019起票:** `docs/decisions/ADR-019-plugin-show-toast-headless.md`(`showToast`と`registerCommand`の実装難易度が非対称と判明した経緯、`ui::ToastState`をヘッダオンリーの純粋状態クラスとした理由、`showToast`を権限ゲートしない理由、`CoreApiFactory`シグネチャは無変更でよかった理由)。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md` §2フェーズ早見表に「8e ✅完了」行を追加(次候補「8f〜」)、§8に§8.11「実装後の確定事項」を新設、§17.1レベル3の参照フェーズ番号を更新
+- `docs/design/detailed_design.md`に新規§8.8「showToast ヘッドレス実装」を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.63(完了記録)、§6推奨プロンプトを現状に合わせて更新
+- `docs/decisions/README.md`にADR-019の行を追加
+
+**次回:** Phase 8eはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)のいずれか、着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。
 
 <!-- 次セッションはここに追記 -->

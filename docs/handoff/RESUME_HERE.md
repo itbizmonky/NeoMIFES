@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-02 (Phase 8c完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`permissions`権限モデル/`registerCommand`・`showToast`実装/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`permissions`権限モデル(推奨案)**が選ばれた。着手前調査で、roadmap §8.3の`permissions`原案5カテゴリ(Network/Filesystem/Subprocess/Registry/Clipboard)はいずれも対応するCoreApi関数が未実装でゲート対象が無いと判明したため、新規`NEOMIFES_PLUGIN_PERMISSION_DOCUMENT`を追加してPhase 8b実装済みの4関数(insertText/deleteRange/getLineCount/getLineText)のみを実際にゲートした。enforcementはroadmap自身が示した「権限が無ければ関数ポインタをNULLにする」方式を採用し、既存のSEHクラッシュ隔離(Phase 8a)がそのまま捕捉するため新規エラーコードは不要だった。`PluginHost::load()`の`coreApi`引数を、権限判明後に呼び出す`CoreApiFactory`関数ポインタへ変更。新規サンプル`permission_denied_plugin`でNULL関数ポインタ経由のクラッシュ隔離を実機確認(Debug/Release/ubsan全934件green)。`manifest.json5`・署名検証・確認ダイアログは発見/インストール機構が無いため見送り。ADR-018起票。§3.62参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
+> **最終更新:** 2026-08-02 (Phase 8d完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`registerCommand`・`showToast`実装/AppContainerサンドボックス/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`registerCommand`・`showToast`実装(推奨案)**が選ばれた。着手前調査で、`showToast`(onLoad/onUnload中の同期呼び出しのみで既存スレッド契約に収まる)と`registerCommand`(コールバックを保存し後で安全に呼び出す新しい契約が必要)の実装難易度が非対称と判明したため再提示し、**「showToastのみ、ヘッドレス実装(推奨案)」**が選ばれた。新規`ui::ToastState`(ヘッダオンリー、「現在表示すべきメッセージ1件」のみ保持する純粋状態クラス)を新設、`NeoMifesCoreApi::showToast`は権限ゲートしない(既存5予約カテゴリのいずれも合致せず新カテゴリの推測導入を避けた)。`PluginHost::load()`に`toastSink`パラメータ追加、`NEOMIFES_CORE_API_VERSION`を2へ引き上げ(初のCoreApi実成長)。新規サンプル`toast_plugin`でNULL非ゲートのshowToast往復を実機確認(Debug/Release/ubsan全942件green)。`registerCommand`・実Win32トーストウィジェット・`main.cpp`配線は次サブフェーズへ延期。ADR-019起票。§3.63参照。roadmap DoD「1文字入力後の増分解析≤50ms」は大規模文書(50万行)で引き続き未達のまま(Phase 7u revert時点から変わらず、本フェーズとは無関係の別課題)
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -95,7 +95,8 @@
 | Phase 8b (`NeoMifesCoreApi`橋渡し実装: insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 (push済み、CI green確認済み) |
 | Phase 8c (Job Objectによるプラグイン資源制限: `ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.61参照) |
 | Phase 8d (`permissions`権限モデル: 自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.62参照) |
-| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / registerCommand・showToast / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 8e (showToast ヘッドレス実装: `ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.63参照) |
+| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / registerCommand / tree-sitter内部実装調査(50万行DoD) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -1906,6 +1907,41 @@ Phase 8c完了後、ユーザーから「次のPhaseに進め」と指示され�
 
 **Phase 8dはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/registerCommand・showToast/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
+### 3.63 Phase 8e (showToast ヘッドレス実装) 完了記録 (2026-08-02)
+
+Phase 8d完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで4候補(`registerCommand`・`showToast`実装/AppContainerサンドボックス/tree-sitter内部実装調査(50万行DoD再挑戦)/SQL文法のビルド依存導入検討)を提示し、**`registerCommand`・`showToast`実装(推奨案)**が選ばれた — ADR-016/017/018が3フェーズ連続で「UI側の受け皿が無いため実装できない」と明記してきた前提条件であり、Phase 8dで権限モデルが整った今、新規CoreApi機能を最初から権限ビットでゲートできる状態になった。
+
+**着手前調査(Explore agent、CLAUDE.mdルール3)で判明した重大な事実:** `showToast`はroadmapスケッチ通り`onLoad`/`onUnload`中に同期的に1回呼ばれるだけで完結し、`plugin_sdk.h`の既存スレッド契約の範囲内にそのまま収まる。一方`registerCommand`は「コールバックを保存し、後で(ユーザーがコマンドパレットから選択した時点で)安全に呼び出す」という既存のスレッド契約が明示的に禁止しているパターンを必要とし、新しい安全性契約の策定・SEH保護された遅延呼び出し機構・実行時コマンド登録API(現状`ui::CommandPalette`は`create()`時に渡された`std::vector<CommandDescriptor>`を後から追加する手段が無い)が必要になる。さらに、本コードベースには**トースト/通知UIが一切存在せず**(`src/`/`include/`/`docs/`全体を検索して確認済み、3箇所のコメントで「no error-toast UI exists in this codebase」と明記)、`PluginHost`は**未だかつて`main.cpp`/`wWinMain`へ配線されたことが無い**。
+
+この状況をAskUserQuestionで再提示し、**「showToastのみ、ヘッドレス実装(推奨案)」**が選ばれた。
+
+**設計方針の要点(詳細は[ADR-019](../decisions/ADR-019-plugin-show-toast-headless.md)参照):**
+- 新規`ui::ToastState`(`src/ui/include/neomifes/ui/toast_state.h`、ヘッダオンリー)。「現在表示すべきメッセージ1件」だけを保持する最小限の設計(`show()`/`hide()`/`isVisible()`/`message()`、last-write-wins・キューイング無し)。実Win32ポップアップウィンドウは新設しない — 本コードベースの既存UIウィジェット(FindBar/GrepBar/GotoLineBar/CommandPalette)はいずれも自動テスト対象になっておらず、`main.cpp`無改修のまま検証する必要があったため。
+- `showToast`は権限ゲートしない(常に非NULL)。roadmap原案の5予約カテゴリのいずれも「トースト表示」に意味的に合致せず、低リスクな表示専用機能に新カテゴリを推測導入しない判断。
+- `NEOMIFES_CORE_API_VERSION`を`1u`→`2u`へ引き上げ(初めてCoreApi構造体に実際にフィールドが追加された)。
+- `PluginHost::load()`に`NeoMifesToastSink* toastSink = nullptr`を追加(`document`と全く同じ扱い)。新規不透明ハンドル`NeoMifesToastSink`、`neomifes::app::toNeoMifesToastSink(ui::ToastState&)`。`neomifes::plugin`は引き続き`neomifes::document`/`neomifes::ui`のいずれにも依存しない。
+
+**実装:** `include/neomifes/plugin_sdk.h`(`NeoMifesToastSink`+`showToast`+`toastSink`+バージョン更新)、`src/plugin/include/neomifes/plugin/plugin_host.h`/`.cpp`(`toastSink`パラメータ)、`src/app/include/neomifes/app/plugin_core_api_bridge.h`/`.cpp`(`toNeoMifesToastSink()`+`showToastImpl()`、`kFullCoreApi`/`kDocumentDeniedCoreApi`双方に設定)、`src/app/CMakeLists.txt`(`neomifes::ui`をPUBLIC追加)、新規`plugins/samples/toast_plugin/`(`NEOMIFES_PLUGIN_PERMISSION_NONE`宣言+`showToast`呼び出し)、`tests/unit/ui_toast_state_test.cpp`(新規)、`tests/unit/app_plugin_core_api_bridge_test.cpp`(新規3テスト)、`tests/integration/plugin_toast_test.cpp`(新規)。
+
+**実測検証:** `PluginShowToastSetsTheRealToastStateThroughTheDllBoundary`で、`toast_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`宣言)が権限無しで`showToast`を呼び出し`ui::ToastState`が実際に更新されることをローカル実機(Debug/Release/ubsan全942件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**検証:**
+- ローカル**Debug/Release/ubsan全942件green**。
+- clang-tidy: `src/plugin/`/`src/app/`/`plugins/samples/toast_plugin/`配下は新規警告0。新規テストファイルで`misc-const-correctness`を1件検出・修正(`ToastState toast;` → `const ToastState toast;`)。既存パターンの警告(非const globalパスvar・整数リテラル大文字suffix)はPhase 8a〜8dから継続する既知の許容パターン。
+- **実アプリ視覚確認は不要**(Phase 8a〜8dと同じ「main.cppに一切触れないヘッドレス変更」)。
+
+**完了条件:**
+- [x] `ui::ToastState`実装
+- [x] `NeoMifesCoreApi::showToast`実装(権限ゲート無し)
+- [x] `PluginHost::load()`への`toastSink`パラメータ追加
+- [x] `toast_plugin`サンプル新設+実機往復の実測検証
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ADR-019起票
+
+**スコープ外(意図的、後続サブフェーズへ):** `registerCommand`(新しい安全性契約・SEH保護された遅延呼び出し機構・`ui::CommandPalette`への実行時登録APIが必要)、実Win32トーストウィジェット(ポップアップウィンドウ・自動消滅タイマー)、`src/app/main.cpp`への配線、複数トーストのキューイング。
+
+**Phase 8eはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)/tree-sitter内部実装調査(50万行DoD)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2065,10 +2101,28 @@ Debug/Release/ubsan全934件green・clang-tidy新規警告0(ubsan/clang-clビル
 `-Wmissing-designated-field-initializers`を検出・4関数ポインタ全てへの明示的`nullptr`で
 解消)。ADR-018起票済み。コミット済み、pushはユーザーの明示指示待ち。**
 
+**続けてPhase 8e(showToast ヘッドレス実装)を実装・完了した(§3.63参照)。AskUserQuestionで
+`registerCommand`・`showToast`実装(推奨案)が選ばれた。着手前調査で`showToast`(onLoad/
+onUnload中の同期呼び出しのみで既存スレッド契約に収まる)と`registerCommand`(コールバック
+を保存し後で安全に呼び出す新しい契約が必要)の実装難易度が非対称と判明したため再提示し、
+「showToastのみ、ヘッドレス実装(推奨案)」が選ばれた。新規`ui::ToastState`(ヘッダオンリー、
+「現在表示すべきメッセージ1件」のみ保持する純粋状態クラス、last-write-wins・キューイング
+無し)を新設 — 本コードベースの既存UIウィジェット(FindBar/GrepBar/GotoLineBar/
+CommandPalette)はいずれも自動テスト対象になっておらず、`main.cpp`無改修のまま検証する
+必要があったため。`showToast`は権限ゲートしない(既存5予約カテゴリのいずれも合致せず新
+カテゴリの推測導入を避けた、`kFullCoreApi`/`kDocumentDeniedCoreApi`双方に同じ実装を設定)。
+`NEOMIFES_CORE_API_VERSION`を1→2へ引き上げ(初めてCoreApi構造体に実際にフィールドが
+追加された)。`PluginHost::load()`に`NeoMifesToastSink* toastSink`パラメータを追加(`document`
+と全く同じ扱い)。新規サンプル`toast_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ
+`showToast`呼び出し)で権限無しのshowToast往復を実機確認。`registerCommand`・実Win32
+トーストウィジェット・`main.cpp`配線は次サブフェーズへ延期。ローカルDebug/Release/ubsan全
+942件green・clang-tidy新規警告0(新規テストファイルで`misc-const-correctness`を1件検出・
+修正)。ADR-019起票済み。コミット済み、pushはユーザーの明示指示待ち。**
+
 **次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/
-registerCommand・showToast(UI側受け皿の設計)のいずれか、着手前にユーザーへ確認すること。
-他の未着手候補としてtree-sitter内部実装のさらなる調査(50万行DoD未達の解消)・SQL文法の
-tree-sitter CLIビルド依存導入検討も保留中。**
+`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)のいずれか、
+着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査
+(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。**
 
 セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
 から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は

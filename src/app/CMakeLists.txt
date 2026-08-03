@@ -29,6 +29,10 @@ target_link_libraries(neomifes_app_input
         # NeoMifesDocument (plugin_sdk.h) in its public signature - same
         # reasoning as neomifes::search/neomifes::syntax above.
         neomifes::plugin_sdk
+        # plugin_core_api_bridge.h (Phase 8e) exposes ui::ToastState in its
+        # public signature (toNeoMifesToastSink()) - same reasoning as
+        # neomifes::plugin_sdk above.
+        neomifes::ui
     PRIVATE
         neomifes::compile_options
         neomifes::util

@@ -70,22 +70,25 @@ public:
     using CoreApiFactory = const NeoMifesCoreApi* (*)(unsigned int grantedPermissions) noexcept;
 
     // `coreApi`/`document` (Phase 8b, `coreApiFactory` reshaped in Phase
-    // 8d): `document` is forwarded verbatim into the NeoMifesPluginContext
-    // handed to onLoad/onUnload - see plugin_sdk.h's NeoMifesPluginContext
-    // comment. `coreApiFactory` is invoked once info->permissions is known
-    // (see CoreApiFactory's own comment above) and ITS result is what gets
-    // forwarded as context->coreApi. Both default to nullptr so existing
-    // callers that only pass `dllPath` (e.g.
+    // 8d), `toastSink` (Phase 8e): `document`/`toastSink` are forwarded
+    // verbatim into the NeoMifesPluginContext handed to onLoad/onUnload -
+    // see plugin_sdk.h's NeoMifesPluginContext comment. `coreApiFactory`
+    // is invoked once info->permissions is known (see CoreApiFactory's own
+    // comment above) and ITS result is what gets forwarded as
+    // context->coreApi. All three default to nullptr so existing callers
+    // that only pass `dllPath` (e.g.
     // tests/integration/plugin_load_test.cpp's four call sites) compile
-    // unchanged. This class deliberately never dereferences `document`
-    // itself, nor does it know what permission bits mean - doing so would
-    // require depending on neomifes::document, which the layering rule
-    // (CLAUDE.md sec.3) forbids for the Plugin Engine (see
-    // neomifes::app::buildPluginCoreApi()/toNeoMifesDocument(),
-    // src/app/plugin_core_api_bridge.h, for the actual implementation).
+    // unchanged. This class deliberately never dereferences `document` or
+    // `toastSink` itself, nor does it know what permission bits mean -
+    // doing so would require depending on neomifes::document/neomifes::ui,
+    // which the layering rule (CLAUDE.md sec.3) forbids for the Plugin
+    // Engine (see neomifes::app::buildPluginCoreApi()/toNeoMifesDocument()/
+    // toNeoMifesToastSink(), src/app/plugin_core_api_bridge.h, for the
+    // actual implementation).
     [[nodiscard]] PluginExpected<void> load(const std::filesystem::path& dllPath,
-                                             CoreApiFactory     coreApiFactory = nullptr,
-                                             NeoMifesDocument*  document       = nullptr);
+                                             CoreApiFactory      coreApiFactory = nullptr,
+                                             NeoMifesDocument*   document       = nullptr,
+                                             NeoMifesToastSink*  toastSink      = nullptr);
 
     // Calls vtable->onUnload(ctx) (SEH-isolated) then frees the DLL
     // unconditionally, even if onUnload crashed (a stuck-but-still-mapped

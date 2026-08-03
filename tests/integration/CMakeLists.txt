@@ -276,3 +276,35 @@ set_tests_properties(plugin_sandbox PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# plugin_toast_test - loads the REAL built toast_plugin sample DLL
+# (Phase 8e, ADR-019) via PluginHost::load(), passing a real ui::ToastState
+# bound through toNeoMifesToastSink(), and asserts the plugin's onLoad
+# actually set the toast's message through the C-ABI boundary without
+# NEOMIFES_PLUGIN_PERMISSION_DOCUMENT.
+add_executable(neomifes_plugin_toast_test
+    plugin_toast_test.cpp
+)
+
+target_link_libraries(neomifes_plugin_toast_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::plugin
+        neomifes::ui
+        neomifes::app_input
+        GTest::gtest
+)
+
+set_target_properties(neomifes_plugin_toast_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    plugin_toast
+    COMMAND neomifes_plugin_toast_test $<TARGET_FILE:toast_plugin>
+)
+
+set_tests_properties(plugin_toast PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

@@ -1675,6 +1675,39 @@ using CoreApiFactory = const NeoMifesCoreApi* (*)(unsigned int grantedPermission
 
 ---
 
+### 8.8 showToast ヘッドレス実装 (Phase 8e実装)
+
+`NeoMifesCoreApi::showToast`をヘッドレスな`ui::ToastState`状態層のみで実装した。詳細は[ADR-019](../decisions/ADR-019-plugin-show-toast-headless.md)参照。
+
+**新規`ui::ToastState` (`src/ui/include/neomifes/ui/toast_state.h`、ヘッダオンリー):**
+```cpp
+class ToastState {
+public:
+    void show(std::u16string_view message);  // last write wins, no queueing
+    void hide() noexcept;
+    [[nodiscard]] bool isVisible() const noexcept;
+    [[nodiscard]] const std::u16string& message() const noexcept;
+private:
+    std::u16string m_message;
+    bool           m_visible = false;
+};
+```
+「現在表示すべきメッセージ1件」だけを保持する最小限の設計。複数メッセージのキューイングは意図的に実装しない(CLAUDE.mdルール10、実際の消費者(実UIウィジェット)がまだ無い状態で先行実装しない)。実際のWin32ポップアップウィンドウ(自動消滅タイマー等)は将来`main.cpp`が本クラスの実インスタンスを保持し描画する段階で新設する、明示的なスコープ外。
+
+**`registerCommand`は今回実装しない。** 着手前調査で、roadmapスケッチの`showToast(ctx, message)`は`onLoad`/`onUnload`中に同期的に1回呼ばれるだけで完結し既存のスレッド契約の範囲内に収まる一方、`registerCommand(ctx, id, callback)`は「コールバックを保存し、後で安全に呼び出す」という既存のスレッド契約が明示的に禁止しているパターンを必要とし、新しい安全性契約の策定・SEH保護された遅延呼び出し機構・`ui::CommandPalette`への実行時コマンド登録APIが必要になると判明した。両者の実装難易度の非対称性を踏まえ`showToast`のみへスコープを縮小した。
+
+**`showToast`は権限ゲートしない(常に非NULL):** roadmap原案の5予約カテゴリ(Network/Filesystem/Subprocess/Registry/Clipboard)のいずれも「トースト表示」という能力に意味的に合致せず、ドキュメントアクセスとも無関係。低リスクな表示専用機能に対して新しい権限カテゴリを推測導入することはCLAUDE.mdルール3に反すると判断した。`buildPluginCoreApi()`が返す`kFullCoreApi`/`kDocumentDeniedCoreApi`の両方に同じ`showToastImpl`を設定することで「常に非NULL」を直接表現した。
+
+**`NEOMIFES_CORE_API_VERSION`を`1u`→`2u`へ引き上げた。** Phase 8b導入時「バージョン1では何も変化していない」と明記していた通り、今回が初めてCoreApi構造体に実際にフィールドが追加される変更であり、意図通りの初回インクリメントとなる。
+
+**`PluginHost::load()`に`NeoMifesToastSink* toastSink = nullptr`を追加した(既存の`document`パラメータと全く同じ扱い)。** 新規不透明ハンドル`NeoMifesToastSink`は`NeoMifesDocument`と同じパターン。`neomifes::app::toNeoMifesToastSink(ui::ToastState&)`が`reinterpret_cast`を`plugin_core_api_bridge.cpp`内に閉じ込める。`neomifes::plugin`は引き続き`neomifes::document`/`neomifes::ui`のいずれにも依存しない(レイヤリング規則、ADR-016)。`neomifes_app_input`が新たに`neomifes::ui`をPUBLICリンクする(`plugin_core_api_bridge.h`が公開シグネチャで`ui::ToastState`を露出するため)。
+
+**実測検証:** 新規サンプル`plugins/samples/toast_plugin/`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`showToast`を呼び出し)を用いた`tests/integration/plugin_toast_test.cpp`で、権限が無くても`showToast`が機能し`ui::ToastState`が実際に更新されることをローカル実機(Debug/Release/ubsan全942件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**既知のギャップ・将来の再評価:** `registerCommand`(`ui::CommandPalette`に実行時登録APIが用意された時点、およびSEH保護された遅延コールバック呼び出し機構の設計が固まった時点)、実Win32トーストウィジェット+`main.cpp`配線(`PluginHost`が初めて`main.cpp`へ配線されるサブフェーズ、まだ日程未定)。
+
+---
+
 ## 9. Encoding Engine 詳細
 
 > **凍結された歴史的記録:** 本節はPhase 6着手前(basic_design.md起草時)に書かれた速記スケッチであり、§9.3で確定した実装とは判定アルゴリズム(§9.1、Phase 6aでは未着手)・不正シーケンス処理方針(§9.2、「U+FFFD置換」ではなく「拒否」を採用)の両方で内容が食い違う。最新情報は§9.3を参照すること。

@@ -240,7 +240,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 8b | `NeoMifesCoreApi`橋渡し実装 (insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 | §8 |
 | 8c | Job Objectによるプラグイン資源制限 (`ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 | §8, §17.1 |
 | 8d | `permissions`権限モデル (自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 | §8, §17.1 |
-| 8e〜 | AppContainerサンドボックス / registerCommand・showToast / 大規模文書の性能DoD再挑戦 / SQL文法対応 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
+| 8e | showToast ヘッドレス実装 (`ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 | §8 |
+| 8f〜 | AppContainerサンドボックス / registerCommand / 大規模文書の性能DoD再挑戦 / SQL文法対応 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -1501,7 +1502,20 @@ typedef struct NeoMifesCoreApi {
 
 **実測による検証:** `tests/integration/plugin_document_editing_test.cpp`の新規テストで、新設サンプル`permission_denied_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`insertText`を無条件呼び出し)がNULL関数ポインタ経由でクラッシュし、`OnLoadCrashed`として報告され、かつ文書が一切変更されないことをローカル実機(Debug/Release/ubsan全934件green)で確認した。
 
-**次候補 (Phase 8e〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
+**次候補 (Phase 8e〜):** ~~AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `registerCommand`・`showToast`(UI側受け皿の設計) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。~~ → `registerCommand`・`showToast`実装が選ばれ、着手前調査で`showToast`のみへ縮小された上でPhase 8eで完了(§8.11参照)。
+
+### 8.11 実装後の確定事項 (Phase 8e 完了、2026-08-02)
+
+`NeoMifesCoreApi::showToast`をヘッドレスな`ui::ToastState`状態層のみで実装した。詳細は[ADR-019](../decisions/ADR-019-plugin-show-toast-headless.md)参照。
+
+**実装した内容(ユーザー選択時点のスコープからの変更点):**
+- 着手前調査で`registerCommand`と`showToast`の実装難易度が本質的に非対称と判明した(`registerCommand`は「コールバックを保存し後で安全に呼び出す」新しい安全性契約が必要、`showToast`は既存の同期呼び出し契約に収まる)ため、AskUserQuestionで再提示し`showToast`のみへスコープを縮小した。`registerCommand`は次サブフェーズへ延期。
+- 実Win32トーストウィジェット(ポップアップウィンドウ・自動消滅タイマー)は新設せず、`ui::ToastState`(ヘッダオンリー、「現在表示すべきメッセージ1件」のみ保持する純粋状態クラス)に留めた。本コードベースの既存UIウィジェット(FindBar/GrepBar/GotoLineBar/CommandPalette)はいずれも自動テスト対象になっておらず正しさの検証を実アプリ視覚確認のみに依存してきたため、`main.cpp`無改修のまま検証可能な形にする必要があったことが理由。
+- `showToast`は権限ゲートしない(常に非NULL)と決定した。roadmap原案の5予約カテゴリのいずれも「トースト表示」に意味的に合致せず、低リスクな表示専用機能に新カテゴリを推測導入しない判断。
+
+**実測による検証:** `tests/integration/plugin_toast_test.cpp`で、新規サンプル`toast_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`showToast`を呼び出し)がNULL関数ポインタ経由のクラッシュを起こさず、`ui::ToastState`が実際に更新されることをローカル実機(Debug/Release/ubsan全942件green)で確認した(推測ではなく実証、CLAUDE.mdルール3)。
+
+**次候補 (Phase 8f〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / `registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
 
 ---
 
@@ -2338,7 +2352,7 @@ neomifes.showToast("Inserted!")
 - ~~Network 権限を要求するプラグイン全て~~ → 権限モデル(Phase 8d)が実装された後も、自己申告を信頼できないため引き続き全プラグインへ一律適用(ADR-018)
 - ~~メモリ・CPU 時間・ハンドル数の上限~~ → 実装したのは`ActiveProcessLimit=1`のみ。メモリ/CPU時間はプロセス全体(ホスト含む)を巻き込むため意図的に見送り、ハンドル数上限は該当するWin32 APIが存在しないと判明(詳細はADR-017)
 
-**レベル 3 (Phase 8e〜、将来検討):** Windows AppContainer で完全隔離
+**レベル 3 (Phase 8f〜、将来検討):** Windows AppContainer で完全隔離
 - Capability に基づく細粒度権限
 - ファイルシステムアクセスは Broker 経由
 - **Phase 8c着手前調査で判明: 既存の同一プロセス内`LoadLibraryW`アーキテクチャへ後付け不可能。別プロセス+IPC全面再設計(ADR-015が一度却下した規模)が前提となる。真に必要になった時点(マーケットプレース等で未検証サードパーティプラグインの実運用が具体化)で再評価する(ADR-015/016/017共通の再評価条件)。**
