@@ -80,10 +80,16 @@ struct Token {
 // grammar's own repo/package name (wharflab/tree-sitter-batch), matching
 // Shell's "named after language family, not grammar package" precedent -
 // roadmap sec.7.2 calls this language "BAT", but an all-caps C++ enumerator
-// reads poorly, so the more conventional "Batch" spelling was chosen.
+// reads poorly, so the more conventional "Batch" spelling was chosen. Phase
+// 7y added Sql (DerekStride/tree-sitter-sql v0.3.11) - the last of roadmap
+// sec.7.2's required languages that had a viable candidate grammar (VB/
+// VBScript remain excluded for license reasons, SAP ABAP was always P1/
+// low-priority). Unlike every prior batch, this grammar's parser.c is not
+// FetchContent'd - see third_party/tree-sitter-sql-generated/NOTICE.md and
+// ADR-021 for why it is vendored (generated once, committed) instead.
 enum class Language {
     Cpp, Python, C, JavaScript, Java, Go, Rust, Json, Html, Css, Shell, Yaml, Toml, Xml,
-    TypeScript, Tsx, Php, Markdown, PowerShell, Ini, Batch
+    TypeScript, Tsx, Php, Markdown, PowerShell, Ini, Batch, Sql
 };
 
 // Parses `text` as C++ and returns a flat, left-to-right, non-overlapping
@@ -158,11 +164,15 @@ enum class Language {
 // Same contract as parseCpp(), for Batch (wharflab/tree-sitter-batch v0.11.1).
 [[nodiscard]] std::vector<Token> parseBatch(std::u16string_view text);
 
+// Same contract as parseCpp(), for SQL (DerekStride/tree-sitter-sql v0.3.11,
+// grammar vendored - see third_party/tree-sitter-sql-generated/NOTICE.md).
+[[nodiscard]] std::vector<Token> parseSql(std::u16string_view text);
+
 // Thin dispatcher over parseCpp()/parsePython()/parseC()/parseJavaScript()/
 // parseJava()/parseGo()/parseRust()/parseJson()/parseHtml()/parseCss()/
 // parseShell()/parseYaml()/parseToml()/parseXml()/parseTypeScript()/
 // parseTsx()/parsePhp()/parseMarkdown()/parsePowerShell()/parseIni()/
-// parseBatch(). Kept alongside the individual
+// parseBatch()/parseSql(). Kept alongside the individual
 // functions (rather than replacing them) so existing callers/tests that
 // only care about one language can keep calling it directly, and so
 // per-language expected-output tests stay easy to write (Phase 7b/7c

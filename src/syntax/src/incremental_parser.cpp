@@ -65,6 +65,8 @@ using detail::tsLanguageFor;
             return detail::namedLeafKindsForIni();
         case Language::Batch:
             return detail::namedLeafKindsForBatch();
+        case Language::Sql:
+            return detail::namedLeafKindsForSql();
     }
     return detail::namedLeafKindsForCpp();  // unreachable (all enumerators handled above)
 }

@@ -63,6 +63,8 @@ extern "C" const TSLanguage* tree_sitter_powershell(void);
 extern "C" const TSLanguage* tree_sitter_ini(void);
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" const TSLanguage* tree_sitter_batch(void);
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" const TSLanguage* tree_sitter_sql(void);
 
 // Phase 7n1: single Language -> TSLanguage* mapping shared by syntax.cpp,
 // incremental_parser.cpp, and outline.cpp - previously each of the first two
@@ -115,6 +117,8 @@ extern "C" const TSLanguage* tree_sitter_batch(void);
             return tree_sitter_ini();
         case Language::Batch:
             return tree_sitter_batch();
+        case Language::Sql:
+            return tree_sitter_sql();
     }
     return tree_sitter_cpp();  // unreachable (all enumerators handled above)
 }
@@ -630,6 +634,54 @@ using LeafKindTable = std::unordered_map<std::string_view, TokenKind>;
     return table;
 }
 
+// Verified via a standalone probe (Phase 7y) against real tree-sitter-sql
+// v0.3.11 output (DerekStride/tree-sitter-sql - see
+// third_party/tree-sitter-sql-generated/NOTICE.md for why this grammar's
+// parser.c is vendored rather than FetchContent'd). Deliberately a much
+// smaller table than the ~356 "keyword_*" named node types this grammar
+// defines (SELECT/FROM/WHERE/JOIN/CREATE/... - one distinct named node type
+// PER keyword, unlike every other grammar in this file, which use anonymous
+// string-literal tokens for keywords, already handled generically by
+// classifyAnonymousLeaf()'s "alphabetic anonymous token -> Keyword" rule).
+// Enumerating 356 explicit entries here would dwarf every other table in
+// this file and silently drift out of sync on a future grammar bump; see
+// classifyLeaf() below, which was extended with one generic "type name
+// starts with keyword_ -> Keyword" rule instead - this generalizes to any
+// future grammar using the same per-keyword-named-node convention, rather
+// than special-casing SQL.
+//
+// "literal" is deliberately NOT in this table, for a genuine correctness
+// reason (not just a scope-out): tree-sitter-sql's "literal" node covers
+// THREE different cases under one type name - (a) a real string literal
+// like 'hello' (a true leaf, no children), (b) a real numeric literal like
+// 3.5 (also a true leaf), AND (c) a wrapper around keyword_true/
+// keyword_false/keyword_null for the TRUE/FALSE/NULL literal keywords (has
+// ONE child, NOT a true leaf - confirmed via probe). isAtomicNode() treats
+// any node whose type has a table entry as atomic (never descended into,
+// see its own comment below) - so adding "literal" here would force TRUE/
+// FALSE/NULL to whatever single TokenKind was chosen, incorrectly
+// overriding their keyword_true/false/null child's classification. Leaving
+// "literal" OUT of this table lets case (c) fall through isAtomicNode()'s
+// child_count()==0 check (false, it has 1 child) and its table-membership
+// check (false, not present) - so the walk descends into it and reaches the
+// keyword_true/false/null leaf, correctly classified as Keyword by the
+// classifyLeaf() prefix rule above. Cases (a)/(b) remain genuine leaves
+// (child_count()==0) so still get emitted as tokens, but colored as
+// TokenKind::Text (no dedicated String/Number bucket) - an accepted
+// grammar-level limitation of the same class as this file's other
+// "one node type covers multiple concepts" trade-offs (XML's Name-for-
+// both-tag-and-attribute, YAML's key/value ambiguity) - there is no way to
+// distinguish (a)/(b)/(c) by node TYPE NAME alone, and classifyLeaf() has
+// no access to the source text to disambiguate by content instead.
+[[nodiscard]] inline const LeafKindTable& namedLeafKindsForSql() {
+    static const LeafKindTable table{
+        {"comment", TokenKind::Comment},     // "-- ..." line comment
+        {"marginalia", TokenKind::Comment},  // "/* ... */" block comment - NOT named "comment" (probe-verified)
+        {"identifier", TokenKind::Variable},
+    };
+    return table;
+}
+
 // See syntax.cpp's original comment (Phase 7a/7d) for the classification
 // rationale (structural: alphabetic -> keyword, leading '#' -> preprocessor,
 // quote delimiters -> string, everything else -> punctuation). Phase 7n1
@@ -662,7 +714,25 @@ using LeafKindTable = std::unordered_map<std::string_view, TokenKind>;
     const std::string_view type = ts_node_type(node);
     if (ts_node_is_named(node)) {
         const auto it = namedKinds.find(type);
-        return it != namedKinds.end() ? it->second : TokenKind::Text;
+        if (it != namedKinds.end()) {
+            return it->second;
+        }
+        // Phase 7y: tree-sitter-sql names every one of its ~356 keywords as
+        // its own distinct named leaf ("keyword_select", "keyword_from", ...
+        // - verified via node-types.json, not guessed), unlike every other
+        // grammar in this file, which use anonymous string-literal tokens
+        // for keywords (already handled generically by
+        // classifyAnonymousLeaf()'s "alphabetic anonymous token -> Keyword"
+        // rule below). This one prefix check generalizes the same
+        // "every keyword is its own named node" convention for any future
+        // grammar that uses it too, instead of enumerating 356 explicit
+        // table entries for SQL alone (see namedLeafKindsForSql()'s own
+        // comment). Safe for every other currently-supported language: none
+        // of their named node types happen to start with "keyword_".
+        if (type.starts_with("keyword_")) {
+            return TokenKind::Keyword;
+        }
+        return TokenKind::Text;
     }
     return classifyAnonymousLeaf(type);
 }

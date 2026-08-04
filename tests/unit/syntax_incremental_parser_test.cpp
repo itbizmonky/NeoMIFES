@@ -21,6 +21,7 @@ using neomifes::syntax::parseCpp;
 using neomifes::syntax::parseIni;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
+using neomifes::syntax::parseSql;
 using neomifes::syntax::parseTypeScript;
 using neomifes::syntax::parseYaml;
 using neomifes::syntax::ReparseEdit;
@@ -405,6 +406,19 @@ TEST(SyntaxIncrementalParserTest, IniSingleCharacterInsertMatchesFullReparse) {
     const std::u16string newText = u"key=12\n";  // '2' inserted right after '1' (pos 5)
     const ReparseEdit    edit    = buildEdit(oldText, newText, 5, 5, 6);
     EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseIni(newText));
+}
+
+// Phase 7y: proves the incremental path also works for Sql, whose grammar is
+// vendored rather than FetchContent'd (see third_party/tree-sitter-sql-
+// generated/NOTICE.md) - reuses the same ReparsingSession/oracle pattern.
+TEST(SyntaxIncrementalParserTest, SqlSingleCharacterInsertMatchesFullReparse) {
+    ReparsingSession      parser(Language::Sql);
+    const std::u16string oldText = u"SELECT id FROM t WHERE id = 1;\n";
+    (void)parser.reparse(oldText, {});
+
+    const std::u16string newText = u"SELECT id FROM t WHERE id = 12;\n";  // '2' inserted right after '1' (pos 29)
+    const ReparseEdit    edit    = buildEdit(oldText, newText, 29, 29, 30);
+    EXPECT_EQ(parser.reparse(newText, std::array{edit}), parseSql(newText));
 }
 
 // Phase 7t: reparseRange()'s partial-range contract ("returns a sorted

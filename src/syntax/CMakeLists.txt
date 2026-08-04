@@ -37,6 +37,7 @@ target_link_libraries(neomifes_syntax
         tree-sitter-powershell-grammar
         tree-sitter-ini-grammar
         tree-sitter-batch-grammar
+        tree-sitter-sql-grammar
 )
 
 set_target_properties(neomifes_syntax PROPERTIES

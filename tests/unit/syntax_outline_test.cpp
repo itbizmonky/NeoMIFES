@@ -261,4 +261,10 @@ TEST(SyntaxOutlineTest, NewPhase7xLanguagesProduceNoNodesWithoutCrashingOrMisrou
     EXPECT_TRUE(extractOutline(u"set VAR=hi\necho %VAR%\n", Language::Batch).empty());
 }
 
+// Phase 7y: same safe-degradation contract extended to Sql (see outline.cpp's
+// emptySymbolTable() comment).
+TEST(SyntaxOutlineTest, SqlProducesNoNodesWithoutCrashingOrMisroutingGrammar) {
+    EXPECT_TRUE(extractOutline(u"SELECT id, name FROM users;\n", Language::Sql).empty());
+}
+
 }  // namespace

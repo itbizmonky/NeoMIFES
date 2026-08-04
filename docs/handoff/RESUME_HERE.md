@@ -1,6 +1,6 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-03 (tree-sitter内部実装調査(不採用と結論)完了・コミット・push・CI green確認(run `30787211256`)後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで3候補(registerCommand実装/AppContainerサンドボックス/SQL文法対応)を提示し、**registerCommand実装(推奨案)**が選ばれた — ADR-019(Phase 8e)が延期した唯一の残項目。着手前調査(Explore agent+専用Plan agent)で、`ui::CommandPalette::create()`が`std::vector<CommandDescriptor>`を1回しか受け取れないこと、Phase 8aの既存SEHトランポリン(`invokePluginCallbackSafe`)が`registerCommand`のコールバックシグネチャと完全に同じ形で再利用可能なこと、`registerCommandImpl()`の実装案に実際のコンパイルエラー(`fromWstringView()`の`u16string_view`を`explicit`な`u16string`コンストラクタへdesignated initializer経由で暗黙変換しようとしていた)を実装前に検出したことが判明。新規`ui::PluginCommandRegistry`(ヘッダオンリー、既存`ui::CommandDescriptor`をそのまま再利用)を新設し、既存SEHトランポリンを公開昇格して再利用、`NEOMIFES_CORE_API_VERSION`を3へ引き上げ。新規サンプル`command_plugin`/`crashing_command_plugin`で遅延呼び出し+クラッシュ隔離を実機確認(Debug/Release/ubsan全956件green)。**実装中の発見:** 「unload後のstaleなコマンド呼び出しが安全か」を検証する統合テストを当初書いたが、ubsanプリセット(ASan)が実際のヒープuse-after-freeを正しく検出し確実に失敗した(ASanが本来の役目を果たした結果であり不具合ではない) — このテストは削除し、代わりに`plugin_sdk.h`のスレッド契約コメントへ「SEHは可能性を減らすが安全性を保証しない」という正確な記述を追加した。`ui::CommandPalette`への実配線・`main.cpp`配線・unload時自動クリーンアップは次サブフェーズへ延期。ADR-020起票。§3.65参照。
+> **最終更新:** 2026-08-04 (Phase 8f完了・コミット(`b1e23d3`、push未実施)後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで次候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**SQL文法対応(推奨案)**が選ばれた — roadmap必須23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無いため対象外」として据え置いていた最後の言語。着手前調査(GitHub API直接確認)で`DerekStride/tree-sitter-sql`(v0.3.11)が`tree-sitter generate`による都度生成を要すると再確認し、AskUserQuestionで「tree-sitter CLIをビルド依存として導入」vs「事前生成してベンダリング」を提示、Plan Modeでの詳細計画作成を経て**ベンダリング(推奨案)**が選ばれた(ADR-021)。開発機上でtree-sitter CLI(v0.26.11)を使い`parser.c`を一度だけ生成したところ17.3MBに達し、`.git`全体(約30MB)に対する規模をAskUserQuestionで再確認の上コミット続行が選ばれた。実機probeで`tree-sitter-sql`が356種の`keyword_*`名前付きノード型を持つと判明し、個別テーブル化せず`classifyLeaf()`へ`keyword_`プレフィックス汎用規則を追加。2段階目のprobeで`literal`ノードがTRUE/FALSE/NULLラッパー(非leaf)と真の文字列/数値リテラル(leaf)の両方を指す同一型名だと判明し、`literal`をテーブルから意図的に除外(登録すると前者を誤分類するため)。既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`非対応の主張を含んでいたため更新が必要だった。ローカルDebug/Release/ubsan全966件green、clang-tidy新規警告0、実アプリ`--open`スモークテスト確認済み。**コミットは2件に分ける予定(third_party/ベンダリング単独→統合一式)、push未実施。** §3.66参照。
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -97,8 +97,9 @@
 | Phase 8d (`permissions`権限モデル: 自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 (push済み、CI green確認済み、§3.62参照) |
 | Phase 8e (showToast ヘッドレス実装: `ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 (push済み、CI green確認済み、§3.63参照) |
 | tree-sitter内部実装調査 (根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証) | ✅ 完了・**不採用と結論** (本番コード変更なし、push済み・CI green確認済み(run `30787211256`)、§3.64参照) |
-| Phase 8f (registerCommand ヘッドレス実装: `ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 (コミット済み、pushはユーザー指示待ち、§3.65参照) |
-| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / SQL文法のtree-sitter CLIビルド依存導入検討等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 8f (registerCommand ヘッドレス実装: `ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 (コミット済み`b1e23d3`、pushはユーザー指示待ち、§3.65参照) |
+| Phase 7y (追加言語対応 バッチ5: SQL、事前生成`parser.c`を`third_party/tree-sitter-sql-generated/`へベンダリング、ADR-021。roadmap必須23言語のうち22言語完了) | ✅ 完了 (コミット2件予定、pushはユーザー指示待ち、§3.66参照) |
+| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / 大規模文書の性能DoD再挑戦等、着手前にユーザーへ確認** | ⏭️ **次回** |
 
 ---
 
@@ -2003,7 +2004,41 @@ tree-sitter内部実装調査完了・コミット・push・CI green確認後、
 
 **スコープ外(意図的、後続サブフェーズへ):** `ui::CommandPalette`への実配線、`src/app/main.cpp`への配線、プラグインunload時の登録済みコマンド自動クリーンアップ(所有権追跡機構が必要)、プラグイン自身が能動的に呼べる`unregisterCommand`相当のCoreApi関数、コマンドの重複id検出・拒否。
 
-**Phase 8fはコミット済み、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/SQL文法のビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
+**Phase 8fはコミット済み(`b1e23d3`)、pushはユーザーの明示指示待ち。** 続けてPhase 7y(追加言語対応バッチ5、SQL)が完了した — 詳細は§3.66参照。
+
+---
+
+### 3.66 Phase 7y (追加言語対応 バッチ5、SQL) 完了記録 (2026-08-04)
+
+Phase 8f完了・コミット後、ユーザーから「次のPhaseに進め」と指示された。`master_roadmap.md` §2の次候補行(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)をAskUserQuestionで提示し、**SQL文法対応(推奨案)**が選ばれた — roadmap必須23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無いため対象外」として据え置いていた最後の言語。
+
+**着手前調査(GitHub API直接確認、CLAUDE.mdルール3)で判明した事実:** `DerekStride/tree-sitter-sql`(v0.3.11、MIT、243★)は`src/`に`scanner.c`のみで`parser.c`が無く、上流CMakeLists自身が`tree-sitter generate`で都度生成する設計だった。tree-sitter CLI(v0.26.11、本プロジェクトのtree-sitterコア本体と同一バージョン)はNode.js不要のスタンドアロンWindowsバイナリとして配布されており、CIには現状Node.js/npm/cargoいずれのツールチェインも存在しない。
+
+**この状況をAskUserQuestionで提示し、Plan Modeで詳細計画を作成した上で、「事前生成して自リポへベンダー(推奨案)」が選ばれた** — 「tree-sitter CLIをビルド依存として導入する」対抗案は、CI 3ジョブへの新規ツールプロビジョニング追加と「ビルド時に第三者バイナリを実行する」という本プロジェクト初のリスクカテゴリを伴うため。詳細は[ADR-021](../decisions/ADR-021-sql-grammar-vendored-generation.md)参照。
+
+**実施内容:**
+- tree-sitter CLI(v0.26.11)を開発機上でダウンロード・実行し、`tree-sitter-sql`(v0.3.11)から`parser.c`を一度だけ生成した。**生成物が17.3MBに達し、現在の`.git`全体(約30MB)に対して大きな割合であることが判明** — 計画時点でこの規模感を明示していなかったため、コミット前にAskUserQuestionでサイズを開示・再確認し、「このまま17MBをコミット」が選ばれた。
+- 新規`third_party/tree-sitter-sql-generated/`: `src/parser.c`(生成)+`src/scanner.c`(上流コピー)+`src/tree_sitter/{parser.h,alloc.h,array.h}`(生成、当初コピーを失念しビルド`fatal error C1083`で発覚・追加)+`LICENSE`+`NOTICE.md`(由来・再生成手順)。
+- `cmake/Dependencies.cmake`: 他の21言語と異なりFetchContentを使わず`third_party/`配下を直接参照する`tree-sitter-sql-grammar`ターゲット新設。
+- `src/syntax/src/syntax_internal.h`: `namedLeafKindsForSql()`(3エントリのみ)+`classifyLeaf()`への`keyword_`プレフィックス汎用規則追加(実機probeで356種の`keyword_*`名前付きノード型を確認、個別テーブル化せず一般化)。`literal`ノードは意図的にテーブル未登録(TRUE/FALSE/NULLをラップする非leaf用法と、真の文字列/数値リテラルのleaf用法が同一型名のため、登録すると前者を誤分類する — 2段階目のprobeで発見・設計訂正)。
+- `syntax.h`/`.cpp`/`outline.cpp`/`incremental_parser.cpp`/`syntax_language.h`: 既存の全21言語と同じパターンでの機械的統合。
+- 単体テスト追加(`syntax_syntax_test.cpp`/`app_syntax_language_test.cpp`/`syntax_outline_test.cpp`/`syntax_incremental_parser_test.cpp`)。**既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`非対応を検証していたため、SQL対応追加により失敗すると判明し修正した。**
+
+**実測検証:**
+- ローカル**Debug/Release/ubsan全966件green**。
+- clang-tidy: 変更した`src/syntax/`配下の全ファイルで新規警告0(対照として未変更ファイル`render_pipeline.cpp`と同一の3行の既知ノイズ「`/Zc:__STDC__`等の引数未使用」のみ確認、実コードへの指摘は無し)。
+- 実アプリで`--open`引数によりコメント・DDL・DML一通りを含むSQLサンプルファイルを開き、3秒後もプロセスが生存していることを確認。
+
+**完了条件:**
+- [x] `third_party/tree-sitter-sql-generated/`へのベンダリング(ユーザー承認済み)
+- [x] `Language::Sql`統合一式(CMake配線・syntax実装・テスト)
+- [x] ローカルDebug/Release/ubsan全green、clang-tidy新規警告0
+- [x] 実アプリ動作確認
+- [x] ADR-021起票
+
+**スコープ外(意図的):** `extractOutline()`のSQL向けシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更、文字列/数値リテラル自体への専用色分け、tree-sitter CLIを将来のビルド依存として導入する案の再検討。
+
+**コミットは2件に分ける予定(third_party/ベンダリング単独→統合一式)、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/大規模文書の性能DoD再挑戦のいずれか、着手前にユーザーへ確認すること。
 
 ---
 
@@ -2343,9 +2378,28 @@ sourceの直接読解で、`ts_parser_parse()`のメインループが文書全�
 (ASanが本来の役目を果たした結果であり実装の不具合ではない) — このテストは削除し、
 `plugin_sdk.h`のスレッド契約コメントへ「SEHは可能性を減らすが安全性を保証しない」という
 正確な記述を追加するに留めた。`ui::CommandPalette`への実配線・`main.cpp`配線・unload時
-自動クリーンアップは次サブフェーズへ延期。**Phase 8fはコミット済み、pushはユーザーの
-明示指示待ち。次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/
-SQL文法のtree-sitter CLIビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。**
+自動クリーンアップは次サブフェーズへ延期。**Phase 8fはコミット済み(`b1e23d3`)、pushは
+ユーザーの明示指示待ち。**
+
+**続けてPhase 7y(追加言語対応バッチ5、SQL)を実装・完了した(§3.66参照)。** roadmap必須
+23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無い」として据え置いて
+いた最後の言語。`DerekStride/tree-sitter-sql`(v0.3.11)は`tree-sitter generate`による
+都度生成を要するため、「tree-sitter CLIをビルド依存として導入」vs「開発機上で一度だけ
+生成しベンダリング」をAskUserQuestionで提示し、**ベンダリング(推奨案)**が選ばれた
+(ADR-021、CI新規ツールプロビジョニング不要・ビルド時第三者バイナリ実行という新規
+リスクカテゴリを回避)。生成した`parser.c`が17.3MB(`.git`全体の約30MBに対して大きな
+割合)と判明したため、コミット前にAskUserQuestionでサイズを再確認し「このまま17MBを
+コミット」が選ばれた。実機probe(2段階)で`tree-sitter-sql`が356種の`keyword_*`名前付き
+ノード型を持つと判明し、個別テーブル化せず`classifyLeaf()`へ`keyword_`プレフィックス
+汎用規則を追加(SQL専用ではなく将来の同種文法にも効く一般化)。2段階目のprobeで
+`literal`ノードがTRUE/FALSE/NULLラッパー(非leaf)と真の文字列/数値リテラル(leaf)の
+両方を指す同一型名だと判明し、`literal`をテーブルから意図的に除外(登録すると前者を
+誤分類するため)。既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`
+非対応を主張していたため更新が必要だった。ローカルDebug/Release/ubsan全966件green、
+clang-tidy新規警告0、実アプリ`--open`スモークテスト確認済み。**コミットは2件に分ける
+予定(third_party/ベンダリング単独→統合一式)、pushはユーザーの明示指示待ち。次フェーズは
+AppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/大規模文書の性能DoD再挑戦の
+いずれか、着手前にユーザーへ確認すること。**
 ```
 
 **Phase 3 全体ロードマップ (完了、2026-07-16):**

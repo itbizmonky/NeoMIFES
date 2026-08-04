@@ -27,6 +27,7 @@ using neomifes::syntax::parsePowerShell;
 using neomifes::syntax::parsePython;
 using neomifes::syntax::parseRust;
 using neomifes::syntax::parseShell;
+using neomifes::syntax::parseSql;
 using neomifes::syntax::parseToml;
 using neomifes::syntax::parseTsx;
 using neomifes::syntax::parseTypeScript;
@@ -1436,6 +1437,84 @@ TEST(SyntaxParseBatchTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
     }
 }
 
+// Every expectation below was computed by a standalone probe against real
+// DerekStride/tree-sitter-sql v0.3.11 output (Phase 7y, CLAUDE.md rule 3),
+// including the two subtleties that drove namedLeafKindsForSql()'s design
+// (see that table's own comment in syntax_internal.h): "literal" wraps
+// keyword_true/false/null for TRUE/FALSE/NULL (must be classified Keyword,
+// NOT the bucket a "literal" table entry would force), and is otherwise a
+// genuine leaf for real string/number literals (classified Text - no
+// dedicated bucket exists for it, an accepted grammar-level limitation).
+TEST(SyntaxParseSqlTest, EmptyTextProducesNoTokens) {
+    EXPECT_TRUE(parseSql(u"").empty());
+}
+
+TEST(SyntaxParseSqlTest, ClassifiesLineCommentSelectKeywordsAndIdentifiers) {
+    const std::u16string source = u"-- get all users\nSELECT id, name FROM users WHERE age > 18;\n";
+    const std::vector<Token> tokens = parseSql(source);
+    ASSERT_EQ(tokens.size(), 12u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);      // "-- get all users"
+    EXPECT_EQ(tokens[1].kind, TokenKind::Keyword);      // SELECT (keyword_select)
+    EXPECT_EQ(tokens[2].kind, TokenKind::Variable);     // id
+    EXPECT_EQ(tokens[3].kind, TokenKind::Punctuation);  // ,
+    EXPECT_EQ(tokens[4].kind, TokenKind::Variable);     // name
+    EXPECT_EQ(tokens[5].kind, TokenKind::Keyword);      // FROM (keyword_from)
+    EXPECT_EQ(tokens[6].kind, TokenKind::Variable);     // users
+    EXPECT_EQ(tokens[7].kind, TokenKind::Keyword);      // WHERE (keyword_where)
+    EXPECT_EQ(tokens[8].kind, TokenKind::Variable);     // age
+    EXPECT_EQ(tokens[9].kind, TokenKind::Punctuation);  // >
+    EXPECT_EQ(tokens[10].kind, TokenKind::Text);        // 18 (literal - no dedicated bucket, see comment above)
+    EXPECT_EQ(tokens[11].kind, TokenKind::Punctuation);  // ;
+    EXPECT_EQ(tokens[1].range.start, 17u);
+    EXPECT_EQ(tokens[1].range.end, 23u);
+}
+
+TEST(SyntaxParseSqlTest, ClassifiesBlockCommentAsCommentAndStringLiteralAsText) {
+    // "marginalia" (NOT "comment") is the block-comment node type - probe-verified.
+    const std::u16string source = u"/* multi\n   line comment */\nSELECT 'hello world' AS greeting;\n";
+    const std::vector<Token> tokens = parseSql(source);
+    ASSERT_EQ(tokens.size(), 6u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Comment);      // "/* multi\n   line comment */" (marginalia)
+    EXPECT_EQ(tokens[1].kind, TokenKind::Keyword);      // SELECT
+    EXPECT_EQ(tokens[2].kind, TokenKind::Text);         // 'hello world' (literal - see comment above)
+    EXPECT_EQ(tokens[3].kind, TokenKind::Keyword);      // AS (keyword_as)
+    EXPECT_EQ(tokens[4].kind, TokenKind::Variable);     // greeting
+    EXPECT_EQ(tokens[5].kind, TokenKind::Punctuation);  // ;
+}
+
+TEST(SyntaxParseSqlTest, ClassifiesTrueFalseNullAsKeywordNotText) {
+    // Regression test for the correctness reason namedLeafKindsForSql()
+    // deliberately excludes "literal": TRUE/FALSE/NULL are each a "literal"
+    // node WRAPPING a keyword_true/keyword_false/keyword_null child (not a
+    // genuine leaf itself, unlike a real string/number literal) - the walk
+    // must descend into it and classify the child as Keyword, not treat the
+    // wrapper as atomic and misclassify it as whatever bucket "literal"
+    // would otherwise map to.
+    const std::u16string source = u"SELECT TRUE, FALSE, NULL;\n";
+    const std::vector<Token> tokens = parseSql(source);
+    ASSERT_EQ(tokens.size(), 7u);
+    EXPECT_EQ(tokens[0].kind, TokenKind::Keyword);      // SELECT
+    EXPECT_EQ(tokens[1].kind, TokenKind::Keyword);      // TRUE (keyword_true)
+    EXPECT_EQ(tokens[2].kind, TokenKind::Punctuation);  // ,
+    EXPECT_EQ(tokens[3].kind, TokenKind::Keyword);      // FALSE (keyword_false)
+    EXPECT_EQ(tokens[4].kind, TokenKind::Punctuation);  // ,
+    EXPECT_EQ(tokens[5].kind, TokenKind::Keyword);      // NULL (keyword_null)
+    EXPECT_EQ(tokens[6].kind, TokenKind::Punctuation);  // ;
+}
+
+TEST(SyntaxParseSqlTest, MalformedInputDoesNotCrashAndStillYieldsTokens) {
+    const std::vector<Token> tokens = parseSql(u"SELEC FRM WHRE (((\n");
+    EXPECT_FALSE(tokens.empty());
+}
+
+TEST(SyntaxParseSqlTest, TokensAreOrderedLeftToRightAndNonOverlapping) {
+    const std::u16string source = u"SELECT id, name FROM users WHERE age > 18;\n";
+    const std::vector<Token> tokens = parseSql(source);
+    for (std::size_t i = 1; i < tokens.size(); ++i) {
+        EXPECT_LE(tokens[i - 1].range.end, tokens[i].range.start);
+    }
+}
+
 TEST(SyntaxParseDispatcherTest, ParseWithPowerShellLanguageMatchesParsePowerShell) {
     const std::u16string source = u"$x = 1\n";
     EXPECT_EQ(parse(source, Language::PowerShell), parsePowerShell(source));
@@ -1449,6 +1528,11 @@ TEST(SyntaxParseDispatcherTest, ParseWithIniLanguageMatchesParseIni) {
 TEST(SyntaxParseDispatcherTest, ParseWithBatchLanguageMatchesParseBatch) {
     const std::u16string source = u"echo hi\n";
     EXPECT_EQ(parse(source, Language::Batch), parseBatch(source));
+}
+
+TEST(SyntaxParseDispatcherTest, ParseWithSqlLanguageMatchesParseSql) {
+    const std::u16string source = u"SELECT id FROM t;\n";
+    EXPECT_EQ(parse(source, Language::Sql), parseSql(source));
 }
 
 }  // namespace

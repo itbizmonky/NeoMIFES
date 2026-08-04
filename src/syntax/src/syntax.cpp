@@ -26,6 +26,7 @@ using detail::namedLeafKindsForPhp;
 using detail::namedLeafKindsForPowerShell;
 using detail::namedLeafKindsForPython;
 using detail::namedLeafKindsForRust;
+using detail::namedLeafKindsForSql;
 using detail::namedLeafKindsForToml;
 using detail::namedLeafKindsForTsx;
 using detail::namedLeafKindsForTypeScript;
@@ -137,6 +138,10 @@ std::vector<Token> parseBatch(std::u16string_view text) {
     return parseWithLanguage(text, detail::tree_sitter_batch(), namedLeafKindsForBatch());
 }
 
+std::vector<Token> parseSql(std::u16string_view text) {
+    return parseWithLanguage(text, detail::tree_sitter_sql(), namedLeafKindsForSql());
+}
+
 std::vector<Token> parse(std::u16string_view text, Language language) {
     switch (language) {
         case Language::Cpp:
@@ -181,6 +186,8 @@ std::vector<Token> parse(std::u16string_view text, Language language) {
             return parseIni(text);
         case Language::Batch:
             return parseBatch(text);
+        case Language::Sql:
+            return parseSql(text);
     }
     return {};  // unreachable (all Language enumerators handled above)
 }

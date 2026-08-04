@@ -535,6 +535,23 @@ add_library(tree-sitter-batch-grammar STATIC
 target_include_directories(tree-sitter-batch-grammar PRIVATE "${tree-sitter-batch_SOURCE_DIR}/src")
 target_link_libraries(tree-sitter-batch-grammar PRIVATE tree-sitter)
 
+# ---- tree-sitter-sql grammar (Phase 7y, ADR-021) ---------------------------
+# DerekStride/tree-sitter-sql は src/parser.c を上流にコミットしていない
+# (grammar.js から `tree-sitter generate` で都度生成する設計、上流CMakeLists
+# 自身が find_program(TREE_SITTER_CLI) 経由でそれを行う)。他の全言語のように
+# FetchContent + 既存parser.cを直接参照するADR-014のパターンが使えないため、
+# 本プロジェクトでこのセッション中に一度だけ生成したparser.cを
+# third_party/tree-sitter-sql-generated/ へベンダリングした(ADR-021、
+# third_party/tree-sitter-sql-generated/NOTICE.md に由来・再生成手順を記載)。
+# FetchContentは使わず、リポジトリ内の静的ファイルを直接参照するのみ。
+add_library(tree-sitter-sql-grammar STATIC
+    "${CMAKE_SOURCE_DIR}/third_party/tree-sitter-sql-generated/src/parser.c"
+    "${CMAKE_SOURCE_DIR}/third_party/tree-sitter-sql-generated/src/scanner.c"
+)
+target_include_directories(tree-sitter-sql-grammar PRIVATE
+    "${CMAKE_SOURCE_DIR}/third_party/tree-sitter-sql-generated/src")
+target_link_libraries(tree-sitter-sql-grammar PRIVATE tree-sitter)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -562,13 +579,16 @@ target_link_libraries(tree-sitter-batch-grammar PRIVATE tree-sitter)
 # tree-sitter-{html,css,bash,yaml,toml,xml}-grammar (Phase 7r) are too.
 # tree-sitter-{typescript,tsx,php,markdown}-grammar (Phase 7s) are too.
 # tree-sitter-{powershell,ini,batch}-grammar (Phase 7x) are too.
+# tree-sitter-sql-grammar (Phase 7y) is too, despite not being FetchContent'd
+# (its parser.c/scanner.c are vendored under third_party/, see ADR-021) - it
+# is still generated/upstream third-party code, not held to our /W4 policy.
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
 foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar
         tree-sitter-c-grammar tree-sitter-javascript-grammar tree-sitter-java-grammar tree-sitter-go-grammar
         tree-sitter-rust-grammar tree-sitter-json-grammar tree-sitter-html-grammar tree-sitter-css-grammar
         tree-sitter-bash-grammar tree-sitter-yaml-grammar tree-sitter-toml-grammar tree-sitter-xml-grammar
         tree-sitter-typescript-grammar tree-sitter-tsx-grammar tree-sitter-php-grammar tree-sitter-markdown-grammar
-        tree-sitter-powershell-grammar tree-sitter-ini-grammar tree-sitter-batch-grammar)
+        tree-sitter-powershell-grammar tree-sitter-ini-grammar tree-sitter-batch-grammar tree-sitter-sql-grammar)
     if(TARGET ${_tp})
         set_target_properties(${_tp} PROPERTIES
             FOLDER "third_party"

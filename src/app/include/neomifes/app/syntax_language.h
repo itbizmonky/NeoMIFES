@@ -24,8 +24,8 @@ namespace neomifes::app {
 // Rust, .json as JSON, .html/.htm as HTML, .css as CSS, .sh/.bash as Shell,
 // .yaml/.yml as YAML, .toml as TOML, .xml as XML, .ts/.mts/.cts as
 // TypeScript, .tsx as TSX, .php as PHP, .md/.markdown as Markdown,
-// .ps1/.psm1/.psd1 as PowerShell, .ini as Ini, and .bat/.cmd as Batch,
-// case-insensitively; nullopt for anything else. This is the single gate
+// .ps1/.psm1/.psd1 as PowerShell, .ini as Ini, .bat/.cmd as Batch, and .sql
+// as SQL, case-insensitively; nullopt for anything else. This is the single gate
 // neomifes::render::RenderPipeline::setLanguage()'s
 // argument is built from. Shebang-line detection (a Python script with no
 // .py extension) is deliberately not implemented - C++ detection is
@@ -108,6 +108,9 @@ namespace neomifes::app {
     }
     if (ext == L".bat" || ext == L".cmd") {
         return syntax::Language::Batch;
+    }
+    if (ext == L".sql") {
+        return syntax::Language::Sql;
     }
     return std::nullopt;
 }

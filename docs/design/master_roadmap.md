@@ -235,14 +235,15 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 7v | ミニマップ (簡易版・スクロール追従型、文書全体俯瞰は次候補) | ✅ 完了 | §7.4 |
 | 7w | ミニマップ「文書全体俯瞰型」拡張 (遅延ポピュレーション方式) | ✅ 完了 | §7.4 |
 | 7x | 追加言語対応 バッチ4 (PowerShell/INI/Batch — 個人メンテナ文法、SQLはparser.c未コミットで対象外、VB/VBScriptはライセンス不明で恒久除外) | ✅ 完了 | §7 |
-| 7y〜 | tree-sitter内部実装のさらなる調査(50万行DoD未達の解消) / SQL文法のtree-sitter CLIビルド依存導入検討 | ⏭️ 次候補 (Phase 7、保留中) | §7 |
+| 7y | 追加言語対応 バッチ5 (SQL — 事前生成parser.cベンダリング方式、ADR-021) | ✅ 完了 | §7 |
+| 7z〜 | tree-sitter内部実装のさらなる調査(50万行DoD未達の解消) | ⏭️ 次候補 (Phase 7、保留中) | §7 |
 | 8a | プラグインエンジン 最小限PoC (C ABI + LoadLibraryW + SEHクラッシュ隔離、ADR-015) | ✅ 完了 | §8 |
 | 8b | `NeoMifesCoreApi`橋渡し実装 (insertText/deleteRange/getLineCount/getLineText、ADR-016) | ✅ 完了 | §8 |
 | 8c | Job Objectによるプラグイン資源制限 (`ActiveProcessLimit=1`のみ、ADR-017) | ✅ 完了 | §8, §17.1 |
 | 8d | `permissions`権限モデル (自己申告ビットフィールド + NULL関数ポインタ・ゲート、ADR-018) | ✅ 完了 | §8, §17.1 |
 | 8e | showToast ヘッドレス実装 (`ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 | §8 |
 | 8f | registerCommand ヘッドレス実装 (`ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 | §8 |
-| 8g〜 | AppContainerサンドボックス / 大規模文書の性能DoD再挑戦 / SQL文法対応 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
+| 8g〜 | AppContainerサンドボックス / 大規模文書の性能DoD再挑戦 (着手前にユーザー確認) | ⏭️ 次候補 | §8 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 未着手 | §9 |
 | 10 | ログ解析 / CSV / JSON-XML tree | 未着手 | §10 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
@@ -900,7 +901,7 @@ v2.0 大幅拡張: **ミニマップ、Breadcrumb、Sticky scroll、Indent guide
 ### 7.2 対応言語 (Phase 7 の一次スコープ、要件定義書 §6 対応)
 必須: C / C++ / TypeScript / JavaScript / Python / Java / Go / Rust / PHP / HTML / CSS / JSON / XML / YAML / SQL / Markdown / PowerShell / VB / VBS / BAT / Shell / INI / TOML / **SAP ABAP** (P1 対応)
 
-> **実装状況 (2026-08-01、Phase 7x完了時点):** ✅ 完了21言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)・TypeScript/Tsx/PHP/Markdown(7s)・PowerShell/Ini/Batch(7x)。TypeScriptは`.ts`/`.tsx`で2つの独立した完全な文法(`typescript`/`tsx`)を使い分ける設計にし、PHPは`php`のみ採用(`php_only`は埋め込み専用で対象外)、Markdownはブロック文法(`tree-sitter-markdown`)のみ採用(`tree-sitter-markdown-inline`は言語注入機構が本コードベースに無いため対象外、段落内の強調/リンク等は無彩色のまま)。PowerShell/Ini/Batchは`tree-sitter/`・`tree-sitter-grammars/`両org不在の個人メンテナ文法(`airbus-cert/tree-sitter-powershell`・`justinmk/tree-sitter-ini`・`wharflab/tree-sitter-batch`)を実地調査の上で採用 — 詳細は§7実装後の確定事項(7x)参照。**残りSQL・VB・VBScript・SAP ABAP(P1)は恒久的または当面の対象外:** SQL(`DerekStride/tree-sitter-sql`)は`src/`に`parser.c`が未コミットで`tree-sitter generate`(Node.js CLI)が必要、本プロジェクト初のビルド依存追加になるため次点(Phase 7yで再検討)。VB/VBScriptは調査した全候補がライセンス不明(`license: null`)のため恒久除外。SAP ABAPは未調査のまま継続保留。
+> **実装状況 (2026-08-04、Phase 7y完了時点):** ✅ 完了22言語 — C++(7a)・Python(7d)・C/JavaScript/Java/Go/Rust/JSON(7n1)・HTML/CSS/Shell/YAML/TOML/XML(7r)・TypeScript/Tsx/PHP/Markdown(7s)・PowerShell/Ini/Batch(7x)・SQL(7y)。TypeScriptは`.ts`/`.tsx`で2つの独立した完全な文法(`typescript`/`tsx`)を使い分ける設計にし、PHPは`php`のみ採用(`php_only`は埋め込み専用で対象外)、Markdownはブロック文法(`tree-sitter-markdown`)のみ採用(`tree-sitter-markdown-inline`は言語注入機構が本コードベースに無いため対象外、段落内の強調/リンク等は無彩色のまま)。PowerShell/Ini/Batchは`tree-sitter/`・`tree-sitter-grammars/`両org不在の個人メンテナ文法(`airbus-cert/tree-sitter-powershell`・`justinmk/tree-sitter-ini`・`wharflab/tree-sitter-batch`)を実地調査の上で採用。SQL(`DerekStride/tree-sitter-sql`)は上流に`parser.c`が無いため、ビルド時にtree-sitter CLIを導入するのではなく開発機上で一度だけ生成した`parser.c`を`third_party/tree-sitter-sql-generated/`へベンダリングして対応(ADR-021) — 詳細は§7実装後の確定事項(7y)参照。**残りVB・VBScript・SAP ABAP(P1)は恒久的または当面の対象外:** VB/VBScriptは調査した全候補がライセンス不明(`license: null`)のため恒久除外。SAP ABAPは未調査のまま継続保留。
 
 ### 7.3 データ構造・アルゴリズム
 
@@ -1012,6 +1013,20 @@ Phase 8a(プラグインエンジン最小限PoC)完了後、ユーザーから�
 - **ローカルDebug/Release/ubsan全905件green、clang-tidy新規警告0を確認した。** テストファイル群(`syntax_syntax_test.cpp`/`syntax_outline_test.cpp`/`syntax_incremental_parser_test.cpp`)には警告が多数出たが、全て「整数リテラルの小文字`u`サフィックス」というPhase 7a以来ファイル全体で一貫している既存スタイル、または私が変更していない既存コード行(自分の追加した`using`宣言により行番号がシフトしただけ)であることを1件ずつ確認し、新規パターンではないと判断した
 
 **スコープ外(意図的、後続バッチへ):** SQL(`parser.c`未コミット、tree-sitter CLI/Node.js依存の新規導入が必要)、VB/VBScript(ライセンス不明の文法しか存在せず恒久除外)、SAP ABAP(未調査のまま継続保留)、新3言語の`extractOutline()`シンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。詳細は`detailed_design.md` §10.25参照。
+
+### 実装後の確定事項/変更点 (2026-08-04、Phase 7y完了 — 追加言語対応 バッチ5・SQL)
+
+Phase 8f(`registerCommand`ヘッドレス実装)完了後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionでroadmap上の次候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**SQL文法対応(推奨案)**が選ばれた — Phase 7xが唯一「候補文法はあるが`parser.c`未コミットのため対象外」として据え置いていた最後の言語。
+
+- **`parser.c`生成方式についてAskUserQuestionでユーザーに再確認した。** Phase 7xの想定通り`DerekStride/tree-sitter-sql`(v0.3.11)は`src/`に`scanner.c`のみで`parser.c`が無く、上流CMakeLists自身が`tree-sitter generate`で都度生成する設計だった。「tree-sitter CLIをビルド依存として導入し毎回生成する」案と「開発機上で一度だけ生成しベンダリングする」案を提示し、**ベンダリング(推奨案)**が選ばれた — CI 3ジョブへの新規ツールプロビジョニング追加、および「ビルド時に第三者バイナリを実行する」という本プロジェクト初のリスクカテゴリを避けるため。詳細は[ADR-021](../decisions/ADR-021-sql-grammar-vendored-generation.md)参照。
+- **tree-sitter CLI(v0.26.11、Node.js不要のスタンドアロンWindowsバイナリ、コア本体と同一バージョン)を開発機上で一度だけ実行し、`parser.c`(17.3MB)を生成した。** 生成物のサイズが現在の`.git`全体(約30MB)に対して大きな割合であることが判明したため、ベンダリング続行の可否をAskUserQuestionで再確認し、「このまま17MBをコミット」が選ばれた(tree-sitter-cppの`parser.c`も同等サイズであり、SQL文法の構造上自然な規模と判断)。
+- **`third_party/tree-sitter-sql-generated/`を新設し、`parser.c`(生成)+`scanner.c`(上流コピー)+`tree_sitter/{parser.h,alloc.h,array.h}`(生成、他の全文法が自分の`src/tree_sitter/`に持つのと同種のランタイムヘッダ)+`LICENSE`+`NOTICE.md`(由来・再生成手順)を配置した。** 当初`tree_sitter/`ヘッダ一式のコピーを失念しビルドが`fatal error C1083`で失敗したため、実機ビルド検証で発見・追加した(CLAUDE.mdルール3、記憶からの推測ではなく実測で確認)。
+- **実機probe(2段階、追加でTRUE/FALSE/NULL・JOIN/CASE・DDL・CTE・ドル引用文字列の構造も確認)で、`tree-sitter-sql`が356種類の`keyword_*`名前付きノード型を持つと判明した。** 他の全20言語と異なりキーワードが匿名トークンではなく個別の名前付きリーフのため、既存の`classifyAnonymousLeaf()`ヒューリスティックが効かない。356個の明示的テーブルエントリを書く代わりに、`classifyLeaf()`へ「テーブル未登録の名前付きリーフの型名が`keyword_`で始まるなら`Keyword`」という1行の汎用規則を追加した — SQL専用の特殊対応ではなく、同じ命名規則を使う将来のどの文法にも自動的に効く一般化。
+- **`literal`ノードが(a)真の文字列/数値リテラル(リーフ)と(b)`TRUE`/`FALSE`/`NULL`(`keyword_true`等を子に持つラッパー、非リーフ)の両方に使われる同一型名だと2段階目のprobeで判明した。** 当初`literal`をテーブルへ追加する設計だったが、これは`isAtomicNode()`の「テーブル登録済み型は無条件にリーフ扱い」という性質により(b)を誤って`literal`のテーブル値に上書きしてしまう(TRUE/FALSE/NULLがKeywordではなく別の色になる)ため、`literal`はテーブルから意図的に除外した。結果、(b)は正しく子(`keyword_true`等)まで降りてKeyword分類され、(a)はリーフのまま`TokenKind::Text`(専用の色分けなし、許容するトレードオフ)になる。単体テストの初期実装(トークン数の手計算)がこの2段階目のprobeを行う前に書いたものだったため実際に1件off-by-oneで失敗し、修正した。
+- **既存のPhase 7x以前からの`DetectLanguageTest.RejectsNonRecognizedExtensions`(`.sql`が非対応であることを検証する既存テスト)が、SQL対応追加後に失敗することが判明した。** 対応拡張子が変わった既存テストの更新漏れであり、`.sql`の主張を削除して修正した(新設した`RecognizesSqlExtension`が正の主張を担う)。
+- **ローカルDebug/Release/ubsan全966件green、clang-tidy新規警告0(未変更の対照ファイルと同一の3行の既知ノイズ「`/Zc:__STDC__`等の引数未使用」のみ、実コードへの指摘なし)を確認した。** 実アプリで`.sql`サンプルファイル(コメント・DDL・DML一通り含む)を`--open`で開き、3秒後もプロセスが生存していることを確認した。
+
+**スコープ外(意図的):** `extractOutline()`のSQL向けシンボル抽出ロジック本体(既存の全非Cpp/Python言語と同じ空`SymbolTable`)、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(既存の汎用ディスパッチがそのまま機能するため不要)、文字列/数値リテラル自体への専用色分け(上記`literal`の型名レベルの限界)、tree-sitter CLIを将来のビルド依存として導入する案の再検討。詳細は`detailed_design.md` §10.26参照。
 
 ### 7.5 Breadcrumb (v2.0 新規)
 
@@ -1529,7 +1544,7 @@ typedef struct NeoMifesCoreApi {
 
 **実測による検証:** `tests/integration/plugin_command_test.cpp`で、新規サンプル`command_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつコマンドを登録し、後から実行されたコールバックが`showToast`を呼ぶ)の遅延呼び出しが正しく`ctx->coreApi`まで到達すること、および新規サンプル`crashing_command_plugin`(登録したコマンドのコールバックが意図的にクラッシュ)の実行が`load()`/`unload()`の呼び出しスタック外でもSEHトランポリンで隔離されることをローカル実機(Debug/Release/ubsan全956件green)で確認した。**プラグインunload後にstaleなコマンドを呼び出す自動テストは、ubsanプリセット(AddressSanitizer)が実際のヒープuse-after-freeを正しく検出・報告したため削除した** — ASanが本来の役目を正しく果たした結果であり、`registerCommand`実装の不具合ではない(詳細はADR-020参照)。
 
-**次候補 (Phase 8g〜):** AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。
+**次候補 (Phase 8g〜):** ~~AppContainerサンドボックス(別プロセス+IPC全面再設計が前提、真に必要になった時点で再評価) / 大規模文書の性能DoD再挑戦 / SQL文法対応 — 着手前にユーザーへ確認する。~~ → SQL文法対応が選ばれ、Phase 7yで完了(§7実装後の確定事項(7y)参照。Phase 7トラック(syntax highlighting)の項目のためPhase 7yとして実施、8g自体は未完了のまま次候補にAppContainer/性能DoD再挑戦のみが残る)。
 
 ---
 

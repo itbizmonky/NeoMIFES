@@ -2883,6 +2883,51 @@ PowerShellは`$true`/`$false`/`$null`を専用のブール/null型ノードと�
 
 **スコープ外(意図的、後続バッチへ):** SQL(`parser.c`未コミット、tree-sitter CLI/Node.js依存の新規導入が必要)、VB/VBScript(ライセンス不明の文法しか存在せず恒久除外)、SAP ABAP(未調査のまま継続保留)、新3言語の`extractOutline()`シンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(Phase 7dで確立済みの汎用ディスパッチがそのまま機能するため不要)。
 
+### 10.26 追加言語対応 バッチ5 (SQL、Phase 7y実装)
+
+Phase 7xが唯一「候補文法はあるが`parser.c`未コミットのため対象外」として据え置いていたSQLに対応した。`DerekStride/tree-sitter-sql`(v0.3.11、MIT、243★)は上流が`src/parser.c`をコミットしておらず、`grammar.js`から`tree-sitter generate`で都度生成する設計(上流`CMakeLists.txt`自身が`find_program(TREE_SITTER_CLI)`経由で行う)。本プロジェクトはこれをビルド依存として導入せず、**開発機上で一度だけ生成した`parser.c`を`third_party/tree-sitter-sql-generated/`へベンダリングする方式(ADR-021)** を採った — 詳細な意思決定過程はADR-021参照。
+
+**`third_party/tree-sitter-sql-generated/`の構成:**
+```
+third_party/tree-sitter-sql-generated/
+├── LICENSE                      # 上流v0.3.11のMITライセンス全文
+├── NOTICE.md                    # 由来・再生成手順
+└── src/
+    ├── parser.c                 # 機械生成(17.3MB)、tree-sitter CLI v0.26.11で生成
+    ├── scanner.c                 # 上流からバイト単位でそのままコピー
+    └── tree_sitter/
+        ├── parser.h              # 生成物(他の全文法が同様に自分のsrc/tree_sitter/に持つのと同種)
+        ├── alloc.h
+        └── array.h
+```
+`cmake/Dependencies.cmake`は他の21言語のような`FetchContent_Declare`を使わず、これらのファイルを直接参照する`add_library(tree-sitter-sql-grammar STATIC ...)`のみ(末尾の`foreach`ループで他文法と同じくwarnings-as-errors除外対象に追加)。
+
+**`namedLeafKindsForSql()`(`syntax_internal.h`、実機probeで確認、意図的に最小限):**
+```cpp
+{"comment", TokenKind::Comment},     // "-- ..." line comment
+{"marginalia", TokenKind::Comment},  // "/* ... */" block comment (NOT named "comment")
+{"identifier", TokenKind::Variable},
+```
+`literal`は意図的に含まない(下記参照)。
+
+**`classifyLeaf()`への`keyword_`プレフィックス規則追加:** `node-types.json`から機械的に抽出した結果、`tree-sitter-sql`は356種類の`keyword_*`名前付きノード型を定義していると判明した(`SELECT`/`FROM`/`WHERE`/`CREATE`/...それぞれが独立した名前付きリーフ)。他の全20言語はキーワードを匿名の文字列リテラルトークンとして扱い、既存の`classifyAnonymousLeaf()`の「無名リーフかつ全アルファベット文字なら`Keyword`」ヒューリスティックがそのまま機能してきたが、SQLはこの前提が成り立たない。356個の明示的テーブルエントリを書き出す代わりに、`classifyLeaf()`(名前付きリーフの分類を担う関数)へ以下の1行を追加した:
+```cpp
+if (type.starts_with("keyword_")) {
+    return TokenKind::Keyword;
+}
+```
+これはSQL専用の特殊対応ではなく、同じ命名規則(全キーワードをそれぞれ独立した名前付きノードとして表現する)を採用する将来のどの文法にも自動的に効く一般化であり、既存の20言語のいずれの名前付きノード型も`keyword_`で始まらないため副作用は無い。
+
+**`literal`をテーブルから意図的に除外した理由(正しさ上の理由、単なるスコープの割り切りではない):** 実機probeで、`literal`ノードは(a)真の文字列/数値リテラル(`'hello'`/`3.5`、真のリーフ、子ノード無し)と(b)`TRUE`/`FALSE`/`NULL`を表す`keyword_true`/`keyword_false`/`keyword_null`を**子として包むラッパー**(子ノード1個、真のリーフではない)の両方に使われる同一型名だと判明した。`isAtomicNode()`は「型名がテーブルにあれば無条件にリーフとして扱う(子へ降りない)」仕組みのため、`literal`をテーブルへ追加すると(b)のケースで`TRUE`/`FALSE`/`NULL`が正しい`Keyword`分類ではなく`literal`のテーブル値へ強制的に上書きされる(誤分類)。`literal`をテーブルから外すことで、(b)は`isAtomicNode()`の子ノード数チェックを通過せず正しく子(`keyword_true`等)まで降りて`Keyword`に分類される一方、(a)は真のリーフのままテーブル外(`TokenKind::Text`、専用の色分けなし)に分類される — SQLの`literal`が指す2つの概念を型名だけで判別する手段が無いための、XML/YAMLの「1つのノード型が複数概念を指す」既存の割り切りと同じ性質の受容可能なトレードオフ。
+
+**probe手法:** 2段階の実機probe(1段目: 基本SELECT/コメント/文字列、2段目: TRUE/FALSE/NULL・JOIN/GROUP BY/ORDER BY/CASE・CREATE TABLE型定義・WITH CTE・ドル引用文字列)を実装前に行った。1段目だけでは`literal`のラッパー用法(b)を見落とすところだったが、2段目で発見し設計を訂正した(CLAUDE.mdルール3、記憶からの推測をしない規律がこの訂正を可能にした)。
+
+**テスト:** `syntax_syntax_test.cpp`に`SyntaxParseSqlTest`6件(空文字列、行コメント+キーワード+識別子分類、ブロックコメント+文字列リテラル分類、TRUE/FALSE/NULL正しくKeyword分類される回帰テスト、不正入力での非クラッシュ、トークン順序整合性)+`SyntaxParseDispatcherTest`1件、`app_syntax_language_test.cpp`に`.sql`拡張子認識1件(既存の`RejectsNonRecognizedExtensions`から`.sql`の主張を削除する更新も同時に必要だった)、`syntax_outline_test.cpp`に空`SymbolTable`確認1件、`syntax_incremental_parser_test.cpp`にSQL増分再解析1件を追加。ローカルDebug/Release/ubsan全966件green、clang-tidy新規警告0(対照ファイルと同一の3行の既知ノイズのみ)。
+
+**実アプリ視覚確認:** `--open`引数でコメント・DDL・DML一通りを含むSQLサンプルファイルを開き、プロセスが3秒後もクラッシュせず生存していることを確認する軽量スモークテストで実施。
+
+**スコープ外(意図的):** `extractOutline()`のSQL向けシンボル抽出ロジック本体(既存の全非Cpp/Python言語と同じ空`SymbolTable`)、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更(既存の汎用ディスパッチがそのまま機能するため不要)、文字列/数値リテラル自体への専用色分け(上記`literal`の型名レベルの限界)、tree-sitter CLIを将来のビルド依存として導入する案の再検討。
+
 ---
 
 ## 11. ログ解析モード 詳細

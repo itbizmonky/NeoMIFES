@@ -2493,4 +2493,39 @@ tree-sitter内部実装調査完了・コミット・push・CI green確認後、
 
 **次回:** Phase 8fはローカル完了・コミット予定(push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/SQL文法のtree-sitter CLIビルド依存導入検討のいずれか、着手前にユーザーへ確認すること。
 
+**追記(Session 76冒頭で確認):** Phase 8fは`b1e23d3`としてコミット済み(push未実施のまま次セッションへ持ち越し)。
+
+---
+
+## Session 76 (2026-08-04): 次のPhaseに進めよ → Phase 7y — 追加言語対応 バッチ5 SQL (ADR-021)
+
+Phase 8f完了・コミット(`b1e23d3`、push未実施)後、ユーザーから「次のPhaseに進め」と指示された。`master_roadmap.md` §2の次候補行(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)をAskUserQuestionで提示し、**SQL文法対応(推奨案)**が選ばれた — roadmap必須23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無いため対象外」として据え置いていた最後の言語。
+
+**着手前調査(`gh api`直接確認、CLAUDE.mdルール3):** `DerekStride/tree-sitter-sql`(v0.3.11、MIT、243★)の`src/`には`scanner.c`のみで`parser.c`が無く、上流CMakeLists自身が`find_program(TREE_SITTER_CLI)` + `tree-sitter generate`で都度生成する設計だった。`scanner.c`は自己完結(標準Cヘッダのみ)、`grammar.js`の依存は全てリポジトリ内ローカルファイルへの相対import(npm不要)。tree-sitter CLI公式最新(v0.26.11、本プロジェクトのtree-sitterコア本体と同一バージョン)はNode.js不要のスタンドアロンWindowsバイナリとして配布されている。CIには現状Node/npm/cargoいずれのツールチェインも存在しない。
+
+**設計方針をAskUserQuestionで2回確認した:**
+1. 「tree-sitter CLIをビルド依存として導入し毎回generateする」vs「開発機上で一度だけ生成しベンダリングする」— **ベンダリング(推奨案)**が選ばれた。CI 3ジョブへの新規ツールプロビジョニング追加と「ビルド時に第三者バイナリを実行する」という本プロジェクト初のリスクカテゴリを回避するため。Plan Modeで詳細計画を作成・承認を得た。
+2. 実際に生成した`parser.c`が17.3MB(現在の`.git`全体約30MBに対して大きな割合)と判明したため、ベンダリング続行の可否を再確認 — **「このまま17MBをコミット」が選ばれた**(tree-sitter-cppの`parser.c`も同等サイズであり、SQL文法の構造上自然な規模と判断)。
+
+**実施内容:**
+- tree-sitter CLI(v0.26.11)を開発機上でダウンロード・実行し、`tree-sitter-sql`(v0.3.11)から`parser.c`を一度だけ生成した。
+- 新規`third_party/tree-sitter-sql-generated/`: `src/parser.c`(生成)+`src/scanner.c`(上流コピー)+`src/tree_sitter/{parser.h,alloc.h,array.h}`(生成、当初コピーを失念しビルド`fatal error C1083`で発覚・追加)+`LICENSE`+`NOTICE.md`(由来・再生成手順)。
+- `cmake/Dependencies.cmake`に、他の21言語と異なりFetchContentを使わず`third_party/`配下を直接参照する`tree-sitter-sql-grammar`ターゲットを新設。
+- **実機probe(2段階)で`tree-sitter-sql`が356種類の`keyword_*`名前付きノード型を持つと`node-types.json`から機械的に確認した。** 他の全20言語はキーワードを匿名トークンとして扱い既存の`classifyAnonymousLeaf()`ヒューリスティックが効いてきたが、SQLはこの前提が成り立たない。356個の明示的テーブルエントリを書く代わりに、`classifyLeaf()`へ「テーブル未登録の名前付きリーフの型名が`keyword_`で始まるなら`Keyword`」という1行の汎用規則を追加した(SQL専用ではなく将来の同種文法にも自動的に効く一般化)。
+- **2段階目のprobeで、`literal`ノードが(a)真の文字列/数値リテラル(leaf)と(b)`TRUE`/`FALSE`/`NULL`を表す`keyword_true`等を子に持つラッパー(非leaf)の両方に使われる同一型名だと判明した。** `isAtomicNode()`は「テーブル登録済み型は無条件リーフ扱い」のため、`literal`をテーブルへ追加すると(b)が誤ってKeywordではなくliteralのテーブル値へ上書きされる。`literal`をテーブルから意図的に除外することで、(b)は正しく子まで降りてKeyword分類され、(a)は`TokenKind::Text`(専用色分けなし、受容するトレードオフ)になる。1段階目のprobeだけではこの区別を見落とすところだった。
+- `syntax.h`/`.cpp`/`outline.cpp`/`incremental_parser.cpp`/`syntax_language.h`への既存21言語と同じパターンでの機械的統合。
+- 単体テスト追加。**既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`非対応を主張していたため、SQL対応追加により失敗すると判明し修正した**(既存テストの更新漏れ、CLAUDE.md §11のドキュメント/テスト鮮度チェックの一環として発見)。単体テストの初期実装(ブロックコメント+文字列リテラルのトークン数)も2段階目のprobe前に書いたため1件off-by-oneで失敗し修正した。
+
+**検証:** ローカル**Debug/Release/ubsan全966件green**。clang-tidy: 変更した`src/syntax/`配下の全ファイルで新規警告0(対照ファイル`render_pipeline.cpp`と同一の3行の既知ノイズ「`/Zc:__STDC__`等の引数未使用」のみ、実コードへの指摘なし)。実アプリで`--open`引数によりコメント・DDL・DML一通りを含むSQLサンプルファイルを開き、3秒後もプロセスが生存していることを確認した。
+
+**ADR-021起票:** `docs/decisions/ADR-021-sql-grammar-vendored-generation.md`(検討した2案の比較・ベンダリング採用理由・生成物サイズについてユーザー確認した経緯・`tree_sitter/`ヘッダも含めた理由・`keyword_`プレフィックス規則を追加した理由・`literal`を意図的に除外した正しさ上の理由を記載)。
+
+**ドキュメント同期:**
+- `docs/design/master_roadmap.md`: §2フェーズ早見表に「7y ✅完了」行を追加(次候補「7z〜」)、「8g〜」からSQL文法対応を削除、§7.2言語一覧の進捗を22/23言語へ更新、新規「実装後の確定事項/変更点 (Phase 7y完了)」小節
+- `docs/design/detailed_design.md`に新規§10.26「追加言語対応 バッチ5 (SQL、Phase 7y実装)」を追加
+- `docs/handoff/RESUME_HERE.md`: 冒頭メタデータ、§1状態表、新規§3.66(完了記録)、§6推奨プロンプトの末尾追記
+- `docs/decisions/README.md`にADR-021の行を追加
+
+**次回:** Phase 7yはローカル完了、コミットは2件に分ける予定(third_party/ベンダリング単独→統合一式、push はユーザーの明示指示待ち)。次フェーズ候補はAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/大規模文書の性能DoD再挑戦のいずれか、着手前にユーザーへ確認すること。
+
 <!-- 次セッションはここに追記 -->
