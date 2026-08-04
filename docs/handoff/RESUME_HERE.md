@@ -152,7 +152,7 @@
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 8.5a | **文書保存基盤** (`saveFile()`、`isDirty()`。probeでmmap解放は不要と判明し実装からは除外) | ✅ **完了 (WI-01、コミット済み`a4a0445`、pushはユーザー指示待ち、§3.67参照)** |
-| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | 🟡 **実装完了 (WI-02、§3.68参照)、🎉 M1ドッグフーディングはユーザー実施待ち** |
+| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | 🟡 **実装完了 (WI-02、コミット済み`3e611d8`、pushはユーザー指示待ち、§3.68参照)、🎉 M1ドッグフーディングはユーザー実施待ち** |
 | 8.5c | `main.cpp` 解体 + 複数文書モデル (`EditorSession`/`Workspace`) | ⏭️ P0 (**8.5d より先**) |
 | 8.5d | タブ UI (`ui::TabBar`) | ⏭️ P0 |
 | 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 |
@@ -2166,7 +2166,7 @@ WI-01完了・コミット後、ユーザーから「次のPahseへ進め」(Pha
 
 **既知の未対応事項(P2、issue化済み):** [`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`](../issues/overlay_focus_blocks_file_lifecycle_keys.md) — FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePaneのいずれかがフォーカスを持っている間はCtrl+S/O/Nが届かない。
 
-**コミット1件、pushはユーザーの明示指示待ち。** **🎉 M1はドッグフーディング完了まで正式には未達扱い。** ユーザーによる確認後、次はWI-03(横スクロール)。
+**コミット済み`3e611d8`、pushはユーザーの明示指示待ち。** **🎉 M1はドッグフーディング完了まで正式には未達扱い。** ユーザーによる確認後、次はWI-03(横スクロール)。
 
 ---
 

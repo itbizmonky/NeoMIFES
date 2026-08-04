@@ -108,7 +108,7 @@ ctest --preset debug --output-on-failure
 ## Phase 8.5 — アプリケーションシェル (P0)
 
 - [x] **WI-01** 文書保存基盤 (`document::saveFile()` / `isDirty()`) → コミット: `a4a0445`
-- [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → 実装完了・コミット待ち (`________`)。**ドッグフーディング未実施のため未チェック** — 下記 DoD 参照
+- [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → コミット: `3e611d8`。**ドッグフーディング未実施のため未チェック** — 下記 DoD 参照
   - 🎉 **ここで M1 達成: NeoMIFES で NeoMIFES を編集できるようになる (ドッグフーディング開始)**
 - [ ] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → `________`
 - [ ] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → `________`
