@@ -103,5 +103,3 @@ AI 機能は完全プラグイン化し、**エディタ本体は AI 無しで�
 [MIT License](LICENSE) — 商用/改変/再配布いずれも自由。詳細は `LICENSE` ファイル参照。
 
 同梱する第三者コードのライセンスは各 `third_party/` サブディレクトリの `LICENSE` / `NOTICE.md` を参照してください。
-
----tset---
