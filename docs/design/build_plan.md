@@ -108,7 +108,7 @@ ctest --preset debug --output-on-failure
 ## Phase 8.5 — アプリケーションシェル (P0)
 
 - [x] **WI-01** 文書保存基盤 (`document::saveFile()` / `isDirty()`) → コミット: `a4a0445`
-- [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → `________`
+- [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → 実装完了・コミット待ち (`________`)。**ドッグフーディング未実施のため未チェック** — 下記 DoD 参照
   - 🎉 **ここで M1 達成: NeoMIFES で NeoMIFES を編集できるようになる (ドッグフーディング開始)**
 - [ ] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → `________`
 - [ ] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → `________`
@@ -335,17 +335,32 @@ probe は使い捨て。スクラッチパッドに書き、**コミットしな
 
 ### DoD
 
-- [ ] `Ctrl+O` でファイルを開き、`Ctrl+S` で保存し、再度開くと編集内容が保持されている
-- [ ] `Ctrl+Shift+S` で別名保存できる
-- [ ] `Ctrl+N` で空の新規文書になる
-- [ ] エクスプローラからファイルをドラッグ&ドロップして開ける
-- [ ] 未保存のまま `Ctrl+N` / `Ctrl+O` / ウィンドウを閉じる、のいずれでも警告が出て「キャンセル」で操作が中止される
-- [ ] 🎉 **ドッグフーディング: NeoMIFES で NeoMIFES のソースを開いて編集し、保存し、そのままコミットできた** ← **本 WI の完了条件の中で最も重要**
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] `Ctrl+O` でファイルを開き、`Ctrl+S` で保存し、再度開くと編集内容が保持されている (実装完了・自動テストで裏付け。実アプリでの手動確認は下記ドッグフーディング項目が兼ねる)
+- [x] `Ctrl+Shift+S` で別名保存できる (`performSave(forceSaveAs=true)`)
+- [x] `Ctrl+N` で空の新規文書になる
+- [x] エクスプローラからファイルをドラッグ&ドロップして開ける (`onDropFiles` 実装済み。実機でのドラッグ操作自体は未検証 — 過去セッションから継続する Win32 GUI 自動化の制約、下記確定事項参照)
+- [x] 未保存のまま `Ctrl+N` / `Ctrl+O` / ウィンドウを閉じる、のいずれでも警告が出て「キャンセル」で操作が中止される (`confirmDiscardIfDirty()` で一元化)
+- [ ] 🎉 **ドッグフーディング: NeoMIFES で NeoMIFES のソースを開いて編集し、保存し、そのままコミットできた** ← **本 WI の完了条件の中で最も重要。ユーザー自身による実施を依頼済み、未実施**
+- [x] Debug / Release / ubsan 全 green (各 1000/1000)、clang-tidy 新規警告 0 (変更/新規ファイル全件個別実行で確認)
+
+### 実装後の確定事項 (2026-08-04)
+
+**設計時点からの簡略化:** 当初「BOM/エンコード/改行コードのロード時メタデータを運ぶ新しい共有関数を app 層に新設する」設計を検討したが、`document::LoadResult` 自体に `lineEnding` フィールドを1つ追加し `loadFile()` 内部で計算する方が、既存の `hadBom`/`detectedEncoding` と全く同じ形で全呼び出し元 (起動時ロード・F12・Grep結果クリック・Ctrl+O・D&D) に自動的に伝播し、複数箇所での実装乖離リスクが構造的に排除できると判明したため、この方式を採用した (`file_loader.cpp` の `detectLineEndingBounded()`、先頭 `1<<20` code units のみ走査)。
+
+**設計レビューで実装前に検出・修正した問題 (Plan agent):**
+1. **`CoInitializeEx` が本コードベースのどこからも呼ばれていなかった** — 既存の D2D/DXGI/D3D11 COM 利用 (ADR-008) は全てファクトリ関数経由で `CoCreateInstance` を要しないが、`IFileOpenDialog`/`IFileSaveDialog` は要する。`file_dialogs.cpp` にファイルローカルな RAII `ComInitGuard` を新設して対応。
+2. **境界プレフィックスでの改行コード検出に実害あるバグが実装前に見つかった。** `kLineEndingDetectionHeadCodeUnits` (1MB) の走査境界がCRLFペアの `\r` と `\n` の間で偶然切れると、`encoding::detectLineEnding()` が末尾の孤立 `\r` を「CR単独」の証拠として誤検出し、一貫したCRLFファイルを `Mixed` と誤判定して `saveFile()` が無言でLFへ書き換える経路になり得た。`detectLineEndingBounded()` で境界切断時の末尾 `\r` を明示的にトリムして対処 (`document_file_loader_test.cpp` に境界を精密に構成した回帰テストあり)。
+3. **Ctrl+N を素朴に実装すると、直前の編集内容が Undo 経由で新規 (空) 文書へ混入する実害あるデータ破損経路が実装前の設計検証で見つかった。** `openDocumentAt()` は `dispatcher.resetUndoHistory()`/`bookmarks.clear()`/両アンカーのリセット/`freeCursorVirtualColumns.reset()` を内部で行うが、Ctrl+N はファイルを読まないため `openDocumentAt()` を経由せず、これらを自前で複製する必要がある。省略すると「編集→Ctrl+N→Ctrl+Z」で `PieceTable::insert()` の範囲外オフセットクランプ (`min(pos, total)`) により、直前ファイルの削除済み内容が新規文書の先頭へ無言で復元される。`handleNewDocumentKey()` で `openDocumentAt()` と同じリセット手順を明示的に複製して対処。
+
+**既知の未対応事項 (Finding 4、docs/issues/ に起票):** FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane のいずれかがキーボードフォーカスを持っている間は Ctrl+S/O/N が届かない (各オーバーレイの `SetWindowSubclass` コールバックが未知のキーを `DefSubclassProc` へ委譲するのみで、親 HWND へは転送しない構造的制約)。5 箇所への転送ロジック追加は本 WI の footprint を超えるため今回は対応せず、`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md` に起票した。
+
+**実アプリでの視覚/操作確認の限界:** 過去複数セッションで確立した通り、この開発環境では Win32 GUI へのキーボード入力合成 (Ctrl 修飾キー含む) が不安定なため、Ctrl+S/O/N/Shift+S の実機キー入力確認は行っていない。実施したのは (a) 全 1000 件の自動テスト green、(b) `NeoMIFES.exe --open <file>` の起動生存確認のみ。**M1 の核心である「NeoMIFES で NeoMIFES のソースを編集・保存・コミットする」ドッグフーディングは、実際にユーザーのリポジトリへ書き込む操作であり自動化・代行せず、ユーザー自身に実施を依頼した。**
+
+詳細は [`detailed_design.md`](detailed_design.md)、[`docs/handoff/RESUME_HERE.md`](../handoff/RESUME_HERE.md) 参照。
 
 ### 完了後にやること
 
-**`CLAUDE.md` §11 のチェックリストに「本セッションの変更を NeoMIFES 自身で編集して確認したか」を追加する。** これ以降、ドッグフーディングは全 WI の標準手順になる。
+**`CLAUDE.md` §11 のチェックリストに「本セッションの変更を NeoMIFES 自身で編集して確認したか」を追加する。** これ以降、ドッグフーディングは全 WI の標準手順になる。**ただし本 WI 自体はまだドッグフーディング未実施のため、この追加はドッグフーディング完了後に行う。**
 
 ---
 

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/original_buffer.h"
 #include "neomifes/platform/file_mapping.h"
@@ -161,6 +162,33 @@ detectFileEncoding(const std::filesystem::path& path, std::uint64_t fileSize) {
     }
 }
 
+// WI-02: how much of the decoded document detectLineEndingBounded() scans -
+// matches file_saver.cpp's kMaxChunkCodeUnits order of magnitude (~2MiB),
+// an unbenchmarked initial value per CLAUDE.md rule 10.
+constexpr std::uint64_t kLineEndingDetectionHeadCodeUnits = 1ULL << 20;
+
+// Scans only the first kLineEndingDetectionHeadCodeUnits code units of
+// `document` (never the whole thing - see LoadResult::lineEnding's doc
+// comment) and classifies the line-ending convention via
+// encoding::detectLineEnding(). Falls back to Lf when nothing is detected.
+encoding::LineEnding detectLineEndingBounded(const Document& document) {
+    const auto totalLength = document.length();
+    if (totalLength == 0) {
+        return encoding::LineEnding::Lf;
+    }
+    const auto snap    = document.snapshot();
+    const auto headEnd = std::min<std::uint64_t>(totalLength, kLineEndingDetectionHeadCodeUnits);
+    std::u16string prefix = snap->extract(TextRange{.start = 0, .end = headEnd});
+    // Truncated mid-scan and the slice ends on a lone '\r' - the code unit
+    // just past the bound (not visible here) might be the paired '\n'.
+    // Trim it so detectLineEnding() doesn't misreport an otherwise-uniform
+    // CRLF file as Mixed (WI-02 design review finding).
+    if (headEnd < totalLength && !prefix.empty() && prefix.back() == u'\r') {
+        prefix.pop_back();
+    }
+    return encoding::detectLineEnding(prefix).value_or(encoding::LineEnding::Lf);
+}
+
 }  // namespace
 
 std::variant<LoadResult, LoadError>
@@ -198,6 +226,7 @@ loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes) {
         std::move(std::get<std::shared_ptr<const OriginalBuffer>>(opened)));
     result.hadBom     = hadBom;
     result.byteLength = size;
+    result.lineEnding = detectLineEndingBounded(*result.document);
     return result;
 }
 
@@ -232,6 +261,7 @@ loadFile(const std::filesystem::path& path, std::uint64_t maxBytes) {
         }
         result.document = std::make_unique<Document>(
             std::move(std::get<std::shared_ptr<const OriginalBuffer>>(opened)));
+        result.lineEnding = detectLineEndingBounded(*result.document);
         return result;
     }
 
@@ -249,6 +279,7 @@ loadFile(const std::filesystem::path& path, std::uint64_t maxBytes) {
     }
     result.document = std::make_unique<Document>(
         OriginalBuffer::fromU16String(std::move(std::get<std::u16string>(decoded))));
+    result.lineEnding = detectLineEndingBounded(*result.document);
     return result;
 }
 

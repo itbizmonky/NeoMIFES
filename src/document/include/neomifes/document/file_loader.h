@@ -52,6 +52,15 @@ struct LoadResult {
     // a future consumer, the same way hadBom/byteLength already were before
     // this phase.
     encoding::Encoding detectedEncoding = encoding::Encoding::Utf8;
+    // WI-02: line-ending convention detected from a BOUNDED prefix of the
+    // decoded document (see file_loader.cpp's detectLineEndingBounded() -
+    // never the whole document, which would force materializing a
+    // multi-GB file just to answer this). Lf (this codebase's own internal
+    // storage convention) when nothing is detected - empty document, or no
+    // terminator found within the bound. This is what lets document::
+    // saveFile() (WI-01) default to "same line ending as the file that was
+    // opened" instead of silently normalizing every save.
+    encoding::LineEnding lineEnding = encoding::LineEnding::Lf;
 };
 
 // Loads `path` as a UTF-8 file. Returns either a Document or a LoadError.

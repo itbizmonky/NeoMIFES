@@ -251,6 +251,42 @@ enum class SaveError { CannotCreateTempFile, WriteFailed, EncodeFailed, ReplaceF
 
 **スコープ外 (WI-02以降):** `Ctrl+S` 等のUI配線、Save Asダイアログ、自動保存/`.bak`永続保持 (WI-11)。
 
+### 3.5 File Lifecycle UI (WI-02実装、2026-08-04)
+
+`document::saveFile()`/`Document::isDirty()` (WI-01) を実際のキーバインド・ダイアログへ配線した。
+
+```cpp
+// src/app/document_open.h — openDocumentAt() の戻り値をLoadedFileMetaへ変更
+struct LoadedFileMeta { bool hadBom; encoding::Encoding encoding; encoding::LineEnding lineEnding; };
+[[nodiscard]] std::variant<LoadedFileMeta, document::LoadError> openDocumentAt(...);
+
+// src/app/file_dialogs.h (新規) — IFileOpenDialog/IFileSaveDialog、COM
+[[nodiscard]] std::optional<std::filesystem::path> showOpenFileDialog(HWND owner);
+[[nodiscard]] std::optional<std::filesystem::path> showSaveFileDialog(
+    HWND owner, const std::optional<std::filesystem::path>& suggestedPath);
+
+// src/app/message_dialogs.h (新規) — TaskDialogIndirect
+enum class UnsavedChangesChoice { Save, DontSave, Cancel };
+[[nodiscard]] UnsavedChangesChoice showUnsavedChangesDialog(HWND owner, std::wstring_view documentName);
+void showSaveErrorDialog(HWND owner, document::SaveError error);
+void showOpenErrorDialog(HWND owner, document::LoadError error);
+```
+
+**`main.cpp`側の共有ヘルパー4つ** (`resetViewAfterDocumentSwap()`/`openAndResetTo()`/`performSave()`/`confirmDiscardIfDirty()`) が、F12・Grep結果クリック・Ctrl+O・D&D・Ctrl+N・`WM_CLOSE`の全ての「文書を差し替える/破棄する」経路を一元的に処理する。`DocumentFileState{encoding, lineEnding, writeBom}` が「Ctrl+Sが何も聞かず再利用すべき値」を保持し、`openAndResetTo()`が`LoadedFileMeta`から自動更新する。
+
+**設計上の主要な逸脱・発見 (詳細は[`build_plan.md`](build_plan.md) WI-02節):**
+- `document::LoadResult`に`lineEnding`フィールドを追加する方式へ簡略化 (`file_loader.cpp`の`detectLineEndingBounded()`、先頭1MBのみ走査)。全5箇所の「ファイルを開く」呼び出し元が自動的に同じロジックを共有する。
+- 境界プレフィックス走査がCRLFペアを分断すると一貫したCRLFファイルを`Mixed`と誤判定するバグを実装前に検出・修正 (`detectLineEndingBounded()`の末尾`\r`トリム)。
+- `MainWindowConfig`に`onClose`(戻り値`bool`、未設定時=true)・`onDropFiles`の2フックを新規追加 (既存13種のいずれにも該当する機能がなかった)。
+- Ctrl+Nは`openDocumentAt()`を経由しないため、`dispatcher.resetUndoHistory()`等のリセットを`handleNewDocumentKey()`側で明示的に複製する必要がある — 省略するとUndo経由で旧文書の内容が新規文書へ混入するデータ破損経路が実装前の設計レビューで見つかった。
+- `TaskDialogIndirect`使用のため`main.cpp`にCommon Controls v6の埋め込みマニフェストリンカプラグマを追加。`ole32`を`NeoMIFES`実行ファイルへ新規リンク (`CoInitializeEx`系、本コードベース初のCoCreateInstanceベースCOM利用)。`comctl32`はCMakeのSTATICライブラリ推移リンクにより`neomifes::ui`経由で自動解決されることをローカルビルドで確認 (明示リンク不要)。
+
+**既知の未対応事項:** オーバーレイパネル (FindBar等5種) がフォーカスを持っている間はCtrl+S/O/Nが届かない。`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`参照。
+
+**影響ファイル:** `src/app/main.cpp` (大幅拡張)、新規`src/app/file_dialogs.h/.cpp`、新規`src/app/message_dialogs.h/.cpp`、`src/app/document_open.h/.cpp`、`src/document/file_loader.h/.cpp` (`lineEnding`フィールド)、`src/ui/main_window.h/.cpp` (`onClose`/`onDropFiles`)。
+
+**スコープ外:** Save Asダイアログでのエンコード/改行選択UI (WI-07)、複数ファイルドラッグ&ドロップでのマルチタブ展開 (WI-05)。
+
 ---
 
 ## 4. Rendering Engine 詳細

@@ -21,9 +21,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <variant>
 
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/text_pos.h"
+#include "neomifes/encoding/encoding.h"
 
 namespace neomifes::document {
 class Document;
@@ -63,12 +65,24 @@ namespace neomifes::app {
 // one atomic "open this file and land on this line" step with no render
 // free to land on a half-updated cursor in between.
 //
+// WI-02: the load-time metadata document::LoadResult carries (hadBom/
+// detectedEncoding/lineEnding), forwarded to the caller instead of being
+// discarded internally - callers need this to remember "what encoding/
+// line-ending/BOM should Ctrl+S reuse for this file" (see main.cpp's
+// DocumentFileState).
+struct LoadedFileMeta {
+    bool                  hadBom;
+    encoding::Encoding    encoding;
+    encoding::LineEnding  lineEnding;
+};
+
 // Returns the LoadError on failure, leaving `document` and every piece of
-// session state above completely untouched (nullopt on success) -
-// preserves loadFile()'s existing error taxonomy for a future caller that
-// wants to react to it (e.g. an error toast) rather than collapsing it to
-// a bare bool now that the information is already there for free.
-[[nodiscard]] std::optional<document::LoadError> openDocumentAt(
+// session state above completely untouched. On success, returns
+// LoadedFileMeta (WI-02) instead of the previous bare nullopt - preserves
+// loadFile()'s existing error taxonomy for a future caller that wants to
+// react to it (e.g. an error toast) rather than collapsing it to a bare
+// bool now that the information is already there for free.
+[[nodiscard]] std::variant<LoadedFileMeta, document::LoadError> openDocumentAt(
     const std::filesystem::path& path, std::optional<document::LineNumber> targetLine,
     std::optional<std::uint64_t> targetColumn, document::Document& document,
     core::CommandDispatcher& dispatcher, core::SelectionModel& selectionModel,

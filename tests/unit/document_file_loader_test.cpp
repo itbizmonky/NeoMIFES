@@ -493,4 +493,99 @@ TEST(LoadFileTest, Utf32SourceContentSpanningMultipleCheckpointsDecodesCorrectly
     fs::remove(path);
 }
 
+// -----------------------------------------------------------------------------
+// WI-02: LoadResult::lineEnding - detected via a bounded prefix scan (see
+// file_loader.cpp's detectLineEndingBounded(), kLineEndingDetectionHeadCodeUnits
+// = 1<<20 code units). document::saveFile() (WI-01) uses this to default to
+// "same line ending as the opened file".
+// -----------------------------------------------------------------------------
+
+using neomifes::encoding::LineEnding;
+
+TEST(LoadFileLineEndingTest, DetectsCrlf) {
+    auto path = tempFileWith("line1\r\nline2\r\n");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Crlf);
+    fs::remove(path);
+}
+
+TEST(LoadFileLineEndingTest, DetectsLf) {
+    auto path = tempFileWith("line1\nline2\n");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Lf);
+    fs::remove(path);
+}
+
+TEST(LoadFileLineEndingTest, DetectsCr) {
+    auto path = tempFileWith("line1\rline2\r");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Cr);
+    fs::remove(path);
+}
+
+TEST(LoadFileLineEndingTest, DetectsMixed) {
+    auto path = tempFileWith("line1\r\nline2\nline3\r");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Mixed);
+    fs::remove(path);
+}
+
+TEST(LoadFileLineEndingTest, EmptyDocumentFallsBackToLf) {
+    auto path = tempFileWith("");
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Lf);
+    fs::remove(path);
+}
+
+TEST(LoadFileLineEndingTest, NoLineEndingAtAllFallsBackToLf) {
+    // A large single line with no terminator anywhere - the "huge minified
+    // line" case detectLineEndingBounded()'s scan window must still handle
+    // without finding any convention to report.
+    std::string content(2 * 1024 * 1024, 'a');  // 2MiB, past the 1<<20 scan window
+    auto path = tempFileWith(content);
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Lf);
+    fs::remove(path);
+}
+
+TEST(LoadFileLineEndingTest,
+    ScanBoundaryLandingBetweenCrAndLfStillDetectsCrlfNotMixed) {
+    // Regression test for the WI-02 design review finding: if the 1<<20
+    // code-unit scan window happens to end exactly one code unit past a
+    // '\r' (i.e. it cuts a CRLF pair in half), the scan must not
+    // misclassify an otherwise-uniform CRLF file as Mixed (a lone,
+    // unpaired '\r' looks identical to Cr-convention content unless the
+    // truncation itself is accounted for - see
+    // file_loader.cpp's detectLineEndingBounded()).
+    constexpr std::size_t kBoundary = 1u << 20;  // matches kLineEndingDetectionHeadCodeUnits
+
+    std::string content;
+    content.reserve(kBoundary + 4096);
+    while (content.size() + 3 <= kBoundary - 1) {
+        content += "a\r\n";
+    }
+    // Pad with plain 'a' bytes (no line-ending characters) up to exactly
+    // kBoundary - 1, so the CRLF pair appended next lands its '\r' at
+    // content[kBoundary - 1] and its '\n' at content[kBoundary] - precisely
+    // straddling the scan boundary.
+    while (content.size() < kBoundary - 1) {
+        content += "a";
+    }
+    content += "\r\n";
+    ASSERT_EQ(content.size(), kBoundary + 1);
+    content += "more\r\n";  // extra content beyond the boundary, still CRLF-only
+
+    auto path = tempFileWith(content);
+    auto result = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Crlf);
+    fs::remove(path);
+}
+
 }  // namespace

@@ -37,7 +37,7 @@ using document::TextPos;
 
 }  // namespace
 
-std::optional<LoadError> openDocumentAt(
+std::variant<LoadedFileMeta, LoadError> openDocumentAt(
     const std::filesystem::path& path, std::optional<document::LineNumber> targetLine,
     std::optional<std::uint64_t> targetColumn, Document& document,
     core::CommandDispatcher& dispatcher, core::SelectionModel& selectionModel,
@@ -49,6 +49,8 @@ std::optional<LoadError> openDocumentAt(
     if (result == nullptr) {
         return std::get<LoadError>(loaded);
     }
+    const LoadedFileMeta meta{
+        .hadBom = result->hadBom, .encoding = result->detectedEncoding, .lineEnding = result->lineEnding};
 
     document = std::move(*result->document);
     dispatcher.resetUndoHistory();
@@ -60,7 +62,7 @@ std::optional<LoadError> openDocumentAt(
     const auto pos = clampedTargetPosition(document, targetLine.value_or(0), targetColumn.value_or(0));
     selectionModel.moveAllTo(pos);
     viewport.ensureVisible(pos, document);
-    return std::nullopt;
+    return meta;
 }
 
 }  // namespace neomifes::app

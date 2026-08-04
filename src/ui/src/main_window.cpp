@@ -1,6 +1,7 @@
 #include "neomifes/ui/main_window.h"
 
 #include <windows.h>
+#include <shellapi.h>  // DragAcceptFiles/DragQueryFileW/DragFinish (WM_DROPFILES, WI-02)
 #include <windowsx.h>  // GET_X_LPARAM/GET_Y_LPARAM (WM_LBUTTONDOWN, Phase 4b2)
 
 #include <utility>
@@ -67,6 +68,8 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onCommand      = config.onCommand;
     m_onAppMessage   = config.onAppMessage;
     m_onNotify       = config.onNotify;
+    m_onClose        = config.onClose;
+    m_onDropFiles    = config.onDropFiles;
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -83,6 +86,9 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
         return false;
     }
     m_currentDpi = ::GetDpiForWindow(m_hwnd);
+    if (config.onDropFiles) {
+        ::DragAcceptFiles(m_hwnd, TRUE);
+    }
 
     // Fire the "window created" hook here - after CreateWindowExW has
     // returned (WM_NCCREATE / WM_CREATE done) but before ShowWindow queues
@@ -175,7 +181,12 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             // avoid flicker.
             return 1;
         case WM_CLOSE:
-            ::DestroyWindow(m_hwnd);
+            if (handleClose()) {
+                ::DestroyWindow(m_hwnd);
+            }
+            return 0;
+        case WM_DROPFILES:
+            handleDropFiles(wParam);
             return 0;
         case WM_DESTROY:
             m_hwnd = nullptr;
@@ -346,6 +357,27 @@ LRESULT MainWindow::handleNotify(WPARAM wParam, LPARAM lParam) noexcept {
         return m_onNotify(m_hwnd, wParam, lParam);
     }
     return 0;
+}
+
+bool MainWindow::handleClose() noexcept {
+    return !m_onClose || m_onClose(m_hwnd);
+}
+
+void MainWindow::handleDropFiles(WPARAM wParam) noexcept {
+    auto* const hDrop = reinterpret_cast<HDROP>(wParam);
+    if (m_onDropFiles) {
+        const UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+        std::vector<std::wstring> paths;
+        paths.reserve(count);
+        for (UINT i = 0; i < count; ++i) {
+            const UINT len = ::DragQueryFileW(hDrop, i, nullptr, 0);
+            std::wstring path(len, L'\0');
+            ::DragQueryFileW(hDrop, i, path.data(), len + 1);
+            paths.push_back(std::move(path));
+        }
+        m_onDropFiles(m_hwnd, std::move(paths));
+    }
+    ::DragFinish(hDrop);
 }
 
 }  // namespace neomifes::ui

@@ -2660,4 +2660,35 @@ CI green確認・build_plan.md発行完了後、ユーザーから「次のPhase
 
 コミット1件、pushはユーザーの明示指示待ち。次はWI-02 (ファイルライフサイクルUI) — 完了時点でM1 (NeoMIFESでNeoMIFESを編集できる、ドッグフーディング開始) 達成。
 
+## Session 79 (2026-08-04): WI-02 (ファイルライフサイクル UI、🎉 M1) 実装
+
+WI-01完了・コミット後、ユーザーから「次のPahseへ進め」(Phaseのタイプミス)と指示された。`build_plan.md`が次項目とするWI-02(ファイルライフサイクルUI)に着手した。Explore agent + 自己調査で現状を把握し、Plan agentによる設計レビューを経てPlan Modeで詳細計画を作成、ユーザー承認(`ExitPlanMode`)を得て実装した。
+
+**Plan agentが実装前に検出した3件の実害あるバグ(コードには一度も現れず、設計段階で潰した):**
+1. **`CoInitializeEx`未呼び出し。** 本コードベースの既存COM利用(D2D/DXGI/D3D11、ADR-008)は全てファクトリ関数経由で`CoCreateInstance`を要しないが、`IFileOpenDialog`/`IFileSaveDialog`は要する。未対応だとCtrl+O/Ctrl+Shift+Sが`CO_E_NOTINITIALIZED`で即失敗しM1のドッグフーディングDoDを直接ブロックする。`file_dialogs.cpp`にファイルローカルなRAII `ComInitGuard`を新設して対応。
+2. **境界プレフィックスでの改行コード検出バグ。** `detectLineEndingBounded()`の1MB走査境界が偶然CRLFペアの`\r`と`\n`の間で切れると、末尾の孤立`\r`を「CR単独」の証拠として誤検出し、一貫したCRLFファイルを`Mixed`と誤判定してCtrl+Sが無言でLFへ書き換える経路になり得た。境界切断時の末尾`\r`トリムで対処、精密構成した回帰テストで検証。
+3. **Ctrl+N素朴実装のデータ破損経路。** `openDocumentAt()`が内部で行う`dispatcher.resetUndoHistory()`/`bookmarks.clear()`/両アンカーリセット/`freeCursorVirtualColumns.reset()`を、Ctrl+N(ファイルを読まないため`openDocumentAt()`を経由しない)側で複製し忘れると、「編集→Ctrl+N→Ctrl+Z」で`PieceTable::insert()`の範囲外オフセットクランプにより直前ファイルの削除済み内容が新規文書へ無言で復元される。`handleNewDocumentKey()`で明示的に複製して対処。
+
+**設計中に気づいたより良い解(WI-01の「BOM分離修正」と同種):** 当初「ロード時メタデータを運ぶ新しい共有関数」を検討したが、`document::LoadResult`に`lineEnding`フィールドを1つ追加し`loadFile()`内部で計算する方が、既存の`hadBom`/`detectedEncoding`と同じ形で全5箇所の「ファイルを開く」呼び出し元(起動時・F12・Grep結果クリック・Ctrl+O・D&D)へ自動的に伝播し、実装乖離リスクが構造的に排除できると判明した。`openDocumentAt()`の戻り値も`std::variant<LoadedFileMeta, LoadError>`へ変更。
+
+**実装:** `resetViewAfterDocumentSwap()`/`openAndResetTo()`/`performSave()`/`confirmDiscardIfDirty()`の4つの共有ヘルパーがF12・Grep結果クリック・Ctrl+O・D&D・Ctrl+N・`WM_CLOSE`の全「文書差し替え/破棄」経路を一元化。新規`src/app/file_dialogs.h/.cpp`(COM、`IFileOpenDialog`/`IFileSaveDialog`)・`src/app/message_dialogs.h/.cpp`(`TaskDialogIndirect`、2ファイルに分離しCOMとComCtl32の依存を混在させない設計)。`MainWindowConfig`へ`onClose`(戻り値`bool`、未設定時=true=閉じてよい、`onSysKeyDown`と逆極性)・`onDropFiles`の2フックを新規追加。
+
+**実装で自己発見・修正したバグ2件:**
+- `DocumentFileState`構造体で`encoding::Encoding encoding = encoding::Encoding::Utf8;`のようにメンバ名`encoding`が名前空間`encoding`をシャドウしコンパイルエラー(`encoding::Encoding`が名前空間解決不能)。既存の`using neomifes::encoding::Encoding;`エイリアスを使い`Encoding encoding = Encoding::Utf8;`へ修正。
+- `wireNormalMode()`のパラメータリストに`fileState`を追加し忘れ、`cfg.onClose`/`cfg.onDropFiles`ラムダが未宣言の変数を参照していた(コンパイルエラーで発覚、`wireNormalMode(...)`呼び出し側の引数リストも合わせて修正)。
+
+**clang-tidy指摘の修正:** `wireNormalMode()`の認知的複雑度31(閾値25)超過 → `cfg.onDropFiles`のラムダ本体を`handleDropFilesEvent()`として関数抽出(既存の`handleMouseDownEvent()`等と同じ「複雑度超過時は名前付き関数へ抽出」パターン)。`message_dialogs.cpp`: `TASKDIALOG_BUTTON`集成体初期化を指定初期化子化、`TASKDIALOGCONFIG::pszMainIcon`のunion access 3箇所に`outline_pane.cpp`前例と同じ`NOLINTBEGIN/END(cppcoreguidelines-pro-type-union-access)`、`showSaveErrorDialog()`の「初期化してから上書き」デッドストアパターンをIIFE形式のswitch-with-returnへ書き換え。`main_window.cpp`: `const auto hDrop`→`auto* const hDrop`(`readability-qualified-auto`)。
+
+**実測検証:** ローカルDebug/Release/ubsan全**1000件green**(3プリセット全て)。変更/新規ファイル全件へclang-tidy個別実行、`src/`配下新規警告0(既知の`/Zc:*`ドライバ引数ノイズは未変更ファイルでも再現することを確認し無関係と判断)。`ole32`をCMakeへ新規リンク(本コードベース初のCoCreateInstanceベースCOM)、`comctl32`は`neomifes::ui`経由のSTATICライブラリ推移リンクで自動解決されることをローカルビルドで確認(明示リンク不要)。
+
+**実アプリ確認の限界:** 過去複数セッションで確立した通りWin32 GUIへのキーボード入力合成(Ctrl修飾キー含む)が不安定なため、Ctrl+S/O/N/Shift+Sの実機キー入力確認は行わず、`NeoMIFES.exe --open README.md`の起動生存確認(3秒後もプロセス生存)のみ実施した。
+
+**🎉 M1核心のドッグフーディング(NeoMIFES自身のソースをNeoMIFESで編集・保存・コミットする)は、実際にユーザーのリポジトリへ書き込む操作であるため自動化・代行せず、計画段階から一貫してユーザー自身への依頼としている。** 本セッション終了時点で未完了 — 完了確認まで、build_plan.md/master_roadmap.mdではWI-02を「実装完了」であって「M1達成」とは区別して記録した。
+
+**既知の未対応事項(P2、issue化):** [`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`](../issues/overlay_focus_blocks_file_lifecycle_keys.md)新設 — FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePaneのいずれかがフォーカスを持っている間はCtrl+S/O/Nが届かない(各オーバーレイのサブクラスプロシージャが未知のキーを親HWNDへ転送しない構造的制約)。5ウィジェットへの転送ロジック追加は本WIのfootprintを超えるため対応せず、実害は限定的(オーバーレイを閉じてから編集・保存する通常フローでは問題にならない)と判断し先送りした。
+
+**ドキュメント同期:** `build_plan.md`(§3・WI-02のDoD・実装後の確定事項)、`master_roadmap.md`(§2フェーズ早見表・§8.5.4実装後の確定事項)、`detailed_design.md`(§3.5新設)、`docs/issues/no_document_save_capability.md`・`no_application_shell.md`(完了条件更新)、新規issue 1件+索引更新、`RESUME_HERE.md`(冒頭ポインタ・§1状態表・§3.68完了記録・推奨プロンプト全て更新)。
+
+コミット1件、pushはユーザーの明示指示待ち。**ユーザーによるドッグフーディング確認後、M1達成を正式記録した上でWI-03(横スクロール)へ進む。**
+
 <!-- 次セッションはここに追記 -->

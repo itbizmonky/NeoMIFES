@@ -37,6 +37,16 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
+// WI-02: TaskDialogIndirect (message_dialogs.cpp) requires the Common
+// Controls v6 ComCtl32 that only loads with this embedded manifest
+// dependency - v5.82 (the default without one) does not export it. No
+// .manifest/.rc file exists anywhere in this repo, so this single-line
+// linker pragma is the standard way to opt in without adding a new build
+// file. Harmless for every other Win32 API this codebase already uses.
+#pragma comment(linker, \
+    "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' " \
+    "version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 #include <algorithm>
 #include <cstdio>
 #include <cwchar>
@@ -51,9 +61,11 @@
 
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/editor_input.h"
+#include "neomifes/app/file_dialogs.h"
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tag_jump.h"
@@ -69,6 +81,8 @@
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
+#include "neomifes/document/file_saver.h"
+#include "neomifes/encoding/encoding.h"
 #include "neomifes/platform/app_data_dir.h"
 #include "neomifes/platform/clipboard.h"
 #include "neomifes/platform/handle_guard.h"
@@ -115,6 +129,8 @@ using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::LoadResult;
 using neomifes::document::TextRange;
+using neomifes::encoding::Encoding;
+using neomifes::encoding::LineEnding;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
@@ -196,6 +212,22 @@ struct LaunchArgs {
     // renders (Phase 3b). File->Open dialog / recent-files UI is out of
     // scope here - this is the smallest useful slice.
     std::optional<std::filesystem::path> openPath;
+};
+
+// WI-02: the document::saveFile()-relevant metadata for the currently open
+// document - what Ctrl+S should reuse without prompting. Deliberately
+// does NOT duplicate the existing currentDocumentPath local (wWinMain) -
+// that variable is already threaded through many pre-existing functions
+// (handleTagJumpKey/handleOutlineKey/extractCurrentOutline/etc., Phase
+// 5c2-7i) for language detection, and renaming it everywhere for this WI
+// would be a large, purely-mechanical diff with no functional benefit.
+// openAndResetTo() (below) is the single place that keeps this struct and
+// currentDocumentPath in sync for every "opened a different file" case;
+// handleNewDocumentKey() is the only other writer (Ctrl+N resets both).
+struct DocumentFileState {
+    Encoding   encoding   = Encoding::Utf8;
+    LineEnding lineEnding = LineEnding::Crlf;  // build_plan.md: new document default
+    bool       writeBom   = false;
 };
 
 // Very small hand-rolled parser. We deliberately avoid CommandLineToArgvW-derived
@@ -298,14 +330,24 @@ int runMessageLoop() noexcept {
 // Real launches only (checked by the caller). A missing/invalid --open path
 // falls back to an empty Document rather than blocking startup - pulled out
 // of wWinMain to keep its cognitive complexity down.
-Document loadStartupDocument(const LaunchArgs& args) {
+// WI-02: `fileStateOut`/`currentDocumentPathOut` are populated ONLY on a
+// successful load (not unconditionally from `args.openPath` regardless of
+// outcome, as this function's caller used to do further down in wWinMain -
+// see prepareDocument()'s own comment for why that distinction now matters
+// for data safety, not just cosmetic language detection).
+Document loadStartupDocument(const LaunchArgs& args, DocumentFileState& fileStateOut,
+                             std::optional<std::filesystem::path>& currentDocumentPathOut) {
     Document document;
     if (!args.openPath) {
         return document;
     }
     auto loadResult = neomifes::document::loadFile(*args.openPath);
     if (auto* result = std::get_if<LoadResult>(&loadResult)) {
-        document = std::move(*result->document);
+        document                = std::move(*result->document);
+        fileStateOut.encoding   = result->detectedEncoding;
+        fileStateOut.lineEnding = result->lineEnding;
+        fileStateOut.writeBom   = result->hadBom;
+        currentDocumentPathOut  = *args.openPath;
     } else {
         debugLogLoadError(*args.openPath, std::get<LoadError>(loadResult));
     }
@@ -335,16 +377,22 @@ Document synthesizeMeasurementDocument() {
 // MeasureFrame), a synthesized large document (MeasureFrame without --open),
 // or an unused empty one (MeasureStartup/MeasureMemory don't render at all).
 // `syntheticLineCountOut` is set only when the synthetic path was taken, for
-// FrameProfile reporting. Pulled out of wWinMain to keep its cognitive
-// complexity down (same rationale as loadStartupDocument() above).
-Document prepareDocument(const LaunchArgs& args, std::uint64_t& syntheticLineCountOut) {
+// FrameProfile reporting. `fileStateOut`/`currentDocumentPathOut` (WI-02)
+// are forwarded to loadStartupDocument() untouched otherwise - synthetic/
+// empty documents have no real source file, so both stay at their
+// freshly-constructed defaults (untitled, UTF-8/CRLF/no-BOM) in those
+// cases. Pulled out of wWinMain to keep its cognitive complexity down
+// (same rationale as loadStartupDocument() above).
+Document prepareDocument(const LaunchArgs& args, std::uint64_t& syntheticLineCountOut,
+                         DocumentFileState& fileStateOut,
+                         std::optional<std::filesystem::path>& currentDocumentPathOut) {
     syntheticLineCountOut = 0;
     if (args.mode == LaunchMode::MeasureFrame && !args.openPath) {
         syntheticLineCountOut = kSyntheticLineCount;
         return synthesizeMeasurementDocument();
     }
     if (args.mode == LaunchMode::Normal || args.mode == LaunchMode::MeasureFrame) {
-        return loadStartupDocument(args);
+        return loadStartupDocument(args, fileStateOut, currentDocumentPathOut);
     }
     return Document{};
 }
@@ -726,18 +774,140 @@ bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Bo
     return true;
 }
 
+// WI-02: the "the document just changed to a different file" reset,
+// shared by every caller that swaps `document`'s content out from under
+// the view (F12 tag-jump, Grep-result-click, and - once wired below -
+// Ctrl+O/drag-drop-open). Originally duplicated verbatim at the F12/Grep
+// call sites (Phase 5c2-7i); a 3rd/4th caller needing the identical
+// sequence is exactly this codebase's own "extract once 3+ callers exist"
+// trigger (see visibleLineAtRow()/reservedTopHeightDips()'s own history).
+//
+// Deliberately does NOT reset dispatcher/bookmarks/anchors/
+// freeCursorVirtualColumns - those are openDocumentAt()'s own internal
+// responsibility when a file was actually loaded. A "reset to blank"
+// caller (Ctrl+N) never calls openDocumentAt() at all (there is no file to
+// load) and MUST perform that half itself - see handleNewDocumentKey()'s
+// own comment for the concrete data-corruption path (a stale Undo
+// splicing the previous file's deleted text into the new blank document)
+// that skipping it caused during this WI's design review.
+void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, FoldingModel& foldingModel,
+                                FindReplaceState& findReplaceState, FindBar& findBar,
+                                const std::optional<std::filesystem::path>& currentDocumentPath) {
+    findReplaceState.currentMatches.clear();
+    findReplaceState.currentMatchIndex = 0;
+    findBar.setMatchCount(0, 0);
+    renderPipeline.setMatchVisuals({});
+    renderPipeline.setBookmarkedLines({});
+    foldingModel.setFoldableRegions({});
+    syncFoldingState(hwnd, renderPipeline, foldingModel);
+    renderPipeline.setLanguage(currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath)
+                                                    : std::nullopt);
+    ::SetFocus(hwnd);
+}
+
+// WI-02: opens `path` into `document` via neomifes::app::openDocumentAt()
+// (optionally jumping to targetLine/targetColumn - both already 0-based,
+// same convention openDocumentAt() itself documents), and on success
+// updates `currentDocumentPath`/`fileState` from the returned
+// LoadedFileMeta and runs resetViewAfterDocumentSwap() + a final repaint.
+// Returns the LoadError on failure, leaving document/currentDocumentPath/
+// fileState completely untouched (matches openDocumentAt()'s own no-
+// partial-mutation-on-failure contract) - callers decide whether to
+// surface it (F12/Grep-click keep their pre-existing silent no-op below;
+// Ctrl+O/drag-drop-open show message_dialogs.h's showOpenErrorDialog()).
+std::optional<LoadError> openAndResetTo(
+    const std::filesystem::path& path, std::optional<neomifes::document::LineNumber> targetLine,
+    std::optional<std::uint64_t> targetColumn, HWND hwnd, Document& document,
+    CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
+    RenderPipeline& renderPipeline, BookmarkManager& bookmarks, FoldingModel& foldingModel,
+    FindReplaceState& findReplaceState, FindBar& findBar,
+    std::optional<neomifes::document::TextPos>& altCursorAnchor,
+    std::optional<neomifes::document::TextPos>& rectangularAnchor,
+    std::optional<std::uint32_t>& freeCursorVirtualColumns,
+    std::optional<std::filesystem::path>& currentDocumentPath, DocumentFileState& fileState) {
+    auto result = neomifes::app::openDocumentAt(path, targetLine, targetColumn, document, dispatcher,
+                                                selectionModel, viewport, bookmarks, altCursorAnchor,
+                                                rectangularAnchor, freeCursorVirtualColumns);
+    auto* const meta = std::get_if<neomifes::app::LoadedFileMeta>(&result);
+    if (meta == nullptr) {
+        return std::get<LoadError>(result);
+    }
+    currentDocumentPath  = path;
+    fileState.encoding   = meta->encoding;
+    fileState.lineEnding = meta->lineEnding;
+    fileState.writeBom   = meta->hadBom;
+    resetViewAfterDocumentSwap(hwnd, renderPipeline, foldingModel, findReplaceState, findBar,
+                               currentDocumentPath);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    return std::nullopt;
+}
+
+// WI-02: shared save routine for Ctrl+S/Ctrl+Shift+S (and the "Save" choice
+// of confirmDiscardIfDirty()'s unsaved-changes prompt below). `forceSaveAs`
+// (or a document that has never been saved anywhere, i.e. `!currentDocumentPath`)
+// prompts via file_dialogs.h's showSaveFileDialog() for a destination first;
+// otherwise reuses the existing path silently. Returns false on a cancelled
+// dialog or a failed document::saveFile() call (in which case
+// message_dialogs.h's showSaveErrorDialog() has already reported it to the
+// user) - never silently swallows a failure (CLAUDE.md rule 3).
+bool performSave(HWND hwnd, Document& document, DocumentFileState& fileState,
+                 std::optional<std::filesystem::path>& currentDocumentPath, bool forceSaveAs) {
+    std::filesystem::path targetPath;
+    if (forceSaveAs || !currentDocumentPath) {
+        const auto chosen = neomifes::app::showSaveFileDialog(hwnd, currentDocumentPath);
+        if (!chosen) {
+            return false;  // dialog cancelled - not an error, just no-op
+        }
+        targetPath = *chosen;
+    } else {
+        targetPath = *currentDocumentPath;
+    }
+    const auto error = neomifes::document::saveFile(document, targetPath, fileState.encoding,
+                                                     fileState.lineEnding, fileState.writeBom);
+    if (error) {
+        neomifes::app::showSaveErrorDialog(hwnd, *error);
+        return false;
+    }
+    currentDocumentPath = targetPath;
+    return true;
+}
+
+// WI-02: the "may this destructive operation proceed" gate shared by
+// Ctrl+O/Ctrl+N/drag-drop-open/WM_CLOSE. An already-clean document is
+// always an immediate yes. Otherwise prompts via
+// message_dialogs.h's showUnsavedChangesDialog(); the Save choice routes
+// through performSave() above so a cancelled Save-As dialog or a failed
+// save also blocks the destructive operation - unsaved work is never
+// discarded behind a save that didn't actually happen.
+bool confirmDiscardIfDirty(HWND hwnd, Document& document, DocumentFileState& fileState,
+                           std::optional<std::filesystem::path>& currentDocumentPath) {
+    if (!document.isDirty()) {
+        return true;
+    }
+    const std::wstring documentName =
+        currentDocumentPath ? currentDocumentPath->filename().wstring() : L"Untitled";
+    switch (neomifes::app::showUnsavedChangesDialog(hwnd, documentName)) {
+        case neomifes::app::UnsavedChangesChoice::Save:
+            return performSave(hwnd, document, fileState, currentDocumentPath,
+                               /*forceSaveAs=*/!currentDocumentPath.has_value());
+        case neomifes::app::UnsavedChangesChoice::DontSave:
+            return true;
+        case neomifes::app::UnsavedChangesChoice::Cancel:
+        default:
+            return false;
+    }
+}
+
 // F12 (Phase 5c4) - same "act on the cursor's current line" shape as
 // handleBookmarkKey()'s F2 above, but here the line's TEXT (not just its
 // number) is inspected: if it contains an MSVC-diagnostic-style location
 // reference ("path(line)"/"path(line,column)", util::parseTagJumpReference()),
-// opens that file via neomifes::app::openDocumentAt() (Phase 5c2) and jumps
-// to the referenced position. Mirrors jumpToGrepResult()'s reset-sequence
-// shape (RenderPipeline's cached match/bookmark visuals and FindBar's match
-// count, both left to the caller by openDocumentAt()'s own contract -
-// document_open.h). Always returns true once vkCode==VK_F12 is confirmed -
-// F12 is unclaimed everywhere else in this dispatch chain, so there is
-// nothing to fall through to whether or not a reference was found/opened
-// (same silent-no-op contract openDocumentAt() itself guarantees on a
+// opens that file via openAndResetTo() (WI-02, wrapping
+// neomifes::app::openDocumentAt(), Phase 5c2) and jumps to the referenced
+// position. Always returns true once vkCode==VK_F12 is confirmed - F12 is
+// unclaimed everywhere else in this dispatch chain, so there is nothing to
+// fall through to whether or not a reference was found/opened (same
+// silent-no-op contract openDocumentAt() itself guarantees on a
 // stale/missing path).
 bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatcher& dispatcher,
                       SelectionModel& selectionModel, Viewport& viewport, BookmarkManager& bookmarks,
@@ -746,7 +916,8 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
                       std::optional<neomifes::document::TextPos>& rectangularAnchor,
                       std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                      std::optional<std::filesystem::path>& currentDocumentPath) {
+                      std::optional<std::filesystem::path>& currentDocumentPath,
+                      DocumentFileState& fileState) {
     if (vkCode != VK_F12) {
         return false;
     }
@@ -766,29 +937,12 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
         neomifes::app::resolveTagJumpPath(reference->path, std::filesystem::current_path());
     const std::optional<std::uint64_t> targetColumn =
         reference->column ? std::optional<std::uint64_t>(*reference->column - 1) : std::nullopt;
-    const auto error = neomifes::app::openDocumentAt(
-        resolvedPath, reference->line - 1, targetColumn, document, dispatcher, selectionModel, viewport,
-        bookmarks, altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns);
-    if (error) {
-        return true;  // stale/missing path - same silent no-op as jumpToGrepResult()
-    }
-
-    findReplaceState.currentMatches.clear();
-    findReplaceState.currentMatchIndex = 0;
-    findBar.setMatchCount(0, 0);
-    renderPipeline.setMatchVisuals({});
-    renderPipeline.setBookmarkedLines({});
-    // Phase 7i: same "clear rather than remap" reasoning as jumpToGrepResult() -
-    // the replaced `document`'s fold regions would otherwise refer to
-    // whichever file was open before this jump.
-    foldingModel.setFoldableRegions({});
-    syncFoldingState(hwnd, renderPipeline, foldingModel);
-    // Phase 7b/7d: track the newly-opened file so RenderPipeline knows which
-    // language (if any) to color it as.
-    currentDocumentPath = resolvedPath;
-    renderPipeline.setLanguage(neomifes::app::detectLanguage(resolvedPath));
-    ::SetFocus(hwnd);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    // stale/missing path - openAndResetTo() leaves everything untouched on
+    // failure, same silent no-op as before this WI.
+    (void)openAndResetTo(resolvedPath, reference->line - 1, targetColumn, hwnd, document, dispatcher,
+                         selectionModel, viewport, renderPipeline, bookmarks, foldingModel,
+                         findReplaceState, findBar, altCursorAnchor, rectangularAnchor,
+                         freeCursorVirtualColumns, currentDocumentPath, fileState);
     return true;
 }
 
@@ -1129,6 +1283,105 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
     return {.handled = true, .changed = false};
 }
 
+// Ctrl+S (save) / Ctrl+Shift+S (save as) (WI-02, build_plan.md §5, 🎉 M1).
+// Single function for both - mirrors handleFindBarKey()'s Ctrl+F/F3
+// combination - since performSave()'s forceSaveAs parameter is exactly
+// `shiftDown`. Always returns true once Ctrl+S is confirmed (return value
+// of performSave() itself is intentionally ignored here - no window-title
+// "saved" indicator exists yet to update either way, out of scope for
+// this WI).
+bool handleSaveKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Document& document,
+                   DocumentFileState& fileState,
+                   std::optional<std::filesystem::path>& currentDocumentPath) {
+    if (!ctrlDown || vkCode != 'S') {
+        return false;
+    }
+    (void)performSave(hwnd, document, fileState, currentDocumentPath, /*forceSaveAs=*/shiftDown);
+    return true;
+}
+
+// Ctrl+O (WI-02) - confirmDiscardIfDirty() first (so an unsaved edit is
+// never silently discarded by opening a different file), then
+// file_dialogs.h's showOpenFileDialog() for the destination, then
+// openAndResetTo() (Phase 5c2's openDocumentAt(), wrapped) same as F12/
+// Grep-result-click. Unlike those two silent-no-op callers, a failed open
+// here is user-INITIATED (not a stale background reference), so it is
+// surfaced via message_dialogs.h's showOpenErrorDialog().
+bool handleOpenKey(HWND hwnd, UINT vkCode, bool ctrlDown, Document& document,
+                   CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
+                   RenderPipeline& renderPipeline, BookmarkManager& bookmarks, FoldingModel& foldingModel,
+                   FindReplaceState& findReplaceState, FindBar& findBar,
+                   std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                   std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                   std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                   std::optional<std::filesystem::path>& currentDocumentPath,
+                   DocumentFileState& fileState) {
+    if (!ctrlDown || vkCode != 'O') {
+        return false;
+    }
+    if (!confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath)) {
+        return true;  // user cancelled the unsaved-changes prompt
+    }
+    const auto chosen = neomifes::app::showOpenFileDialog(hwnd);
+    if (!chosen) {
+        return true;  // Open dialog cancelled - nothing to do
+    }
+    const auto error = openAndResetTo(*chosen, std::nullopt, std::nullopt, hwnd, document, dispatcher,
+                                      selectionModel, viewport, renderPipeline, bookmarks, foldingModel,
+                                      findReplaceState, findBar, altCursorAnchor, rectangularAnchor,
+                                      freeCursorVirtualColumns, currentDocumentPath, fileState);
+    if (error) {
+        neomifes::app::showOpenErrorDialog(hwnd, *error);
+    }
+    return true;
+}
+
+// Ctrl+N (WI-02) - confirmDiscardIfDirty() first, then resets `document` to
+// a fresh blank Document IN PLACE (move-assignment onto the existing
+// object, not a locally-scoped replacement - CommandDispatcher and other
+// collaborators were bound to this specific Document instance at
+// construction and must keep pointing at it). Ctrl+N never calls
+// openDocumentAt() (there is no file to load), so it does not get that
+// function's internal reset for free - this mirrors it explicitly
+// (dispatcher.resetUndoHistory()/bookmarks.clear()/both selection anchors/
+// freeCursorVirtualColumns, exactly as document_open.cpp's openDocumentAt()
+// does after its own move-assignment). Skipping this was a real
+// data-corruption path found during this WI's design review: a stale Undo
+// entry from the PREVIOUS document splices its deleted text into the new
+// blank document's start on Ctrl+Z (PieceTable::insert() silently clamps
+// an out-of-range offset to 0 rather than rejecting it) - see
+// resetViewAfterDocumentSwap()'s own comment.
+bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, Document& document,
+                          CommandDispatcher& dispatcher, SelectionModel& selectionModel,
+                          Viewport& viewport, RenderPipeline& renderPipeline, BookmarkManager& bookmarks,
+                          FoldingModel& foldingModel, FindReplaceState& findReplaceState, FindBar& findBar,
+                          std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                          std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                          std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                          std::optional<std::filesystem::path>& currentDocumentPath,
+                          DocumentFileState& fileState) {
+    if (!ctrlDown || vkCode != 'N') {
+        return false;
+    }
+    if (!confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath)) {
+        return true;  // user cancelled the unsaved-changes prompt
+    }
+    document = Document{};
+    dispatcher.resetUndoHistory();
+    bookmarks.clear();
+    altCursorAnchor.reset();
+    rectangularAnchor.reset();
+    freeCursorVirtualColumns.reset();
+    selectionModel.moveAllTo(0);
+    viewport.ensureVisible(0, document);
+    currentDocumentPath.reset();
+    fileState = DocumentFileState{};
+    resetViewAfterDocumentSwap(hwnd, renderPipeline, foldingModel, findReplaceState, findBar,
+                               currentDocumentPath);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    return true;
+}
+
 // Handles WM_KEYDOWN end-to-end: Ctrl+C/X/V first (Phase 4b6c), falling
 // through to the regular movement/edit/undo path otherwise. Pulled all the
 // way out of wireNormalMode's onKeyDown lambda body (not just the branching
@@ -1147,7 +1400,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                         std::optional<std::uint32_t>& freeCursorVirtualColumns,
                         std::optional<neomifes::document::TextPos>& altCursorAnchor,
                         std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                        std::optional<std::filesystem::path>& currentDocumentPath) {
+                        std::optional<std::filesystem::path>& currentDocumentPath,
+                        DocumentFileState& fileState) {
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled,
                                    freeCursorVirtualColumns, selectionModel, document, renderPipeline,
                                    viewport)) {
@@ -1182,7 +1436,21 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     }
     if (handleTagJumpKey(hwnd, vkCode, document, dispatcher, selectionModel, viewport, bookmarks,
                          renderPipeline, findBar, findReplaceState, foldingModel, altCursorAnchor,
-                         rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath)) {
+                         rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath, fileState)) {
+        return;
+    }
+    if (handleSaveKey(hwnd, vkCode, shiftDown, ctrlDown, document, fileState, currentDocumentPath)) {
+        return;
+    }
+    if (handleOpenKey(hwnd, vkCode, ctrlDown, document, dispatcher, selectionModel, viewport,
+                      renderPipeline, bookmarks, foldingModel, findReplaceState, findBar, altCursorAnchor,
+                      rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath, fileState)) {
+        return;
+    }
+    if (handleNewDocumentKey(hwnd, vkCode, ctrlDown, document, dispatcher, selectionModel, viewport,
+                             renderPipeline, bookmarks, foldingModel, findReplaceState, findBar,
+                             altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns,
+                             currentDocumentPath, fileState)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
@@ -1525,44 +1793,19 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, 
                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
                       std::optional<neomifes::document::TextPos>& rectangularAnchor,
                       std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                      std::optional<std::filesystem::path>& currentDocumentPath) {
+                      std::optional<std::filesystem::path>& currentDocumentPath,
+                      DocumentFileState& fileState) {
     if (resultIndex >= grepState.currentResults.size()) {
         return;
     }
     const GrepMatch& match = grepState.currentResults[resultIndex];
-    const auto        error = neomifes::app::openDocumentAt(
-        match.path, match.line, match.columnRange.start, document, dispatcher, selectionModel, viewport,
-        bookmarks, altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns);
-    if (error) {
-        // Stale result (file moved/deleted since the Grep ran) - leave the
-        // current document untouched, same "silently no-op on failure"
-        // contract openDocumentAt() itself guarantees. No error-toast UI
-        // exists yet to surface this.
-        return;
-    }
-
-    findReplaceState.currentMatches.clear();
-    findReplaceState.currentMatchIndex = 0;
-    findBar.setMatchCount(0, 0);
-    renderPipeline.setMatchVisuals({});
-    // Separate from BookmarkManager::clear(), which openDocumentAt() already
-    // called internally - this is RenderPipeline's own cached copy, pushed
-    // earlier by handleBookmarkKey()'s setBookmarkedLines() call.
-    renderPipeline.setBookmarkedLines({});
-    // Phase 7i: the just-replaced `document` invalidates every existing fold
-    // region's line numbers (they described the PREVIOUS file) - clearing
-    // rather than trying to remap them avoids folding the wrong lines in the
-    // new file. Repopulated the next time the outline panel is opened for
-    // this file (same accepted "no auto-refresh on file switch" limitation
-    // Phase 7g's OutlinePane already has).
-    foldingModel.setFoldableRegions({});
-    syncFoldingState(hwnd, renderPipeline, foldingModel);
-    // Phase 7b/7d: track the newly-opened file so RenderPipeline knows which
-    // language (if any) to color it as.
-    currentDocumentPath = match.path;
-    renderPipeline.setLanguage(neomifes::app::detectLanguage(match.path));
-    ::SetFocus(hwnd);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    // Stale result (file moved/deleted since the Grep ran) - openAndResetTo()
+    // leaves everything untouched on failure, same silent no-op contract as
+    // before this WI. No error-toast UI exists yet to surface this.
+    (void)openAndResetTo(match.path, match.line, match.columnRange.start, hwnd, document, dispatcher,
+                         selectionModel, viewport, renderPipeline, bookmarks, foldingModel,
+                         findReplaceState, findBar, altCursorAnchor, rectangularAnchor,
+                         freeCursorVirtualColumns, currentDocumentPath, fileState);
 }
 
 // Builds the GrepBarConfig callbacks (Phase 5c3) - same extraction rationale
@@ -1576,7 +1819,8 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
                                  std::optional<neomifes::document::TextPos>& altCursorAnchor,
                                  std::optional<neomifes::document::TextPos>& rectangularAnchor,
                                  std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                                 std::optional<std::filesystem::path>& currentDocumentPath) {
+                                 std::optional<std::filesystem::path>& currentDocumentPath,
+                                 DocumentFileState& fileState) {
     GrepBarConfig config{};
     config.onRunQuery = [&grepState, &grepBar, &searchHistory](std::u16string_view queryText,
                                                                 std::u16string_view folderText) {
@@ -1595,10 +1839,11 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
     config.onResultActivated = [hwnd, &grepState, &document, &dispatcher, &selectionModel, &viewport,
                                 &bookmarks, &renderPipeline, &findBar, &findReplaceState, &foldingModel,
                                 &altCursorAnchor, &rectangularAnchor, &freeCursorVirtualColumns,
-                                &currentDocumentPath](std::size_t resultIndex) {
+                                &currentDocumentPath, &fileState](std::size_t resultIndex) {
         jumpToGrepResult(resultIndex, hwnd, grepState, document, dispatcher, selectionModel, viewport,
                         bookmarks, renderPipeline, findBar, findReplaceState, foldingModel,
-                        altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath);
+                        altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath,
+                        fileState);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -1641,6 +1886,35 @@ void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Document& docu
                                 static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
+// WI-02: cfg.onDropFiles body, pulled out of wireNormalMode() for the same
+// cognitive-complexity reason as handleMouseDownEvent()/handleKeyDownEvent()
+// above. Multi-file drops open only the first path (no multi-tab yet, see
+// build_plan.md's explicit WI-02 scope cut - multi-tab is WI-05).
+void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, Document& document,
+                          CommandDispatcher& dispatcher, SelectionModel& selectionModel,
+                          Viewport& viewport, RenderPipeline& renderPipeline, BookmarkManager& bookmarks,
+                          FoldingModel& foldingModel, FindReplaceState& findReplaceState, FindBar& findBar,
+                          std::optional<neomifes::document::TextPos>& altCursorAnchor,
+                          std::optional<neomifes::document::TextPos>& rectangularAnchor,
+                          std::optional<std::uint32_t>& freeCursorVirtualColumns,
+                          std::optional<std::filesystem::path>& currentDocumentPath,
+                          DocumentFileState& fileState) {
+    if (paths.empty()) {
+        return;
+    }
+    if (!confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath)) {
+        return;
+    }
+    const auto error = openAndResetTo(paths.front(), std::nullopt, std::nullopt, hwnd, document,
+                                      dispatcher, selectionModel, viewport, renderPipeline, bookmarks,
+                                      foldingModel, findReplaceState, findBar, altCursorAnchor,
+                                      rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath,
+                                      fileState);
+    if (error) {
+        neomifes::app::showOpenErrorDialog(hwnd, *error);
+    }
+}
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
@@ -1655,12 +1929,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     SearchHistory& searchHistory, OutlinePane& outlinePane, BookmarkManager& bookmarks,
                     FoldingModel& foldingModel, bool& freeCursorModeEnabled,
                     std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                    std::optional<std::filesystem::path>& currentDocumentPath, bool& isDraggingMinimap) {
+                    std::optional<std::filesystem::path>& currentDocumentPath, DocumentFileState& fileState,
+                    bool& isDraggingMinimap) {
     cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
                           &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
                           &grepBar, &grepState, &searchHistory, &outlinePane, &bookmarks, &foldingModel,
                           &altCursorAnchor, &rectangularAnchor, &freeCursorModeEnabled,
-                          &freeCursorVirtualColumns, &currentDocumentPath](HWND hwnd) {
+                          &freeCursorVirtualColumns, &currentDocumentPath, &fileState](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -1699,7 +1974,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             buildGrepBarConfig(hwnd, document, dispatcher, selectionModel, viewport, bookmarks,
                               renderPipeline, findBar, findReplaceState, grepBar, grepState,
                               searchHistory, foldingModel, altCursorAnchor, rectangularAnchor,
-                              freeCursorVirtualColumns, currentDocumentPath);
+                              freeCursorVirtualColumns, currentDocumentPath, fileState);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
@@ -1764,16 +2039,31 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         renderPipeline.applyAsyncSyntaxTokens(std::move(*tokens));
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
+    // WI-02: WM_CLOSE veto - both go through confirmDiscardIfDirty() so an
+    // unsaved edit is never silently discarded by closing the window or
+    // dropping a different file onto it.
+    cfg.onClose = [&document, &fileState, &currentDocumentPath](HWND hwnd) {
+        return confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath);
+    };
+    cfg.onDropFiles = [&document, &dispatcher, &selectionModel, &viewport, &renderPipeline, &bookmarks,
+                       &foldingModel, &findReplaceState, &findBar, &altCursorAnchor, &rectangularAnchor,
+                       &freeCursorVirtualColumns, &currentDocumentPath,
+                       &fileState](HWND hwnd, std::vector<std::wstring> paths) {
+        handleDropFilesEvent(hwnd, std::move(paths), document, dispatcher, selectionModel, viewport,
+                             renderPipeline, bookmarks, foldingModel, findReplaceState, findBar,
+                             altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns,
+                             currentDocumentPath, fileState);
+    };
     cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
                      &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
                      &bookmarks, &foldingModel, &freeCursorModeEnabled, &freeCursorVirtualColumns,
-                     &altCursorAnchor, &rectangularAnchor,
-                     &currentDocumentPath](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &altCursorAnchor, &rectangularAnchor, &currentDocumentPath,
+                     &fileState](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
                           document, renderPipeline, findBar, findReplaceState, commandPalette,
                           gotoLineBar, grepBar, outlinePane, bookmarks, foldingModel,
                           freeCursorModeEnabled, freeCursorVirtualColumns, altCursorAnchor,
-                          rectangularAnchor, currentDocumentPath);
+                          rectangularAnchor, currentDocumentPath, fileState);
     };
     cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
                            HWND hwnd, UINT vkCode, bool shiftDown) {
@@ -1899,8 +2189,20 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Declared before window/renderPipeline so it outlives both (reverse
     // destruction order) - RenderPipeline::setDocument() below hands out a
     // non-owning pointer that must not dangle while the message loop runs.
-    std::uint64_t syntheticLineCountUsed = 0;
-    Document      document               = prepareDocument(args, syntheticLineCountUsed);
+    //
+    // WI-02: currentDocumentPath/fileState are declared here (not further
+    // down where currentDocumentPath used to live alone) because
+    // prepareDocument() populates all three together from the same
+    // loadFile() call - see loadStartupDocument()'s comment on why
+    // currentDocumentPath must only be set on a SUCCESSFUL load (a stale
+    // path pointing at an empty `document` would make a later Ctrl+S wipe
+    // the original file, not just mis-color syntax highlighting the way an
+    // incorrect path did before saveFile() existed).
+    std::uint64_t                        syntheticLineCountUsed = 0;
+    std::optional<std::filesystem::path> currentDocumentPath;
+    DocumentFileState                    fileState;
+    Document document =
+        prepareDocument(args, syntheticLineCountUsed, fileState, currentDocumentPath);
     FrameProfile  frameProfile{};
 
     // Editor Core state (Phase 4b1) - Normal-mode-only in practice (only
@@ -1989,14 +2291,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Phase 7b: which file (if any) `document` was loaded from - Document
     // itself never tracks this (see syntax_language.h's file comment), and
     // RenderPipeline::setLanguage() needs it to decide which language (if
-    // any) to color the current document as. Only meaningful in Normal mode,
-    // same rationale as searchHistoryPath above (load failures leave
-    // `document` empty, which parses to zero tokens - harmless, see the
-    // Phase 7b plan's Context section point 2).
-    std::optional<std::filesystem::path> currentDocumentPath;
-    if (args.mode == LaunchMode::Normal && args.openPath) {
-        currentDocumentPath = *args.openPath;
-    }
+    // any) to color the current document as. WI-02: now declared/populated
+    // together with `document`/`fileState` near the top of wWinMain (see
+    // that declaration's comment) rather than here, so it stays accurate
+    // for the new Ctrl+S capability too.
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -2015,7 +2313,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
                        commandPalette, gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
                        bookmarks, foldingModel, freeCursorModeEnabled, freeCursorVirtualColumns,
-                       currentDocumentPath, isDraggingMinimap);
+                       currentDocumentPath, fileState, isDraggingMinimap);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

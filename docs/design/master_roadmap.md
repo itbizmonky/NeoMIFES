@@ -272,7 +272,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 8f | registerCommand ヘッドレス実装 (`ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 | §8 |
 | **— ここまでエンジン層。以下 v2.1 で再編 (`gap_analysis.md` §7) —** | | | |
 | **8.5a** | **文書保存基盤** (`document::saveFile()`、mmap 解放 + `ReplaceFileW` アトミック置換、`isDirty()`、エンコード/改行/BOM 指定書き出し) | ⏭️ **最優先 (P0)** | §8.5 |
-| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N、`IFileDialog`、`WM_DROPFILES`、未保存警告) | ⏭️ **P0** | §8.5 |
+| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N、`IFileDialog`、`WM_DROPFILES`、未保存警告) | 🟡 **実装完了・🎉 M1ドッグフーディング未実施** | §8.5 |
 | **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`app::EditorSession` / `app::Workspace` 新設。2,053 行の `main.cpp` から状態を移設) | ⏭️ **P0** | §8.5 |
 | **8.5d** | **タブ UI** (`ui::TabBar`、Ctrl+Tab / Ctrl+W / Ctrl+PgUp・PgDn) | ⏭️ **P0** | §8.5 |
 | **8.5e** | **IME 完全対応** (`WM_IME_*`、未確定文字列のインライン描画、`CANDIDATEFORM` キャレット追従) | ⏭️ **P0** | §8.5, §16.1 |
@@ -1658,6 +1658,18 @@ Phase 6d で `OriginalBuffer` は 10GB ファイルを `CreateFileW(GENERIC_READ
 - `WM_DROPFILES` によるドラッグ&ドロップ (`DragAcceptFiles`)
 - 未保存警告ダイアログ (`TaskDialogIndirect` — Windows 10/11 標準の外観)
 - `WM_CLOSE` での確認 (`MainWindow` の既存 `onClose` フックを拡張)
+
+#### 実装後の確定事項/変更点 (2026-08-04、WI-02完了)
+
+**`onClose`フックは新規追加だった。** 上記記述は「既存の`onClose`フックを拡張」としていたが、着手前調査で`MainWindowConfig`には`onWindowCreated`/`onFirstPaint`/`onDeferredInit`/`onResize`/`onKeyDown`/`onSysKeyDown`/`onChar`/`onMouseWheel`/`onMouseDown`/`onMouseDrag`/`onCommand`/`onAppMessage`/`onNotify`の13種のみ存在し`onClose`は無かったと判明 (`build_plan.md` WI-02節が着手前に訂正済み)。新規`onClose`(戻り値`bool`、未設定時=true=閉じてよい、`onSysKeyDown`の「未設定=false」と逆極性)・`onDropFiles`の2フックを`main_window.h`/`.cpp`へ追加した。
+
+**`document::LoadResult`に`lineEnding`フィールドを追加する設計へ簡略化した。** 当初想定していた「ロード時メタデータを運ぶ新しい共有関数」は不要と判明し、`hadBom`/`detectedEncoding`と同じ形で`LoadResult`に統合、`openDocumentAt()`の戻り値も`std::variant<LoadedFileMeta, LoadError>`へ変更した (`LoadedFileMeta{hadBom, encoding, lineEnding}`)。全5箇所の「ファイルを開く」呼び出し元 (起動時・F12・Grep結果クリック・Ctrl+O・D&D) が同一ロジックを共有するため、複数箇所での実装乖離が構造的に起きない。
+
+**設計レビューで実装前に検出・修正した3件の実害あるバグ(詳細は`build_plan.md` WI-02節参照):** (1) `CoInitializeEx`未呼び出し (`IFileOpenDialog`/`IFileSaveDialog`が`CO_E_NOTINITIALIZED`で即失敗する)、(2) 改行コード検出の境界プレフィックス走査が偶然CRLFペアを分断すると一貫したCRLFファイルを`Mixed`と誤判定し無言でLFへ書き換わりうるバグ、(3) Ctrl+Nを素朴実装すると直前ファイルの削除済み内容がUndo経由で新規文書へ混入するデータ破損経路。いずれも実装前のPlan agent設計レビューで検出し、コード自体には一度も現れていない。
+
+**既知の未対応事項:** オーバーレイ (FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane) がフォーカスを持っている間はCtrl+S/O/Nが届かない。`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`に起票。
+
+**🎉 M1 (ドッグフーディング開始) は本サブフェーズの実装完了時点では未達。** 実装・自動テスト・ローカルビルド検証は全て完了したが、「NeoMIFES自身のソースをNeoMIFESで開き編集・保存・コミットする」という核心のDoD項目は、実際にユーザーのリポジトリへ書き込む操作であるため自動化・代行せず、ユーザー自身への実施依頼に留めた。M1達成の正式な記録は、ユーザーによる確認後に別途追記する。
 
 ### 8.5.5 サブフェーズ 8.5c — `main.cpp` 解体 + 複数文書モデル (**8.5d より必ず先**)
 

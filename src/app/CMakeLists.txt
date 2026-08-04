@@ -52,6 +52,8 @@ add_executable(NeoMIFES WIN32
     main.cpp
     startup_profile.cpp
     frame_profile.cpp
+    file_dialogs.cpp
+    message_dialogs.cpp
 )
 
 target_link_libraries(NeoMIFES
@@ -71,6 +73,11 @@ target_link_libraries(NeoMIFES
         neomifes::search
         user32
         shell32
+        # file_dialogs.cpp (WI-02): CoInitializeEx/CoCreateInstance/
+        # CoUninitialize/CoTaskMemFree - this repo's first CoCreateInstance-
+        # based COM usage (existing D2D/DXGI/D3D11 COM, ADR-008, is all
+        # factory-function-based and never needed ole32 directly).
+        ole32
 )
 
 set_target_properties(NeoMIFES PROPERTIES

@@ -1,6 +1,6 @@
 # Issue: 文書保存機能が存在しない (P0 — 出荷不能)
 
-**✅ 一部解消 (2026-08-04、WI-01)**: `document::saveFile()` / `isDirty()` / `markSaved()` 実装済み (ヘッドレス、10GBファイル対応の境界メモリ設計)。**`Ctrl+S`等のUI配線は未実装のまま (WI-02)** — 本Issueは WI-02 完了まで P0 のまま残す。詳細は [`build_plan.md`](../design/build_plan.md) WI-01 節、[`detailed_design.md` §3.4](../design/detailed_design.md#34-filesaver-wi-01実装2026-08-04) 参照。
+**✅ ほぼ解消 (2026-08-04、WI-01 + WI-02)**: `document::saveFile()` / `isDirty()` / `markSaved()` (WI-01) に続き、`Ctrl+S`/`Ctrl+Shift+S`/`Ctrl+O`/`Ctrl+N`/D&D/未保存警告のUI配線 (WI-02) を実装済み。自動テスト (計1000件、Debug/Release/ubsan) は全green。**唯一残るのはドッグフーディング (NeoMIFES自身のソースをNeoMIFESで編集・保存・コミットする実地確認) — 実際にユーザーのリポジトリへ書き込む操作のため自動化せず、ユーザーへ実施を依頼中。** 完了後、本Issueをクローズする。詳細は [`build_plan.md`](../design/build_plan.md) WI-01/WI-02 節、[`detailed_design.md` §3.4](../design/detailed_design.md#34-filesaver-wi-01実装2026-08-04) 参照。
 
 - **起票日:** 2026-08-04 (中間レビュー、Phase 8f / 7y 完了時点)
 - **対象:** `src/document/` (`saveFile()` の新設)、`src/app/main.cpp` (`Ctrl+S` 配線)
@@ -65,11 +65,11 @@ roadmap §8.5.3 で採用方針を規定済み:
 
 - [x] `document::saveFile(doc, path, encoding, lineEnding, bom)` が実装され、10GB ファイルでも全文実体化なしに保存できる (WI-01、境界メモリはハイブリッドチャンク分割 `kLinesPerChunk`/`kMaxChunkCodeUnits` で保証、`document_save_bench.cpp`のpeak working set計測で確認)
 - [x] `document::Document::isDirty()` / `markSaved()` が実装されている (WI-01)
-- [ ] `Ctrl+S` / `Ctrl+Shift+S` で保存でき、再度開くと編集内容が保持されている (WI-02、UI配線)
-- [ ] 未保存のまま閉じようとすると警告が出る (WI-02)
+- [x] `Ctrl+S` / `Ctrl+Shift+S` で保存でき、再度開くと編集内容が保持されている (WI-02、`performSave()`/`handleSaveKey()`)
+- [x] 未保存のまま閉じようとすると警告が出る (WI-02、`confirmDiscardIfDirty()` を Ctrl+N/Ctrl+O/D&D/`WM_CLOSE` の全経路で共有)
 - [x] 保存が他プロセスのロックで失敗した場合、元ファイルが破壊されない (WI-01、`replaceIntoPlace()`の実ファイル存在チェックで保証、統合テスト`FailedSaveLeavesTheOriginalFileUntouched`で実証)
 - [x] `tests/integration/` に「開く → 編集→ 保存 → 再度開く → 内容一致」のラウンドトリップテストがある (WI-01、`document_save_roundtrip_test.cpp`)
-- [ ] **ドッグフーディング: NeoMIFES 自身のソースを NeoMIFES で編集して保存し、そのままコミットできる** (`Ctrl+S`が無いため引き続き未達、WI-02完了まで持ち越し)
+- [ ] **ドッグフーディング: NeoMIFES 自身のソースを NeoMIFES で編集して保存し、そのままコミットできる** (WI-02実装完了・自動テスト全green。実際にユーザーのリポジトリへ書き込む操作のため自動化せず、ユーザーへ実施を依頼中 — 本項目のみ未達)
 
 ## 再検証コマンド
 

@@ -4,7 +4,7 @@
 >
 > **本ファイルは「これまでの経緯」の記録が中心 (2,100 行)。実際に手を動かすための指示は `build_plan.md` にある。**
 > `build_plan.md` §0 のコールドスタート手順を実行すれば、次に何をどう作ればよいかが 5〜10 分で確定する。
-> **次にやること: WI-02 (ファイルライフサイクル UI、`Ctrl+S`/`Ctrl+O`/`Ctrl+N`/D&D/未保存警告)** — `build_plan.md` §5 参照。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`、push はユーザー指示待ち)。
+> **次にやること: 🎉 M1 ドッグフーディング確認 (ユーザー実施) → WI-03 (横スクロール)** — `build_plan.md` §5 参照。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。**WI-02 (ファイルライフサイクル UI) は実装・自動テスト (1000/1000 green)・ローカルビルド検証まで完了し、コミット待ち。** 唯一残る DoD 項目「NeoMIFES 自身のソースを NeoMIFES で編集・保存・コミットする」ドッグフーディングは、実際にユーザーのリポジトリへ書き込む操作のため自動化せず、ユーザーへ実施を依頼中。完了確認後に WI-03 (横スクロール) へ進む。
 >
 > ---
 
@@ -26,7 +26,7 @@
 > - **Phase 9 以降の全新機能は Phase 8.5 / 8.6 完了まで凍結**
 >
 > ### 次にやること
-> **Phase 8.5a (文書保存基盤) は完了した (2026-08-04、WI-01)。** 次は **Phase 8.5b (WI-02、ファイルライフサイクル UI)**。着手前probeで「mmap解放は不要」(U#22/U#26解消)・「エラーコードではなく実ファイル存在チェックでリカバリ判断」(U#23解消) と判明し、`build_plan.md`/roadmap原案の一部を意図的に簡略化した — 詳細は §3.67 参照。
+> **Phase 8.5a (文書保存基盤) は完了した (2026-08-04、WI-01)。Phase 8.5b (WI-02、ファイルライフサイクル UI) も実装・自動テスト・ローカルビルド検証まで完了した (2026-08-04、§3.68参照)。** 唯一残るのはドッグフーディング (実際にユーザーのリポジトリへ書き込む操作のため自動化せず依頼中) — 完了確認後、次は **Phase 8.5g (WI-03、横スクロール)**。着手前probeで「mmap解放は不要」(U#22/U#26解消)・「エラーコードではなく実ファイル存在チェックでリカバリ判断」(U#23解消) と判明し、`build_plan.md`/roadmap原案の一部を意図的に簡略化した — 詳細は §3.67 参照。
 >
 > ### 新設・更新した文書
 > - 🆕 [`docs/design/gap_analysis.md`](../design/gap_analysis.md) — 中間レビュー本体 (P0/P1 ギャップ、構造的原因分析、Phase 再編、プロセス提言)
@@ -152,7 +152,7 @@
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 8.5a | **文書保存基盤** (`saveFile()`、`isDirty()`。probeでmmap解放は不要と判明し実装からは除外) | ✅ **完了 (WI-01、コミット済み`a4a0445`、pushはユーザー指示待ち、§3.67参照)** |
-| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | ⏭️ **次回・最優先 (P0、WI-02)** |
+| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | 🟡 **実装完了 (WI-02、§3.68参照)、🎉 M1ドッグフーディングはユーザー実施待ち** |
 | 8.5c | `main.cpp` 解体 + 複数文書モデル (`EditorSession`/`Workspace`) | ⏭️ P0 (**8.5d より先**) |
 | 8.5d | タブ UI (`ui::TabBar`) | ⏭️ P0 |
 | 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 |
@@ -2136,6 +2136,38 @@ CI green確認・中間レビュー(`gap_analysis.md`、roadmap v2.1改訂、`bu
 
 **コミット1件、pushはユーザーの明示指示待ち。** 次はWI-02(ファイルライフサイクルUI)— 完了時点でM1(NeoMIFESでNeoMIFESを編集できる、ドッグフーディング開始)達成。
 
+### 3.68 WI-02 (ファイルライフサイクル UI、🎉 M1) 完了記録 (2026-08-04)
+
+WI-01完了・コミット後、ユーザーから「次のPahseへ進め」(Phase のタイプミス)と指示された。`build_plan.md`が次項目として規定するWI-02(ファイルライフサイクルUI)に着手した — Ctrl+S/Ctrl+Shift+S/Ctrl+O/Ctrl+N/ドラッグ&ドロップ/未保存警告/`WM_CLOSE`確認を実装し、本WI完了時点でM1(NeoMIFES自身のソースをNeoMIFESで編集・保存・コミットできる=ドッグフーディング開始)を達成する計画。
+
+**Plan Modeでの設計レビュー(Plan agent)で実装前に検出・修正した3件の実害あるバグ:**
+1. **`CoInitializeEx`が本コードベースのどこからも呼ばれていなかった。** 既存のD2D/DXGI/D3D11 COM利用(ADR-008)は全てファクトリ関数経由で`CoCreateInstance`を要しないが、`IFileOpenDialog`/`IFileSaveDialog`は要する。未対応だとCtrl+O/Ctrl+Shift+Sが`CO_E_NOTINITIALIZED`で即失敗する。`file_dialogs.cpp`にファイルローカルなRAII `ComInitGuard`を新設して対応。
+2. **境界プレフィックスでの改行コード検出に実害あるバグがあった。** `kLineEndingDetectionHeadCodeUnits`(1MB)の走査境界が偶然CRLFペアの`\r`と`\n`の間で切れると、`encoding::detectLineEnding()`が末尾の孤立`\r`を「CR単独」の証拠として誤検出し、一貫したCRLFファイルを`Mixed`と誤判定して`saveFile()`が無言でLFへ書き換える経路になり得た。`detectLineEndingBounded()`で境界切断時の末尾`\r`を明示的にトリムして対処。
+3. **Ctrl+Nを素朴に実装すると、直前の編集内容がUndo経由で新規(空)文書へ混入する実害あるデータ破損経路があった。** `openDocumentAt()`は`dispatcher.resetUndoHistory()`/`bookmarks.clear()`/両アンカーのリセット/`freeCursorVirtualColumns.reset()`を内部で行うが、Ctrl+Nはファイルを読まないため`openDocumentAt()`を経由せず、これらを自前で複製する必要がある。省略すると「編集→Ctrl+N→Ctrl+Z」で`PieceTable::insert()`の範囲外オフセットクランプ(`min(pos, total)`)により、直前ファイルの削除済み内容が新規文書の先頭へ無言で復元される。`handleNewDocumentKey()`で明示的に複製して対処。
+
+**設計中に気づいたより良い解:** 当初「BOM/エンコード/改行コードのロード時メタデータを運ぶ新しい共有関数をapp層に新設する」設計を検討したが、`LoadResult`自体に`lineEnding`フィールドを1つ追加し`loadFile()`内部で計算する方が、既存の`hadBom`/`detectedEncoding`と全く同じ形で全呼び出し元(起動時ロード・F12・Grep結果クリック・Ctrl+O・D&D)に自動的に伝播し、複数箇所での実装乖離リスクが構造的に排除できると判明した。`openDocumentAt()`の戻り値も`std::variant<LoadedFileMeta, LoadError>`へ変更し、全呼び出し元がこの単一の情報源を共有する。
+
+**実装で自己発見・修正したバグ:** `DocumentFileState`構造体で`encoding::Encoding encoding = encoding::Encoding::Utf8;`のようにメンバ名`encoding`が名前空間`encoding`をシャドウしコンパイルエラーになる問題(既存の`using neomifes::encoding::Encoding;`エイリアスを使い`Encoding encoding = Encoding::Utf8;`へ修正)。`wireNormalMode()`関数のパラメータリストに`fileState`を追加し忘れていた問題(`cfg.onClose`/`cfg.onDropFiles`ラムダが未宣言変数を参照していた)。
+
+**clang-tidy指摘の修正:** `wireNormalMode()`の認知的複雑度が31(閾値25)を超過 → `cfg.onDropFiles`のラムダ本体を`handleDropFilesEvent()`として関数抽出(既存の`handleMouseDownEvent()`等と同じ「複雑度超過時は名前付き関数へ抽出」パターン)。`message_dialogs.cpp`で`TASKDIALOG_BUTTON`の集成体初期化を指定初期化子へ変更・`TASKDIALOGCONFIG::pszMainIcon`のunion access 3箇所に`outline_pane.cpp`前例と同じ`NOLINTBEGIN/END(cppcoreguidelines-pro-type-union-access)`を適用・`showSaveErrorDialog()`の「初期化してから上書きする」デッドストアパターンをIIFE形式のswitch-with-returnへ書き換え。`main_window.cpp`で`const auto hDrop`を`auto* const hDrop`へ修正(`readability-qualified-auto`)。
+
+**実測検証:** ローカルDebug/Release/ubsan全**1000件green**(3プリセット全て)。変更/新規ファイル全件(`main.cpp`/`file_dialogs.cpp`/`message_dialogs.cpp`/`main_window.cpp`/2テストファイル)へclang-tidy個別実行、`src/`配下新規警告0(`/Zc:*`系の既知ノイズを除く、未変更ファイルでも再現し無関係と確認済み)。`ole32`/`comctl32`のリンクはローカルビルドで実際に解決することを確認(`comctl32`は`neomifes::ui`経由のCMake STATIC推移リンクで自動解決、明示追加不要)。
+
+**実アプリでの視覚/操作確認の限界:** 過去複数セッションで確立した通りWin32 GUIへのキーボード入力合成(Ctrl修飾キー含む)が不安定なため、Ctrl+S/O/N/Shift+Sの実機キー入力確認は行っていない。実施したのは`NeoMIFES.exe --open README.md`の起動生存確認のみ(3秒後もプロセス生存)。
+
+**完了条件:**
+- [x] `Ctrl+O`でファイルを開き、`Ctrl+S`で保存し、再度開くと編集内容が保持されている(自動テストで裏付け)
+- [x] `Ctrl+Shift+S`で別名保存できる
+- [x] `Ctrl+N`で空の新規文書になる
+- [x] エクスプローラからファイルをドラッグ&ドロップして開ける(実装済み、実機ドラッグ操作自体は未検証)
+- [x] 未保存のまま`Ctrl+N`/`Ctrl+O`/ウィンドウを閉じる、のいずれでも警告が出て「キャンセル」で操作が中止される
+- [ ] 🎉 **ドッグフーディング: NeoMIFESでNeoMIFESのソースを開いて編集し、保存し、そのままコミットできた** ← **ユーザーへ実施を依頼中、未完了**
+- [x] Debug/Release/ubsan全green(各1000/1000)、clang-tidy新規警告0
+
+**既知の未対応事項(P2、issue化済み):** [`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`](../issues/overlay_focus_blocks_file_lifecycle_keys.md) — FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePaneのいずれかがフォーカスを持っている間はCtrl+S/O/Nが届かない。
+
+**コミット1件、pushはユーザーの明示指示待ち。** **🎉 M1はドッグフーディング完了まで正式には未達扱い。** ユーザーによる確認後、次はWI-03(横スクロール)。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2185,21 +2217,21 @@ CI green確認・中間レビュー(`gap_analysis.md`、roadmap v2.1改訂、`bu
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md 冒頭の中間レビュー結果と docs/design/gap_analysis.md を読んで現状を把握せよ。
+RESUME_HERE.md §3.68 (WI-02 完了記録) を読んで現状を把握せよ。
 
-エンジン層 (Phase 0〜8f) は完了しているが、2026-08-04 の中間レビューで
-「アプリケーションシェルにフェーズが一度も割り当てられていなかった」という
-ロードマップの構造的欠陥が判明した。NeoMIFES は現在、編集内容をファイルに
-保存できない。roadmap は v2.1 で Phase 8.5 / 8.6 / 12' を新設済み。
+WI-01 (文書保存基盤) / WI-02 (ファイルライフサイクル UI、Ctrl+S/O/N/D&D/
+未保存警告) は実装・自動テスト (1000/1000 green)・ローカルビルド検証まで
+完了し、コミット待ちの状態にある。🎉 M1 (NeoMIFES で NeoMIFES を編集できる)
+の唯一残る DoD 項目は「NeoMIFES 自身のソースを NeoMIFES で編集・保存・
+コミットする」ドッグフーディングであり、実際にユーザーのリポジトリへ
+書き込む操作のため自動化せず、ユーザーへ実施を依頼済み。
 
-Phase 8.5a (文書保存基盤) に着手せよ。roadmap §8.5.3 に設計方針を規定済み。
-最大の技術課題は mmap 中のファイルへの上書き (一時ファイル + ReplaceFileW
-アトミック置換 + マップ解放/再取得)。未決事項 U#22 (保存後の Piece Table
-再構築と Undo 履歴の整合性) / U#23 (保存失敗時の一時ファイル処理) は
-実機 probe で検証してから実装すること (CLAUDE.md ルール3)。
+ユーザーからドッグフーディング完了の確認が得られたら、build_plan.md
+§3 の WI-02 行にコミットハッシュを記入し M1 達成を正式に記録した上で、
+WI-03 (横スクロール、build_plan.md §5 参照) に着手すること。
 
-未 push のコミットが 3 件ある (b1e23d3 / 2f8380e / 23c2cc2)。push は
-ユーザーの明示指示を待つこと。
+未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
+で実際の差分を確認してから、push はユーザーの明示指示を待つこと。
 ```
 
 **着手前に必ず確認すること (中間レビューによる新ルール):**

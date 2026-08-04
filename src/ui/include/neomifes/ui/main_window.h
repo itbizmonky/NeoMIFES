@@ -11,6 +11,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include "neomifes/ui/click_tracking.h"
 
@@ -112,6 +114,28 @@ struct MainWindowConfig {
     // 0 (no handler configured) is a safe default for TreeView, which does
     // not require a specific non-zero reply.
     std::function<LRESULT(HWND, WPARAM, LPARAM)> onNotify;
+    // Optional: invoked from WM_CLOSE (WI-02). Returns whether the window
+    // may actually close (true = proceed to DestroyWindow, false = leave
+    // the window open) - used for the unsaved-changes confirmation. NOTE
+    // THE INVERTED DEFAULT vs onSysKeyDown above: no handler configured
+    // here is equivalent to always returning TRUE (closable), the opposite
+    // of onSysKeyDown's "no handler = false/unconsumed" - onSysKeyDown's
+    // false lets DefWindowProcW preserve system key behavior when nothing
+    // claims a key, whereas WM_CLOSE has no such fallback to defer to; the
+    // pre-WI-02 behavior (unconditional DestroyWindow) is the correct
+    // no-handler default to preserve.
+    std::function<bool(HWND)> onClose;
+    // Optional: invoked from WM_DROPFILES (WI-02) with every dropped file's
+    // full path, in drop order. MainWindow itself decodes the raw HDROP via
+    // DragQueryFileW/DragFinish before calling out (same "decode the
+    // primitive Win32 payload, hand the app layer clean typed values"
+    // convention onMouseDown/onKeyDown already follow - GET_X_LPARAM/
+    // GetKeyState respectively - unlike onCommand/onAppMessage/onNotify's
+    // deliberate opacity, which exists specifically to avoid neomifes::ui
+    // depending on render::/syntax:: payload types; HDROP decoding needs no
+    // such cross-layer knowledge). Only registered (DragAcceptFiles(TRUE))
+    // when this is actually set - see create()'s implementation.
+    std::function<void(HWND, std::vector<std::wstring>)> onDropFiles;
 };
 
 class MainWindow {
@@ -160,6 +184,8 @@ private:
     void handleMouseUp() noexcept;
     void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
     LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
+    [[nodiscard]] bool handleClose() noexcept;
+    void handleDropFiles(WPARAM wParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
@@ -175,6 +201,8 @@ private:
     std::function<void(HWND, WPARAM, LPARAM)>                         m_onCommand;
     std::function<void(HWND, UINT, WPARAM, LPARAM)>                   m_onAppMessage;
     std::function<LRESULT(HWND, WPARAM, LPARAM)>                      m_onNotify;
+    std::function<bool(HWND)>                                         m_onClose;
+    std::function<void(HWND, std::vector<std::wstring>)>              m_onDropFiles;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;
