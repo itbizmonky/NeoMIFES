@@ -2,8 +2,13 @@
 
 このファイルは Claude Code が本リポジトリで作業する際に必ず最初に参照するガイドです。要件定義書 [`NeoMIFES_要件定義書.md`](NeoMIFES_要件定義書.md) と併せて読むこと。
 
-> 🔖 **セッション再開時は先に [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) を読み、現在のフェーズと未検証の宿題を把握すること。**
-> 🔴 **2026-08-04 中間レビュー: [`docs/design/gap_analysis.md`](docs/design/gap_analysis.md) を必読。** エンジン層は完成に近い一方、**NeoMIFES は編集内容をファイルに保存できない**。roadmap が「アプリケーションシェル」にフェーズを一度も割り当てていなかった構造的欠陥が判明し、v2.1 で Phase 8.5 / 8.6 / 12' を新設した。**Phase 9 以降の全新機能は Phase 8.5 / 8.6 完了まで凍結。**
+> # 🚀 実装を進めるなら、まず [`docs/design/build_plan.md`](docs/design/build_plan.md) §0 を読め
+>
+> **`build_plan.md` は実行順の作業指示書であり、コンテキストを一切持たないセッションが単独で製造を継続できるよう設計されている。** §0 のコールドスタート手順 (5〜10 分) を実行すれば、次に何をどう作ればよいかが確定する。
+> **`master_roadmap.md` (2,900 行) を最初から読んではいけない。** 必要な章は各作業単位 (WI) が指定する。
+>
+> 🔖 セッション再開時の詳細な現在地は [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md)。
+> 🔴 **2026-08-04 中間レビュー: [`docs/design/gap_analysis.md`](docs/design/gap_analysis.md)。** エンジン層は完成に近い一方、**NeoMIFES は編集内容をファイルに保存できない**。roadmap が「アプリケーションシェル」にフェーズを一度も割り当てていなかった構造的欠陥が判明し、v2.1 で Phase 8.5 / 8.6 / 12' を新設した。**Phase 9 以降の全新機能は WI-13 (MVP 出荷判定) まで凍結。**
 > 🗺️ **未着手フェーズ (Phase 4b8・5b2・5b3・5c・6〜12) の実装詳細は [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) に一気通貫で規定済み (2026-07-19 v2.0 発行、Google/MS 責任者視点レビュー済、23章)。これらのフェーズについて「何を作るか」を推測・再設計する前に必ずこのファイルの該当章を読むこと。本書は Plan-of-Record であり、要件定義書と同格の拘束力を持つ。矛盾が生じた場合はユーザーに確認する (CLAUDE.md 絶対ルール3)。**
 > 📜 **過去の設計判断・方針転換の経緯は [`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) にセッション単位で時系列集約。「なぜ今この設計か」の一次資料。**
 > 📝 **各セッション終了時、TIMELINE.md の末尾に「そのセッションで決めたこと・作ったもの」を 1 セクション追記すること。**

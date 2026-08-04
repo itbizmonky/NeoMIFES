@@ -39,8 +39,9 @@ Windows 向け純粋ネイティブテキストエディタ。C++23 + Win32 API 
 ## ドキュメント
 
 **まずここから:**
-- [**セッション再開ガイド (`RESUME_HERE.md`)**](docs/handoff/RESUME_HERE.md) — 現在地と次アクション
+- 🚀 [**製造全体計画 (`build_plan.md`)**](docs/design/build_plan.md) — **実行順の作業指示書。開発を進めるならここから**
 - [**商用化ギャップ分析 (`gap_analysis.md`)**](docs/design/gap_analysis.md) — 中間レビュー結果、P0/P1 ギャップ
+- [セッション再開ガイド (`RESUME_HERE.md`)](docs/handoff/RESUME_HERE.md) — これまでの経緯の詳細記録
 
 **計画:**
 - [要件定義書](NeoMIFES_要件定義書.md) — 何を作るか (v1.0 凍結)
