@@ -225,6 +225,32 @@ struct LoadResult {
 - ファイル本体は `OriginalBuffer::openMemoryMapped` (mmap) 経由で扱う。`FileLoader` 自身は BOM 検出のための先頭3バイトだけを個別に `_wfopen_s`/`fread` で読む (mmap 全体を作ってから3バイトだけ見るより単純)
 - 非同期化 (Worker 経由) は将来検討。現状は同期 API のみ
 
+### 3.4 FileSaver (WI-01実装、2026-08-04)
+
+```cpp
+enum class SaveError { CannotCreateTempFile, WriteFailed, EncodeFailed, ReplaceFailed, OriginalFileAtRisk };
+
+// docの現在の内容をpathへストリーム保存する。成功時はdoc.markSaved()を
+// 呼びnullopt、失敗時はdocも対象ファイルも変更しない。
+[[nodiscard]] std::optional<SaveError> saveFile(Document& doc, const std::filesystem::path& path,
+                                                 encoding::Encoding enc,
+                                                 encoding::LineEnding lineEnding, bool writeBom);
+```
+
+`Document::isDirty()`/`markSaved()` は `m_version`/`m_savedVersion` の比較で実装 (`build_plan.md`の設計スケッチ通り、追加の特別扱い不要)。`encoding::convertLineEndings()`/`withBom()` を新設し、保存経路専用の変換をencodingモジュール側へ集約した。
+
+**着手前probeで判明し、`build_plan.md`/`master_roadmap.md`の原案(mmap解放→再mmap→Piece Table単一ピース再構築)から意図的に逸脱した設計:**
+
+1. **mmap解放・Piece Table再構築は不要と実測で確認した (U#22/U#26解消)。** `ReplaceFileW(target, replacement, backup)` は、`target` が `FILE_SHARE_READ|WRITE|DELETE` でmmap開きっぱなしのままでも成功する。旧mmapビューは置換後も旧内容を(孤立したまま)返し続け、`target` パスへの新規オープンは新内容を返す。`OriginalBuffer` の既存mmap構造(`FILE_SHARE_DELETE` 込み)はそのまま一切変更しない。
+2. **`ReplaceFileW` は存在しないファイルへは使えない (create-or-replaceではなくreplace専用)。** 新規ファイル (Ctrl+N の初回保存)・存在しないパスへの Save As では、`ReplaceFileW` 失敗後に `MoveFileExW(temp, target, MOVEFILE_REPLACE_EXISTING)` へフォールバックする。
+3. **リカバリ判断はエラーコード分岐ではなく、失敗後の実ファイル存在チェック (`fs::exists`) で行う (U#23解消)。** probeで `ERROR_FILE_NOT_FOUND`(2) が「targetが存在しない」場合と「replacementが存在しない (呼び出し側バグ)」場合の両方で返り、エラーコード単独では区別できないと判明したため。
+4. **チャンク分割は行境界 (`kLinesPerChunk=4096`) とコード単位上限 (`kMaxChunkCodeUnits=2^20`) のハイブリッド。** `Document::lineCount()` は `'\n'` のみを数えるため、CR-onlyファイルや改行を含まない巨大な1行は行境界チャンク単独では文書全体が1チャンクになり、境界メモリ制約 (100MB以上のファイルでピークメモリが比例しない) が破れる。コード単位上限が保険として効く。サロゲートペア・CRLFペアを跨がない境界調整 (`adjustSubChunkEnd()`) はこの巨大単一行パスでのみ発動する。
+5. **BOM書き込みはチャンクループから分離し、`writeBom` が真なら文書の内容に関わらず先頭で1回だけ書く。** 空文書でもBOMが正しく書かれる (チャンクが1つも実行されないケースへの対応)。
+
+**影響ファイル:** `src/document/{document.h,document.cpp}` (`isDirty()`/`markSaved()`)、`src/document/include/neomifes/document/file_saver.h` + `src/document/src/file_saver.cpp` (新規)、`src/encoding/{encoding.h,encoding.cpp}` (`convertLineEndings()`/`withBom()`)。`original_buffer.h`/`.cpp` は無変更 (上記1参照)。
+
+**スコープ外 (WI-02以降):** `Ctrl+S` 等のUI配線、Save Asダイアログ、自動保存/`.bak`永続保持 (WI-11)。
+
 ---
 
 ## 4. Rendering Engine 詳細

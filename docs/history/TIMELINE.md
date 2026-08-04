@@ -2623,4 +2623,41 @@ Phase 8f完了・コミット(`b1e23d3`、push未実施)後、ユーザーから
 
 **コールドスタート導線の接続:** `CLAUDE.md` 冒頭 (自動読み込みされる)・`RESUME_HERE.md` 冒頭・`README.md`・`master_roadmap.md` §0.2・`gap_analysis.md` 冒頭の 5 箇所から `build_plan.md` §0 へ誘導した。**`master_roadmap.md` §0.2 には「本書と `build_plan.md` が矛盾したら、実行順は `build_plan.md`、機能仕様は本書が正」と優先順位を明記した。**
 
+## Session 78 (2026-08-04): WI-01 (文書保存基盤、`document::saveFile()`) 実装
+
+CI green確認・build_plan.md発行完了後、ユーザーから「次のPhaseへ進め」と指示された。`build_plan.md`が最優先(P0)とするWI-01(文書保存基盤)に着手した。
+
+**Plan Mode + 複数probeによる設計検証で、`build_plan.md`/roadmap原案から2点意図的に逸脱した:**
+
+1. **mmap解放・Piece Table再構築 (原案手順4・6) は不要と実測で確認し、実装から除外した。** PowerShell経由のWin32 P/Invoke probeで、`ReplaceFileW(target, replacement, backup)`が`target`をmmap開きっぱなし (`FILE_SHARE_READ|WRITE|DELETE`) のままでも成功し、旧mmapビューは孤立して旧内容を返し続け、新規オープンは新内容を返すことを実証した。`OriginalBuffer`のmmap構造は一切変更していない。**これによりU#22 (Undo履歴とTextRangeの整合性) はPiece Table再構築自体が発生しないため自動的に解消、U#26 (マップ解放の要否) も解消。**
+2. **U#23 (保存失敗時の挙動) は「エラーコード分岐」ではなく「失敗後の`fs::exists()`実ファイルチェック」で解決した。** 2回目のprobeで`ERROR_FILE_NOT_FOUND`(2)が「targetが存在しない (新規ファイル)」と「replacementが存在しない (呼び出し側バグ)」の両方で返り、エラーコード単体では区別できないと判明したため。1回目のprobeはPowerShellの中間関数呼び出しが`GetLastError()`を汚染する方法論上の欠陥があり、インライン捕捉するC#メソッドへ書き直して再実施した。
+
+**Plan agentによる設計レビューで2件の重大な欠陥を検出・修正した:**
+- **Finding 1:** `ReplaceFileW`は既存ファイルの置換専用でcreate-or-replaceではない。新規ファイル (Ctrl+N初回保存)・存在しないパスへのSave Asが素朴な設計では失敗する → 失敗後に対象が存在しないと判明した場合`MoveFileExW(temp, target, MOVEFILE_REPLACE_EXISTING)`へフォールバックする設計を追加した。
+- **Finding 2:** 行境界のみのチャンク分割は、CR-onlyファイルや改行を含まない巨大な1行 (`Document::lineCount()`が`'\n'`のみを数える既存挙動のため) で1チャンク=文書全体に退化し、境界メモリ制約 (100MB以上でピークメモリが比例しない、というDoD) が破れる → 行数上限 (`kLinesPerChunk=4096`) とコード単位上限 (`kMaxChunkCodeUnits=2^20`) のハイブリッドチャンク分割を採用した。サロゲートペア・CRLFペアを跨がない境界調整はこの巨大単一行パスでのみ発動する。
+
+**実装:**
+- `Document::isDirty()`/`markSaved()` — `m_savedVersion`メンバを追加し`m_version`との比較で実装。
+- `encoding::convertLineEndings()`/`withBom()` — 保存経路専用の変換をencodingモジュールへ集約。
+- 新規`src/document/include/neomifes/document/file_saver.h` + `src/document/src/file_saver.cpp` — `saveFile()`を`writeChunks()`/`replaceIntoPlace()`の2ヘルパーへ分割 (CLAUDE.mdルール4、50行以内)。BOM書き込みはチャンクループから分離し、空文書でも正しくBOMが書かれる設計にした。
+
+**実装レビュー時に自己発見・修正したバグ2件 (ユーザーへの提示前に自ら潰した):**
+- `replaceIntoPlace()`が`noexcept`なのに、失敗時に単一引数版の`fs::exists()`(OS由来の真のエラーで例外を投げうる)を呼んでいた。呼ばれれば`std::terminate()`に直結する。`error_code`オーバーロードへ修正。
+- 書き込み失敗時の一時ファイルcleanup (`fs::remove(tempPath, ec)`) が、`FileHandle`をcloseする前に実行されていた。`FILE_SHARE_READ`のみでopenしているため、開いたままの削除は常にsharing violationで失敗し、無言でリークしていた。`tempFile.reset()`をcloseより先に移動して修正。
+
+**テスト:**
+- 単体: `isDirty()`/`markSaved()`の状態遷移6件、`convertLineEndings()`のテーブル駆動9件、`withBom()`の全13`Encoding`往復8件。
+- 新規統合`document_save_roundtrip_test.cpp` (12件): 同一パス保存、新規パスへの保存 (Finding 1回帰)、Save As、5エンコーディング往復 (Utf8/Utf16Le/ShiftJis/EucJp/Iso2022Jp、BOM系は`detectBom()`一致も確認)、3改行コード往復 (`detectLineEnding()`一致確認)、300万文字の単一行ファイル・CR-onlyファイル (Finding 2回帰)、ロック中ファイルへの保存失敗で原本バイト列が無傷であることの実証。
+- 新規ベンチマーク`document_save_bench.cpp`: `platform::currentProcessMemory().peakWorkingSetBytes`の前後差分で100MB保存時のピークメモリを計測 (resting deltaではなくpeakを使う理由をコードコメントに明記 — 実体化してから解放される回帰は resting delta では見逃す)。
+
+**実測検証:** ローカルDebug/Release/ubsan全**991件green** (新規追加31件含む)。clang-tidy: `file_saver.cpp`で`misc-const-correctness`の実指摘1件を修正 (未初期化のまま後で読むだけの変数に`const`漏れ)、`document.cpp`/`encoding.cpp`は既知の`/Zc:*`ノイズのみで実指摘なし。`tests/bench`/`tests/integration`はwarn-only設定のため軽微な指摘 (`rand()`使用等) は既存慣習通り未修正。
+
+**完了条件 (全て達成):** 開く→編集→保存→再度開くラウンドトリップ / 5エンコーディング往復+BOM一致 / 3改行コード往復 / 100MB保存でピークメモリ非比例 / 保存失敗時の原本無傷 / `isDirty()`状態遷移 / Debug・Release・ubsan全green・clang-tidy新規警告0 (src/配下)。
+
+**スコープ外 (意図的、WI-02以降):** `Ctrl+S`等のUI配線、未保存警告ダイアログ、自動保存/`.bak`永続保持 (WI-11)。ドッグフーディングDoDは`Ctrl+S`が無いため未達のまま — WI-02完了で初めて達成される。
+
+**ドキュメント同期:** `build_plan.md` (§3チェックリスト`[x]`化+§5実装後の確定事項)、`master_roadmap.md` §8.5.3 (probeで判明した簡略化設計への更新)、`detailed_design.md` §3.4新設、`docs/issues/no_document_save_capability.md` (完了条件を部分達成へ更新)、`RESUME_HERE.md` (冒頭ポインタをWI-02へ更新、§1状態表更新、§3.67完了記録追加)。
+
+コミット1件、pushはユーザーの明示指示待ち。次はWI-02 (ファイルライフサイクルUI) — 完了時点でM1 (NeoMIFESでNeoMIFESを編集できる、ドッグフーディング開始) 達成。
+
 <!-- 次セッションはここに追記 -->

@@ -504,4 +504,64 @@ std::optional<LineEnding> detectLineEnding(std::u16string_view text) noexcept {
     return lfCount > 0 ? LineEnding::Lf : LineEnding::Cr;
 }
 
+std::u16string convertLineEndings(std::u16string_view text, LineEnding target) {
+    std::u16string_view terminator;
+    switch (target) {
+        case LineEnding::Crlf:
+            terminator = u"\r\n";
+            break;
+        case LineEnding::Cr:
+            terminator = u"\r";
+            break;
+        case LineEnding::Lf:
+        case LineEnding::Mixed:  // not a meaningful target; treated as Lf, see header comment
+            terminator = u"\n";
+            break;
+    }
+    std::u16string out;
+    out.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] == u'\r') {
+            out.append(terminator);
+            i += (i + 1 < text.size() && text[i + 1] == u'\n') ? 2 : 1;
+        } else if (text[i] == u'\n') {
+            out.append(terminator);
+            ++i;
+        } else {
+            out.push_back(text[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
+Encoding withBom(Encoding encoding, bool wantBom) noexcept {
+    const auto info = describe(encoding);
+    if (info.family == Family::LegacyCodepage || info.family == Family::Iso2022Jp) {
+        return encoding;  // no BOM concept for these
+    }
+    if (info.hasBom == wantBom) {
+        return encoding;  // already the requested state
+    }
+    switch (info.family) {
+        case Family::Utf8:
+            return wantBom ? Encoding::Utf8Bom : Encoding::Utf8;
+        case Family::Utf16:
+            if (info.bigEndian) {
+                return wantBom ? Encoding::Utf16BeBom : Encoding::Utf16Be;
+            }
+            return wantBom ? Encoding::Utf16LeBom : Encoding::Utf16Le;
+        case Family::Utf32:
+            if (info.bigEndian) {
+                return wantBom ? Encoding::Utf32BeBom : Encoding::Utf32Be;
+            }
+            return wantBom ? Encoding::Utf32LeBom : Encoding::Utf32Le;
+        case Family::LegacyCodepage:
+        case Family::Iso2022Jp:
+            break;  // handled above
+    }
+    return encoding;  // unreachable, see describe()'s own comment on this pattern
+}
+
 }  // namespace neomifes::encoding

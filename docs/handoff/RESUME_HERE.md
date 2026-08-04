@@ -4,7 +4,7 @@
 >
 > **本ファイルは「これまでの経緯」の記録が中心 (2,100 行)。実際に手を動かすための指示は `build_plan.md` にある。**
 > `build_plan.md` §0 のコールドスタート手順を実行すれば、次に何をどう作ればよいかが 5〜10 分で確定する。
-> **次にやること: WI-01 (文書保存基盤)** — `build_plan.md` §5 参照。
+> **次にやること: WI-02 (ファイルライフサイクル UI、`Ctrl+S`/`Ctrl+O`/`Ctrl+N`/D&D/未保存警告)** — `build_plan.md` §5 参照。WI-01 (文書保存基盤) は完了・コミット済み (`________`、push はユーザー指示待ち)。
 >
 > ---
 
@@ -26,7 +26,7 @@
 > - **Phase 9 以降の全新機能は Phase 8.5 / 8.6 完了まで凍結**
 >
 > ### 次にやること
-> **Phase 8.5a (文書保存基盤)。** roadmap §8.5.3 に設計方針を規定済み。最大の技術課題は「mmap 中のファイルへの上書き」(一時ファイル + `ReplaceFileW` アトミック置換 + マップ解放/再取得)。未決事項 U#22 / U#23 を実機 probe で検証してから実装すること。
+> **Phase 8.5a (文書保存基盤) は完了した (2026-08-04、WI-01)。** 次は **Phase 8.5b (WI-02、ファイルライフサイクル UI)**。着手前probeで「mmap解放は不要」(U#22/U#26解消)・「エラーコードではなく実ファイル存在チェックでリカバリ判断」(U#23解消) と判明し、`build_plan.md`/roadmap原案の一部を意図的に簡略化した — 詳細は §3.67 参照。
 >
 > ### 新設・更新した文書
 > - 🆕 [`docs/design/gap_analysis.md`](../design/gap_analysis.md) — 中間レビュー本体 (P0/P1 ギャップ、構造的原因分析、Phase 再編、プロセス提言)
@@ -151,8 +151,8 @@
 
 | Phase | 内容 | 状態 |
 |---|---|---|
-| **8.5a** | **文書保存基盤** (`saveFile()`、mmap 解放 + `ReplaceFileW`、`isDirty()`) | ⏭️ **次回・最優先 (P0)** |
-| 8.5b | ファイルライフサイクル UI (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | ⏭️ P0 |
+| 8.5a | **文書保存基盤** (`saveFile()`、`isDirty()`。probeでmmap解放は不要と判明し実装からは除外) | ✅ **完了 (WI-01、コミット済み`________`、pushはユーザー指示待ち、§3.67参照)** |
+| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | ⏭️ **次回・最優先 (P0、WI-02)** |
 | 8.5c | `main.cpp` 解体 + 複数文書モデル (`EditorSession`/`Workspace`) | ⏭️ P0 (**8.5d より先**) |
 | 8.5d | タブ UI (`ui::TabBar`) | ⏭️ P0 |
 | 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 |
@@ -2101,6 +2101,40 @@ Phase 8f完了・コミット後、ユーザーから「次のPhaseに進め」�
 **スコープ外(意図的):** `extractOutline()`のSQL向けシンボル抽出ロジック本体、`RenderPipeline`/`SyntaxWorker`/`main.cpp`への変更、文字列/数値リテラル自体への専用色分け、tree-sitter CLIを将来のビルド依存として導入する案の再検討。
 
 **コミットは2件に分ける予定(third_party/ベンダリング単独→統合一式)、pushはユーザーの明示指示待ち。** 次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/大規模文書の性能DoD再挑戦のいずれか、着手前にユーザーへ確認すること。
+
+---
+
+### 3.67 WI-01 (文書保存基盤、`document::saveFile()`) 完了記録 (2026-08-04)
+
+CI green確認・中間レビュー(`gap_analysis.md`、roadmap v2.1改訂、`build_plan.md`発行)完了後、ユーザーから「次のPhaseへ進め」と指示された。`build_plan.md`が最優先(P0)として規定するWI-01(文書保存基盤)に着手した — NeoMIFESが編集内容をファイルに保存できない、という本プロジェクト最大の欠落を埋める。
+
+**Plan Mode + 複数の実機probeによる設計検証(CLAUDE.mdルール3)で、`build_plan.md`/roadmap原案から2点意図的に逸脱した:**
+
+1. **mmap解放・Piece Table再構築(原案の手順4・6)は不要と実測で確認し、実装から除外した。** `ReplaceFileW(target, replacement, backup)`は`target`が`FILE_SHARE_READ|WRITE|DELETE`でmmap開きっぱなしのままでも成功し、旧mmapビューは孤立したまま旧内容を返し続け、新規オープンは新内容を返す(PowerShell経由のWin32 P/Invoke probeで実証)。`OriginalBuffer`のmmap構造は一切変更していない。U#22(Undo履歴整合性)・U#26(マップ解放の要否)はこれで解消。
+2. **リカバリ判断は`GetLastError()`分岐ではなく、失敗後の実ファイル存在チェック(`fs::exists`)で行う設計にした(U#23解消)。** 2回目のprobeで`ERROR_FILE_NOT_FOUND`(2)が「targetが存在しない(新規ファイル)」と「replacementが存在しない(呼び出し側バグ)」の両方で返り区別できないと判明したため。
+
+**Plan agentによる設計レビューで2件の重大な欠陥を検出・修正:**
+- **Finding 1:** `ReplaceFileW`は既存ファイルの置換専用でcreate-or-replaceではない。新規ファイル(Ctrl+N初回保存)・存在しないパスへのSave Asが失敗する → `MoveFileExW`フォールバックを追加。
+- **Finding 2:** 行境界のみのチャンク分割は、CR-onlyファイルや改行を含まない巨大な1行(`Document::lineCount()`が`'\n'`のみを数える既存挙動のため)で1チャンク=文書全体に退化し、境界メモリ制約が破れる → 行数上限(`kLinesPerChunk=4096`)とコード単位上限(`kMaxChunkCodeUnits=2^20`)のハイブリッドチャンク分割を採用。
+
+**実装:** `Document::isDirty()`/`markSaved()`(`m_savedVersion`比較)、`encoding::convertLineEndings()`/`withBom()`、新規`file_saver.h`/`.cpp`(`saveFile()`、`writeChunks()`/`replaceIntoPlace()`ヘルパーに分割)。実装レビュー時に自己発見・修正した2件のバグ: (a) `replaceIntoPlace()`が`noexcept`なのに`fs::exists()`の例外送出オーバーロードを呼んでいた(`std::terminate`リスク、error_codeオーバーロードへ修正)、(b) 書き込み失敗時の一時ファイルcleanupが、ハンドルをcloseする前に`fs::remove()`していたため常にsharing violationで無言失敗していた(FileHandleのcloseを`fs::remove()`より先に移動)。
+
+**テスト:** 単体テスト(`isDirty()`/`markSaved()`状態遷移、`convertLineEndings()`テーブル駆動、`withBom()`全13Encoding往復)、新規統合テスト`document_save_roundtrip_test.cpp`(同一パス保存、新規パスへの保存=Finding 1回帰、Save As、5エンコーディング往復、3改行コード往復、巨大単一行/CR-onlyファイル=Finding 2回帰、ロック中ファイルへの保存失敗で原本無傷)、新規ベンチマーク`document_save_bench.cpp`(peak working set deltaで100MB保存時のメモリ非比例性を計測)。
+
+**実測検証:** ローカルDebug/Release/ubsan全**991件green**(新規追加分含む)。clang-tidy: `file_saver.cpp`で1件の実指摘(`misc-const-correctness`)を修正、`document.cpp`/`encoding.cpp`は既知の`/Zc:*`ノイズのみ。tests/bench配下はwarn-onlyのため未修正(既存慣習通り)。
+
+**完了条件:**
+- [x] `document::saveFile()`/`isDirty()`/`markSaved()`実装
+- [x] 開く→編集→保存→再度開くラウンドトリップ green
+- [x] UTF-8/UTF-16LE/Shift-JIS/EUC-JP/ISO-2022-JP往復 + BOM系`detectBom()`一致
+- [x] LF/CRLF/CR改行往復 + `detectLineEnding()`一致
+- [x] 100MB保存でピークメモリがファイルサイズに比例しない(ハイブリッドチャンク分割で保証)
+- [x] 保存失敗時に原本が無傷(統合テストで実証)
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0(src/配下)
+
+**スコープ外(意図的、WI-02以降):** `Ctrl+S`等のUI配線、未保存警告ダイアログ、自動保存/`.bak`永続保持(WI-11)。ドッグフーディングDoD(`gap_analysis.md`§8.1)は`Ctrl+S`が無いため未達のまま。
+
+**コミット1件、pushはユーザーの明示指示待ち。** 次はWI-02(ファイルライフサイクルUI)— 完了時点でM1(NeoMIFESでNeoMIFESを編集できる、ドッグフーディング開始)達成。
 
 ---
 

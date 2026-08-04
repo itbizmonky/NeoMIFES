@@ -1639,6 +1639,18 @@ Phase 6d で `OriginalBuffer` は 10GB ファイルを `CreateFileW(GENERIC_READ
 
 **影響ファイル:** `src/document/{document.h,document.cpp}` (`saveFile()` / `isDirty()` / `markSaved()`)、`src/document/src/original_buffer.cpp` (マップ解放 API)、`src/platform/src/file_mapping.cpp`、`src/encoding/` (書き出し方向の変換は Phase 6b1/6b2 の `convertFromUtf16Lenient` が既に存在)
 
+#### 実装後の確定事項/変更点 (2026-08-04、Phase 8.5a完了)
+
+**着手前probeにより、上記「採用方針」の手順4・6 (mmap解放 → 再mmap → Piece Table単一ピース再構築) は不要と判明し、実装から除外した。** `ReplaceFileW(target, replacement, backup)` は `target` が `FILE_SHARE_READ|WRITE|DELETE` でmmap開きっぱなしのままでも成功し、置換後の旧mmapビューは孤立したまま旧内容を返し続け、新規オープンは新内容を返す (実機probeで確認済み)。**`OriginalBuffer`のmmap構造は一切変更しない。** これによりU#22 (Undo履歴の`TextRange`整合性) はPiece Table再構築自体が発生しないため解消、U#26は「マップ解放は不要」で解消。
+
+**U#23は「エラーコード分岐」ではなく「失敗後の実ファイル存在チェック (`fs::exists`)」で解決した。** probeで `ERROR_FILE_NOT_FOUND`(2) が「targetが存在しない (新規ファイル)」と「replacementが存在しない (呼び出し側バグ)」の両方で返り、エラーコード単体では区別できないと判明したため。`ReplaceFileW`失敗後は `fs::exists(path)` → `fs::exists(backupPath)` の順に実ファイル状態を見て、新規ファイルなら`MoveFileExW`フォールバック、backupのみ残っていれば復元、それも失敗すれば `SaveError::OriginalFileAtRisk` を返す。
+
+**設計レビュー (Plan agent) で判明した2つの追加課題への対応:**
+- **Save As/新規ファイルの成功に`ReplaceFileW`だけでは足りない** (replace専用、create-or-replaceではない) — 失敗かつtarget不在なら `MoveFileExW(temp, target, MOVEFILE_REPLACE_EXISTING)` へフォールバックする設計を追加。
+- **行境界のみのチャンク分割は、CR-onlyファイルや改行を含まない巨大な1行で1チャンク=文書全体に退化し、境界メモリ制約が破れる** (`Document::lineCount()`が`'\n'`のみを数える既存挙動のため) — 行数上限 (`kLinesPerChunk=4096`) とコード単位上限 (`kMaxChunkCodeUnits=2^20`) のハイブリッドチャンク分割を採用。
+
+詳細は [`detailed_design.md` §3.4](detailed_design.md#34-filesaver-wi-01実装2026-08-04) 参照。
+
 ### 8.5.4 サブフェーズ 8.5b — ファイルライフサイクル UI
 
 - `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+O` / `Ctrl+N` / `Ctrl+W`

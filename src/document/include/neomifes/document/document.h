@@ -75,6 +75,18 @@ public:
     // (see ADR-010).
     [[nodiscard]] std::uint64_t version() const noexcept { return m_version; }
 
+    // WI-01: true iff at least one mutation has happened since the last
+    // markSaved() call (or since construction, if markSaved() was never
+    // called - a freshly-loaded or freshly-constructed empty Document
+    // starts at m_version == m_savedVersion == 0, so this correctly reports
+    // "not dirty" with no special-casing needed for either path).
+    [[nodiscard]] bool isDirty() const noexcept { return m_version != m_savedVersion; }
+
+    // Called by document::saveFile() (file_saver.h) after a successful
+    // save. Snapshots the current version as "the last saved one" - any
+    // mutation after this call makes isDirty() true again.
+    void markSaved() noexcept { m_savedVersion = m_version; }
+
     // Convenience read of the whole document.
     [[nodiscard]] std::u16string toU16String() const;
 
@@ -146,6 +158,9 @@ private:
     mutable LineIndex     m_lineIndex;
     mutable bool          m_lineIndexDirty = true;
     std::uint64_t         m_version        = 0;
+    // WI-01: version() value as of the last markSaved() call. See
+    // isDirty()'s comment for why both start at 0 with no extra ceremony.
+    std::uint64_t         m_savedVersion   = 0;
     // Phase 7k: accumulated by insertText()/eraseRange()/replaceRange(),
     // drained by takePendingEdits().
     std::vector<EditDelta> m_pendingEdits;

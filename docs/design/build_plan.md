@@ -107,7 +107,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 8.5 — アプリケーションシェル (P0)
 
-- [ ] **WI-01** 文書保存基盤 (`document::saveFile()` / `isDirty()`) → コミット: `________`
+- [x] **WI-01** 文書保存基盤 (`document::saveFile()` / `isDirty()`) → コミット: `________`
 - [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → `________`
   - 🎉 **ここで M1 達成: NeoMIFES で NeoMIFES を編集できるようになる (ドッグフーディング開始)**
 - [ ] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → `________`
@@ -279,6 +279,14 @@ void markSaved() noexcept;                      // saveFile() 成功時に呼ぶ
 
 probe は使い捨て。スクラッチパッドに書き、**コミットしない** (本プロジェクトの確立した慣習)。
 
+### 実装後の確定事項 (2026-08-04 完了)
+
+**probeでU#22/U#23/U#26を検証した結果、上記「採用する手順」の 4 (mmap解放) と 6 (再mmap + Piece Table再構築) は不要と判明し、実装しなかった。** `ReplaceFileW`はマップ済みファイルに対しても成功し (`FILE_SHARE_DELETE`込みの既存mmapのまま)、旧mmapビューは孤立して旧内容を返し続け、新規オープンは新内容を返す。U#23は「エラーコード分岐」ではなく「失敗後の`fs::exists()`による実ファイル状態チェック」で解決した (`ERROR_FILE_NOT_FOUND`だけでは「target不在」と「replacement不在(バグ)」を区別できないとprobeで判明したため)。
+
+設計レビューで追加発覚した2件: (1) `ReplaceFileW`は既存ファイル置換専用のため新規ファイル/Save Asには`MoveFileExW`フォールバックが必要、(2) `Document::lineCount()`が`'\n'`のみを数えるため行境界のみのチャンク分割はCR-onlyファイル/巨大単一行で退化する → 行数上限とコード単位上限のハイブリッドチャンク分割を採用。
+
+詳細は [`detailed_design.md` §3.4](detailed_design.md#34-filesaver-wi-01実装2026-08-04)、[`docs/handoff/RESUME_HERE.md` §3.67](../handoff/RESUME_HERE.md) 参照。
+
 ### 影響ファイル
 
 - `src/document/include/neomifes/document/document.h` / `src/document/src/document.cpp` — `saveFile()` / `isDirty()` / `markSaved()`
@@ -289,13 +297,13 @@ probe は使い捨て。スクラッチパッドに書き、**コミットしな
 
 ### DoD
 
-- [ ] 「開く → 編集 → 保存 → 再度開く → 内容一致」のラウンドトリップテストが green
-- [ ] UTF-8 / UTF-8 BOM / UTF-16LE / Shift-JIS それぞれで保存でき、`detectEncoding()` が保存後のファイルを正しく判定する
-- [ ] 改行コード LF / CRLF / CR を指定して保存でき、`detectLineEnding()` が一致する
-- [ ] **100MB 以上のファイルを保存してもピークメモリがファイルサイズに比例しない** (全文実体化していないことの証明。`document_load_bench.cpp` の計測パターンを流用)
-- [ ] 保存が失敗しても**元ファイルが壊れない** (U#23 の結論に従う)
-- [ ] `isDirty()` が編集で true、保存で false になる
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] 「開く → 編集 → 保存 → 再度開く → 内容一致」のラウンドトリップテストが green
+- [x] UTF-8 / UTF-8 BOM / UTF-16LE / Shift-JIS それぞれで保存でき、`detectBom()`/直接 `decode()` で保存後のファイルが一致することを確認 (`detectEncoding()` の自動判定は別機能のため、ラウンドトリップ検証は既知のエンコードで直接デコードする形にした)
+- [x] 改行コード LF / CRLF / CR を指定して保存でき、`detectLineEnding()` が一致する
+- [x] **100MB 以上のファイルを保存してもピークメモリがファイルサイズに比例しない** (`document_save_bench.cpp`、peak working set delta 計測)
+- [x] 保存が失敗しても**元ファイルが壊れない** (U#23 の結論に従う。統合テスト `FailedSaveLeavesTheOriginalFileUntouched` で実証)
+- [x] `isDirty()` が編集で true、保存で false になる
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
 
 ---
 

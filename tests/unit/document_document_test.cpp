@@ -220,4 +220,49 @@ TEST(DocumentLineColumnToOffsetTest, EmptyDocumentReturnsZero) {
     EXPECT_EQ(doc.lineColumnToOffset(0, 0), 0u);
 }
 
+// WI-01: isDirty()/markSaved().
+TEST(DocumentDirtyTest, FreshlyConstructedDocumentIsNotDirty) {
+    const Document doc;
+    EXPECT_FALSE(doc.isDirty());
+}
+
+TEST(DocumentDirtyTest, InsertTextMakesItDirty) {
+    Document doc;
+    doc.insertText(0, u"hello");
+    EXPECT_TRUE(doc.isDirty());
+}
+
+TEST(DocumentDirtyTest, MarkSavedClearsDirty) {
+    Document doc;
+    doc.insertText(0, u"hello");
+    doc.markSaved();
+    EXPECT_FALSE(doc.isDirty());
+}
+
+TEST(DocumentDirtyTest, EditAfterMarkSavedIsDirtyAgain) {
+    Document doc;
+    doc.insertText(0, u"hello");
+    doc.markSaved();
+    doc.insertText(0, u"x");
+    EXPECT_TRUE(doc.isDirty());
+}
+
+TEST(DocumentDirtyTest, MarkSavedOnAnAlreadyCleanDocumentIsANoOp) {
+    Document doc;
+    doc.markSaved();
+    EXPECT_FALSE(doc.isDirty());
+}
+
+TEST(DocumentDirtyTest, EraseRangeAndReplaceRangeAlsoMarkDirty) {
+    Document doc;
+    doc.insertText(0, u"hello");
+    doc.markSaved();
+    doc.eraseRange(TextRange{.start = 0, .end = 1});
+    EXPECT_TRUE(doc.isDirty());
+
+    doc.markSaved();
+    doc.replaceRange(TextRange{.start = 0, .end = 1}, u"H");
+    EXPECT_TRUE(doc.isDirty());
+}
+
 }  // namespace

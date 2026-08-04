@@ -17,6 +17,7 @@ set_target_properties(neomifes_util_bench PROPERTIES
 add_executable(neomifes_document_bench
     document_load_bench.cpp
     document_piece_table_bench.cpp
+    document_save_bench.cpp
 )
 
 target_link_libraries(neomifes_document_bench

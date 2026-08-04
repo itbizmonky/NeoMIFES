@@ -345,3 +345,35 @@ set_tests_properties(plugin_command PROPERTIES
     LABELS "integration"
     TIMEOUT 30
 )
+
+# document_save_roundtrip_test - exercises document::saveFile() (WI-01,
+# build_plan.md §5) against the REAL filesystem: open/edit/save/reopen round
+# trips, Save-As to a new/existing path, multi-encoding and line-ending
+# round trips, the hybrid chunking path's degenerate-input regression cases,
+# and that a blocked save leaves the original file untouched.
+add_executable(neomifes_document_save_roundtrip_test
+    document_save_roundtrip_test.cpp
+)
+
+target_link_libraries(neomifes_document_save_roundtrip_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::encoding
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_document_save_roundtrip_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    document_save_roundtrip
+    COMMAND neomifes_document_save_roundtrip_test
+)
+
+set_tests_properties(document_save_roundtrip PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)

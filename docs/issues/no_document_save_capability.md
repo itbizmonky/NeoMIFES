@@ -1,5 +1,7 @@
 # Issue: 文書保存機能が存在しない (P0 — 出荷不能)
 
+**✅ 一部解消 (2026-08-04、WI-01)**: `document::saveFile()` / `isDirty()` / `markSaved()` 実装済み (ヘッドレス、10GBファイル対応の境界メモリ設計)。**`Ctrl+S`等のUI配線は未実装のまま (WI-02)** — 本Issueは WI-02 完了まで P0 のまま残す。詳細は [`build_plan.md`](../design/build_plan.md) WI-01 節、[`detailed_design.md` §3.4](../design/detailed_design.md#34-filesaver-wi-01実装2026-08-04) 参照。
+
 - **起票日:** 2026-08-04 (中間レビュー、Phase 8f / 7y 完了時点)
 - **対象:** `src/document/` (`saveFile()` の新設)、`src/app/main.cpp` (`Ctrl+S` 配線)
 - **優先度:** **最高 (P0)** — 本項目が未解消の限り、いかなる形態でもエンドユーザーへ配布してはならない
@@ -61,13 +63,13 @@ roadmap §8.5.3 で採用方針を規定済み:
 
 ## 完了条件
 
-- [ ] `document::Document::saveFile(path, encoding, lineEnding, bom)` が実装され、10GB ファイルでも全文実体化なしに保存できる
-- [ ] `document::Document::isDirty()` / `markSaved()` が実装されている
-- [ ] `Ctrl+S` / `Ctrl+Shift+S` で保存でき、再度開くと編集内容が保持されている
-- [ ] 未保存のまま閉じようとすると警告が出る
-- [ ] 保存が他プロセスのロックで失敗した場合、元ファイルが破壊されない (U#23 の結論に従う)
-- [ ] `tests/integration/` に「開く → 編集 → 保存 → 再度開く → 内容一致」のラウンドトリップテストがある
-- [ ] **ドッグフーディング: NeoMIFES 自身のソースを NeoMIFES で編集して保存し、そのままコミットできる**
+- [x] `document::saveFile(doc, path, encoding, lineEnding, bom)` が実装され、10GB ファイルでも全文実体化なしに保存できる (WI-01、境界メモリはハイブリッドチャンク分割 `kLinesPerChunk`/`kMaxChunkCodeUnits` で保証、`document_save_bench.cpp`のpeak working set計測で確認)
+- [x] `document::Document::isDirty()` / `markSaved()` が実装されている (WI-01)
+- [ ] `Ctrl+S` / `Ctrl+Shift+S` で保存でき、再度開くと編集内容が保持されている (WI-02、UI配線)
+- [ ] 未保存のまま閉じようとすると警告が出る (WI-02)
+- [x] 保存が他プロセスのロックで失敗した場合、元ファイルが破壊されない (WI-01、`replaceIntoPlace()`の実ファイル存在チェックで保証、統合テスト`FailedSaveLeavesTheOriginalFileUntouched`で実証)
+- [x] `tests/integration/` に「開く → 編集→ 保存 → 再度開く → 内容一致」のラウンドトリップテストがある (WI-01、`document_save_roundtrip_test.cpp`)
+- [ ] **ドッグフーディング: NeoMIFES 自身のソースを NeoMIFES で編集して保存し、そのままコミットできる** (`Ctrl+S`が無いため引き続き未達、WI-02完了まで持ち越し)
 
 ## 再検証コマンド
 

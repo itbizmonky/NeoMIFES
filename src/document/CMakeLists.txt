@@ -3,6 +3,7 @@ add_library(neomifes_document STATIC
     src/buffer_snapshot.cpp
     src/document.cpp
     src/file_loader.cpp
+    src/file_saver.cpp
     src/line_index.cpp
     src/original_buffer.cpp
     src/piece_table.cpp

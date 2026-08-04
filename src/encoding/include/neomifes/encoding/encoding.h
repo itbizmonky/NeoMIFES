@@ -146,4 +146,26 @@ enum class LineEnding { Crlf, Lf, Cr, Mixed };
 // (master_roadmap.md §6.3) is surfacing this to the user as a warning.
 [[nodiscard]] std::optional<LineEnding> detectLineEnding(std::u16string_view text) noexcept;
 
+// WI-01 (document::saveFile()): rewrites every line terminator found in
+// `text` (CRLF, lone CR, or lone LF - the same three conventions
+// detectLineEnding() recognizes) to `target`'s convention. `target ==
+// LineEnding::Mixed` is not a meaningful save target (Mixed is only ever a
+// *detected* property of existing content) - treated as Lf, since that is
+// this codebase's own internal storage convention (Document never stores
+// CRLF-normalized content; whatever terminators were in the source file are
+// preserved verbatim until a save explicitly asks to convert them).
+//
+// A single forward pass, safe to call independently on arbitrary text
+// fragments PROVIDED the caller never splits a CRLF pair across two
+// separate calls (file_saver.cpp's chunking is line-boundary-aligned
+// specifically to guarantee this - see its own comments).
+[[nodiscard]] std::u16string convertLineEndings(std::u16string_view text, LineEnding target);
+
+// WI-01: returns the *Bom or non-Bom variant of `encoding` matching
+// `wantBom`, keeping the same transformation-format family and byte order.
+// No-op (returns `encoding` unchanged) for ShiftJis/EucJp/Iso2022Jp, which
+// have no BOM variant. Reuses this module's own family/byte-order
+// classification internally rather than duplicating it - see encoding.cpp.
+[[nodiscard]] Encoding withBom(Encoding encoding, bool wantBom) noexcept;
+
 }  // namespace neomifes::encoding

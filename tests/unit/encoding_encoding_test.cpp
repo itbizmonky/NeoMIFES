@@ -478,4 +478,96 @@ TEST(DetectLineEndingTest, EmptyTextReturnsNullopt) {
     EXPECT_EQ(detectLineEnding(u""), std::nullopt);
 }
 
+// --- convertLineEndings() (WI-01) -------------------------------------------
+
+using neomifes::encoding::convertLineEndings;
+
+TEST(ConvertLineEndingsTest, LfToCrlf) {
+    EXPECT_EQ(convertLineEndings(u"a\nb\nc", LineEnding::Crlf), u"a\r\nb\r\nc");
+}
+
+TEST(ConvertLineEndingsTest, CrlfToLf) {
+    EXPECT_EQ(convertLineEndings(u"a\r\nb\r\nc", LineEnding::Lf), u"a\nb\nc");
+}
+
+TEST(ConvertLineEndingsTest, CrToLf) {
+    EXPECT_EQ(convertLineEndings(u"a\rb\rc", LineEnding::Lf), u"a\nb\nc");
+}
+
+TEST(ConvertLineEndingsTest, LfToCr) {
+    EXPECT_EQ(convertLineEndings(u"a\nb\nc", LineEnding::Cr), u"a\rb\rc");
+}
+
+TEST(ConvertLineEndingsTest, MixedInputConvertsEveryTerminatorToTheTarget) {
+    EXPECT_EQ(convertLineEndings(u"a\r\nb\nc\rd", LineEnding::Lf), u"a\nb\nc\nd");
+    EXPECT_EQ(convertLineEndings(u"a\r\nb\nc\rd", LineEnding::Crlf), u"a\r\nb\r\nc\r\nd");
+    EXPECT_EQ(convertLineEndings(u"a\r\nb\nc\rd", LineEnding::Cr), u"a\rb\rc\rd");
+}
+
+TEST(ConvertLineEndingsTest, MixedTargetIsTreatedAsLf) {
+    EXPECT_EQ(convertLineEndings(u"a\r\nb\rc", LineEnding::Mixed), u"a\nb\nc");
+}
+
+TEST(ConvertLineEndingsTest, EmptyStringReturnsEmptyString) {
+    EXPECT_EQ(convertLineEndings(u"", LineEnding::Crlf), u"");
+}
+
+TEST(ConvertLineEndingsTest, TextWithNoTerminatorIsUnchanged) {
+    EXPECT_EQ(convertLineEndings(u"no newline here", LineEnding::Crlf), u"no newline here");
+}
+
+TEST(ConvertLineEndingsTest, TrailingLoneCrWithNoFollowingCharacterConvertsOnce) {
+    EXPECT_EQ(convertLineEndings(u"a\r", LineEnding::Lf), u"a\n");
+}
+
+TEST(ConvertLineEndingsTest, AlreadyAtTargetConventionIsUnchanged) {
+    EXPECT_EQ(convertLineEndings(u"a\r\nb\r\nc", LineEnding::Crlf), u"a\r\nb\r\nc");
+}
+
+// --- withBom() (WI-01) -------------------------------------------------------
+
+using neomifes::encoding::withBom;
+
+TEST(WithBomTest, TogglesUtf8BomOnAndOff) {
+    EXPECT_EQ(withBom(Encoding::Utf8, true), Encoding::Utf8Bom);
+    EXPECT_EQ(withBom(Encoding::Utf8Bom, false), Encoding::Utf8);
+}
+
+TEST(WithBomTest, TogglesUtf16LeBomOnAndOff) {
+    EXPECT_EQ(withBom(Encoding::Utf16Le, true), Encoding::Utf16LeBom);
+    EXPECT_EQ(withBom(Encoding::Utf16LeBom, false), Encoding::Utf16Le);
+}
+
+TEST(WithBomTest, TogglesUtf16BeBomOnAndOff) {
+    EXPECT_EQ(withBom(Encoding::Utf16Be, true), Encoding::Utf16BeBom);
+    EXPECT_EQ(withBom(Encoding::Utf16BeBom, false), Encoding::Utf16Be);
+}
+
+TEST(WithBomTest, TogglesUtf32LeBomOnAndOff) {
+    EXPECT_EQ(withBom(Encoding::Utf32Le, true), Encoding::Utf32LeBom);
+    EXPECT_EQ(withBom(Encoding::Utf32LeBom, false), Encoding::Utf32Le);
+}
+
+TEST(WithBomTest, TogglesUtf32BeBomOnAndOff) {
+    EXPECT_EQ(withBom(Encoding::Utf32Be, true), Encoding::Utf32BeBom);
+    EXPECT_EQ(withBom(Encoding::Utf32BeBom, false), Encoding::Utf32Be);
+}
+
+TEST(WithBomTest, RequestingTheAlreadyCurrentBomStateReturnsTheSameEncodingUnchanged) {
+    EXPECT_EQ(withBom(Encoding::Utf8, false), Encoding::Utf8);
+    EXPECT_EQ(withBom(Encoding::Utf8Bom, true), Encoding::Utf8Bom);
+}
+
+TEST(WithBomTest, LegacyCodepageEncodingsAreNoOpRegardlessOfWantBom) {
+    EXPECT_EQ(withBom(Encoding::ShiftJis, true), Encoding::ShiftJis);
+    EXPECT_EQ(withBom(Encoding::ShiftJis, false), Encoding::ShiftJis);
+    EXPECT_EQ(withBom(Encoding::EucJp, true), Encoding::EucJp);
+    EXPECT_EQ(withBom(Encoding::EucJp, false), Encoding::EucJp);
+}
+
+TEST(WithBomTest, Iso2022JpIsNoOpRegardlessOfWantBom) {
+    EXPECT_EQ(withBom(Encoding::Iso2022Jp, true), Encoding::Iso2022Jp);
+    EXPECT_EQ(withBom(Encoding::Iso2022Jp, false), Encoding::Iso2022Jp);
+}
+
 }  // namespace
