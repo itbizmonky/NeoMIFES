@@ -15,7 +15,6 @@
 
 | Issue | 概要 | 対応 Phase |
 |---|---|---|
-| [文書保存機能が存在しない](no_document_save_capability.md) | **編集内容をファイルに保存できない。** `CreateFileW` の呼び出しは mmap 用の読み取り専用 1 箇所のみ | 8.5a / 8.5b |
 | [アプリケーションシェルが未実装](no_application_shell.md) | ファイルを開くUI / タブ / メニュー / ステータスバー / 行番号 / 横スクロール / アイコンが全て無い。`main.cpp` が 2,053 行 | 8.5b〜8.5g |
 | [メインエディタが IME を処理しない](no_ime_support_in_main_editor.md) | 未確定文字列がインライン表示されず、候補ウィンドウがキャレットに追従しない | 8.5e |
 
@@ -54,6 +53,7 @@
 | [`OriginalBuffer` の mmap + Lazy Decode 化](lazy_decode_mmap.md) | 🟢 Phase 2b3 (2026-07-15)。1GB 2.03s / private WS 増分 0.46MB 実測 |
 | [`NeoMifesCoreApi` と `Document` の API ギャップ](plugin_core_api_document_gap.md) | 🟢 Phase 8b (2026-08-02、ADR-016) |
 | [SQL 文法の `parser.c` 未コミット問題](sql_grammar_needs_tree_sitter_cli.md) | 🟢 Phase 7y (2026-08-04、ADR-021 ベンダリング方式) |
+| [文書保存機能が存在しない](no_document_save_capability.md) | 🟢 WI-01+WI-02 (2026-08-05、🎉 M1達成。ドッグフーディングでバグ2件発見・修正、実際に編集・保存・コミットまで実証) |
 
 ---
 

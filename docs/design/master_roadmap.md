@@ -272,7 +272,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 8f | registerCommand ヘッドレス実装 (`ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 | §8 |
 | **— ここまでエンジン層。以下 v2.1 で再編 (`gap_analysis.md` §7) —** | | | |
 | **8.5a** | **文書保存基盤** (`document::saveFile()`、mmap 解放 + `ReplaceFileW` アトミック置換、`isDirty()`、エンコード/改行/BOM 指定書き出し) | ⏭️ **最優先 (P0)** | §8.5 |
-| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N、`IFileDialog`、`WM_DROPFILES`、未保存警告) | 🟡 **実装完了・🎉 M1ドッグフーディング未実施** | §8.5 |
+| **8.5b** | **ファイルライフサイクル UI** (Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N、`IFileDialog`、`WM_DROPFILES`、未保存警告) | ✅ **完了・🎉 M1達成 (2026-08-05)** | §8.5 |
 | **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`app::EditorSession` / `app::Workspace` 新設。2,053 行の `main.cpp` から状態を移設) | ⏭️ **P0** | §8.5 |
 | **8.5d** | **タブ UI** (`ui::TabBar`、Ctrl+Tab / Ctrl+W / Ctrl+PgUp・PgDn) | ⏭️ **P0** | §8.5 |
 | **8.5e** | **IME 完全対応** (`WM_IME_*`、未確定文字列のインライン描画、`CANDIDATEFORM` キャレット追従) | ⏭️ **P0** | §8.5, §16.1 |
@@ -1669,7 +1669,7 @@ Phase 6d で `OriginalBuffer` は 10GB ファイルを `CreateFileW(GENERIC_READ
 
 **既知の未対応事項:** オーバーレイ (FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane) がフォーカスを持っている間はCtrl+S/O/Nが届かない。`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`に起票。
 
-**🎉 M1 (ドッグフーディング開始) は本サブフェーズの実装完了時点では未達。** 実装・自動テスト・ローカルビルド検証は全て完了したが、「NeoMIFES自身のソースをNeoMIFESで開き編集・保存・コミットする」という核心のDoD項目は、実際にユーザーのリポジトリへ書き込む操作であるため自動化・代行せず、ユーザー自身への実施依頼に留めた。M1達成の正式な記録は、ユーザーによる確認後に別途追記する。
+**🎉 M1 (ドッグフーディング開始) を達成した (2026-08-05)。** 実装・自動テスト・ローカルビルド検証完了後、ユーザーが実際にドッグフーディングを試みた結果、自動テストと軽量な生存確認だけでは検出できなかった実害あるバグを2件発見した — (1) Ctrl+O後にウィンドウ移動等の無関係な再描画まで新しい文書内容が表示されない (`RenderPipeline::render()`の粗粒度フレームスキップが文書スワップを偶然の`documentVersion`一致で「変化なし」と誤判定)、(2) マウスホイールでEOFを超えてスクロールし続けると`Viewport`内部のtopLineが無制限に増え続ける (`applyMouseWheelScroll()`が上限クランプを欠いていた)。両方とも根本原因を特定・修正し、回帰テストで実証した。その後ユーザーが実際に`README.md`をNeoMIFESで開いて編集・`Ctrl+S`保存・`git diff`確認・`git commit`まで完走し、M1のDoDを正式に満たした。詳細は`docs/handoff/RESUME_HERE.md` §3.69参照。
 
 ### 8.5.5 サブフェーズ 8.5c — `main.cpp` 解体 + 複数文書モデル (**8.5d より必ず先**)
 

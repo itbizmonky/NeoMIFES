@@ -1,6 +1,6 @@
 # Issue: 文書保存機能が存在しない (P0 — 出荷不能)
 
-**✅ ほぼ解消 (2026-08-04、WI-01 + WI-02)**: `document::saveFile()` / `isDirty()` / `markSaved()` (WI-01) に続き、`Ctrl+S`/`Ctrl+Shift+S`/`Ctrl+O`/`Ctrl+N`/D&D/未保存警告のUI配線 (WI-02) を実装済み。自動テスト (計1000件、Debug/Release/ubsan) は全green。**唯一残るのはドッグフーディング (NeoMIFES自身のソースをNeoMIFESで編集・保存・コミットする実地確認) — 実際にユーザーのリポジトリへ書き込む操作のため自動化せず、ユーザーへ実施を依頼中。** 完了後、本Issueをクローズする。詳細は [`build_plan.md`](../design/build_plan.md) WI-01/WI-02 節、[`detailed_design.md` §3.4](../design/detailed_design.md#34-filesaver-wi-01実装2026-08-04) 参照。
+**✅ 解消 (2026-08-05、WI-01 + WI-02、🎉 M1達成)**: `document::saveFile()` / `isDirty()` / `markSaved()` (WI-01) に続き、`Ctrl+S`/`Ctrl+Shift+S`/`Ctrl+O`/`Ctrl+N`/D&D/未保存警告のUI配線 (WI-02) を実装済み。自動テスト (計1002件、Debug/Release/ubsan) は全green。実装完了後のドッグフーディングで実害あるバグ2件 (Ctrl+O後の画面未反映、マウスホイールEOF超過スクロール) が見つかり修正済み。**ユーザーが実際にNeoMIFES自身のソース (`README.md`) をNeoMIFESで編集・`Ctrl+S`で保存・`git diff`確認・`git commit`まで完走し、ドッグフーディングDoDを含む全完了条件を満たした。** 本Issueをクローズする。詳細は [`build_plan.md`](../design/build_plan.md) WI-01/WI-02 節、[`docs/handoff/RESUME_HERE.md` §3.69](../handoff/RESUME_HERE.md)、[`detailed_design.md` §3.4](../design/detailed_design.md#34-filesaver-wi-01実装2026-08-04) 参照。
 
 - **起票日:** 2026-08-04 (中間レビュー、Phase 8f / 7y 完了時点)
 - **対象:** `src/document/` (`saveFile()` の新設)、`src/app/main.cpp` (`Ctrl+S` 配線)
@@ -69,7 +69,7 @@ roadmap §8.5.3 で採用方針を規定済み:
 - [x] 未保存のまま閉じようとすると警告が出る (WI-02、`confirmDiscardIfDirty()` を Ctrl+N/Ctrl+O/D&D/`WM_CLOSE` の全経路で共有)
 - [x] 保存が他プロセスのロックで失敗した場合、元ファイルが破壊されない (WI-01、`replaceIntoPlace()`の実ファイル存在チェックで保証、統合テスト`FailedSaveLeavesTheOriginalFileUntouched`で実証)
 - [x] `tests/integration/` に「開く → 編集→ 保存 → 再度開く → 内容一致」のラウンドトリップテストがある (WI-01、`document_save_roundtrip_test.cpp`)
-- [ ] **ドッグフーディング: NeoMIFES 自身のソースを NeoMIFES で編集して保存し、そのままコミットできる** (WI-02実装完了・自動テスト全green。実際にユーザーのリポジトリへ書き込む操作のため自動化せず、ユーザーへ実施を依頼中 — 本項目のみ未達)
+- [x] **ドッグフーディング: NeoMIFES 自身のソースを NeoMIFES で編集して保存し、そのままコミットできる** (2026-08-05達成。ユーザーが実際に`README.md`をNeoMIFESで開いて編集・`Ctrl+S`保存・`git diff`確認・`git commit`(`d02138b`/`34b79e5`)まで完走した。この過程で実害あるバグ2件を発見・修正した実例あり — 詳細は`docs/handoff/RESUME_HERE.md` §3.69)
 
 ## 再検証コマンド
 
