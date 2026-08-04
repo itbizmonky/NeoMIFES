@@ -3,6 +3,7 @@
 このファイルは Claude Code が本リポジトリで作業する際に必ず最初に参照するガイドです。要件定義書 [`NeoMIFES_要件定義書.md`](NeoMIFES_要件定義書.md) と併せて読むこと。
 
 > 🔖 **セッション再開時は先に [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) を読み、現在のフェーズと未検証の宿題を把握すること。**
+> 🔴 **2026-08-04 中間レビュー: [`docs/design/gap_analysis.md`](docs/design/gap_analysis.md) を必読。** エンジン層は完成に近い一方、**NeoMIFES は編集内容をファイルに保存できない**。roadmap が「アプリケーションシェル」にフェーズを一度も割り当てていなかった構造的欠陥が判明し、v2.1 で Phase 8.5 / 8.6 / 12' を新設した。**Phase 9 以降の全新機能は Phase 8.5 / 8.6 完了まで凍結。**
 > 🗺️ **未着手フェーズ (Phase 4b8・5b2・5b3・5c・6〜12) の実装詳細は [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) に一気通貫で規定済み (2026-07-19 v2.0 発行、Google/MS 責任者視点レビュー済、23章)。これらのフェーズについて「何を作るか」を推測・再設計する前に必ずこのファイルの該当章を読むこと。本書は Plan-of-Record であり、要件定義書と同格の拘束力を持つ。矛盾が生じた場合はユーザーに確認する (CLAUDE.md 絶対ルール3)。**
 > 📜 **過去の設計判断・方針転換の経緯は [`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) にセッション単位で時系列集約。「なぜ今この設計か」の一次資料。**
 > 📝 **各セッション終了時、TIMELINE.md の末尾に「そのセッションで決めたこと・作ったもの」を 1 セクション追記すること。**
@@ -54,20 +55,26 @@
 要件定義書 §17 のレイヤードアーキテクチャに従う。**上位レイヤは下位のみに依存**、**下位は上位を知らない**。
 
 ```
-[UI Shell (Win32)]
+[L7: UI Shell (Win32)]        ウィンドウ / タブ / メニュー / ダイアログ / IME
     ↓
-[Editor Core] ── [Command / Undo]
+[L6: Application Shell]       Workspace / EditorSession / ファイルライフサイクル (開く・保存)
+                              Session Manager / Config Manager / キーバインド
     ↓
-[Rendering Engine (Direct2D/DirectWrite)]
+[L5: Editor Core] ── [Command / Undo]
     ↓
-[Document Engine (Piece Table / Rope)]
+[L4: Rendering Engine (Direct2D/DirectWrite)]
     ↓
-[Search Engine] [Encoding Engine]
+[L3: Document Engine (Piece Tree + mmap)]
     ↓
-[Plugin Engine (DLL, hot-load)]
+[L3: Search Engine] [L3: Encoding Engine] [L3: Syntax Engine]
+    ↓
+[L2: Plugin Engine (DLL, hot-load)]
     ↓
 [AI Plugin]  →  External AI (Claude / GPT / Gemini)
 ```
+
+> ⚠️ **2026-08-04 の中間レビューによる重要な修正:** 本図は元々 **L6 (Application Shell) が欠落していた**。`basic_design.md` §2.1/§3.2 は L6 に Session Manager・Config Manager を、L7 にタブ・ダイアログを正しく規定していたが、**本ファイルの簡略図でそれが脱落**し、`master_roadmap.md` のフェーズ表が本図に 1:1 対応する形で切られた結果、**L6/L7 相当の機能に 8 フェーズ間フェーズが一度も割り当てられなかった** (ファイル保存・タブ・設定・メニュー・IME が全て未実装)。詳細は [`docs/design/gap_analysis.md`](docs/design/gap_analysis.md) §6.1。
+> **教訓: 上位設計書を要約して作業計画を作るとき、要約で落ちた項目は永久に実装されない。**
 
 - **MVVM は採用しない**。Win32 のメッセージループ + Command パターン + Observer で構築する。
 - レイヤ間は **純粋インターフェース (抽象クラス)** で結合し、実装差し替え可能にする。
@@ -174,12 +181,16 @@ NeoMIFES/
 | 6 | エンコーディング + 自動判定 | 全対象エンコード往復テスト |
 | 7 | シンタックスハイライト・アウトライン・折り畳み | 主要言語対応 |
 | 8 | プラグインエンジン + SDK | サンプルDLL動作 |
-| 9 | AI プラグイン (Claude 統合) | 主要機能動作 |
+| **8.5** | **アプリケーションシェル (保存/開く/タブ/IME/メニュー/横スクロール)** | **開いて編集して保存して終了できる** |
+| **8.6** | **製品化基盤 (設定/キーバインド/テーマ/自動保存)** | **設定が永続化される** |
+| **12'** | **MVP 出荷判定** | **秀丸/サクラの代替として実用に耐える** |
 | 10 | ログ解析モード / CSV モード / JSON-XML Tree | 各モード動作 |
 | 11 | Git 統合 / LSP 統合 / マクロ | 個別 DoD |
+| 9 | AI プラグイン (Claude 統合) | 主要機能動作 |
 | 12 | 総合品質保証 (静的解析/Sanitizer/クラッシュテスト) | 出荷判定 |
 
-> ⚠️ **上表は v0 時点の粗い提案であり、Phase 4b8 以降の実装詳細としては [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) が正 (Plan-of-Record)。** 各フェーズのサブスコープ・UI/UX 設計・データ構造・性能目標・影響ファイルは master_roadmap.md 側にのみ記載されている。着手前に必ずそちらの該当章を読むこと。
+> ⚠️ **上表は v0 時点の粗い提案であり、Phase 4b8 以降の実装詳細としては [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) **v2.1** が正 (Plan-of-Record)。** 各フェーズのサブスコープ・UI/UX 設計・データ構造・性能目標・影響ファイルは master_roadmap.md 側にのみ記載されている。着手前に必ずそちらの該当章を読むこと。
+> **2026-08-04 追記:** Phase 8.5 / 8.6 / 12' は中間レビュー ([`docs/design/gap_analysis.md`](docs/design/gap_analysis.md)) で新設。**Phase 9 (AI) は最後尾へ移動した** — CLAUDE.md 自身が「エディタ本体は AI 無しでも 100% 動作しなければならない」と定めている以上、本体が 100% 動作していない段階で AI を積むのは矛盾するため。
 
 ---
 
@@ -218,6 +229,11 @@ NeoMIFES/
 - [ ] **[`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) の末尾にセッションサマリを追記する** (既存ルール、本ファイル冒頭参照)。
 - [ ] **複数セッションにまたがる親フェーズ (例: Phase 2b 全体) が完了したら、`docs/phase_reports/` に正式レポートを1本発行する。** サブステップ (2b1, 2b2 等) ごとに乱立させず、TIMELINE.md のセッション記録で代替し、親フェーズ完了時にまとめる。
 - [ ] **(2026-07-15 追加) コード変更を push する前に、必ずローカルでビルド・テスト・clang-tidy を実行する。** この開発機には Visual Studio Community 2026 (MSVC 19.50) が実際にインストールされている (`docs/handoff/RESUME_HERE.md` §2 の手順参照)。「MSVC が無いので CI 任せ」という思い込みで push→CI失敗→修正を繰り返さない。過去にこの思い込みで `FILE_SHARE_DELETE` 漏れや Clang 非互換コードなど、ローカルで数十秒で見つけられたはずのバグを CI 往復 (数分〜十数分/回) で発見していた。
+- [ ] **(2026-08-04 追加・最重要) 本フェーズで追加した機能を、実アプリで実際に操作して確認したか。** できない場合、その理由と代替検証を明記する。**「プロセスが 3 秒後も生存していた」は機能確認ではない。** この縮退した検証だけを繰り返した結果、`Ctrl+S` が存在しないこと (=編集内容を保存できないこと) が 8 フェーズにわたり発覚しなかった。
+- [ ] **(2026-08-04 追加) 完了宣言の前に、要件定義書 §6 の必須機能リストと `master_roadmap.md` §1.5 の 60 機能マトリクスに照らし、自フェーズが「対応 Phase」に書かれている項目を全て実装したか確認する。** 未実装項目があれば「保留項目なし」「完全に完了」と書いてはならない。Phase 4b8 が実際にこの誤りを犯した (自動インデント・縦編集が未実装のまま「roadmap 上の保留項目を残さず完全に完了」と宣言された)。
+- [ ] **(2026-08-04 追加) 「◯◯が存在しないため縮退した」という判断を行ったら、その ◯◯ を `docs/issues/` に起票し、[`docs/issues/README.md`](docs/issues/README.md) の索引にも 1 行追加する。** 同じ理由での縮退が **3 回**を超えたら、その基盤の実装を次フェーズ候補に必ず含める。設定システムは **13 回**縮退理由に挙げられながら一度も起票されず、`kTabWidth` の二重定義という具体的な負債まで発生させた。
+- [ ] **(2026-08-04 追加) 次フェーズ候補は「要件定義書の未達項目」「master_roadmap §12.3 出荷判定チェックリストの未達項目」「gap_analysis.md の P0/P1」の 3 つのリストから選定する。** それ以外から提示する場合は理由を明記する。Phase 7 後半以降、候補が毎回「直前のフェーズの延長線上」から選ばれ、製品全体から見た優先度が評価軸に入っていなかった。
+- [ ] **(2026-08-04 追加) `README.md` の「現在の状態」と `docs/issues/*.md` のヘッダ (優先度・状態) も鮮度点検の対象に含める。** README は「Phase 0.5 整備中」のまま 8 フェーズ分、`lazy_decode_mmap.md` は解消済みなのに「優先度: 高」のまま 3 週間放置されていた。
 - [ ] **(2026-07-15 追加) ADR を新規発行・Superseded 化したら、それを参照している `basic_design.md`/`detailed_design.md` のコード例・記述も同じセッション内で同期させる。** Issue や ADR 自体は正しく更新していても、設計書本体のコード例 (クラス定義・API シグネチャ・性能値) が古い設計のまま放置されるケースが実際に発生した (ADR-007 採用後も `detailed_design.md` §3.1 が ADR-006 時代の `RCU`/`std::atomic<shared_ptr<PieceTree>>`/`O(1) snapshot` のコード例のままだった、Phase 3 着手前レビューで3セッション分放置されていたことが判明)。ADR を書いたら「この決定を説明しているコード例が設計書のどこかに残っていないか」を `grep` で確認する。
 
 ---

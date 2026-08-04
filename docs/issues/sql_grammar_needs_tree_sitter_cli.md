@@ -4,6 +4,7 @@
 - **対象:** `cmake/Dependencies.cmake`、`src/syntax/`(将来SQL対応する場合)
 - **優先度:** 低 (roadmap §7.2の必須言語だが、代替手段の検討が先決)
 - **関連:** [ADR-014](../decisions/ADR-014-syntax-engine-tree-sitter.md)、`docs/design/master_roadmap.md` §7.2
+- **✅ 解決済み (2026-08-04、Phase 7y、コミット `2f8380e` / `23c2cc2`):** [ADR-021](../decisions/ADR-021-sql-grammar-vendored-generation.md) により「開発機上で一度だけ `tree-sitter generate` を実行し、生成された `parser.c` を `third_party/tree-sitter-sql-generated/` へベンダリングする」方式を採用。tree-sitter CLI をビルド依存として導入する案 (CI 3ジョブへの新規プロビジョニング + ビルド時に第三者バイナリを実行する新リスクカテゴリ) は不採用とした。本文書は経緯の記録として残す。
 
 ## 背景
 

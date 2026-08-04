@@ -1,6 +1,44 @@
 # NeoMIFES — 次回セッション再開ガイド
 
-> **最終更新:** 2026-08-04 (Phase 8f完了・コミット(`b1e23d3`、push未実施)後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで次候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**SQL文法対応(推奨案)**が選ばれた — roadmap必須23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無いため対象外」として据え置いていた最後の言語。着手前調査(GitHub API直接確認)で`DerekStride/tree-sitter-sql`(v0.3.11)が`tree-sitter generate`による都度生成を要すると再確認し、AskUserQuestionで「tree-sitter CLIをビルド依存として導入」vs「事前生成してベンダリング」を提示、Plan Modeでの詳細計画作成を経て**ベンダリング(推奨案)**が選ばれた(ADR-021)。開発機上でtree-sitter CLI(v0.26.11)を使い`parser.c`を一度だけ生成したところ17.3MBに達し、`.git`全体(約30MB)に対する規模をAskUserQuestionで再確認の上コミット続行が選ばれた。実機probeで`tree-sitter-sql`が356種の`keyword_*`名前付きノード型を持つと判明し、個別テーブル化せず`classifyLeaf()`へ`keyword_`プレフィックス汎用規則を追加。2段階目のprobeで`literal`ノードがTRUE/FALSE/NULLラッパー(非leaf)と真の文字列/数値リテラル(leaf)の両方を指す同一型名だと判明し、`literal`をテーブルから意図的に除外(登録すると前者を誤分類するため)。既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`非対応の主張を含んでいたため更新が必要だった。ローカルDebug/Release/ubsan全966件green、clang-tidy新規警告0、実アプリ`--open`スモークテスト確認済み。**コミットは2件に分ける予定(third_party/ベンダリング単独→統合一式)、push未実施。** §3.66参照。
+> # 🔴 最重要 (2026-08-04 中間レビュー) — 次回セッションはここから読むこと
+>
+> **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**
+> 詳細は **[`docs/design/gap_analysis.md`](../design/gap_analysis.md)** (本ガイドと同格の必読文書、Plan-of-Record 補遺)。
+>
+> ### 一行で
+> **NeoMIFES はエンジン層が世界水準に達している一方、「編集内容をファイルに保存できない」。** 製品コード全体で `CreateFileW` は mmap 用の読み取り専用 1 箇所のみ。`Ctrl+S` のハンドラも存在しない。
+>
+> ### 何が起きていたか
+> roadmap v2.0 は Phase 1〜12 を全て**技術レイヤ名**で命名しており (Document Engine / Rendering / …)、CLAUDE.md §3 のレイヤ図と 1:1 対応していた。しかし「**アプリケーションシェル**」(ファイル保存・複数文書・設定・IME・ウィンドウクローム) はそのレイヤ図に存在せず、**8 フェーズにわたりフェーズを一度も割り当てられなかった**。
+> 60 機能マトリクスも「対応 Phase」欄に `§13.5` のような**章番号**を書いた行が 8 行あり、章はいつまでも実装されなかった。
+>
+> ### 是正 (roadmap v2.1 で適用済み)
+> - **Phase 8.5「アプリケーションシェル」(P0)** / **Phase 8.6「製品化基盤」(P1)** / **Phase 12'「MVP 出荷判定」** を新設
+> - Phase 9 (AI) を最後尾へ移動、Phase 10 (ログ解析) を前倒し、8g (AppContainer) と 7z (大規模文書 DoD) を凍結
+> - **Phase 9 以降の全新機能は Phase 8.5 / 8.6 完了まで凍結**
+>
+> ### 次にやること
+> **Phase 8.5a (文書保存基盤)。** roadmap §8.5.3 に設計方針を規定済み。最大の技術課題は「mmap 中のファイルへの上書き」(一時ファイル + `ReplaceFileW` アトミック置換 + マップ解放/再取得)。未決事項 U#22 / U#23 を実機 probe で検証してから実装すること。
+>
+> ### 新設・更新した文書
+> - 🆕 [`docs/design/gap_analysis.md`](../design/gap_analysis.md) — 中間レビュー本体 (P0/P1 ギャップ、構造的原因分析、Phase 再編、プロセス提言)
+> - 🆕 [`docs/issues/README.md`](../issues/README.md) — Issue 索引 (これまで存在せず、18 件が一覧できなかった)
+> - 🆕 [`docs/issues/no_document_save_capability.md`](../issues/no_document_save_capability.md) (P0)
+> - 🆕 [`docs/issues/no_application_shell.md`](../issues/no_application_shell.md) (P0)
+> - 🆕 [`docs/issues/no_ime_support_in_main_editor.md`](../issues/no_ime_support_in_main_editor.md) (P0)
+> - 🆕 [`docs/issues/no_settings_system.md`](../issues/no_settings_system.md) (P1)
+> - 📝 [`master_roadmap.md`](../design/master_roadmap.md) **v2.0 → v2.1**
+> - 📝 [`README.md`](../../README.md) — 「Phase 0.5 整備中」のまま **8 フェーズ分陳腐化していた**ため全面刷新
+>
+> ### 開発プロセスへの必須変更 (`gap_analysis.md` §8)
+> 1. **ドッグフーディング DoD:** 以後の全フェーズで「NeoMIFES 自身のソースを NeoMIFES で編集してコミットする」を完了条件に含める。この 1 条件があれば保存機能の欠落は初日に発覚していた
+> 2. **完了宣言の前に**、要件定義書 §6 と 60 機能マトリクスで自フェーズが「対応 Phase」に書かれた項目を全て実装したか確認する。未実装があれば「保留項目なし」と書いてはならない
+> 3. **次フェーズ候補は**「要件定義書の未達項目」「roadmap §12.3 出荷判定リスト」「`gap_analysis.md` の P0/P1」の 3 リストから選ぶ。エンジン層の延長線上から選ぶ偏りが 8 フェーズ続いた
+> 4. **「◯◯が無いため縮退した」と判断したら `docs/issues/` に起票する。** 同じ理由での縮退が 3 回を超えたらその基盤を次フェーズ候補に必ず含める (設定システムは **13 回**縮退理由に挙げられながら一度も起票されなかった)
+>
+> ---
+
+> **前回セッションの記録 (Phase 7y):** 2026-08-04 (Phase 8f完了・コミット(`b1e23d3`、push未実施)後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionで次候補(AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)を提示し、**SQL文法対応(推奨案)**が選ばれた — roadmap必須23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無いため対象外」として据え置いていた最後の言語。着手前調査(GitHub API直接確認)で`DerekStride/tree-sitter-sql`(v0.3.11)が`tree-sitter generate`による都度生成を要すると再確認し、AskUserQuestionで「tree-sitter CLIをビルド依存として導入」vs「事前生成してベンダリング」を提示、Plan Modeでの詳細計画作成を経て**ベンダリング(推奨案)**が選ばれた(ADR-021)。開発機上でtree-sitter CLI(v0.26.11)を使い`parser.c`を一度だけ生成したところ17.3MBに達し、`.git`全体(約30MB)に対する規模をAskUserQuestionで再確認の上コミット続行が選ばれた。実機probeで`tree-sitter-sql`が356種の`keyword_*`名前付きノード型を持つと判明し、個別テーブル化せず`classifyLeaf()`へ`keyword_`プレフィックス汎用規則を追加。2段階目のprobeで`literal`ノードがTRUE/FALSE/NULLラッパー(非leaf)と真の文字列/数値リテラル(leaf)の両方を指す同一型名だと判明し、`literal`をテーブルから意図的に除外(登録すると前者を誤分類するため)。既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`非対応の主張を含んでいたため更新が必要だった。ローカルDebug/Release/ubsan全966件green、clang-tidy新規警告0、実アプリ`--open`スモークテスト確認済み。**コミットは2件に分ける予定(third_party/ベンダリング単独→統合一式)、push未実施。** §3.66参照。
 > ⚠️ **2026-07-29 教訓:** 複数フェーズをまとめてpushする運用そのものは問題ないが、性能に関わる変更(Phase 7k以降のEditDelta等)を含む場合は、pushしてCIが通るまでを1つの検証単位とみなすこと。`ctest`ローカル検証はgreenでも、CIの「ベンチマークスモーク実行」ステップ(`core_undo_stack_bench.exe`等、`ctest`に登録されていないためローカルの`ctest`実行では走らない)で初めて顕在化する性能回帰がありうる。
 > ⚠️ **2026-07-21 訂正の経緯:** 前々回セッションの記録で「Phase 6b1〜6d全てpush済み」としていたが実際には6dが未pushだった。前回セッション冒頭で`git fetch`/`git log origin/main..HEAD`により発見・訂正し、Phase 6d・5c5をまとめて`git push`、CI success確認済み。今後は「pushした」という記録を残す前に必ず`git log origin/main..HEAD`で実際の差分を確認すること。
 > **次回開いたら最初にこのファイルを読むこと。**
@@ -98,8 +136,24 @@
 | Phase 8e (showToast ヘッドレス実装: `ui::ToastState`、ADR-019。`registerCommand`は延期) | ✅ 完了 (push済み、CI green確認済み、§3.63参照) |
 | tree-sitter内部実装調査 (根本原因特定 + `ts_parser_set_included_ranges()` 実機probe検証) | ✅ 完了・**不採用と結論** (本番コード変更なし、push済み・CI green確認済み(run `30787211256`)、§3.64参照) |
 | Phase 8f (registerCommand ヘッドレス実装: `ui::PluginCommandRegistry`+既存SEHトランポリン再利用、ADR-020。CommandPalette実配線は延期) | ✅ 完了 (コミット済み`b1e23d3`、pushはユーザー指示待ち、§3.65参照) |
-| Phase 7y (追加言語対応 バッチ5: SQL、事前生成`parser.c`を`third_party/tree-sitter-sql-generated/`へベンダリング、ADR-021。roadmap必須23言語のうち22言語完了) | ✅ 完了 (コミット2件予定、pushはユーザー指示待ち、§3.66参照) |
-| **次フェーズ選定 — AppContainerサンドボックス(別プロセス+IPC全面再設計が前提) / 大規模文書の性能DoD再挑戦等、着手前にユーザーへ確認** | ⏭️ **次回** |
+| Phase 7y (追加言語対応 バッチ5: SQL、事前生成`parser.c`を`third_party/tree-sitter-sql-generated/`へベンダリング、ADR-021。roadmap必須23言語のうち22言語完了) | ✅ 完了 (コミット済み `2f8380e`/`23c2cc2`、pushはユーザー指示待ち、§3.66参照) |
+| **中間レビュー (商用化ギャップ分析、roadmap v2.1 改訂)** | ✅ 完了 (2026-08-04、[`gap_analysis.md`](../design/gap_analysis.md)) |
+
+### ⚠️ ここまでが「エンジン層」。以下が未着手の「アプリケーションシェル」
+
+| Phase | 内容 | 状態 |
+|---|---|---|
+| **8.5a** | **文書保存基盤** (`saveFile()`、mmap 解放 + `ReplaceFileW`、`isDirty()`) | ⏭️ **次回・最優先 (P0)** |
+| 8.5b | ファイルライフサイクル UI (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | ⏭️ P0 |
+| 8.5c | `main.cpp` 解体 + 複数文書モデル (`EditorSession`/`Workspace`) | ⏭️ P0 (**8.5d より先**) |
+| 8.5d | タブ UI (`ui::TabBar`) | ⏭️ P0 |
+| 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 |
+| 8.5f | ウィンドウクローム (メニュー/`HACCEL`/ステータスバー/行番号/`.rc`/`.ico`) | ⏭️ P0 |
+| 8.5g | 横スクロール (`leftColumn`、`WM_HSCROLL`) | ⏭️ P0 (早期着手推奨) |
+| 8.6a〜e | 製品化基盤 (設定/キーバインド/テーマ/自動保存/基本編集の穴埋め) | ⏭️ P1 |
+| **12'** | **MVP 出荷判定** | ⏭️ 新設 |
+| 10 → 11 → 9 → 12 | ログ解析 → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
+| (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
 
@@ -2070,10 +2124,11 @@ Phase 8f完了・コミット後、ユーザーから「次のPhaseに進め」�
 - 設計:
   - 基本: [`docs/design/basic_design.md`](../design/basic_design.md)
   - 詳細: [`docs/design/detailed_design.md`](../design/detailed_design.md)
-  - **マスターロードマップ (Phase 4b8/5b3/5c/6-12 の実装詳細一気通貫): [`docs/design/master_roadmap.md`](../design/master_roadmap.md)** (v2.0、2026-07-19)
+  - **マスターロードマップ (Plan-of-Record、23章): [`docs/design/master_roadmap.md`](../design/master_roadmap.md)** (**v2.1**、2026-08-04)
+  - 🔴 **商用化ギャップ分析 (Plan-of-Record 補遺、必読): [`docs/design/gap_analysis.md`](../design/gap_analysis.md)** (2026-08-04)
   - レビュー: [`docs/design/self_review.md`](../design/self_review.md)
-- 意思決定: [`docs/decisions/README.md`](../decisions/README.md)
-- Issue (Phase 2b/3c/4a 引継ぎ): [`docs/issues/`](../issues/)
+- 意思決定: [`docs/decisions/README.md`](../decisions/README.md) (ADR 21 本)
+- **Issue 索引 (2026-08-04 新設): [`docs/issues/README.md`](../issues/README.md)** (18 件、P0/P1/凍結/解決済みで分類)
 - フェーズ報告:
   - [Phase 0.5](../phase_reports/phase_0.5_report.md)
   - [Phase 1](../phase_reports/phase_1_report.md)
@@ -2085,368 +2140,44 @@ Phase 8f完了・コミット後、ユーザーから「次のPhaseに進め」�
 
 ## 6. 次回の推奨最初のプロンプト例
 
+> **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
+
 ```
-RESUME_HERE.md を読んで現在の状態を把握せよ。roadmap §5全体(5a〜5c5)・§6全体(6a〜6d)・
-Phase 7a〜7tは全てpush済み・CI green確認済み(Phase 7t: run `30489212731`、success、
-1h47m35s)。**Phase 7t(可視範囲スコープ化トークン再設計: `reparseRange()`、永続トークン列
-を廃止、§3.54参照)を実装・push・CI確認済み。ローカルDebug/Release/ubsan全865件green。**
+RESUME_HERE.md 冒頭の中間レビュー結果と docs/design/gap_analysis.md を読んで現状を把握せよ。
 
-**roadmap §7.2必須23言語のうち18言語まで対応完了(残り6言語: SQL/PowerShell/VB/VBS/BAT/INI
-は公式org不在のため対象外のまま)。roadmap DoD「1文字入力後の増分解析≤50ms」はPhase 7tで
-小〜中規模文書では達成(5万行15.65ms)したが、大規模文書は未達のまま(50万行155.95ms、
-§3.54参照)。**
+エンジン層 (Phase 0〜8f) は完了しているが、2026-08-04 の中間レビューで
+「アプリケーションシェルにフェーズが一度も割り当てられていなかった」という
+ロードマップの構造的欠陥が判明した。NeoMIFES は現在、編集内容をファイルに
+保存できない。roadmap は v2.1 で Phase 8.5 / 8.6 / 12' を新設済み。
 
-**Phase 7u(`TSInput`コールバックAPI採用)を実装・全テストgreenまで確認したが、診断計測で
-`read()`の遅延読み込み自体は正しく動作している(1回・8192バイトのみ)にもかかわらず
-`ts_parser_parse()`自体が旧文字列一括API(`extract()`込みの公正な合計約175ms)より約1.8倍
-遅い(約300〜325ms)ことが判明し、明確な性能後退と確認された。ユーザー承認のもと全面
-revertし、Phase 7t完了時点のコードに戻した(§3.55参照、詳細は
-`docs/issues/tree_sitter_incremental_parse_cost.md`)。revertドキュメント同期commit
-(`aecd939`)はpush済み・CI green確認済み(run `30604893065`、success、1h46m35s)。
-roadmap DoDは大規模文書で引き続き未達のまま、次の対応方針は未定 — 安易にTSInput的
-アプローチを再試行せず、まずtree-sitter自身の内部実装を読解してから設計すること。**
+Phase 8.5a (文書保存基盤) に着手せよ。roadmap §8.5.3 に設計方針を規定済み。
+最大の技術課題は mmap 中のファイルへの上書き (一時ファイル + ReplaceFileW
+アトミック置換 + マップ解放/再取得)。未決事項 U#22 (保存後の Piece Table
+再構築と Undo 履歴の整合性) / U#23 (保存失敗時の一時ファイル処理) は
+実機 probe で検証してから実装すること (CLAUDE.md ルール3)。
 
-**Phase 7v(ミニマップ、簡易版・スクロール追従型)を実装・完了した(§3.56参照)。右側縦帯・
-シンタックス色反映・現在可視範囲の強調矩形・クリックジャンプ/ドラッグスクロール。文書全体を
-常に俯瞰表示するVSCode型ではなく、まず可視範囲+マージンのみを表示するスクロール追従型v1に
-留め、実測・実アプリ確認後に拡張判断する方針をユーザーが選択した。ローカルDebug/Release/
-ubsan全865件green・clang-tidy新規警告0・`--measure-frame`実測(avgFrameNs≈16.53ms、既存
-ベースラインと同水準)・実アプリでのクリックジャンプ視覚確認済み。**
-
-**続けてPhase 7w(ミニマップ「文書全体俯瞰型」拡張)を実装・完了した(§3.57参照)。着手前
-調査で判明した最大の技術的障壁(可視範囲外の色情報取得 — `m_tokens`はPhase 7t以降「可視
-範囲+マージンのみ」保持)についてAskUserQuestionで3方式を提示し、**「遅延ポピュレーション」
-方式(推奨案)**が選ばれた: 初期表示は全体グレー、スクロールで見た範囲だけ後から色を埋める。
-行番号ベースの色蓄積配列(`std::vector<MinimapLineColorState>`、100万行でも約1MB)+
-`viewport_math.h`のバケット化純粋関数2つ(`computeMinimapBucketCount()`/
-`minimapBucketStartLine()`)を新設、ミニマップの窓を`[0,totalLines)`固定化、ヒットテスト/
-強調矩形を連続比例配分へ書き換えた。`main.cpp`は無変更(公開シグネチャ不変)。ローカル
-Debug/Release/ubsan全875件green・clang-tidy新規警告0・`--measure-frame`実測
-(avgFrameNs≈16.50ms、Phase 7vベースラインと同水準)・実アプリでのミニマップ全体俯瞰表示+
-クリックジャンプ視覚確認済み。push済み・CI green確認済み。**
-
-**続けてPhase 8a(プラグインエンジン 最小限PoC)を実装・完了した(§3.58参照)。roadmap §8の
-完全なv2.0ビジョン(サンドボックス・IPC・署名検証・マーケットプレース)は1PRには大きすぎる
-ためAskUserQuestionでスコープ縮小案を提示し、**「最小限PoC」**(DLL読み込み+`onLoad`/
-`onUnload`呼び出し+SEHクラッシュ隔離のみ)が選ばれた。既存・未使用だった
-`platform::ModuleHandle`を再利用、`plugin_sdk.h`(本リポジトリ初のトップレベル`include/`)+
-`neomifes::plugin::PluginHost`+サンプルDLL4種(`hello_plugin`/`hello_plugin_bad_api_version`/
-`crashing_plugin`/`throwing_plugin`、本リポジトリ初の`MODULE` CMakeターゲット)を新設。SEH
-トランポリンは無条件`EXCEPTION_EXECUTE_HANDLER`を採用し、ハードウェア例外・C++例外
-(throw)双方の隔離を実測で確認(推測ではなく実証)。ADR-015起票済み。`NeoMifesCoreApi`・
-権限モデル・サンドボックス・マニフェスト・署名検証・マーケットプレース・UI配線は全て
-明示的に延期(`docs/issues/plugin_core_api_document_gap.md`)。ローカルDebug/Release/ubsan
-全green・clang-tidy新規警告0。push済み・CI green確認済み。**
-
-**続けてPhase 7x(追加言語対応バッチ4: PowerShell/Ini/Batch)を実装・完了した(§3.59参照)。
-AskUserQuestionで残り6言語バッチ4(SQL/PowerShell/VB/VBS/BAT/INI)が選ばれた後、`gh api`
-直接確認で想定より品質の低い状況が判明: VB/VBScriptは調査した全候補がライセンス不明
-(license:null)で対象化不可(`docs/issues/vb_vbscript_grammar_no_licensed_candidate.md`)、
-SQL(`DerekStride/tree-sitter-sql`、243★)は`parser.c`未コミットでtree-sitter CLI(Node.js)
-の新規導入が必要なため次点(`docs/issues/sql_grammar_needs_tree_sitter_cli.md`)。この状況を
-再提示し、**PowerShell/INI/Batchの3言語のみ実装(推奨案)**が選ばれた(個人メンテナ文法、
-Phase 7n1/7r/7sの公式org文法とは品質階層が異なる旨を明記)。実機probe2種類(通常ダンプ+
-`walkTree()`相当ロジック再現のトークンシミュレーション)で正確な期待値を取得して実装。
-ローカルDebug/Release/ubsan全905件green・clang-tidy新規警告0(既存パターンのみ確認)・
-実アプリ視覚確認(3言語ともプロセス生存確認)済み。roadmap §7.2必須23言語のうち21言語
-まで対応完了(残りSQL/VB/VBScript/SAP ABAP)。push済み・CI green確認済み。**
-
-**続けてPhase 8b(`NeoMifesCoreApi`橋渡し実装)を実装・完了した(§3.60参照)。AskUserQuestion
-で4候補(CoreApi橋渡し/AppContainerサンドボックス/大規模文書の性能DoD再挑戦/SQL文法対応)
-を提示し、**CoreApi橋渡し設計(推奨案)**が選ばれた。Plan agentによる詳細設計+実ファイル
-検証で重要な訂正を得た: `PieceTree::eraseRange()`は反転レンジ(start>end)を安全なno-opと
-して扱う(メモリ破壊ではなく正しさの問題)。`document::Document::lineText()`/
-`lineColumnToOffset()`新設、`plugin_sdk.h`へ`NeoMifesCoreApi`(insertText/deleteRange/
-getLineCount/getLineTextの4関数のみ、registerCommand/showToast/ネットワーク系は権限
-モデル無しのため引き続き延期)追加。`neomifes::plugin`はDocument Engine非依存のまま維持し
-(CLAUDE.md §3レイヤリング)、ブリッジ実装は`src/app/plugin_core_api_bridge.h`/`.cpp`
-(既存の`document_open.h`/`outline_bridge.h`と同じ糊付け層パターン)に配置。新規サンプル
-プラグイン`document_editing_plugin`+統合テストで実DLL境界越しのCoreApi往復を実測検証。
-ローカルDebug/Release/ubsan全931件green・clang-tidy新規警告0(`std::copy_n`の
-`bugprone-suspicious-stringview-data-usage`を`.data()`→`.begin()`で解消)。ADR-016起票済み。
-push済み・CI green確認済み。**
-
-**続けてPhase 8c(Job Objectによるプラグイン資源制限)を実装・完了した(§3.61参照)。
-AskUserQuestionでAppContainerサンドボックス(推奨案)が選ばれたが、着手前調査(Explore
-agent + Microsoft Learn直接確認)でAppContainerは既存の同一プロセス内`LoadLibraryW`
-アーキテクチャへ後付け不可能(別プロセス+IPC全面再設計が前提、ADR-015が一度却下した規模)
-と判明。再提示し**「Job Object資源制限のみに縮小」(推奨案)**が選ばれた。プロセス全体を
-巻き込むメモリ/CPU時間制限は「10GBファイル対応」という中核価値と衝突するため見送り、
-`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`(`ActiveProcessLimit=1`)のみを採用。新規
-`ensureProcessSandboxed()`/`queryActiveJobLimits()`(`src/plugin/plugin_sandbox.h`/`.cpp`)、
-`PluginHost::load()`へは自動フックしない設計(約40個の単体テストが1プロセスに同居する
-共有テストバイナリを、片道操作である`AssignProcessToJobObject`が汚染する副作用を発見した
-ため)。専用統合テストで、サンドボックス化後の子プロセス生成失敗+呼び出し元プロセスの
-生存継続を実機確認。ローカルDebug/Release/ubsan全932件green・clang-tidy新規警告0
-(`SandboxState`の集成体初期化に`modernize-use-designated-initializers`を検出・修正)。
-ADR-017起票済み。コミット済み、pushはユーザーの明示指示待ち。**
-
-**続けてPhase 8d(`permissions`権限モデル)を実装・完了した(§3.62参照)。AskUserQuestionで
-`permissions`権限モデル(推奨案)が選ばれた。着手前調査でroadmap §8.3の`permissions`原案
-5カテゴリ(Network/Filesystem/Subprocess/Registry/Clipboard)はいずれも対応するCoreApi関数
-が未実装でゲート対象が無いと判明したため、新規`NEOMIFES_PLUGIN_PERMISSION_DOCUMENT`を
-追加してPhase 8b実装済みの4関数(insertText/deleteRange/getLineCount/getLineText)のみを
-実際にゲートした。enforcementはroadmap自身が示した「権限が無ければ関数ポインタをNULLに
-する」方式を採用し、Phase 8aの既存SEHクラッシュ隔離がそのまま捕捉するため新規エラー
-コードは不要だった。`PluginHost::load()`の`coreApi`引数を、`neomifes_plugin_info()`で権限
-が判明した後に呼び出す`CoreApiFactory`関数ポインタへ変更(従来は呼び出し元が事前に
-`coreApi`を構築していたため手遅れだった)。新規サンプル`permission_denied_plugin`
-(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ`insertText`を無条件呼び出し)でNULL関数
-ポインタ経由のクラッシュ隔離を実機確認。`manifest.json5`・Authenticode署名検証・確認
-ダイアログはプラグイン発見/インストール機構が無いため見送り。Job Object制限(ADR-017)は
-自己申告を信頼できないため権限連動化せず全プラグイン一律適用のまま据え置いた。ローカル
-Debug/Release/ubsan全934件green・clang-tidy新規警告0(ubsan/clang-clビルドで
-`-Wmissing-designated-field-initializers`を検出・4関数ポインタ全てへの明示的`nullptr`で
-解消)。ADR-018起票済み。コミット済み、pushはユーザーの明示指示待ち。**
-
-**続けてPhase 8e(showToast ヘッドレス実装)を実装・完了した(§3.63参照)。AskUserQuestionで
-`registerCommand`・`showToast`実装(推奨案)が選ばれた。着手前調査で`showToast`(onLoad/
-onUnload中の同期呼び出しのみで既存スレッド契約に収まる)と`registerCommand`(コールバック
-を保存し後で安全に呼び出す新しい契約が必要)の実装難易度が非対称と判明したため再提示し、
-「showToastのみ、ヘッドレス実装(推奨案)」が選ばれた。新規`ui::ToastState`(ヘッダオンリー、
-「現在表示すべきメッセージ1件」のみ保持する純粋状態クラス、last-write-wins・キューイング
-無し)を新設 — 本コードベースの既存UIウィジェット(FindBar/GrepBar/GotoLineBar/
-CommandPalette)はいずれも自動テスト対象になっておらず、`main.cpp`無改修のまま検証する
-必要があったため。`showToast`は権限ゲートしない(既存5予約カテゴリのいずれも合致せず新
-カテゴリの推測導入を避けた、`kFullCoreApi`/`kDocumentDeniedCoreApi`双方に同じ実装を設定)。
-`NEOMIFES_CORE_API_VERSION`を1→2へ引き上げ(初めてCoreApi構造体に実際にフィールドが
-追加された)。`PluginHost::load()`に`NeoMifesToastSink* toastSink`パラメータを追加(`document`
-と全く同じ扱い)。新規サンプル`toast_plugin`(`NEOMIFES_PLUGIN_PERMISSION_NONE`を宣言しつつ
-`showToast`呼び出し)で権限無しのshowToast往復を実機確認。`registerCommand`・実Win32
-トーストウィジェット・`main.cpp`配線は次サブフェーズへ延期。ローカルDebug/Release/ubsan全
-942件green・clang-tidy新規警告0(新規テストファイルで`misc-const-correctness`を1件検出・
-修正)。ADR-019起票済み。コミット済み、pushはユーザーの明示指示待ち。**
-
-**次フェーズはAppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/
-`registerCommand`(実行時コマンド登録API+SEH保護された遅延呼び出し機構が前提)のいずれか、
-着手前にユーザーへ確認すること。他の未着手候補としてtree-sitter内部実装のさらなる調査
-(50万行DoD未達の解消)・SQL文法のtree-sitter CLIビルド依存導入検討も保留中。**
-
-セッションを開く際は必ず`git fetch`+`git log origin/main..HEAD`で実際のpush状態を確認して
-から報告すること(過去に「pushした」という記録がずれていたことが複数回あった)。push後は
-CI状況を`gh run list`/`gh run view`で確認するまでを1つの検証単位とみなすこと(2026-07-29の
-教訓、ヘッダ冒頭参照)。
-
-**(2026-07-24確認) PowerShell+.NET(`Graphics.CopyFromScreen`)+ Win32 P/Invokeでネイティブ
-ウィンドウのスクリーンショット撮影・`Read`ツールでの視覚確認は可能。プレーンな文字入力
-(`SendKeys`)もWM_CHARとして正常に届く(`reference_no_win32_gui_automation.md`参照)。**
-
-**(2026-07-26確認、重要) Ctrl/Shift等の修飾キーを伴うショートカットは、この環境の合成
-キーボード入力(`SendKeys`/`keybd_event`/`SendInput`のいずれも)では再現できない —
-送信直後に`GetAsyncKeyState`で確認しても「押されていない」を返し続けることまで確認済み
-(サンドボックス環境がOSレベルで拒否している)。このため、Ctrl+F/Ctrl+Shift+P/Ctrl+Shift+F/
-Ctrl+G/Ctrl+Up・Down/Shift+Alt+ドラッグ等、修飾キーを伴う操作は「実際に押してスクリーン
-ショットで確認する」ことができない。代わりに`EnumChildWindows`(P/Invoke)でコントロールの
-クラス名・`GetDlgCtrlID`・`GetWindowRect`を直接調べる構造検証で代替すること(Phase 7gで
-実際にこの手法だけでバグを1件発見・修正した、§3.41参照)。日本語IME合成同様、この種の
-検証はユーザー自身の実機確認に委ねる運用に切り替えること — 「SendKeysで再現できる見込み」
-という以前の記述(2026-07-24時点)は誤りだったので今後参照しないこと。**
-
-**(2026-07-26追加、Phase 7j確認) 上記の制約は合成キーボード入力(修飾キー)に限定される —
-マウスクリック自体(`SetCursorPos`+`mouse_event(MOUSEEVENTF_LEFTDOWN|LEFTUP)`)は修飾キー
-無しであれば正常に機能し、`ClientToScreen`でクライアント座標→スクリーン座標を変換した上で
-狙った位置(ガターのフォールドマーカー等)への実クリックを合成でき、その結果をスクリーン
-ショットで確認できることをPhase 7jで実証した(§3.44参照)。修飾キー無しのマウス操作(クリック・
-ドラッグ)が必要な機能の視覚確認では、まずこの手法を試すこと — キーボードショートカット
-経由でしか到達できない機能(コマンドパレット内のコマンド等)は引き続き対話的確認不可のまま。**
-
-Phase 6a/6b1/6c1/6c2/6b2/6d/7a/7fはヘッドレス実装(UI/Document結合なし)のため視覚確認対象は無い。
-Phase 7k(真の増分再解析コア基盤)も同様にヘッドレス(実アプリの見た目に一切影響しない変更)
-のため視覚確認対象は無い(§3.45参照)。
-
-**(2026-07-28追加、重要) Phase 7lの視覚確認で、上記のマウスクリック合成・スクリーンショット
-手法が本セッションでは機能しなかった。** `GetWindowRect`/`IsWindowVisible`はウィンドウの実在を
-正常値で返すが、その領域を`CopyFromScreen`で撮ると常にデスクトップが写り込み、ウィンドウ中心
-座標への実クリック(`SetCursorPos`+`mouse_event`)を送っても`GetForegroundWindow()`が変化しな
-かった(=クリックが実際にそのウィンドウへ届いていないことの証拠)。全画面(2モニタ分)を
-キャプチャしても対象ウィンドウはどこにも見えなかった。**恒久的な退行と決めつけず、次回セッション
-でもまず素直にこの手順を試すこと** — 一時的なセッション状態に起因する可能性がある
-(詳細は`reference_no_win32_gui_automation.md`)。今回はテストスイート(非同期ワーカーの
-統合テスト、pump-and-wait方式で実スレッド/実メッセージ配送を検証)+プロセス生存確認
-(`Responding=True`を約2分間維持)で代替した。
-
-**(2026-07-28追加、Phase 7n1確認、重要) 上記「素直に再試行すること」を実行したところ、
-`GetWindowRect`/`CopyFromScreen`自体は成功する(エラー無し、妥当なサイズのビットマップを
-返す)ようになったが、`CopyFromScreen`が撮影した画像がNeoMIFESのウィンドウ内容ではなく、
-全く無関係な別のウィンドウ(ブラウザ)の内容だった。** 誤って撮影した画像は不適切な内容を
-含んでいたため即座に削除し、他に保存・共有していない。これはPhase 7lの「デスクトップが
-写り込む」不調とは異なる新しい失敗モードで、2回連続の不調(Phase 7l・7n1)であるため
-恒久的な退行の可能性が高まった。**次回セッションでは、まず`MainWindowHandle`ではなく
-何らかの方法でウィンドウが実際にどのプロセス/セッションに属しているか(`GetWindowThreadProcessId`
-等)を確認してから撮影する等、より慎重な検証を行うこと。それでも改善しない場合は、この
-セッション環境ではスクリーンショット手法自体が信頼できないと判断し、視覚確認は毎回
-自動テスト+プロセス生存確認で代替する運用へ切り替えることを検討する。**
-
-**(2026-07-28追加、Phase 7o確認、重要) 上記の慎重な検証(`GetWindowThreadProcessId`で
-撮影対象が本当に自分が起動したプロセスのものか確認)を実施したところ、スクリーンショット
-自体は今回正しくNeoMIFESのウィンドウ内容を撮影できた(3回連続の不調から回復)。しかし
-その状態で合成キーボード入力(`SendKeys`での`{PGDN}`・`{DOWN 90}`、いずれも修飾キー無し)
-を送っても、カーソルもスクロール位置も一切変化しなかった。** Phase 7h/7jで「修飾キー無しの
-矢印キーは機能する」と記録されていた前例と食い違う結果であり、`SetForegroundWindow`が
-true を返しウィンドウ所有プロセスIDも一致しているにもかかわらず、実際のキーボードフォーカス
-がこのセッションの合成入力の送信先と一致していない可能性が高い。**この自動化環境の
-入力合成は、スクリーンショットとは独立に、それ自体も信頼できない状態にあると考えられる。**
-次回セッションでは、まずキー入力単体の疎通確認(例えば単純な文字入力が実際にドキュメントへ
-挿入されるか)から素直に再試行し、それでも機能しない場合は視覚的な対話確認を諦めて
-`setTopLine()`等API直接呼び出し+統合テストで代替する判断を早めに行うこと(詳細は
-`reference_no_win32_gui_automation.md`)。
-
-**次フェーズは残り15言語対応(バッチ2、§3.48参照)・ミニマップ、または`IncrementalParser`
-の公開契約を「差分のみ返却」へ変更する大規模改修(真のDoD達成に必要)のいずれか。
-Sticky scrollはPhase 7oで完了した(§3.49参照)。**
-折り畳み機能(`core::FoldingModel`のキーボード操作コア基盤+ガター+/-クリックトグル)は
-Phase 7i/7jで完結済み(§3.43・§3.44参照)。真の増分再解析は Phase 7k(ヘッドレスコア)+
-Phase 7l(`SyntaxWorker`統合)+ Phase 7m(`ts_tree_get_changed_ranges()`によるトークン
-部分更新)で完結し、実際に使われる機能になった(§3.45・§3.46・§3.47参照)。**ただし
-性能面のDoD(roadmap §7.11「≤50ms」)はPhase 7mを経てもまだ未達のまま** —
-`reparse()`が呼び出しのたびに文書全体サイズのトークン列を確保・返却する設計のままで、
-Phase 7mの実測(50万行で約10倍のコスト、文書サイズにほぼ比例)により「定数倍改善に
-留まり漸近的改善ではない」ことが判明した。次にDoD達成を目指すなら`IncrementalParser`
-の契約自体を「差分のみ返却」へ変更する必要がある(§3.47参照)。
-言語対応はPhase 7dでC++/Python、Phase 7n1でC/JavaScript/Java/Go/Rust/JSON(バッチ1)が
-完了し、roadmap §7.2必須23言語中8言語まで進んだ(§3.48参照、残り15言語+SAP ABAP)。
-Phase 7自体がroadmap最大級のフェーズのため、7a〜7jで確立したパターン(tree-sitterグラマー
-追加はSOURCE_SUBDIR+自前add_libraryターゲット・ADR-014、トークン色付けはSetDrawingEffectの
-毎フレーム再適用・detailed_design.md §10.4、非同期化はSyntaxWorker単一スレッド+単一スロット
-合流・detailed_design.md §10.5、言語ディスパッチはLanguage enum+namedLeafKindsForXテーブル・
-detailed_design.md §10.6、Indent guidesはRenderPipelineへのdrawXxxOnLine追記・
-detailed_design.md §10.7、アウトライン抽出は独立した2回目パース+明示スタック走査・
-detailed_design.md §10.8、アウトラインUI統合はWM_NOTIFYベースのWC_TREEVIEW・
-detailed_design.md §10.9、BreadcrumbはkGutterWidthDips方式を縦方向にミラーした
-新規座標オフセット+OutlineNodeツリーの逆引き・detailed_design.md §10.10、
-折り畳みは二重座標系を避けて論理行のまま隠れた行をスキップするローカルウォーク・
-detailed_design.md §10.11、ガター+/-クリックトグルはガター全幅を対象とする寛容な
-ヒットテスト+`onKeyDown`等と同じ「ラムダは薄いラッパーのみ」パターンへのonMouseDown
-再構成・detailed_design.md §10.12、Sticky scrollは既存の類似機能(Breadcrumb)を
-テンプレートに採用しブラシ・描画パターンを再利用しつつ、動的な帯の高さ変化を
-`kBreadcrumbHeightDips`直接参照4箇所の一元化用共有ヘルパーで吸収・detailed_design.md
-§10.17参照)を
-踏襲しつつ、次のサブフェーズのスコープをPlan Modeで具体化してから着手すること
-(推測実装をしない、CLAUDE.mdルール3)。3言語目を追加する際は、
-実装着手前に必ずスタンドアロンprobe(`ts_probe`ディレクトリパターン)でそのグラマーの
-実出力を確認してからnamedLeafKindsForXテーブル/シンボルテーブルを構築すること — 記憶
-からの推測は厳禁(Phase 7fでC++/Pythonの`function_definition`同名ノードの構造差異を
-見落としたバグが実際に発生している、§3.40参照)。**新規のRenderPipeline系機能で`src/`配下のコードに再帰関数を書く場合は、
-`src/.clang-tidy`が`WarningsAsErrors: '*'`のため`misc-no-recursion`が木の実際の深さに
-関わらず一律エラー化することをPhase 7hで再確認済み(§3.42参照)— 再帰で書いた場合は
-clang-tidy実行時に明示ループへの書き換えが必要になる前提で見積もること。**
-
-**別タスク(spawn_task済み、task_e3df1519): FindBar/CommandPalette/GotoLineBar/GrepBarの
-初期位置決めバグ修正。** Phase 7g視覚確認中に`EnumChildWindows`で発見 — `onDeferredInit`
-(WM_SIZEより後に走る投稿メッセージ)内で`.create()`されるため、ユーザーが手動でウィンドウを
-リサイズするまで正しい位置に配置されない。`OutlinePane`(Phase 7g)は`create()`直後に
-`GetClientRect`+`GetDpiForWindow`で明示的に`onParentResized()`を呼んで解消済み — 同じパターンを
-残り4オーバーレイへ適用すればよい。ユーザーがこのタスクを起動していなければ、このセッションで
-拾って対応してもよい。
-
-着手前に本ファイル §3.19〜§3.44 末尾のスコープ外一覧・完了条件チェックボックスを読むこと。
-修飾キーを伴わない操作(日本語IME確認含む)は引き続きユーザーに依頼する
-(5c1・5c2・6a・6b1・6c1・6c2・6b2・6d・7a・7fはヘッドレスのため視覚確認対象なし)。
-コマンドパレット経由のコマンド(Phase 4b8d/4b8f/7iの「Fold/Unfold at Cursor」等)の対話的
-トグル確認は、Ctrl+Shift+Pの合成入力制約により本セッションでは実施不可 — 単体/統合テストと
-コードレビューで代替する運用を継続する(§3.43参照)。**修飾キー無しのマウス操作(クリック・
-ドラッグ)は合成可能なので、視覚確認が必要な場面ではまずマウス操作だけで完結する経路が
-無いか検討すること(§3.44参照)。**
-
-**続けてtree-sitter内部実装調査(根本原因特定 + `ts_parser_set_included_ranges()`実機probe
-検証)を実施し、不採用と結論した(§3.64参照)。** 背景エージェントによるvendored tree-sitter
-sourceの直接読解で、`ts_parser_parse()`のメインループが文書全体をオートマトンで歩くことが
-構造的に必須という根本原因を特定。唯一の未検証の回避策`ts_parser_set_included_ranges()`
-について、Plan Modeで「実装前に使い捨てprobeで実機検証(Stage A)→結果次第で実装/記録して
-終了(Stage B)」という2段階計画を策定・承認を得た。実機probeの結果、**正しさ(複数行コメント・
-生文字列の途中から窓が始まると誤分類が広範囲に伝播)・再利用実効性(近接スクロールの80%
-重複窓ですら`reuse_node`が1件も観測されず`reuse=0`)のいずれも不成立と判明**。本番コード
-(`src/syntax/`・`src/render/`)は一切変更せず、`docs/issues/tree_sitter_incremental_parse_cost.md`
-に根本原因・probe実測結果・新たな検討候補(文脈プレフィックス緩和策、未検証)を追記した。
-**roadmap DoD「1文字入力後の増分解析≤50ms」(大規模文書)は引き続き未達のまま、現時点で
-有望な次の方向性は無い — 安易に再挑戦せず、issue docの「今後の検討候補」を踏まえて
-着手判断すること。**
-
-**続けてPhase 8f(registerCommandヘッドレス実装)を実装・完了した(§3.65参照)。** ADR-019
-(Phase 8e)が延期した唯一の残項目。新規`ui::PluginCommandRegistry`(ヘッダオンリー、既存
-`ui::CommandDescriptor`をそのまま格納)を新設し、Phase 8aの既存SEHトランポリン
-(`invokePluginCallbackSafe`)を公開昇格して再利用した(コールバックシグネチャが
-`onLoad`/`onUnload`と完全に同じ形だったため新規トランポリンは書いていない)。Plan agent
-のレビューで`registerCommandImpl()`実装案の実際のコンパイルエラー(`fromWstringView()`の
-`u16string_view`を`explicit`な`u16string`へdesignated initializer経由で暗黙変換しようと
-していた)を実装前に検出・修正した。`registerCommand`は`showToast`と同じ論法で権限ゲート
-しない。新規サンプル`command_plugin`/`crashing_command_plugin`で、遅延呼び出しが
-`ctx->coreApi`まで正しく到達すること・`load()`/`unload()`外で起きるクラッシュもSEH
-隔離されることを実機確認した(Debug/Release/ubsan全956件green)。**重要な発見:**
-「unload後のstaleなコマンド呼び出しが安全か」を検証する統合テストを当初書いたが、ubsan
-プリセット(AddressSanitizer)が実際のヒープuse-after-freeを正しく検出し確実に失敗した
-(ASanが本来の役目を果たした結果であり実装の不具合ではない) — このテストは削除し、
-`plugin_sdk.h`のスレッド契約コメントへ「SEHは可能性を減らすが安全性を保証しない」という
-正確な記述を追加するに留めた。`ui::CommandPalette`への実配線・`main.cpp`配線・unload時
-自動クリーンアップは次サブフェーズへ延期。**Phase 8fはコミット済み(`b1e23d3`)、pushは
-ユーザーの明示指示待ち。**
-
-**続けてPhase 7y(追加言語対応バッチ5、SQL)を実装・完了した(§3.66参照)。** roadmap必須
-23言語のうちPhase 7xが唯一「候補文法はあるが上流に`parser.c`が無い」として据え置いて
-いた最後の言語。`DerekStride/tree-sitter-sql`(v0.3.11)は`tree-sitter generate`による
-都度生成を要するため、「tree-sitter CLIをビルド依存として導入」vs「開発機上で一度だけ
-生成しベンダリング」をAskUserQuestionで提示し、**ベンダリング(推奨案)**が選ばれた
-(ADR-021、CI新規ツールプロビジョニング不要・ビルド時第三者バイナリ実行という新規
-リスクカテゴリを回避)。生成した`parser.c`が17.3MB(`.git`全体の約30MBに対して大きな
-割合)と判明したため、コミット前にAskUserQuestionでサイズを再確認し「このまま17MBを
-コミット」が選ばれた。実機probe(2段階)で`tree-sitter-sql`が356種の`keyword_*`名前付き
-ノード型を持つと判明し、個別テーブル化せず`classifyLeaf()`へ`keyword_`プレフィックス
-汎用規則を追加(SQL専用ではなく将来の同種文法にも効く一般化)。2段階目のprobeで
-`literal`ノードがTRUE/FALSE/NULLラッパー(非leaf)と真の文字列/数値リテラル(leaf)の
-両方を指す同一型名だと判明し、`literal`をテーブルから意図的に除外(登録すると前者を
-誤分類するため)。既存の`DetectLanguageTest.RejectsNonRecognizedExtensions`が`.sql`
-非対応を主張していたため更新が必要だった。ローカルDebug/Release/ubsan全966件green、
-clang-tidy新規警告0、実アプリ`--open`スモークテスト確認済み。**コミットは2件に分ける
-予定(third_party/ベンダリング単独→統合一式)、pushはユーザーの明示指示待ち。次フェーズは
-AppContainerサンドボックス(別プロセス+IPC全面再設計が前提)/大規模文書の性能DoD再挑戦の
-いずれか、着手前にユーザーへ確認すること。**
+未 push のコミットが 3 件ある (b1e23d3 / 2f8380e / 23c2cc2)。push は
+ユーザーの明示指示を待つこと。
 ```
 
-**Phase 3 全体ロードマップ (完了、2026-07-16):**
+**着手前に必ず確認すること (中間レビューによる新ルール):**
+1. roadmap §8.5 の該当サブフェーズを読む
+2. 要件定義書 §6 と 60 機能マトリクスで、そのサブフェーズが担当する項目を全て洗い出す
+3. Plan Mode で詳細プランを起こす
+4. 完了時に「ドッグフーディングできるか」を必ず確認する
 
-| サブフェーズ | 内容 | 状態 |
-|---|---|---|
-| 3a | D2D/DXGI/COM 基盤配線 | ✅ 完了 (§3.5 参照) |
-| 3b | DirectWrite テキストレイアウト、Document内容の実描画、最小スクロール状態 | ✅ 完了 (§3.6 参照) |
-| 3c | TextLayoutCache + 粗粒度フレームスキップ + `--measure-frame` 計測ハーネス | ✅ 完了 (§3.7 参照) |
-
-Phase 3 は [`docs/phase_reports/phase_3_report.md`](../phase_reports/phase_3_report.md) として統合レポート発行済み。旧「Phase 3d」(Line Gutter・テーマ・日本語フォントフォールバック・IME) は Phase 3 の DoD (60fpsスクロール確認) に必須でないため対象外とし、Phase 4 とは独立の将来フェーズとして扱う方針をユーザーと確認済み。
-
-**Phase 4a (Command/Undo/Selection、ヘッドレス) は完了済み (§3.8 参照、ADR-012)。** `src/core/` に `Cursor`/`SelectionModel`/`ICommand`/`InsertTextCommand`/`DeleteRangeCommand`/`ReplaceRangeCommand`/`UndoStack`/`CommandDispatcher`/`Viewport` を実装し、`tests/bench/core_undo_stack_bench.cpp` の実測 (Release: push 352ms / undo 174ms、100万コマンド) で CLAUDE.md Phase 4 DoD「100万Undo達成」を満たした。
-
-**Phase 4b1 (キーボード入力配線・キャレット描画・マウスホイールスクロール) は完了済み (§3.9 参照)。** `neomifes::app_input` ライブラリで `WM_KEYDOWN`/`WM_CHAR`/`WM_MOUSEWHEEL` を Editor Core に配線し、実アプリで対話的な編集・移動・Undo/Redo・スクロールが動作する状態になった。キャレットも `RenderPipeline` に描画される。
-
-**Phase 4b2 (マウスクリック位置特定・選択範囲ハイライト描画) は完了済み (§3.10 参照)。** `RenderPipeline::hitTest()` でクリック座標を `TextPos` に変換し、`SelectionModel::moveAllTo(pos, shiftDown)` でクリック/Shift+クリックによるカーソル移動・選択拡張を実装。選択範囲は半透明の矩形でハイライト描画される。
-
-**Phase 4b3 (ドラッグ選択) は完了済み (§3.11 参照)。** Phase 4b2 の `handleMouseDown(pos, shiftDown=true, ...)` がドラッグの継続移動に必要な挙動と完全に一致していたため、新規の core/app ロジックは不要で、`MainWindow` の `SetCapture`/`WM_MOUSEMOVE`/`WM_LBUTTONUP` 配線のみで実現した。
-
-**Phase 4b4 (ダブルクリック単語選択・トリプルクリック行選択) は完了済み (§3.12 参照)。** 単語境界はユーザー確認済みの簡易文字種ベース。クリック回数判定はヘッダオンリーの純粋関数 `click_tracking.h`(`src/render/`のmath系ヘッダと同じパターン)で実装し、`MainWindow`のロジックが初めてユニットテスト可能になった。
-
-**Phase 4b5a (複数カーソル編集コマンド基盤) / Phase 4b5b (Alt+クリック複数カーソル追加) は完了済み (§3.13 参照)。** `ICommand::cursorsAfterExecute()`/`cursorsAfterUndo()`(`std::vector<Cursor>`)+新規 `MultiCursorEditCommand`(累積オフセット法)で編集コマンドが複数カーソルに対応し、`handleAltClick()`(`SelectionModel::addCursor()`を呼ぶだけ)でAlt+クリックからカーソルを追加できるようになった。`editor_input.cpp`の`handleChar`/`applyDeleteKey`は単一/複数カーソルを区別せず`MultiCursorEditCommand`経由で統一的に処理する。
-
-**Phase 4b6a〜4b6d (PageUp/PageDown・Ctrl+矢印単語移動・クリップボードコピー・Alt+Shift拡張) は完了済み (§3.14 参照)。** `MovementKind`に`PageUp`/`PageDown`/`WordLeft`/`WordRight`を追加(既存の列保持ロジック・`classify()`を一般化・再利用)。新規`src/platform/clipboard.h/.cpp`でCtrl+C/X/V(当時はプライマリカーソルの選択範囲のみ)を実装。新規`SelectionModel::moveCursorMatching()`でAlt+Shift+クリック/Alt+ドラッグによる特定カーソルの選択拡張を実装。
-
-**Phase 4b7a〜4b7c (複数カーソル視覚描画・複数行単語移動・複数カーソルクリップボード) は完了済み (§3.15 参照)。** `RenderPipeline::setCursorVisuals(std::vector<CursorVisual>)`で複数カーソルのキャレット/選択ハイライトが実際に画面へ描画されるようになった(Phase 4b5a以降の既知の制限を解消、ユーザー自身が実アプリで視覚確認済み)。`moveByWordForward()`/`moveByWordBackward()`が行境界を越えて継続するようになった。`textToCopy()`/`handlePaste()`/新規`deleteAllSelections()`が全カーソル(選択を持つもの)を対象に動作するようになった。
-
-**Phase 4b8 は6サブフェーズ(4b8a〜4b8g)全て完了済み(§3.22/§3.23参照)。** 矩形選択(マウス+キーボード)・桁位置ジャンプ・マーカー・タブ⇔スペース変換・フリーカーソル(簡略版)・N対N分配クリップボード・Shift+Alt+Iの全機能を実装済み、roadmap上の保留項目は残っていない。実アプリでの視覚確認のみユーザー依頼待ち。
-
-**Phase 5a (Search Engine基盤: RE2導入 + `SearchService::findAll`) は完了済み (§3.16 参照)。** ADR-002で決定済みのRE2を`cmake/Dependencies.cmake`に導入(常時ビルド対象化)、新規`src/search/`モジュールで同期・単一行スコープの`SearchService::findAll(Document, Query)`を実装。リテラル/正規表現検索をRE2の1本のコードパスで統一。新規`src/util/utf8_convert.h`でUTF-16⇔UTF-8変換+オフセットマッピングを実装(日本語テキストでのマッチ位置精度を担保)。ビルド中に判明した2件のCMake問題(RE2の`install(EXPORT)`衝突、ubsanプリセットでのAbseil起因`_ITERATOR_DEBUG_LEVEL`不一致)を解決済み。20万行合成ドキュメントでの`findAll()`実測値(約60〜66ms、約150MB/s相当)を記録し、要件定義書の「数GBファイルでも高速」達成には今後の非同期化・チャンク並列化が必要になることを実証。コードレビュー(`/code-review`)で確認された4件の正当性バグを修正済み(§3.16末尾参照)。
-
-**Phase 5b1 (複数行にまたがるマッチ対応) は完了済み (§3.17 参照)。** `scanDocument()`を「1行ずつ検索」から「文書全体を1バッファ化して1回検索」する方式に書き換え、`\n`を含むリテラルクエリや`[\s\S]`等の文字クラスで行をまたぐマッチが可能になった。`buildPattern()`に`"(?m)"`を付与し`^`/`$`の行アンカー動作を維持。ベンチマークも改善(約60〜66ms→約33〜39ms、単一ピース文書)。
-
-**Phase 5b2 (置換 core::ReplaceAllCommand + search::expandReplacementTemplate) は完了済み (§3.18 参照)。** master_roadmap.md §4.3のスケッチから意図的に乖離し(core::とsearch::を疎結合に維持)、新規`core::ReplaceAllCommand`/`core::cumulative_shift_edit.h`/`search::expandReplacementTemplate`/`search::Match.groups`を実装。テスト300件(279→300)全green。
-
-**Phase 5b3a (Find bar UI基盤: WC_EDIT子コントロール + マッチハイライト) は完了済み (§3.19 参照、push済み)。** 本プロジェクト初の子HWND。新規`ui::FindBar`(IME安全性・WM_SYSKEYDOWN・デバウンスタイマー対応済み)+`render::MatchVisual`+`ui::MainWindow::onCommand`フックを実装、ここで初めて`search::`が実アプリ本体(`NeoMIFES.exe`)へリンクされた。CMakeガードを`cmake/Dependencies.cmake`(RE2/Abseil、無条件)と新規`cmake/TestDependencies.cmake`(GoogleTest/benchmark、`NEOMIFES_BUILD_TESTS`限定)に分割。テスト310件(300→310)全green。**実アプリでのCtrl+F/日本語IME/マッチハイライトの視覚確認は未実施 — 次セッション冒頭でユーザーに依頼すること。**
-
-**次回 (Phase 5c または Phase 6) 着手時に確認すること:**
-1. 対話的な1行単位編集が実現したら、[ADR-011](../decisions/ADR-011-phase3c-render-cache-scope.md) の再評価トリガーに従い細粒度 DamageTracker の要否を判断する (Phase 4b1〜4b8g では未判断のまま)
-2. `docs/issues/undo_stack_unbounded_memory.md` — Phase 4b1 で約1,350件規模の初回実測を追記済みだが、100万件規模の実測はまだ無い。編集量が増える機能が加わったら再実測を検討
-3. `docs/issues/replace_all_buffer_snapshot_extract_scaling.md` — Replace UIから大量マッチの置換が可能になった (Phase 5b3b完了済み) ので、`replace_all_bench.cpp`の実測を検討する時期に来ている
-4. `docs/issues/match_highlight_linear_scan_scaling.md` — マッチハイライトの線形走査コスト、大量マッチ経路(Phase 5c Grep等)ができてから再評価
-5. RE2/Abseilの`MSVC_RUNTIME_LIBRARY`強制上書き(`cmake/Dependencies.cmake`の`neomifes_collect_targets_recursive()`)は、Abseil/RE2のバージョンを更新する際に同じロジックが引き続き妥当か再確認すること(Abseilの`ABSL_MSVC_STATIC_RUNTIME`オプションの挙動が変わっていないか)
+---
 
 ## 7. 履歴を辿りたいとき
 [`docs/history/TIMELINE.md`](../history/TIMELINE.md) にセッション単位で全ての意思決定と成果物を時系列に記録。「なぜこう決めたか」を後追いする際の一次資料。
 
 ## 8. セッション終了時に必ず確認すること
 [`CLAUDE.md`](../../CLAUDE.md) §11 の「セッション終了時チェックリスト」を実行してから作業を締めること。2026-07-15 の包括レビューでドキュメント鮮度の不整合 (本ファイルの `git init` 指示残留、Issue チェックボックス未更新、ベンチ実測値の未確認等) が多数見つかった反省に基づく恒久ルール。
+
+**2026-08-04 中間レビューによる追加項目** (詳細は [`gap_analysis.md`](../design/gap_analysis.md) §8.2):
+
+- [ ] **本フェーズで追加した機能を、実アプリで実際に操作して確認したか。** できない場合、その理由と代替検証を明記する。**「プロセスが 3 秒後も生存していた」は機能確認ではない** — この縮退した検証だけを繰り返した結果、`Ctrl+S` が存在しないことが 8 フェーズ発覚しなかった
+- [ ] **要件定義書 §6 の必須機能リストと roadmap §1.5 の 60 機能マトリクスに照らし、自フェーズが「対応 Phase」に書かれている項目を全て実装したか。** 未実装があれば完了宣言に「保留項目なし」と書いてはならない (Phase 4b8 が実際にこの誤りを犯した — 自動インデント・縦編集が未実装のまま「完全に完了」と宣言された)
+- [ ] **「◯◯が存在しないため縮退した」という判断をしたら、その ◯◯ を [`docs/issues/`](../issues/) に起票し [`docs/issues/README.md`](../issues/README.md) の索引にも 1 行追加したか。** 同じ理由での縮退が 3 回を超えたら、その基盤の実装を次フェーズ候補に必ず含める (設定システムは **13 回**縮退理由に挙げられながら一度も起票されなかった)
+- [ ] **issue のヘッダ (優先度・状態) も点検したか。** 本文だけ更新してヘッダを放置する例が実際にあった (`lazy_decode_mmap.md` が Phase 2b3 で解消後も「優先度: 高」のまま 3 週間放置)
+- [ ] **README.md の「現在の状態」が実態と合っているか。** 2026-08-04 時点で「Phase 0.5 — ビルド基盤整備中」のまま 8 フェーズ分陳腐化していた

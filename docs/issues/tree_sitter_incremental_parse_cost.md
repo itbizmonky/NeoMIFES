@@ -2,8 +2,12 @@
 
 - **起票日:** 2026-07-31 (Phase 7u 実装・検証・revert 時に判明)
 - **対象:** [`src/syntax/src/incremental_parser.cpp`](../../src/syntax/src/incremental_parser.cpp) の `IncrementalParser::reparseRange()`
-- **優先度:** 中 (roadmap §7.11 のDoD「1文字入力後の増分解析: ≤50ms」が大規模文書(50万行)で未達のまま残っている根本原因)
-- **関連:** `docs/design/master_roadmap.md` §7.11、Phase 7q/7t の完了記録(いずれも同じDoD未達を記録)
+- **優先度:** ~~中~~ → **🧊 凍結 (P2、2026-08-04 の中間レビューで格下げ)**
+- **関連:** `docs/design/master_roadmap.md` §7.11、Phase 7q/7t の完了記録(いずれも同じDoD未達を記録)、[`gap_analysis.md`](../design/gap_analysis.md) §4.4
+
+> **🧊 2026-08-04 中間レビューによる凍結決定 ([`gap_analysis.md`](../design/gap_analysis.md) §4.4):**
+> 本項目の技術的判断・調査の質はいずれも高い。しかし **優先順位として誤っている** — 「50万行のファイルで 100ms 速くする」ことに 4 フェーズ (7q / 7t / 7u / tree-sitter 内部調査) を費やす一方、「**ファイルを保存する**」には 0 フェーズしか費やしていなかった。
+> **本項目は Phase 12 直前まで凍結する。** 凍結解除時に判断すべきは「達成する」か「**DoD 値そのものを改訂する**」かの二択であり、後者も正当な結論として認める (達成不能と判明した目標を未達のまま放置し続けるより、正直に改訂する方が健全)。改訂する場合の候補値: 「10万行までは ≤50ms、50万行では ≤200ms」。
 
 ## 背景
 

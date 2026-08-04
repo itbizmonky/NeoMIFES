@@ -90,6 +90,15 @@
 - **Undo Stack:** 100万件対応 (パッキング + 圧縮スナップショット)
 - **Session Manager:** ワークスペース状態の永続化 (JSON)
 - **Config Manager:** ユーザー設定 (JSON/TOML) の読み書きと動的反映
+- **(v2.1 追記) File Lifecycle:** ファイルの新規/開く/保存/別名保存、ダーティ状態管理、複数文書 (`Workspace` / `EditorSession`)
+
+> 🔴 **2026-08-04 中間レビューによる重要な注記:** 本節が規定する L6 のうち、**2026-08-04 時点で実装されているのは Command Dispatcher と Undo Stack のみ**である。Session Manager・Config Manager・File Lifecycle はいずれも未実装で、その結果 **NeoMIFES は編集内容をファイルに保存できない**。
+>
+> **原因:** 本節は正しく規定していたが、[`CLAUDE.md`](../../CLAUDE.md) §3 の簡略レイヤ図で **L6 が丸ごと脱落**し、`master_roadmap.md` のフェーズ表がその簡略図に 1:1 対応する形で切られたため、L6 にフェーズが一度も割り当てられなかった。詳細は [`gap_analysis.md`](gap_analysis.md) §6.1。
+>
+> **是正:** CLAUDE.md §3 の図に L6 を復活させ、roadmap v2.1 で **Phase 8.5 (アプリケーションシェル)** / **Phase 8.6 (製品化基盤)** を新設した。
+>
+> **教訓: 上位設計書を要約して下位の作業計画を作るとき、要約で落ちた項目は永久に実装されない。**
 
 ### 3.3 Editor Core (L5)
 - **Cursor / Selection:** 複数カーソル、矩形選択、縦編集
