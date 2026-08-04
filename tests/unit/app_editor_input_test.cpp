@@ -310,12 +310,23 @@ TEST(EditorInputTest, HandleCharIgnoresOtherControlCharacters) {
 }
 
 TEST(EditorInputTest, ApplyMouseWheelScrollUpDecreasesTopLineClampedToZero) {
-    EXPECT_EQ(applyMouseWheelScroll(WHEEL_DELTA, 5), 2U);   // scroll up: -3 lines
-    EXPECT_EQ(applyMouseWheelScroll(WHEEL_DELTA, 1), 0U);   // clamped, not negative
+    EXPECT_EQ(applyMouseWheelScroll(WHEEL_DELTA, 5, 1000), 2U);   // scroll up: -3 lines
+    EXPECT_EQ(applyMouseWheelScroll(WHEEL_DELTA, 1, 1000), 0U);   // clamped, not negative
 }
 
 TEST(EditorInputTest, ApplyMouseWheelScrollDownIncreasesTopLine) {
-    EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 5), 8U);  // scroll down: +3 lines
+    EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 5, 1000), 8U);  // scroll down: +3 lines
+}
+
+TEST(EditorInputTest, ApplyMouseWheelScrollDownClampsToLastLineNearEof) {
+    // totalLines=10 -> maxTopLine=9; scrolling down from 8 would otherwise
+    // reach 11, but must clamp to 9 (the bug WI-02 dogfooding reported:
+    // Viewport::topLine() growing past what render-time clamping displays).
+    EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 8, 10), 9U);
+}
+
+TEST(EditorInputTest, ApplyMouseWheelScrollDownWithZeroTotalLinesClampsToZero) {
+    EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 0, 0), 0U);
 }
 
 TEST(EditorInputTest, HandleMouseDownPlacesCursorAndClearsSelection) {

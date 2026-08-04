@@ -59,11 +59,18 @@ bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown,
 bool handleChar(wchar_t ch, core::CommandDispatcher& dispatcher, core::SelectionModel& selection,
                core::Viewport& viewport, const document::Document& document);
 
-// Pure function: maps a WM_MOUSEWHEEL delta to a new topLine, clamped to 0.
-// No document/state dependency, so it's testable without constructing
-// anything.
+// Pure function: maps a WM_MOUSEWHEEL delta to a new topLine, clamped to
+// [0, totalLines - 1] (or 0 if totalLines == 0) - the same effective bound
+// RenderPipeline already applies at render time for display purposes
+// (m_topLine < totalLines ? m_topLine : totalLines - 1). Before this upper
+// bound existed here too, scrolling past EOF left Viewport's stored topLine
+// growing unboundedly - nothing visibly changed once the display-side clamp
+// kicked in, but scrolling back up required "unwinding" all of that
+// invisible excess first. Clamping here keeps Viewport::topLine() from ever
+// diverging from what's actually drawn.
 [[nodiscard]] document::LineNumber applyMouseWheelScroll(short wheelDelta,
-                                                          document::LineNumber currentTopLine);
+                                                          document::LineNumber currentTopLine,
+                                                          document::LineNumber totalLines);
 
 // Places the cursor at `pos` (collapsing any selection), or extends the
 // selection to `pos` if shiftDown. `pos` is already hit-tested by the

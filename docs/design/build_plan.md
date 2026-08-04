@@ -108,7 +108,7 @@ ctest --preset debug --output-on-failure
 ## Phase 8.5 — アプリケーションシェル (P0)
 
 - [x] **WI-01** 文書保存基盤 (`document::saveFile()` / `isDirty()`) → コミット: `a4a0445`
-- [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → コミット: `3e611d8`。**ドッグフーディング未実施のため未チェック** — 下記 DoD 参照
+- [ ] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → コミット: `3e611d8`。**ドッグフーディングで2件の実害あるバグを発見 (下記バグ修正コミット参照)、修正済みだが再確認待ちのため未チェック** — 下記 DoD 参照
   - 🎉 **ここで M1 達成: NeoMIFES で NeoMIFES を編集できるようになる (ドッグフーディング開始)**
 - [ ] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → `________`
 - [ ] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → `________`
@@ -340,8 +340,8 @@ probe は使い捨て。スクラッチパッドに書き、**コミットしな
 - [x] `Ctrl+N` で空の新規文書になる
 - [x] エクスプローラからファイルをドラッグ&ドロップして開ける (`onDropFiles` 実装済み。実機でのドラッグ操作自体は未検証 — 過去セッションから継続する Win32 GUI 自動化の制約、下記確定事項参照)
 - [x] 未保存のまま `Ctrl+N` / `Ctrl+O` / ウィンドウを閉じる、のいずれでも警告が出て「キャンセル」で操作が中止される (`confirmDiscardIfDirty()` で一元化)
-- [ ] 🎉 **ドッグフーディング: NeoMIFES で NeoMIFES のソースを開いて編集し、保存し、そのままコミットできた** ← **本 WI の完了条件の中で最も重要。ユーザー自身による実施を依頼済み、未実施**
-- [x] Debug / Release / ubsan 全 green (各 1000/1000)、clang-tidy 新規警告 0 (変更/新規ファイル全件個別実行で確認)
+- [ ] 🎉 **ドッグフーディング: NeoMIFES で NeoMIFES のソースを開いて編集し、保存し、そのままコミットできた** ← **ユーザーが実施し、2件の実害あるバグを発見・報告 (下記「ドッグフーディングで発覚したバグ」参照)。両バグとも修正・検証済みだが、修正後の再確認はまだ得られていないため未チェックのまま**
+- [x] Debug / Release / ubsan 全 green (各 1002/1002)、clang-tidy 新規警告 0 (変更/新規ファイル全件個別実行で確認)
 
 ### 実装後の確定事項 (2026-08-04)
 
@@ -357,6 +357,15 @@ probe は使い捨て。スクラッチパッドに書き、**コミットしな
 **実アプリでの視覚/操作確認の限界:** 過去複数セッションで確立した通り、この開発環境では Win32 GUI へのキーボード入力合成 (Ctrl 修飾キー含む) が不安定なため、Ctrl+S/O/N/Shift+S の実機キー入力確認は行っていない。実施したのは (a) 全 1000 件の自動テスト green、(b) `NeoMIFES.exe --open <file>` の起動生存確認のみ。**M1 の核心である「NeoMIFES で NeoMIFES のソースを編集・保存・コミットする」ドッグフーディングは、実際にユーザーのリポジトリへ書き込む操作であり自動化・代行せず、ユーザー自身に実施を依頼した。**
 
 詳細は [`detailed_design.md`](detailed_design.md)、[`docs/handoff/RESUME_HERE.md`](../handoff/RESUME_HERE.md) 参照。
+
+### ドッグフーディングで発覚したバグ (2026-08-05)
+
+ユーザーが実際にドッグフーディングを試み、以下 2 件の実害あるバグを発見・報告した。両方とも本セッション中に根本原因を特定し修正・自動テストで実証済み。
+
+1. **Ctrl+O でファイルを読み込んだ際に内容が表示されない (ウィンドウ移動等の無関係な再描画で初めて反映される)。** 原因は `RenderPipeline::render()` の粗粒度フレームスキップ (Phase 3c/ADR-011) が、文書 SWAP (`setDocument()` を新しい `Document` へ差し替える) を「何も変わっていない」と誤判定しうる構造的な穴だった。`FrameState::documentVersion` は新しい `Document` 自身の独立したバージョンカウンタ (`Document::version()`) を見ているため、直前の文書と偶然同じ値 (典型的には起動直後、両方とも `version()==0` または最初の1回の編集で `version()==1`) になり得る。他の全フィールド (topLine/カーソル/マッチ/ブックマーク/フォールド領域) も文書スワップ直後は既定値に揃うため、`FrameState::operator==` (defaulted) が偶然一致し `render()` が再描画を丸ごとスキップしていた。**修正:** `RenderPipeline` に単調増加する `m_documentGeneration` カウンタを新設し、全ての文書スワップ経路が無条件に呼ぶ `setLanguage()` 内でインクリメント。`FrameState` に `documentGeneration` フィールドを追加し `captureFrameState()` で反映。単調カウンタは値が絶対に繰り返さないため、この種の偶然の一致を構造的に排除する。同種の懸念は `setLanguage()` 自身の既存コメントが `refreshDocumentCacheIfStale()` 側の別チェック (`m_hasCachedSnapshot`) に対して既に指摘・対処済みだったが、`render()` レベルの外側のチェックには対処が漏れていた。
+2. **マウスホイールで一番下までスクロールし続けると、画面は EOF より下にスクロールされないが、内部的にはスクロールした分だけカーソル位置(トップライン)が下に移動しており、上にスクロールして戻るのが極端に重い。** `core::Viewport::scrollTo()` は意図的にクランプしないベアセッター (「クランプは描画時に `RenderPipeline` が行う」という既存設計方針)。`src/app/editor_input.cpp` の `applyMouseWheelScroll()` はこの前提のもと下限 (0未満にしない) のみクランプし、上限は一切クランプしていなかった。`RenderPipeline` は描画時に実効トップラインを正しく `totalLines-1` でクランプするため画面上は正常に見えるが、`Viewport` が内部に保持する実際のトップライン値は際限なく増え続け、それを「巻き戻す」までスクロールバックが画面上に反映されなかった。**修正:** `applyMouseWheelScroll()` に `totalLines` 引数を追加し、`RenderPipeline` が既に使っている実効クランプ式 (`totalLines>0 ? totalLines-1 : 0`) と全く同じ上限を下向きスクロール側にも適用。`Viewport::topLine()` が描画結果から二度と乖離しなくなる。
+
+両バグとも `tests/integration/render_text_smoke_test.cpp`/`tests/unit/app_editor_input_test.cpp` に回帰テストを追加し、修正前の状態に戻すと実際にテストが RED になることを確認してから修正を確定させた (`DocumentSwapWithCoincidentallyMatchingVersionForcesRedraw`、`ApplyMouseWheelScrollDownClampsToLastLineNearEof`)。ローカル Debug/Release/ubsan 全 1002/1002 green、clang-tidy 新規警告 0 (変更 4 ファイル個別実行、既存の無関係な `tests/` 警告 1 件を確認済みだが本バグ修正とは無関係な既存コード)。
 
 ### 完了後にやること
 

@@ -2691,4 +2691,26 @@ WI-01完了・コミット後、ユーザーから「次のPahseへ進め」(Pha
 
 コミット済み`3e611d8`、pushはユーザーの明示指示待ち。**ユーザーによるドッグフーディング確認後、M1達成を正式記録した上でWI-03(横スクロール)へ進む。**
 
+## Session 80 (2026-08-05): WI-02ドッグフーディングで発覚した2バグの修正
+
+WI-02完了・コミット(`3e611d8`)後、ユーザーが実際にNeoMIFESでドッグフーディングを試み、以下2件のバグを報告した(ユーザー原文):「Ctrl+Oでファイルを読み込んだ際に内容が表示されない、ウィンドウを移動したりテキストウィンドウの再描写が発生したら反映される。」「一番下までマウスのホイールでスクロールし続けると、テキストのEOFに達して画面はEOFより下にスクロールされないが、実際にはスクロールしたぶんカーソル位置が下に移動しており、上にスクロールして戻るのが疲れる。」以降、ユーザーからの追加指示なしに自律的に原因調査・修正・検証を行った。
+
+**Bug #1 (Ctrl+O後の画面未反映) の根本原因:** `RenderPipeline::render()`の粗粒度フレームスキップ(Phase 3c/ADR-011)が「文書SWAP」を「何も変わっていない」と誤判定しうる構造的な穴だった。`FrameState::documentVersion`は新しい`Document`自身の独立したバージョンカウンタ(`Document::version()`)を見ており、直前の文書と偶然同じ値(典型的には起動直後、両方とも`version()`が0または1)になり得る。他フィールド(topLine/カーソル/マッチ/ブックマーク/フォールド)も文書スワップ直後は既定値に揃うため(`resetViewAfterDocumentSwap()`がクリアするため)、defaultedな`FrameState::operator==`が偶然一致し再描画がまるごとスキップされていた。**この種の懸念は`setLanguage()`自身の既存コメントが`refreshDocumentCacheIfStale()`側の別チェック(`m_hasCachedSnapshot`)に対して既に指摘・対処済みだったが、`render()`レベルの外側のチェックには対処が漏れていた**という自己整合性のギャップだった。
+
+**Bug #1 修正:** `RenderPipeline`に単調増加する`m_documentGeneration`カウンタを新設し、全ての文書スワップ経路が無条件に呼ぶ`setLanguage()`内でインクリメント。`FrameState`へ`documentGeneration`フィールドを追加し`captureFrameState()`で反映(defaultedな`operator==`が自動的に比較対象に含める)。単調カウンタは値が二度と繰り返さないため、この種の偶然の一致を構造的に排除する。
+
+**Bug #2 (マウスホイールEOF超過スクロール) の根本原因:** `core::Viewport::scrollTo()`は意図的にクランプしないベアセッター(「クランプは描画時に`RenderPipeline`が行う」という既存設計方針、`Viewport`自身のヘッダコメントに明記)。`applyMouseWheelScroll()`はこの前提のもと下限のみクランプし上限は無クランプだった。`RenderPipeline`は描画時に実効トップラインを`totalLines-1`で正しくクランプするため画面上は正常に見えるが、`Viewport`が内部に保持する実際のトップライン値は際限なく増え続け、それを「巻き戻す」までスクロールバックが画面に反映されなかった。
+
+**Bug #2 修正:** `applyMouseWheelScroll()`に`totalLines`引数を追加し、`RenderPipeline`が既に5箇所で使う実効クランプ式(`totalLines>0 ? totalLines-1 : 0`)と同じ上限を下向きスクロール側にも適用。呼び出し元`main.cpp`の`cfg.onMouseWheel`を`document.lineCount()`を渡すよう更新。
+
+**回帰テストの検証手法(推測で終わらせない):** 両バグとも、修正前の状態へ一時的に戻すとテストが実際にREDになることを確認してから修正を確定させた。Bug #1は`render_text_smoke_test.cpp`に新設した`DocumentSwapWithCoincidentallyMatchingVersionForcesRedraw`(版数が偶然一致する2つの異なる文書へのスワップを構成し、レイアウトキャッシュ統計が動く=再描画されたことを検証)で、`.documentGeneration = m_documentGeneration`を一時的に`0`固定へ書き換えてFAILEDになることを確認後、元に戻した。Bug #2は`app_editor_input_test.cpp`に新設した`ApplyMouseWheelScrollDownClampsToLastLineNearEof`/`ApplyMouseWheelScrollDownWithZeroTotalLinesClampsToZero`で検証。
+
+**実測検証:** ローカルDebug/Release/ubsan全**1002/1002件green**(3プリセット全て)。変更ファイル(`render_pipeline.h`/`.cpp`、`editor_input.h`/`.cpp`、`main.cpp`、`app_editor_input_test.cpp`、`render_text_smoke_test.cpp`)へclang-tidy個別実行、新規警告0(`app_editor_input_test.cpp`に既存警告1件(`FoldingModel folding`のconst化提案、139行目)を確認したが、`git diff`で今回の変更範囲(312-330行目)と無関係と確認済み)。`NeoMIFES.exe --open README.md`の起動生存確認(3秒後も生存)。
+
+**スコープ外:** どちらのバグもroot causeが構造的(既存メカニズムの一部を拡張する形)で対応できたため、新規の妥協・issue化は発生していない。
+
+**ドキュメント同期:** `build_plan.md`(WI-02 DoDの再オープン+「ドッグフーディングで発覚したバグ」節新設)、`RESUME_HERE.md`(冒頭サマリ・§1状態表・§3.69完了記録・推奨プロンプト全て更新)。
+
+コミット待ち、pushはユーザーの明示指示待ち。**🎉 M1はユーザーによる再ドッグフーディング確認まで正式には未達扱いのまま。** 確認が得られ次第、build_plan.md WI-02行にコミットハッシュを記入しM1達成を正式に記録した上で、WI-03(横スクロール)へ進む。
+
 <!-- 次セッションはここに追記 -->

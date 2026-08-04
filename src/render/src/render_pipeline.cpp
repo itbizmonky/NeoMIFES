@@ -106,9 +106,10 @@ RenderExpected<void> RenderPipeline::resize(std::uint32_t width, std::uint32_t h
 
 RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
     return FrameState{
-        .hasDocument     = m_document != nullptr,
-        .documentVersion = m_document != nullptr ? m_document->version() : 0,
-        .topLine         = m_topLine,
+        .hasDocument        = m_document != nullptr,
+        .documentVersion    = m_document != nullptr ? m_document->version() : 0,
+        .documentGeneration = m_documentGeneration,
+        .topLine            = m_topLine,
         .width           = m_width,
         .height          = m_height,
         .dpiScale        = m_dpiScale,

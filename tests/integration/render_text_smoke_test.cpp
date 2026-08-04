@@ -216,6 +216,59 @@ TEST(RenderTextSmokeTest, CaretOnlyMovementForcesRedrawInsteadOfFrameSkip) {
         << "caret-only movement was frame-skipped instead of triggering a redraw";
 }
 
+// WI-02 dogfooding bug fix: a document SWAP (setDocument() to a brand-new
+// Document, as openAndResetTo()/Ctrl+O do) whose new Document's version()
+// coincidentally matches the previous cached value must still force a
+// redraw. Both documents here get exactly one insertText() call, so both
+// sit at version()==1 - without m_documentGeneration (see
+// RenderPipeline::setLanguage()'s comment), every other FrameState field
+// would also be unchanged (topLine/cursor/matches/bookmarks/folds all at
+// their defaults), and the Phase 3c coarse frame-skip would incorrectly
+// treat the second document's content as never having been drawn. Same
+// "stats must move" technique as CaretOnlyMovementForcesRedrawInsteadOfFrameSkip
+// above.
+TEST(RenderTextSmokeTest, DocumentSwapWithCoincidentallyMatchingVersionForcesRedraw) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document firstDoc;
+    firstDoc.insertText(0, u"line0\nline1\nline2");
+    ASSERT_EQ(firstDoc.version(), 1U);
+    pipeline.setDocument(&firstDoc);
+    pipeline.setLanguage(Language::Cpp);  // mirrors openAndResetTo()'s unconditional call
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // A brand-new Document, one insertText() call, so version()==1 again -
+    // the exact coincidence this test exists to guard against - but with
+    // DIFFERENT content, proving this isn't the same document being
+    // re-rendered by chance.
+    Document secondDoc;
+    secondDoc.insertText(0, u"AAAA\nBBBB\nCCCC");
+    ASSERT_EQ(secondDoc.version(), 1U);
+    pipeline.setDocument(&secondDoc);
+    pipeline.setLanguage(Language::Cpp);  // mirrors openAndResetTo()'s unconditional call
+
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (after document swap) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "document swap with a coincidentally-matching version() was frame-skipped instead of "
+           "triggering a redraw";
+}
+
 TEST(RenderTextSmokeTest, HitTestReturnsPositionsWithinKnownLineBounds) {
     // Phase 4b2: RenderPipeline::hitTest() is the first HitTestPoint use in
     // this codebase - no exact pixel-to-column round trip is asserted here

@@ -215,6 +215,13 @@ public:
         // regardless, but resetting this explicitly avoids relying on that
         // indirection for correctness.
         m_hasRequestedTokenRange = false;
+        // WI-02: see m_documentGeneration's own declaration comment for why
+        // FrameState::documentVersion alone cannot reliably detect a
+        // document swap, and why every document-swap caller already calls
+        // setLanguage() unconditionally (making this the single correct
+        // place to bump it, the same reasoning that made it the right place
+        // for the m_hasCachedSnapshot reset above).
+        ++m_documentGeneration;
     }
 
     // Called once per completed background parse (Phase 7c) - main.cpp's
@@ -293,6 +300,13 @@ private:
     struct FrameState {
         bool                  hasDocument     = false;
         std::uint64_t         documentVersion = 0;
+        // WI-02: see m_documentGeneration's declaration comment - catches a
+        // document SWAP (Ctrl+O/Ctrl+N/D&D/F12/Grep-click) whose new
+        // Document's version() coincidentally matches the previous cached
+        // value (most commonly right after startup, both at version 0),
+        // which documentVersion alone cannot distinguish from "nothing
+        // changed".
+        std::uint64_t         documentGeneration = 0;
         document::LineNumber  topLine         = 0;
         std::uint32_t         width = 0, height = 0;
         float                 dpiScale = 0.0F;
@@ -671,6 +685,24 @@ private:
     document::Document*                               m_document              = nullptr;
     bool                                              m_hasCachedSnapshot     = false;
     std::uint64_t                                     m_cachedDocumentVersion = 0;
+    // Bumped by setLanguage() (see its own comment - every document-swap
+    // caller calls setLanguage() unconditionally, WI-02's Ctrl+O/Ctrl+N/D&D
+    // included). FrameState::documentGeneration below exists because
+    // FrameState::documentVersion alone is NOT enough to detect a document
+    // swap: a freshly-loaded Document starts its own independent version
+    // counter (Document::version()), so a brand-new document can coincide
+    // with the previous document's cached version number - most commonly
+    // right after startup, where both the initial empty Document and a
+    // just-opened file's Document sit at version 0. When that coincidence
+    // lines up with every other FrameState field also being unchanged (same
+    // topLine/cursor/selection/etc, plausible right after Ctrl+O on a fresh
+    // window), render()'s coarse frame-skip (ADR-011) would otherwise treat
+    // the swap as "nothing changed" and never actually draw the new content
+    // until some UNRELATED state change (e.g. a resize from moving the
+    // window) forced a real render() call - the exact bug reported during
+    // WI-02 dogfooding. A monotonically increasing counter can never repeat,
+    // so this coincidence is now structurally impossible.
+    std::uint64_t                                     m_documentGeneration    = 0;
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw

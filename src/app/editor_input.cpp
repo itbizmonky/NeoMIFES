@@ -240,15 +240,18 @@ bool handleChar(wchar_t ch, CommandDispatcher& dispatcher, SelectionModel& selec
                                    document);
 }
 
-document::LineNumber applyMouseWheelScroll(short wheelDelta, document::LineNumber currentTopLine) {
+document::LineNumber applyMouseWheelScroll(short wheelDelta, document::LineNumber currentTopLine,
+                                           document::LineNumber totalLines) {
     constexpr std::int64_t kLinesPerNotch = 3;
     const std::int64_t     notches        = wheelDelta / WHEEL_DELTA;
     // WM_MOUSEWHEEL convention: positive delta = wheel rotated away from the
     // user ("scroll up" gesture), which reveals earlier lines - topLine
     // should decrease, hence the negation before scaling by lines/notch.
     const std::int64_t linesToScroll = -notches * kLinesPerNotch;
+    const document::LineNumber maxTopLine = totalLines > 0 ? totalLines - 1 : 0;
     if (linesToScroll >= 0) {
-        return currentTopLine + static_cast<document::LineNumber>(linesToScroll);
+        const auto candidate = currentTopLine + static_cast<document::LineNumber>(linesToScroll);
+        return std::min(candidate, maxTopLine);
     }
     const auto scrollUp = static_cast<document::LineNumber>(-linesToScroll);
     return (currentTopLine >= scrollUp) ? currentTopLine - scrollUp : 0;

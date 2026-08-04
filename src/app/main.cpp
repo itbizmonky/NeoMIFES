@@ -2075,8 +2075,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         handleCharEvent(hwnd, ch, dispatcher, selectionModel, viewport, document, renderPipeline,
                        freeCursorVirtualColumns);
     };
-    cfg.onMouseWheel = [&viewport, &selectionModel, &renderPipeline](HWND hwnd, short wheelDelta) {
-        viewport.scrollTo(neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine()));
+    cfg.onMouseWheel = [&viewport, &selectionModel, &renderPipeline, &document](HWND hwnd, short wheelDelta) {
+        viewport.scrollTo(
+            neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine(), document.lineCount()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
