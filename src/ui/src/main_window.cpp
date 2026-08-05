@@ -65,11 +65,19 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onMouseWheel   = config.onMouseWheel;
     m_onMouseDown    = config.onMouseDown;
     m_onMouseDrag    = config.onMouseDrag;
+    m_onHScroll      = config.onHScroll;
     m_onCommand      = config.onCommand;
     m_onAppMessage   = config.onAppMessage;
     m_onNotify       = config.onNotify;
     m_onClose        = config.onClose;
     m_onDropFiles    = config.onDropFiles;
+
+    // WI-03: WS_HSCROLL only added when a handler is actually configured -
+    // must be decided before CreateWindowExW (unlike DragAcceptFiles below,
+    // a scrollbar style bit can't be toggled on after the window exists
+    // without a separate SetWindowLongPtrW dance this class has no other
+    // reason to need).
+    const DWORD windowStyle = WS_OVERLAPPEDWINDOW | (config.onHScroll ? WS_HSCROLL : 0);
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -77,7 +85,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
         0,
         kWindowClassName,
         L"NeoMIFES",
-        WS_OVERLAPPEDWINDOW,
+        windowStyle,
         CW_USEDEFAULT, CW_USEDEFAULT,
         config.initialWidth, config.initialHeight,
         nullptr, nullptr, hInstance, this);
@@ -170,6 +178,9 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_LBUTTONUP:
             handleMouseUp();
+            return 0;
+        case WM_HSCROLL:
+            handleHScroll(wParam);
             return 0;
         case WM_COMMAND:
             handleCommand(wParam, lParam);
@@ -344,6 +355,12 @@ void MainWindow::handleMouseUp() noexcept {
     }
     m_isDragging = false;
     ::ReleaseCapture();
+}
+
+void MainWindow::handleHScroll(WPARAM wParam) noexcept {
+    if (m_onHScroll) {
+        m_onHScroll(m_hwnd, LOWORD(wParam), HIWORD(wParam));
+    }
 }
 
 void MainWindow::handleCommand(WPARAM wParam, LPARAM lParam) noexcept {

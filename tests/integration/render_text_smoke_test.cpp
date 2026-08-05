@@ -1382,6 +1382,190 @@ TEST(RenderTextSmokeTest, MinimapWindowSurvivesResize) {
         << "render() after resize() failed: " << neomifes::render::describe(secondRender.error());
 }
 
+// WI-03: horizontal scroll. A 1200-character single line stands in for the
+// DoD's "1000-char line reachable" case (this codebase has no
+// pixel-capture, per this file's header - "reachable" here means render()
+// succeeds and hitTest() resolves near the intended column once scrolled,
+// not that glyphs are visually verified).
+TEST(RenderTextSmokeTest, HorizontalScrollRendersWithoutErrorForLongLine) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, std::u16string(1200, u'x'));
+    pipeline.setDocument(&doc);
+
+    const auto firstRender = pipeline.render();
+    ASSERT_TRUE(firstRender.has_value())
+        << "initial render() failed: " << neomifes::render::describe(firstRender.error());
+
+    // Several distinct scroll positions, including one past the whole line's
+    // length - render() must never error regardless of leftColumn.
+    for (const std::uint32_t column : {0U, 1U, 500U, 1199U, 5000U}) {
+        pipeline.setLeftColumn(column);
+        const auto rendered = pipeline.render();
+        EXPECT_TRUE(rendered.has_value())
+            << "render() at leftColumn=" << column
+            << " failed: " << neomifes::render::describe(rendered.error());
+    }
+}
+
+// WI-03: maxVisibleLineLength() (the horizontal scrollbar's nMax source,
+// main.cpp's syncHorizontalScrollBar()) must track the longest line among
+// those actually drawn - a cheap, windowed approximation (see this method's
+// header comment on why a whole-document scan is unacceptable).
+TEST(RenderTextSmokeTest, MaxVisibleLineLengthReflectsLongestVisibleLine) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"short\n" + std::u16string(300, u'x') + u"\nshort2");
+    pipeline.setDocument(&doc);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    EXPECT_GE(pipeline.maxVisibleLineLength(), 300U);
+}
+
+// WI-03: hitTest()'s xDip->TextPos conversion must account for the current
+// horizontal scroll offset (leftColumnOffsetDips()) - see hitTest()'s
+// comment. Same "plausible bounds, not exact pixel round-trip" limitation
+// HitTestReturnsPositionsWithinKnownLineBounds documents (Consolas' actual
+// glyph metrics aren't asserted here), but monospace means every column
+// advances by the same width, so a ~10-column tolerance is safely
+// distinguishable from "leftColumn was ignored entirely" (which would land
+// back near column 0).
+TEST(RenderTextSmokeTest, HitTestAccountsForLeftColumnWhenScrolledHorizontally) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, std::u16string(1200, u'x'));
+    pipeline.setDocument(&doc);
+
+    const auto firstRender = pipeline.render();
+    ASSERT_TRUE(firstRender.has_value())
+        << "initial render() failed: " << neomifes::render::describe(firstRender.error());
+
+    // x=0 with no horizontal scroll should hit near the very start of the line.
+    const auto unscrolledHit = pipeline.hitTest(0, 0);
+    ASSERT_TRUE(unscrolledHit.has_value());
+    EXPECT_LE(*unscrolledHit, 2U);
+
+    // Scroll 50 columns right, re-render, then hit-test the SAME x=0 - it
+    // should now resolve near column 50, not column 0.
+    pipeline.setLeftColumn(50);
+    const auto secondRender = pipeline.render();
+    ASSERT_TRUE(secondRender.has_value())
+        << "render() after setLeftColumn() failed: " << neomifes::render::describe(secondRender.error());
+
+    const auto scrolledHit = pipeline.hitTest(0, 0);
+    ASSERT_TRUE(scrolledHit.has_value());
+    EXPECT_GE(*scrolledHit, 40U);
+    EXPECT_LE(*scrolledHit, 60U);
+}
+
+// WI-03: the gutter (bookmark dots, fold chevrons) must stay visually fixed
+// regardless of horizontal scroll - hitTestFoldMarker() only ever checks the
+// gutter's own X range ([0, kGutterWidthDips)), unrelated to leftColumn, so
+// it must resolve identically before and after scrolling.
+TEST(RenderTextSmokeTest, GutterFoldMarkerHitTestIsUnaffectedByHorizontalScroll) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, std::u16string(200, u'x') + u"\nline1\nline2");
+    pipeline.setDocument(&doc);
+    pipeline.setFoldRegions({neomifes::render::FoldVisual{
+        .headerLine = 0, .endLineInclusive = 2, .folded = false}});
+
+    const auto firstRender = pipeline.render();
+    ASSERT_TRUE(firstRender.has_value())
+        << "initial render() failed: " << neomifes::render::describe(firstRender.error());
+    const auto unscrolledHit = pipeline.hitTestFoldMarker(5, 0);
+    ASSERT_TRUE(unscrolledHit.has_value());
+    EXPECT_EQ(*unscrolledHit, 0U);
+
+    pipeline.setLeftColumn(80);
+    const auto secondRender = pipeline.render();
+    ASSERT_TRUE(secondRender.has_value())
+        << "render() after setLeftColumn() failed: " << neomifes::render::describe(secondRender.error());
+    const auto scrolledHit = pipeline.hitTestFoldMarker(5, 0);
+    ASSERT_TRUE(scrolledHit.has_value())
+        << "gutter fold-marker hit test was affected by horizontal scroll";
+    EXPECT_EQ(*scrolledHit, 0U);
+}
+
+// WI-03: FrameState.leftColumn must be included in the coarse frame-skip
+// comparison (Phase 3c/ADR-011) - the exact same hazard
+// m_documentGeneration was added to fix earlier this session
+// (see FrameState::leftColumn's declaration comment): a horizontal-only
+// scroll (e.g. dragging the new scrollbar) with topLine/cursor/selection/etc
+// all unchanged must not be silently swallowed by the frame-skip. Same
+// "stats must move" technique as CaretOnlyMovementForcesRedrawInsteadOfFrameSkip
+// above.
+TEST(RenderTextSmokeTest, LeftColumnOnlyChangeForcesRedraw) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, std::u16string(200, u'x'));
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // leftColumn only - Document/topLine/size/cursor/selection/etc all
+    // unchanged.
+    pipeline.setLeftColumn(50);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (leftColumn moved) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "leftColumn-only change was frame-skipped instead of triggering a redraw";
+}
+
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();

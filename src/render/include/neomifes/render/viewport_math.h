@@ -24,6 +24,20 @@ namespace neomifes::render {
     return count > 0.0F ? static_cast<std::uint32_t>(count) : 0U;
 }
 
+// WI-03: horizontal counterpart to computeVisibleLineCount() above - how
+// many monospace columns fit in `availableWidthDips` (already reduced by
+// the caller for the gutter/minimap - see RenderPipeline::
+// computeVisibleColumnCount() callers). Same "0 on non-positive input"
+// degenerate-state convention.
+[[nodiscard]] constexpr std::uint32_t computeVisibleColumnCount(
+    float availableWidthDips, float charWidthDips) noexcept {
+    if (availableWidthDips <= 0.0F || charWidthDips <= 0.0F) {
+        return 0;
+    }
+    const float count = availableWidthDips / charWidthDips;
+    return count > 0.0F ? static_cast<std::uint32_t>(count) : 0U;
+}
+
 // Phase 7t: widens [visibleStart, visibleEnd) by up to `marginLines` lines
 // on each side, clamped to [0, totalLines) - the syntax-token "prefetch
 // window" RenderPipeline::computeDesiredTokenRange() requests, so small

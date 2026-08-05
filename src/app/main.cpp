@@ -457,6 +457,9 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
                                   const SelectionModel& selection, const Viewport& viewport,
                                   std::uint32_t primaryVirtualColumnOffset = 0) {
     renderPipeline.setTopLine(viewport.topLine());
+    // WI-03: horizontal counterpart to setTopLine() above, same "driven
+    // every frame from Viewport" wiring.
+    renderPipeline.setLeftColumn(viewport.leftColumn());
     std::vector<neomifes::render::CursorVisual> visuals;
     visuals.reserve(selection.cursors().size());
     for (const auto& cursor : selection.cursors()) {
@@ -470,6 +473,27 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
     }
     renderPipeline.setCursorVisuals(std::move(visuals));
     ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// WI-03: keeps the window's standard horizontal scrollbar (WS_HSCROLL) in
+// sync with RenderPipeline/Viewport's own idea of the scroll range - range
+// (nMax) from maxVisibleLineLength() (the visible-window approximation, see
+// that method's comment), page size (nPage) from visibleColumnCount(), thumb
+// position (nPos) from leftColumn(). Called once per successful render()
+// (the paint handler below) rather than from every scroll-causing event
+// individually - maxVisibleLineLength()/visibleColumnCount() are only
+// current AFTER a render pass has walked the (possibly newly scrolled-to)
+// visible lines, so re-deriving them any earlier would use stale values.
+void syncHorizontalScrollBar(HWND hwnd, const RenderPipeline& renderPipeline,
+                             const Viewport& viewport) noexcept {
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin   = 0;
+    si.nMax   = static_cast<int>(renderPipeline.maxVisibleLineLength());
+    si.nPage  = static_cast<UINT>(renderPipeline.visibleColumnCount());
+    si.nPos   = static_cast<int>(viewport.leftColumn());
+    ::SetScrollInfo(hwnd, SB_HORZ, &si, TRUE);
 }
 
 // Pushes FoldingModel's current region list into RenderPipeline as
@@ -1493,6 +1517,53 @@ void handleCharEvent(HWND hwnd, wchar_t ch, CommandDispatcher& dispatcher,
     }
 }
 
+// WI-03: standard Win32 scroll-code decode for WM_HSCROLL - nullopt for
+// SB_ENDSCROLL and anything else unrecognized (a no-op). Every switch branch
+// returns directly (no intermediate "declare then overwrite" variable) so
+// clang-analyzer-deadcode.DeadStores has nothing to flag - an initial value
+// that's unconditionally overwritten before any read is exactly what that
+// check exists to catch, and a straight `switch { case: return X; ... }`
+// shape simply never creates one.
+[[nodiscard]] std::optional<std::uint32_t> computeHScrollTargetColumn(
+    WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept {
+    switch (scrollCode) {
+        case SB_LINELEFT:
+            return currentColumn > 0 ? currentColumn - 1 : 0;
+        case SB_LINERIGHT:
+            return currentColumn + 1;
+        case SB_PAGELEFT:
+            return currentColumn > pageStep ? currentColumn - pageStep : 0;
+        case SB_PAGERIGHT:
+            return currentColumn + pageStep;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION:
+            return scrollPos;
+        default:
+            return std::nullopt;
+    }
+}
+
+// WI-03: handles WM_HSCROLL (this window's first-ever scrollbar). Page step
+// uses renderPipeline.visibleColumnCount() (falls back to 1 column if the
+// text area hasn't been sized/measured yet, so PageLeft/PageRight always
+// make forward progress instead of silently doing nothing). Extracted to a
+// standalone function (not left inline in wireNormalMode's cfg.onHScroll
+// lambda) - the scroll-code switch's nesting pushed wireNormalMode's own
+// cognitive complexity over clang-tidy's threshold, same "pull the lambda
+// body out" fix this codebase's other onXxx handlers already needed (see
+// handleKeyDownEvent()/handleCharEvent() above).
+void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, Viewport& viewport,
+                        const SelectionModel& selectionModel, RenderPipeline& renderPipeline) {
+    const std::uint32_t pageStep = std::max<std::uint32_t>(renderPipeline.visibleColumnCount(), 1);
+    const auto newColumn =
+        computeHScrollTargetColumn(scrollCode, scrollPos, viewport.leftColumn(), pageStep);
+    if (!newColumn) {
+        return;  // SB_ENDSCROLL etc - nothing to do
+    }
+    viewport.scrollToColumn(*newColumn);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+}
+
 // Handles WM_SYSKEYDOWN (Phase 4b8g): Shift+Alt+arrows extends/starts a
 // keyboard-driven rectangular selection, reusing `rectangularAnchor` - the
 // same session state Shift+Alt+drag already established in Phase 4b8a (see
@@ -1942,11 +2013,20 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             return;
         }
         renderPipeline.setDocument(&document);
-        window.setPaintHandler([&renderPipeline](HWND) {
+        window.setPaintHandler([&renderPipeline, &viewport](HWND paintHwnd) {
             const auto rendered = renderPipeline.render();
             if (!rendered) {
                 debugLogRenderError("RenderPipeline::render", rendered.error());
+                return;
             }
+            // WI-03: kept fresh every successful frame rather than only on
+            // WM_SIZE - m_charWidthDips (which visibleColumnCount() depends
+            // on) isn't measured until the FIRST render() call completes, so
+            // relying on resize() alone would leave this at 0 until the user
+            // manually resized the window. See syncHorizontalScrollBar()'s
+            // comment for why the scrollbar sync itself belongs here too.
+            viewport.setVisibleColumnCount(renderPipeline.visibleColumnCount());
+            syncHorizontalScrollBar(paintHwnd, renderPipeline, viewport);
         });
         const FindBarConfig findBarConfig =
             buildFindBarConfig(hwnd, document, dispatcher, selectionModel, viewport, renderPipeline,
@@ -2079,6 +2159,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         viewport.scrollTo(
             neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine(), document.lineCount()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    };
+    // WI-03: this window's first-ever scrollbar (WS_HSCROLL, added by
+    // MainWindow::create() only because this handler is set - see
+    // MainWindowConfig::onHScroll's comment). Body lives in
+    // handleHScrollEvent() (not inline here) - see that function's comment.
+    cfg.onHScroll = [&viewport, &selectionModel, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
+        handleHScrollEvent(hwnd, scrollCode, scrollPos, viewport, selectionModel, renderPipeline);
     };
     cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
                        &rectangularAnchor, &freeCursorVirtualColumns, &foldingModel, &isDraggingMinimap](

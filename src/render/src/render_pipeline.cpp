@@ -117,6 +117,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .matchVisuals    = m_matchVisuals,
         .bookmarkedLines = m_bookmarkedLines,
         .foldRegions     = m_foldRegions,
+        .leftColumn      = m_leftColumn,
     };
 }
 
@@ -695,6 +696,11 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
     const std::vector<CaretDraw> caretDraws = computeCaretDraws();
     std::size_t tokenCursor = 0;  // Phase 7b: threaded forward across the line loop, see drawTokensOnLine()'s comment
 
+    // WI-03: recomputed fresh from the lines actually walked below every
+    // call - see maxVisibleLineLength()'s comment for why this deliberately
+    // stays windowed rather than a whole-document scan.
+    std::uint32_t maxLineLength = 0;
+
     std::u16string_view remaining(text);
     float                y         = reservedTopHeightDips();  // Phase 7h/7o: reserve the strip(s) above
     TextPos              lineStart = startOffset;
@@ -711,6 +717,7 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         if (!isLineHidden(line)) {
             drawTextLine(dc, line, y, lineSpan, lineStart, lineEnd, caretDraws, tokenCursor);
             y += m_lineHeightDips;
+            maxLineLength = std::max(maxLineLength, static_cast<std::uint32_t>(lineSpan.size()));
         }
         if (newlinePos == std::u16string_view::npos) {
             break;
@@ -718,6 +725,7 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         lineStart = lineEnd + 1;  // +1 for the '\n' this line's span excluded
         remaining = remaining.substr(newlinePos + 1);
     }
+    m_maxVisibleLineLength = maxLineLength;
 }
 
 void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, float y,
@@ -733,6 +741,18 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     if (!layoutResult.has_value()) {
         return;
     }
+    // WI-03: clips everything from here through the folded-header marker
+    // below to [kGutterWidthDips, width) so a line scrolled right by
+    // leftColumnOffsetDips() never visually bleeds into the gutter -
+    // drawGutterOnLine() (called after PopAxisAlignedClip below) paints no
+    // opaque background over [0, kGutterWidthDips), unlike the minimap/
+    // Breadcrumb/Sticky scroll (all drawn AFTER drawVisibleLines() in
+    // renderOnce() and self-overpaint any bleed-through - this asymmetry is
+    // why only the gutter needs an explicit clip).
+    const float widthDips  = static_cast<float>(m_width) / m_dpiScale;
+    const float heightDips = static_cast<float>(m_height) / m_dpiScale;
+    dc.PushAxisAlignedClip(D2D1::RectF(kGutterWidthDips, 0.0F, widthDips, heightDips),
+                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     // Drawn before DrawTextLayout so glyphs render on top of the highlight
     // (Phase 4b2, N-cursor generalization Phase 4b7a). Matches drawn first
     // (Phase 5b3a) so an active text selection layers visibly above match
@@ -749,19 +769,25 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
         caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
     drawIndentGuidesOnLine(dc, y, lineSpan, isActiveLine);
     drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
-    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, y), *layoutResult, m_textBrush.Get());
+    // WI-03: shifted left by leftColumnOffsetDips() so scrolling right moves
+    // the glyphs, not kGutterWidthDips itself (which never changes).
+    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips - leftColumnOffsetDips(), y), *layoutResult,
+                      m_textBrush.Get());
     drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
-    drawGutterOnLine(dc, y, line);
     // Phase 7i: a folded header shows its own text (drawn above) plus a
-    // short " {...}" marker past it, standing in for the hidden body.
+    // short " {...}" marker past it, standing in for the hidden body. Stays
+    // inside the clip (WI-03) - it's text-derived content, same as the
+    // glyphs it follows.
     const auto foldedHeader = std::ranges::find_if(
         m_foldRegions, [line](const FoldVisual& r) { return r.folded && r.headerLine == line; });
     if (foldedHeader != m_foldRegions.end()) {
         DWRITE_TEXT_METRICS metrics{};
         if (SUCCEEDED((*layoutResult)->GetMetrics(&metrics))) {
-            drawFoldedHeaderMarker(dc, kGutterWidthDips + metrics.width, y);
+            drawFoldedHeaderMarker(dc, kGutterWidthDips - leftColumnOffsetDips() + metrics.width, y);
         }
     }
+    dc.PopAxisAlignedClip();
+    drawGutterOnLine(dc, y, line);
 }
 
 bool RenderPipeline::isLineHidden(document::LineNumber line) const noexcept {
@@ -865,9 +891,11 @@ void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     // called with - kGutterWidthDips must be added explicitly here to line
     // up with the glyphs, which DO get shifted by DrawTextLayout()'s origin
     // parameter (Phase 4b8c, confirmed by reading the actual D2D/DWrite
-    // call sequence - see drawVisibleLines()).
-    const D2D1_RECT_F caretRect = D2D1::RectF(kGutterWidthDips + caretX, y,
-                                              kGutterWidthDips + caretX + kCaretWidthDips,
+    // call sequence - see drawVisibleLines()). WI-03: leftColumnOffsetDips()
+    // subtracted the same way DrawTextLayout()'s own origin now is.
+    const float leftDip = kGutterWidthDips - leftColumnOffsetDips();
+    const D2D1_RECT_F caretRect = D2D1::RectF(leftDip + caretX, y,
+                                              leftDip + caretX + kCaretWidthDips,
                                               y + m_lineHeightDips);
     dc.FillRectangle(caretRect, m_textBrush.Get());
 }
@@ -892,8 +920,10 @@ void RenderPipeline::drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLay
         return;
     }
     // See drawCaretOnLine()'s comment - layout-local coordinates need the
-    // gutter offset added explicitly (Phase 4b8c).
-    const D2D1_RECT_F selectionRect = D2D1::RectF(kGutterWidthDips + startX, y, kGutterWidthDips + endX,
+    // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
+    // (Phase 4b8c).
+    const float leftDip = kGutterWidthDips - leftColumnOffsetDips();
+    const D2D1_RECT_F selectionRect = D2D1::RectF(leftDip + startX, y, leftDip + endX,
                                                   y + m_lineHeightDips);
     dc.FillRectangle(selectionRect, m_selectionBrush.Get());
 }
@@ -920,9 +950,11 @@ void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
         return;
     }
     // See drawCaretOnLine()'s comment - layout-local coordinates need the
-    // gutter offset added explicitly (Phase 4b8c).
+    // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
+    // (Phase 4b8c).
+    const float leftDip = kGutterWidthDips - leftColumnOffsetDips();
     const D2D1_RECT_F matchRect =
-        D2D1::RectF(kGutterWidthDips + startX, y, kGutterWidthDips + endX, y + m_lineHeightDips);
+        D2D1::RectF(leftDip + startX, y, leftDip + endX, y + m_lineHeightDips);
     dc.FillRectangle(matchRect, brush);
 }
 
@@ -1011,8 +1043,10 @@ void RenderPipeline::drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y,
     const std::uint32_t guideCount    = computeIndentGuideCount(indentColumns, kTabWidth);
     ID2D1SolidColorBrush* brush = isActiveLine ? m_activeIndentGuideBrush.Get() : m_indentGuideBrush.Get();
     for (std::uint32_t level = 1; level <= guideCount; ++level) {
-        const float x =
-            kGutterWidthDips + (static_cast<float>(level * kTabWidth) * m_charWidthDips);
+        // WI-03: leftColumnOffsetDips() subtracted, same as every other
+        // text-derived X coordinate in this file.
+        const float x = kGutterWidthDips - leftColumnOffsetDips() +
+                        (static_cast<float>(level * kTabWidth) * m_charWidthDips);
         const D2D1_RECT_F guideRect =
             D2D1::RectF(x, y, x + kIndentGuideWidthDips, y + m_lineHeightDips);
         dc.FillRectangle(guideRect, brush);
@@ -1089,6 +1123,19 @@ float RenderPipeline::reservedTopHeightDips() const noexcept {
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
     const bool hasSticky = stickyScrollRegionAt(startLine).has_value();
     return kBreadcrumbHeightDips + (hasSticky ? kStickyScrollHeightDips : 0.0F);
+}
+
+float RenderPipeline::leftColumnOffsetDips() const noexcept {
+    return static_cast<float>(m_leftColumn) * m_charWidthDips;
+}
+
+std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
+    if (m_dpiScale <= 0.0F) {
+        return 0;
+    }
+    const float availableWidthDips =
+        (static_cast<float>(m_width) / m_dpiScale) - kGutterWidthDips - kMinimapWidthDips;
+    return computeVisibleColumnCount(availableWidthDips, m_charWidthDips);
 }
 
 std::u16string RenderPipeline::extractLineText(LineNumber line) const noexcept {
@@ -1330,8 +1377,11 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
 
     // Clicks within the gutter strip itself clamp to column 0 of that line -
     // no separate "toggle bookmark on gutter click" interaction exists yet
-    // (Phase 4b8c, deliberately deferred).
-    const float xDip = std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - kGutterWidthDips);
+    // (Phase 4b8c, deliberately deferred). WI-03: leftColumnOffsetDips()
+    // added back AFTER the gutter clamp - the inverse of drawTextLine()'s
+    // `kGutterWidthDips - leftColumnOffsetDips()` glyph-origin shift.
+    const float xDip =
+        std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - kGutterWidthDips) + leftColumnOffsetDips();
     // Phase 7h/7o: clicks within the Breadcrumb/Sticky scroll strip(s) clamp
     // to the first visible line's row offset - same "clamp to a sane
     // default" convention as the gutter's xDip clamp above.

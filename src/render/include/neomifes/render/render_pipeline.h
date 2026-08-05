@@ -149,6 +149,45 @@ public:
     void setTopLine(document::LineNumber line) noexcept { m_topLine = line; }
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
 
+    // WI-03: horizontal counterpart to setTopLine() - driven every frame by
+    // main.cpp's syncRenderStateAndInvalidate() the same way, from
+    // core::Viewport::leftColumn(). Column is a UTF-16 code-unit offset from
+    // each line's start (monospace-column approximation, same convention
+    // CaretDraw::column/drawIndentGuidesOnLine() already use).
+    void setLeftColumn(std::uint32_t column) noexcept { m_leftColumn = column; }
+    [[nodiscard]] std::uint32_t leftColumn() const noexcept { return m_leftColumn; }
+
+    // WI-03: the length (UTF-16 code units) of the longest line among those
+    // ACTUALLY drawn last frame (drawVisibleLines() updates this as a side
+    // effect of its existing per-line loop, at no extra cost - lineSpan.size()
+    // is already computed there). Deliberately NOT a whole-document maximum -
+    // scanning the whole document would violate this codebase's 10GB-file
+    // guarantee (CLAUDE.md's core value proposition; no O(document-size) scan
+    // is acceptable here, matching every other "operate on the visible window
+    // only" choice in this file - minimap bucketing, syntax tokens, folding).
+    // main.cpp uses this as the horizontal scrollbar's nMax - an inherently
+    // approximate range that updates as the user scrolls into different
+    // regions of the document, an accepted editor-UX trade-off.
+    [[nodiscard]] std::uint32_t maxVisibleLineLength() const noexcept { return m_maxVisibleLineLength; }
+
+    // WI-03: how many monospace columns actually fit in the text area right
+    // now (viewport_math.h::computeVisibleColumnCount(), the horizontal
+    // counterpart to layoutCacheStats()-adjacent visibility queries). The
+    // main.cpp app layer uses this for two purposes: (a) feeding
+    // core::Viewport::setVisibleColumnCount() so ensureVisible()'s
+    // right-edge auto-follow (End key, typing past the visible edge) has a
+    // window size to clamp against, (b) the horizontal scrollbar's nPage
+    // (thumb size / page-scroll step) in SetScrollInfo. Available width is
+    // reduced by both the gutter and the minimap (m_width/m_dpiScale -
+    // kGutterWidthDips - kMinimapWidthDips) - the minimap always occupies
+    // the strip's width regardless of horizontal scroll position (Phase 7v/
+    // 7w's "whole document overview", unaffected by leftColumn), so it's as
+    // much "reserved, non-text width" as the gutter is. Returns 0 before
+    // m_charWidthDips is measured (pre-first-render) or m_dpiScale isn't
+    // set yet (pre-first-resize) - same "resolves itself within a frame or
+    // two" tolerance computeDesiredTokenRange() already documents.
+    [[nodiscard]] std::uint32_t visibleColumnCount() const noexcept;
+
     // The full set of cursors to draw - one caret + (optionally) one
     // selection highlight each (Phase 4b7a, generalizing Phase 4b1's
     // setCaretPosition()/Phase 4b2's setSelectionRange() from a single
@@ -326,6 +365,15 @@ private:
         // topLine/size unchanged) must not be coarse-frame-skipped either -
         // it changes which lines are drawn.
         std::vector<FoldVisual> foldRegions;
+        // WI-03: same rationale as topLine above - a horizontal-only scroll
+        // (e.g. dragging the new horizontal scrollbar with topLine/cursor/
+        // selection/etc all unchanged) must not be coarse-frame-skipped
+        // either. This is the exact bug class m_documentGeneration was added
+        // to fix earlier in this project's history (a mutated field NOT
+        // included here silently disables redraw whenever nothing else in
+        // FrameState happens to change) - leftColumn is added here the
+        // moment m_leftColumn is introduced, not after the fact.
+        std::uint32_t leftColumn = 0;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -445,6 +493,17 @@ private:
     // 3+ call sites" pattern as isLineHidden()/visibleLineAtRow() (Phase
     // 7i/7j).
     [[nodiscard]] float reservedTopHeightDips() const noexcept;
+    // WI-03: X-DIP offset every horizontally-scrolled X-coordinate consumer
+    // in this file subtracts from its otherwise-fixed kGutterWidthDips-
+    // relative position - `m_leftColumn * m_charWidthDips`, the same
+    // monospace-column approximation drawIndentGuidesOnLine() already uses
+    // (`level*kTabWidth*m_charWidthDips`). Extracted once 3+ call sites
+    // needed it (drawCaretOnLine/drawSelectionOnLine/drawMatchOnLine/
+    // drawIndentGuidesOnLine/hitTest()/drawTextLine()'s clip+glyph origin/
+    // drawFoldedHeaderMarker's call site - 7 in total), same "extract once
+    // 3+ call sites exist" precedent reservedTopHeightDips() itself set
+    // (Phase 7o).
+    [[nodiscard]] float leftColumnOffsetDips() const noexcept;
     // X-DIP offset where the minimap strip begins (kMinimapWidthDips before
     // the client-area's right edge). Extracted (Phase 7v) once drawMinimap()
     // and hitTestMinimap() both needed it - same "2nd call site" rule as
@@ -705,6 +764,14 @@ private:
     std::uint64_t                                     m_documentGeneration    = 0;
     std::shared_ptr<const document::BufferSnapshot>   m_cachedSnapshot;
     document::LineNumber                              m_topLine               = 0;
+    // WI-03: horizontal scroll state, same lifecycle as m_topLine above -
+    // driven by setLeftColumn(), read by every X-coordinate consumer via
+    // leftColumnOffsetDips(). m_maxVisibleLineLength is a side-effect
+    // output (not scroll state itself) updated by drawVisibleLines()'s
+    // existing per-line loop - see maxVisibleLineLength()'s comment for why
+    // this stays windowed rather than a whole-document scan.
+    std::uint32_t                                     m_leftColumn            = 0;
+    std::uint32_t                                     m_maxVisibleLineLength  = 0;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)

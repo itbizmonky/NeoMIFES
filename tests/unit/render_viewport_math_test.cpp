@@ -5,6 +5,7 @@
 namespace {
 
 using neomifes::render::computeMinimapBucketCount;
+using neomifes::render::computeVisibleColumnCount;
 using neomifes::render::computeVisibleLineCount;
 using neomifes::render::minimapBucketStartLine;
 using neomifes::render::widenLineRangeWithMargin;
@@ -43,6 +44,40 @@ TEST(ViewportMathTest, NegativeLineHeightReturnsZero) {
 
 TEST(ViewportMathTest, LineHeightTallerThanClientReturnsZero) {
     EXPECT_EQ(computeVisibleLineCount(10, 1.0F, 20.0F), 0U);
+}
+
+// WI-03: computeVisibleColumnCount() - the horizontal counterpart to
+// computeVisibleLineCount() above, same table-driven degenerate-input style.
+
+TEST(ComputeVisibleColumnCountTest, TypicalWidthComputesExpectedColumnCount) {
+    // 700 DIPs available / 7 DIPs-per-char = 100 columns.
+    EXPECT_EQ(computeVisibleColumnCount(700.0F, 7.0F), 100U);
+}
+
+TEST(ComputeVisibleColumnCountTest, NarrowerWidthFitsFewerColumns) {
+    const auto wide   = computeVisibleColumnCount(700.0F, 7.0F);
+    const auto narrow = computeVisibleColumnCount(350.0F, 7.0F);
+    EXPECT_LT(narrow, wide);
+}
+
+TEST(ComputeVisibleColumnCountTest, ZeroWidthReturnsZero) {
+    EXPECT_EQ(computeVisibleColumnCount(0.0F, 7.0F), 0U);
+}
+
+TEST(ComputeVisibleColumnCountTest, NegativeWidthReturnsZero) {
+    EXPECT_EQ(computeVisibleColumnCount(-100.0F, 7.0F), 0U);
+}
+
+TEST(ComputeVisibleColumnCountTest, ZeroCharWidthReturnsZero) {
+    EXPECT_EQ(computeVisibleColumnCount(700.0F, 0.0F), 0U);
+}
+
+TEST(ComputeVisibleColumnCountTest, NegativeCharWidthReturnsZero) {
+    EXPECT_EQ(computeVisibleColumnCount(700.0F, -7.0F), 0U);
+}
+
+TEST(ComputeVisibleColumnCountTest, CharWidthWiderThanAvailableWidthReturnsZero) {
+    EXPECT_EQ(computeVisibleColumnCount(5.0F, 7.0F), 0U);
 }
 
 // Phase 7t: widenLineRangeWithMargin() - the syntax-token prefetch window

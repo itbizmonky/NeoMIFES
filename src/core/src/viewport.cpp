@@ -8,10 +8,16 @@ void Viewport::ensureVisible(document::TextPos pos, const document::Document& do
     const document::LineNumber line = doc.offsetToLine(pos);
     if (line < m_topLine) {
         m_topLine = line;
-        return;
-    }
-    if (m_visibleLineCount > 0 && line >= m_topLine + m_visibleLineCount) {
+    } else if (m_visibleLineCount > 0 && line >= m_topLine + m_visibleLineCount) {
         m_topLine = line - m_visibleLineCount + 1;
+    }
+
+    // WI-03: horizontal counterpart, same clamp-into-window shape as above.
+    const auto column = static_cast<std::uint32_t>(pos - doc.lineToOffset(line));
+    if (column < m_leftColumn) {
+        m_leftColumn = column;
+    } else if (m_visibleColumnCount > 0 && column >= m_leftColumn + m_visibleColumnCount) {
+        m_leftColumn = column - m_visibleColumnCount + 1;
     }
 }
 

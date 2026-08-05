@@ -37,20 +37,38 @@ class Viewport {
 public:
     void scrollTo(document::LineNumber topLine) noexcept { m_topLine = topLine; }
 
-    // Adjusts topLine (if needed) so the line containing `pos` falls inside
-    // the currently visible window.
+    // WI-03: horizontal counterpart to scrollTo() - sets the leftmost
+    // visible column (UTF-16 code units from each line's start, same
+    // monospace-column convention CaretDraw::column already uses).
+    void scrollToColumn(std::uint32_t column) noexcept { m_leftColumn = column; }
+
+    // Adjusts topLine/leftColumn (if needed) so the line+column containing
+    // `pos` falls inside the currently visible window. The column half
+    // (WI-03) mirrors the line half exactly: derives the column via
+    // `pos - doc.lineToOffset(line)`, the same idiom
+    // RenderPipeline::computeCaretDraws() already uses
+    // (`cv.position - m_document->lineToOffset(cursorLine)`).
     void ensureVisible(document::TextPos pos, const document::Document& doc);
 
     void setVisibleLineCount(std::uint32_t count) noexcept { m_visibleLineCount = count; }
 
+    // WI-03: horizontal counterpart to setVisibleLineCount().
+    void setVisibleColumnCount(std::uint32_t count) noexcept { m_visibleColumnCount = count; }
+
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
+    // WI-03: horizontal counterpart to topLine().
+    [[nodiscard]] std::uint32_t leftColumn() const noexcept { return m_leftColumn; }
     [[nodiscard]] LineRange            visibleLines() const noexcept {
         return LineRange{.start = m_topLine, .end = m_topLine + m_visibleLineCount};
     }
 
 private:
-    document::LineNumber m_topLine          = 0;
-    std::uint32_t          m_visibleLineCount = 0;
+    document::LineNumber m_topLine            = 0;
+    std::uint32_t          m_visibleLineCount   = 0;
+    // WI-03: horizontal scroll state, same "0 == default/unset" convention
+    // as the vertical members above.
+    std::uint32_t          m_leftColumn         = 0;
+    std::uint32_t          m_visibleColumnCount = 0;
 };
 
 }  // namespace neomifes::core

@@ -62,4 +62,46 @@ TEST(ViewportTest, EnsureVisibleScrollsDownWhenPositionBelowWindow) {
     EXPECT_EQ(viewport.topLine(), 3U);                 // window becomes [3, 5)
 }
 
+// WI-03: horizontal counterparts to the four tests above - ensureVisible()'s
+// column half mirrors the line half exactly (see viewport.cpp).
+
+TEST(ViewportTest, ScrollToColumnSetsLeftColumn) {
+    Viewport viewport;
+    viewport.scrollToColumn(15);
+    EXPECT_EQ(viewport.leftColumn(), 15U);
+}
+
+TEST(ViewportTest, EnsureVisibleDoesNothingHorizontallyWhenColumnAlreadyInWindow) {
+    Document doc;
+    doc.insertText(0, u"0123456789ABCDEFGHIJ");  // single line, 20 columns
+    Viewport viewport;
+    viewport.scrollToColumn(5);
+    viewport.setVisibleColumnCount(10);  // window = [5, 15)
+
+    viewport.ensureVisible(8, doc);  // column 8, inside window
+    EXPECT_EQ(viewport.leftColumn(), 5U);
+}
+
+TEST(ViewportTest, EnsureVisibleScrollsLeftWhenColumnBeforeWindow) {
+    Document doc;
+    doc.insertText(0, u"0123456789ABCDEFGHIJ");
+    Viewport viewport;
+    viewport.scrollToColumn(10);
+    viewport.setVisibleColumnCount(5);  // window = [10, 15)
+
+    viewport.ensureVisible(2, doc);  // column 2, left of window
+    EXPECT_EQ(viewport.leftColumn(), 2U);
+}
+
+TEST(ViewportTest, EnsureVisibleScrollsRightWhenColumnPastWindow) {
+    Document doc;
+    doc.insertText(0, u"0123456789ABCDEFGHIJ");
+    Viewport viewport;
+    viewport.scrollToColumn(0);
+    viewport.setVisibleColumnCount(5);  // window = [0, 5)
+
+    viewport.ensureVisible(18, doc);  // column 18, past window
+    EXPECT_EQ(viewport.leftColumn(), 14U);  // window becomes [14, 19)
+}
+
 }  // namespace
