@@ -513,9 +513,14 @@ private:
     // into an unbounded-width layout box same as always, and drawMinimap()
     // simply paints an opaque strip over the right edge afterward (called
     // after drawVisibleLines() in renderOnce()) - deliberately looser than
-    // the gutter's contract, since there is no horizontal scroll mechanism
-    // in this codebase whose "text hidden under the minimap" state a user
-    // could otherwise reach. Returns 0.0F if m_dpiScale isn't positive yet
+    // the gutter's contract. WI-03 (fact-check, was stale before): this
+    // codebase DOES have a horizontal scroll mechanism now (m_leftColumn/
+    // WM_HSCROLL), but the minimap is deliberately unaffected by it - Phase
+    // 7w's "whole document overview" mode always represents [0, totalLines)
+    // regardless of m_leftColumn (see drawMinimap()'s own comment), so text
+    // scrolled right never needs to "peek out" from under the minimap the
+    // way it needs the gutter clip (drawTextLine()'s PushAxisAlignedClip) to
+    // stay fixed instead. Returns 0.0F if m_dpiScale isn't positive yet
     // (pre-first-resize) - callers compare this against kGutterWidthDips to
     // detect "too narrow to draw/hit-test" the same way.
     [[nodiscard]] float minimapLeftDips() const noexcept;

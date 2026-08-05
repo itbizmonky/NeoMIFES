@@ -2717,4 +2717,26 @@ WI-02完了・コミット(`3e611d8`)後、ユーザーが実際にNeoMIFESで�
 
 pushはユーザーの明示指示待ち。次はWI-03(横スクロール)へ進む。
 
+## Session 81 (2026-08-05): WI-03 (横スクロール) 実装完了
+
+🎉 M1達成後、ユーザーから「次に進め」と指示され、`build_plan.md`の次項目WI-03(横スクロール)に着手した。Explore agent + 自己検証による着手前調査を経てPlan Modeで詳細計画を作成・ユーザー承認を得た上で実装した。
+
+**設計の骨子:** `core::Viewport`に`m_leftColumn`/`m_visibleColumnCount`を追加し、`ensureVisible()`の列版(`pos - doc.lineToOffset(line)`から列を算出、既存の`RenderPipeline::computeCaretDraws()`と同一パターン)を実装。既存の全17箇所の`ensureVisible()`呼び出し元は無改修のままHome/End/入力時の横方向自動追従を獲得した。`RenderPipeline`に`m_leftColumn`/`leftColumnOffsetDips()`ヘルパーを追加し、テキスト由来の描画(グリフ・キャレット・選択/マッチハイライト・インデントガイド・フォールドヘッダーマーカー・`hitTest()`)の計7箇所のX座標を横スクロールに追従させた。
+
+**着手前調査で発見した、既定設計だけでは見落とされていた技術的必然性:** `drawGutterOnLine()`(ブックマークドット・フォールドシェブロン)は`[0, kGutterWidthDips)`へ背景を一切塗りつぶさないため、`-leftColumnOffsetDips()`オフセット導入後、右スクロールした行のグリフがガター領域へ視覚的にはみ出しうると判明。`drawTextLine()`内のテキスト由来描画のみを`PushAxisAlignedClip`/`PopAxisAlignedClip`で保護し、ガター自体はクリップの外側で描画して固定表示を維持した。ミニマップは元々`m_leftColumn`を一切参照しない設計(Phase 7w「whole document overview」)のため無改修で済んだ。
+
+`FrameState`に`leftColumn`フィールドを追加し、本セッション冒頭で修正したばかりの`m_documentGeneration`欠落バグ(コミット`5712435`)と同型の「変化したフィールドがFrameStateに含まれていないと粗粒度フレームスキップに再描画ごと飲み込まれる」再発を予防した(回帰テスト`LeftColumnOnlyChangeForcesRedraw`)。
+
+本コードベース初のネイティブスクロールバー(`WS_HSCROLL`/`WM_HSCROLL`)を`MainWindow`に追加。`main.cpp`側は標準スクロールコード(`SB_LINELEFT`/`LINERIGHT`/`PAGELEFT`/`PAGERIGHT`/`THUMBTRACK`/`THUMBPOSITION`)を新設`computeHScrollTargetColumn()`で解決し、毎フレーム描画後に`syncHorizontalScrollBar()`で`SetScrollInfo`へ反映する。**実装中にclang-tidyの`readability-function-cognitive-complexity`が`wireNormalMode()`の閾値超過(33、閾値25)を検出** — `cfg.onHScroll`ラムダのswitch文を独立関数`handleHScrollEvent()`へ抽出したが、それでも`clang-analyzer-deadcode.DeadStores`(初期値`currentColumn`が全パスで上書きされ未読のまま)を新たに検出したため、switch文の各ケースが直接`return`する`computeHScrollTargetColumn()`(戻り値`std::optional<uint32_t>`)へさらにリファクタし、両方の指摘を解消した。横スクロールバーの範囲(`nMax`)は現在描画中の可視行の最大文字数を毎フレーム安価に追跡する新設`RenderPipeline::maxVisibleLineLength()`から取得 — 10GBファイル対応という中核価値のため全文書スキャンは不採用。
+
+**着手前調査で発見した既存の潜在バグ(WI-03のスコープ外、未修正):** 垂直方向の`Viewport::setVisibleLineCount()`が実運用のどこからも一度も呼ばれていないため、`ensureVisible()`の下端追従クランプが常にfalseのまま機能していない可能性が高いと判明した。横方向は新規機能でありDoD達成のため`RenderPipeline::visibleColumnCount()`を新設し毎フレーム配線したが、縦方向の同型修正はWI-03のスコープに含めず、次フェーズ候補検討時の材料として記録した。
+
+**実測検証:** ローカルDebug/Release/ubsan全**1013/1013件green**(3プリセット全て)。変更11ファイルへclang-tidy個別実行、新規警告0。`--measure-frame`実測 avg 16.50ms / p50 16.67ms / p95 16.79ms(5万行合成文書・300フレーム・Release、既存ベースライン16.5ms付近から劣化なし)。
+
+**実アプリでの視覚確認と、その過程で発生したスクリーンショット事故:** 1200文字行を含むテストファイルを`--open`し、スクリーンショットで長い行がNO_WRAPで右端を超えて伸びること・本コードベース初の水平スクロールバーが正しいサイズのthumbで表示されることを確認した。**この過程で、この開発環境のスクリーンショット手法(`CopyFromScreen`)が所有プロセスIDの確認をパスしたにもかかわらず、無関係な別ウィンドウ(ユーザーの別のアプリケーション)の内容を誤って撮影する事故が1件発生した。** 内容は読み上げず・分析せず即座に削除し、AskUserQuestionでユーザーへ経緯を報告した。ユーザーの判断により、スクロールバーのクリック/ドラッグによる対話的確認は行わず、既存の自動テストスイート(hitTestラウンドトリップ・ガター固定・フレームスキップ打破・`render()`無エラー)で正しさを担保する方針に切り替えた。この失敗モードは過去セッション(Phase 7l/7n1)で記録済みのパターンと一致し、`reference_no_win32_gui_automation.md`メモリへ追記した。
+
+**ドキュメント同期:** `build_plan.md`(WI-03 DoD全項目`[x]`化+「実装後の確定事項」節新設)、`master_roadmap.md`(§8.5.9に実装後の確定事項追記)、`render_pipeline.h`(`minimapLeftDips()`周辺の「横スクロール機構が無いから」という前提が本WIで崩れたコメントを事実訂正)、`RESUME_HERE.md`(冒頭サマリ・§3.70完了記録)。
+
+コミット済み`6052da8`(実装)。ドキュメント同期は別コミットで追記予定。pushはユーザーの明示指示待ち。次はWI-04(`main.cpp`解体 + `EditorSession`/`Workspace`新設)へ進む。
+
 <!-- 次セッションはここに追記 -->

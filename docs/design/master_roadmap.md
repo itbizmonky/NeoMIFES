@@ -1743,6 +1743,8 @@ class Workspace {
 
 **影響範囲が広い:** `RenderPipeline` の X 座標計算 (キャレット / 選択 / マッチハイライト / Indent guides / ガター) 全てに `-leftColumnDips` のオフセットが波及する。**早期着手が望ましい** (後になるほど波及先が増える)。折返し表示 (word wrap) は本サブフェーズのスコープ外とし、Phase 12 以降で判断する。
 
+**実装後の確定事項 (2026-08-05、WI-03 完了、コミット `6052da8`):** 上記の設計方針通りに実装した。X座標オフセットが波及した箇所は`drawCaretOnLine`/`drawSelectionOnLine`/`drawMatchOnLine`/`drawIndentGuidesOnLine`/`hitTest()`/`drawTextLine()`のテキスト描画起点/`drawFoldedHeaderMarker`呼び出しの計7箇所(新設`RenderPipeline::leftColumnOffsetDips()`ヘルパーに集約)。**着手前調査で設計方針にはなかった追加要件が1件判明した:** `drawGutterOnLine()`(ブックマーク/フォールドマーカー)は背景を塗りつぶさないため、横スクロールしたグリフがガター領域へはみ出す構造的な穴があり、`drawTextLine()`のテキスト由来描画のみを`PushAxisAlignedClip`/`PopAxisAlignedClip`で保護した。`FrameState`に`leftColumn`を追加し粗粒度フレームスキップの再発(直前セッションの`m_documentGeneration`バグと同型)を予防。本コードベース初のネイティブスクロールバー(`WS_HSCROLL`/`WM_HSCROLL`)を`MainWindow`に追加。垂直方向の`Viewport::setVisibleLineCount()`が実運用で一度も呼ばれていない既存の潜在バグを発見したが、WI-03のスコープ外として本セッションでは未修正(詳細は`build_plan.md` WI-03の「実装後の確定事項」参照)。
+
 ---
 
 ## 8.6. Phase 8.6 — 製品化基盤 (v2.1 新設)

@@ -110,7 +110,7 @@ ctest --preset debug --output-on-failure
 - [x] **WI-01** 文書保存基盤 (`document::saveFile()` / `isDirty()`) → コミット: `a4a0445`
 - [x] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → コミット: `3e611d8`。ドッグフーディングで2件の実害あるバグを発見・修正 (`5712435`/`8199c38`/`a8df325`)、ユーザーが実際に編集・保存・コミット (`d02138b`/`34b79e5`) まで完走し 🎉 M1 達成
   - 🎉 **M1 達成 (2026-08-05): NeoMIFES で NeoMIFES を編集できるようになった (ドッグフーディング完了)**
-- [ ] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → `________`
+- [x] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → コミット: `6052da8`
 - [ ] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → `________`
 - [ ] **WI-05** タブ UI (`ui::TabBar`) → `________`
 - [ ] **WI-06** IME 完全対応 (`WM_IME_*` + インライン未確定文字列) → `________`
@@ -407,12 +407,24 @@ probe は使い捨て。スクラッチパッドに書き、**コミットしな
 
 ### DoD
 
-- [ ] 1000 文字の行を含むファイルで、右端まで横スクロールして内容を読める
-- [ ] 横スクロール中にクリックしたとき、`hitTest()` が正しい文字位置を返す
-- [ ] `End` キーでキャレットが行末へ移動し、画面が自動追従する
-- [ ] ガターとミニマップは横スクロールしても位置が変わらない
-- [ ] `--measure-frame` の実測値が既存ベースライン (avgFrameNs ≈ 16.5ms) から悪化していない
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] 1000 文字の行を含むファイルで、右端まで横スクロールして内容を読める (1200文字行での`render()`無エラーを複数`leftColumn`値で確認、実アプリでもNO_WRAPで右端まで伸びることを視覚確認)
+- [x] 横スクロール中にクリックしたとき、`hitTest()` が正しい文字位置を返す (`HitTestAccountsForLeftColumnWhenScrolledHorizontally`)
+- [x] `End` キーでキャレットが行末へ移動し、画面が自動追従する (`Viewport::ensureVisible()`の列版を全17箇所の既存呼び出し元が無改修で獲得。実機キー入力確認はWin32 GUI自動化の既知の制約により未実施 — 下記確定事項参照)
+- [x] ガターとミニマップは横スクロールしても位置が変わらない (`GutterFoldMarkerHitTestIsUnaffectedByHorizontalScroll`、ミニマップは元々`m_leftColumn`を一切参照しない設計)
+- [x] `--measure-frame` の実測値が既存ベースライン (avgFrameNs ≈ 16.5ms) から悪化していない (実測 avg 16.50ms / p50 16.67ms / p95 16.79ms、5万行合成文書・300フレーム・Release)
+- [x] Debug / Release / ubsan 全 green (各1013/1013)、clang-tidy 新規警告 0 (変更11ファイル個別実行)
+
+### 実装後の確定事項 (2026-08-05)
+
+**設計時点からの唯一の逸脱: `Viewport::setVisibleColumnCount()`と対をなす垂直方向`setVisibleLineCount()`が、既存コードのどこからも一度も呼ばれていないことが実装中に判明した。** これは`Viewport::ensureVisible()`の下端追従クランプ(`m_visibleLineCount > 0 && line >= m_topLine + m_visibleLineCount`)が本番コードでは常にfalseのまま生存してきたことを意味する、既存の潜在バグ(WI-03のスコープ外、本セッションでは修正していない)。横方向は新規機能でありDoD「Endキーでの自動追従」を満たす必要があったため、水平方向に限り`RenderPipeline::visibleColumnCount()`(新設、`viewport_math.h::computeVisibleColumnCount()`をガター/ミニマップ分を差し引いた幅で呼ぶ)を毎フレーム描画後に`Viewport::setVisibleColumnCount()`へ供給する配線を追加した。垂直方向との非対称性(横は配線されている、縦は配線されていない)を意図的に許容し、縦方向の同種の修正はWI-03のスコープに含めなかった。
+
+**ガタークリップの技術的必然性(着手前調査で発見):** `drawGutterOnLine()`(ブックマークドット・フォールドシェブロン)は`[0, kGutterWidthDips)`へ背景の塗りつぶしを一切行わない。`-leftColumnOffsetDips()`のオフセットを導入すると、右へスクロールした行のグリフがガター領域へ視覚的にはみ出しうるため、`drawTextLine()`内のテキスト由来の描画(マッチ/選択ハイライト/インデントガイド/トークン色/グリフ本体/キャレット/フォールドヘッダーマーカー)のみを`PushAxisAlignedClip`/`PopAxisAlignedClip`で囲んだ。ガター自体(ブックマーク/フォールドマーカー)はクリップの**外側**で描画され、常に固定表示される。
+
+**フレームスキップ再発防止:** `FrameState`に`leftColumn`フィールドを追加した。本セッション冒頭で修正したばかりの`m_documentGeneration`欠落バグ(コミット`5712435`)と全く同じ「変化したフィールドがFrameStateに含まれていないと粗粒度フレームスキップに再描画ごと飲み込まれる」パターンを、水平スクロールバーのドラッグのみで再発させないための予防的対応。回帰テスト`LeftColumnOnlyChangeForcesRedraw`で実証。
+
+**実アプリでの視覚確認:** 1200文字行を含むテストファイルを実際に`--open`し、スクリーンショットで(a) 長い行がNO_WRAPで右端を超えて伸びること、(b) 本コードベース初のネイティブ水平スクロールバー(`WS_HSCROLL`)が画面下端に正しいサイズの thumb で表示されることを確認した。**この過程で、この開発環境のスクリーンショット手法が別の無関係なウィンドウの内容を誤って撮影する事故が1件発生した(既知の環境不調パターン、内容は読み上げず即座に削除・ユーザーに報告済み)。** これを受けてユーザーの判断により、スクロールバーのクリック/ドラッグによる実際のスクロール動作の対話的確認は行わず、自動テストスイート(hitTest ラウンドトリップ・ガター固定・フレームスキップ打破・`render()`無エラー)で正しさを担保する方針に切り替えた。
+
+詳細は [`detailed_design.md`](detailed_design.md) 参照。
 
 ---
 

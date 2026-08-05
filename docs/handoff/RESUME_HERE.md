@@ -4,7 +4,7 @@
 >
 > **本ファイルは「これまでの経緯」の記録が中心 (2,100 行)。実際に手を動かすための指示は `build_plan.md` にある。**
 > `build_plan.md` §0 のコールドスタート手順を実行すれば、次に何をどう作ればよいかが 5〜10 分で確定する。
-> **🎉 M1 達成 (2026-08-05)。次にやること: WI-03 (横スクロール)** — `build_plan.md` §5 参照。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。WI-02 (ファイルライフサイクル UI) は実装・コミット済み (`3e611d8`)。ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見・報告 → 根本原因を特定・修正・回帰テストで実証、コミット済み (`5712435`)。ユーザーが2バグとも解消したことを再確認した後、**実際に `README.md` を NeoMIFES で開いて編集・`Ctrl+S` 保存・`git diff`/`git status` 確認・`git commit` (`d02138b`、修正コミット`34b79e5`) まで完走した。** これにより 🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した。§3.69参照。次はWI-03 (横スクロール) に着手すること。
+> **🎉 M1 達成 (2026-08-05)。WI-03 (横スクロール) も完了・コミット済み (`6052da8`)。次にやること: WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設)** — `build_plan.md` §5 参照。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。WI-02 (ファイルライフサイクル UI) は実装・コミット済み (`3e611d8`)。ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見・報告 → 根本原因を特定・修正・回帰テストで実証、コミット済み (`5712435`)。ユーザーが2バグとも解消したことを再確認した後、**実際に `README.md` を NeoMIFES で開いて編集・`Ctrl+S` 保存・`git diff`/`git status` 確認・`git commit` (`d02138b`、修正コミット`34b79e5`) まで完走した。** これにより 🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した。§3.69参照。WI-03 (横スクロール) は本コードベース初のネイティブスクロールバー(`WS_HSCROLL`)を実装し完了した。§3.70参照。次はWI-04に着手すること。
 >
 > ---
 
@@ -26,7 +26,7 @@
 > - **Phase 9 以降の全新機能は Phase 8.5 / 8.6 完了まで凍結**
 >
 > ### 次にやること
-> **Phase 8.5a (文書保存基盤) は完了した (2026-08-04、WI-01)。Phase 8.5b (WI-02、ファイルライフサイクル UI) も実装・自動テスト・ローカルビルド検証まで完了した (2026-08-04、§3.68参照)。** ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見。両方とも修正・回帰テストで実証済み (2026-08-05)、ユーザーが実際に `README.md` を NeoMIFES で編集・保存・`git commit` まで完走し **🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した (§3.69参照)。** 次は **Phase 8.5g (WI-03、横スクロール)**。着手前probeで「mmap解放は不要」(U#22/U#26解消)・「エラーコードではなく実ファイル存在チェックでリカバリ判断」(U#23解消) と判明し、`build_plan.md`/roadmap原案の一部を意図的に簡略化した — 詳細は §3.67 参照。
+> **Phase 8.5a (文書保存基盤) は完了した (2026-08-04、WI-01)。Phase 8.5b (WI-02、ファイルライフサイクル UI) も実装・自動テスト・ローカルビルド検証まで完了した (2026-08-04、§3.68参照)。** ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見。両方とも修正・回帰テストで実証済み (2026-08-05)、ユーザーが実際に `README.md` を NeoMIFES で編集・保存・`git commit` まで完走し **🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した (§3.69参照)。** **Phase 8.5g (WI-03、横スクロール) も完了した (§3.70参照)。** 次は **WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設)**。着手前probeで「mmap解放は不要」(U#22/U#26解消)・「エラーコードではなく実ファイル存在チェックでリカバリ判断」(U#23解消) と判明し、`build_plan.md`/roadmap原案の一部を意図的に簡略化した — 詳細は §3.67 参照。
 >
 > ### 新設・更新した文書
 > - 🆕 [`docs/design/gap_analysis.md`](../design/gap_analysis.md) — 中間レビュー本体 (P0/P1 ギャップ、構造的原因分析、Phase 再編、プロセス提言)
@@ -2193,6 +2193,31 @@ WI-02完了後、ユーザーが実際にドッグフーディングを試み、
 - [x] 🎉 **完全なドッグフーディング(NeoMIFES自身のソースをNeoMIFESで開いて編集・保存・実際にコミット)** ← **達成。ユーザーが実際に`README.md`をNeoMIFESで開いて編集(テキスト追記)・`Ctrl+S`で保存・`git diff`/`git status`で差分確認・`git commit`(`d02138b`)まで完走した。その後、同じループで内容を修正して再度保存・コミット(`34b79e5`)した。**
 
 **コミット済み`5712435`/`8199c38`/`a8df325`/`d02138b`/`34b79e5`、pushはユーザーの明示指示待ち。** **🎉 M1達成 (2026-08-05)。** 次はWI-03(横スクロール)。
+
+### 3.70 WI-03 (横スクロール) 完了記録 (2026-08-05)
+
+M1達成後、ユーザーから「次に進め」と指示され、`build_plan.md`の次項目WI-03(横スクロール)に着手した。`core::Viewport`に`m_leftColumn`/`m_visibleColumnCount`を追加し、`ensureVisible()`の列版(`pos - doc.lineToOffset(line)`から列を算出、既存の`RenderPipeline::computeCaretDraws()`と同じ既存パターン)を実装。既存の全17箇所の`ensureVisible()`呼び出し元は無改修のままHome/End/入力時の横方向自動追従を獲得した。
+
+**着手前調査で判明した、既定設計だけでは見落とされていた技術的必然性:** `drawGutterOnLine()`(ブックマークドット・フォールドシェブロン)は`[0, kGutterWidthDips)`へ背景を一切塗りつぶさないため、`-leftColumnOffsetDips()`オフセット導入後、右スクロールした行のグリフがガター領域へ視覚的にはみ出しうると判明。`drawTextLine()`内のテキスト由来描画(マッチ/選択ハイライト/インデントガイド/トークン色/グリフ本体/キャレット/フォールドヘッダーマーカー)のみを`PushAxisAlignedClip`/`PopAxisAlignedClip`で保護し、ガター自体はクリップの外側で描画して固定表示を維持した。X座標オフセットは新設`RenderPipeline::leftColumnOffsetDips()`ヘルパーに集約し、7箇所(`drawCaretOnLine`/`drawSelectionOnLine`/`drawMatchOnLine`/`drawIndentGuidesOnLine`/`hitTest()`/`drawTextLine()`のテキスト描画起点/`drawFoldedHeaderMarker`呼び出し)へ適用した。
+
+`FrameState`に`leftColumn`フィールドを追加し、本セッション冒頭で修正したばかりの`m_documentGeneration`欠落バグ(コミット`5712435`)と同型の「変化したフィールドがFrameStateに含まれていないと粗粒度フレームスキップに再描画ごと飲み込まれる」再発を予防した(回帰テスト`LeftColumnOnlyChangeForcesRedraw`)。
+
+本コードベース初のネイティブスクロールバー(`WS_HSCROLL`/`WM_HSCROLL`)を`MainWindow`に追加。`main.cpp`側は標準スクロールコード(`SB_LINELEFT`/`LINERIGHT`/`PAGELEFT`/`PAGERIGHT`/`THUMBTRACK`/`THUMBPOSITION`)を新設`computeHScrollTargetColumn()`(純粋関数、switch文の複雑度がclang-tidyの`readability-function-cognitive-complexity`閾値を超えたため`wireNormalMode()`から独立関数へ抽出)で解決し、毎フレーム描画後に`syncHorizontalScrollBar()`で`SetScrollInfo`へ反映する。横スクロールバーの範囲(`nMax`)は現在描画中の可視行の最大文字数を毎フレーム安価に追跡する新設`RenderPipeline::maxVisibleLineLength()`から取得 — 10GBファイル対応という中核価値のため全文書スキャンは不採用、既存のミニマップ/シンタックストークン/折り畳みと同じ「可視範囲のみ扱う」思想を踏襲した。
+
+**着手前調査で発見した既存の潜在バグ(WI-03のスコープ外、未修正):** 垂直方向の`Viewport::setVisibleLineCount()`が実運用のどこからも一度も呼ばれていないため、`ensureVisible()`の下端追従クランプ(矢印下移動でカーソルが画面下端を超えた際の自動スクロール)が常にfalseのまま機能していない可能性が高いと判明した。横方向は新規機能でありDoD達成のため`RenderPipeline::visibleColumnCount()`を新設し毎フレーム`Viewport::setVisibleColumnCount()`へ供給する配線を追加したが、縦方向の同型の修正はWI-03のスコープに含めなかった。次フェーズ候補の検討時に考慮すること。
+
+**実アプリでの視覚確認:** 1200文字行を含むテストファイルを`--open`し、スクリーンショットで長い行がNO_WRAPで右端を超えて伸びること・本コードベース初の水平スクロールバーが正しいサイズのthumbで表示されることを確認した。**この過程でこの開発環境のスクリーンショット手法が無関係な別ウィンドウの内容を誤って撮影する事故が1件発生し(既知の環境不調パターン、内容は読み上げず即座に削除・ユーザーに報告済み)、ユーザーの判断によりスクロールバーのクリック/ドラッグの対話的確認は行わず、自動テストスイートで正しさを担保する方針に切り替えた。**
+
+**完了条件:**
+- [x] 1200文字行での`render()`無エラー(複数`leftColumn`値)
+- [x] `hitTest()`が横スクロール後も正しい列へ復元 (`HitTestAccountsForLeftColumnWhenScrolledHorizontally`)
+- [x] ガター/フォールドマーカーが横スクロールに影響されない (`GutterFoldMarkerHitTestIsUnaffectedByHorizontalScroll`)
+- [x] `FrameState.leftColumn`が粗粒度フレームスキップを正しく打破 (`LeftColumnOnlyChangeForcesRedraw`)
+- [x] Debug/Release/ubsan全green(各1013/1013)、clang-tidy新規警告0(変更11ファイル個別実行)
+- [x] `--measure-frame`実測 avg 16.50ms(既存ベースライン16.5ms付近から劣化なし)
+- [x] 実アプリでの視覚確認(スクリーンショット、水平スクロールバー表示・NO_WRAP確認)
+
+**コミット済み`6052da8`、pushはユーザーの明示指示待ち。** 次はWI-04(`main.cpp`解体 + `EditorSession`/`Workspace`新設)。
 
 ---
 
