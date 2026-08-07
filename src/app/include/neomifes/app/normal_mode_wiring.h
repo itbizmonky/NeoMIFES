@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "neomifes/app/editor_session.h"
+#include "neomifes/app/workspace.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
@@ -72,8 +73,27 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // isDraggingMinimap) are Workspace-wide or process-wide state that stays
 // outside any one EditorSession - see this file's EditorSession
 // member-placement notes.
+//
+// WI-05 step 1: takes Workspace& instead of EditorSession& - once
+// Workspace can hold more than one session, every lambda this function (or
+// the 5 buildXConfig()/createAndPositionOutlinePane() helpers it calls)
+// STORES for later invocation (FindBarConfig/CommandDescriptor::action/
+// GotoLineBarConfig/GrepBarConfig/OutlinePaneConfig callbacks, and
+// wireNormalMode's own cfg.onKeyDown/onChar/onMouseWheel/onMouseDown/
+// onMouseDrag/onHScroll/onSysKeyDown/onClose/onDropFiles/the paint handler)
+// must resolve workspace.active() FRESH at invocation time rather than
+// capture a single EditorSession& fixed at construction time - otherwise,
+// after a tab switch, a stored callback (e.g. the Command Palette's "Undo")
+// would silently keep operating on the tab that was active when
+// wireNormalMode() ran, not the one the user is currently looking at. Only
+// the ~15 functions that build/capture such stored closures actually
+// needed this signature change; every other function in this file that is
+// only ever called SYNCHRONOUSLY (by a caller that has already freshly
+// resolved the correct session) keeps taking EditorSession& unchanged - a
+// deliberately narrower, more precise realization of the same
+// no-stale-tab-reference guarantee, not a blanket rename.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
-                    EditorSession& session, HINSTANCE hInstance, ui::FindBar& findBar,
+                    Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
                     bool& freeCursorModeEnabled, bool& isDraggingMinimap);

@@ -1081,14 +1081,19 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession
 // outlive the returned FindBarConfig (they are wWinMain-scope locals; the
 // config itself is only used immediately, inside findBar.create()). WI-04:
 // takes EditorSession& (document/dispatcher/selection/viewport/
-// findReplaceState - 5 members).
-FindBarConfig buildFindBarConfig(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+// findReplaceState - 5 members). WI-05 step 1: takes Workspace& instead -
+// every callback below is STORED inside FindBar and invoked later
+// (whenever the user next interacts with the Find bar), so each one
+// resolves workspace.active() fresh at its own invocation time rather than
+// capturing a single session fixed when this function ran (see
+// wireNormalMode()'s header comment for why).
+FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                  FindBar& findBar, SearchHistory& searchHistory) {
     FindBarConfig config{};
-    config.onQueryChanged = [hwnd, &session, &renderPipeline, &findBar](std::u16string_view query,
-                                                                        bool caseSensitive, bool wholeWord,
-                                                                        bool regex) {
-        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, session, renderPipeline, findBar);
+    config.onQueryChanged = [hwnd, &workspace, &renderPipeline, &findBar](std::u16string_view query,
+                                                                          bool caseSensitive, bool wholeWord,
+                                                                          bool regex) {
+        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, workspace.active(), renderPipeline, findBar);
     };
     // Recording happens here (Enter/F3 while the find edit itself has
     // focus), not inside navigateToMatch() - this is the one call site that
@@ -1109,23 +1114,25 @@ FindBarConfig buildFindBarConfig(HWND hwnd, EditorSession& session, RenderPipeli
             findBar.setQueryText(*newer);
         }
     };
-    config.onFindNext = [hwnd, &session, &renderPipeline, &findBar, &searchHistory]() {
+    config.onFindNext = [hwnd, &workspace, &renderPipeline, &findBar, &searchHistory]() {
+        EditorSession& session = workspace.active();
         searchHistory.record(session.findReplaceState().currentQuery.pattern);
         navigateToMatch(true, hwnd, session, renderPipeline, findBar);
     };
-    config.onFindPrevious = [hwnd, &session, &renderPipeline, &findBar, &searchHistory]() {
+    config.onFindPrevious = [hwnd, &workspace, &renderPipeline, &findBar, &searchHistory]() {
+        EditorSession& session = workspace.active();
         searchHistory.record(session.findReplaceState().currentQuery.pattern);
         navigateToMatch(false, hwnd, session, renderPipeline, findBar);
     };
-    config.onClosed = [hwnd, &findBar, &session, &renderPipeline]() {
-        closeFindBar(hwnd, findBar, session, renderPipeline);
+    config.onClosed = [hwnd, &findBar, &workspace, &renderPipeline]() {
+        closeFindBar(hwnd, findBar, workspace.active(), renderPipeline);
     };
-    config.onReplaceCurrent = [hwnd, &session, &renderPipeline,
+    config.onReplaceCurrent = [hwnd, &workspace, &renderPipeline,
                                &findBar](std::u16string_view replacementText) {
-        replaceCurrentMatch(replacementText, hwnd, session, renderPipeline, findBar);
+        replaceCurrentMatch(replacementText, hwnd, workspace.active(), renderPipeline, findBar);
     };
-    config.onReplaceAll = [hwnd, &session, &renderPipeline, &findBar](std::u16string_view replacementText) {
-        replaceAllMatches(replacementText, hwnd, session, renderPipeline, findBar);
+    config.onReplaceAll = [hwnd, &workspace, &renderPipeline, &findBar](std::u16string_view replacementText) {
+        replaceAllMatches(replacementText, hwnd, workspace.active(), renderPipeline, findBar);
     };
     return config;
 }
@@ -1144,8 +1151,12 @@ FindBarConfig buildFindBarConfig(HWND hwnd, EditorSession& session, RenderPipeli
 // reason documented above handleKeyDownEvent(). WI-04: takes EditorSession&
 // (dispatcher/findReplaceState/selection/viewport/document/folding/
 // freeCursorVirtualColumns - 7 members); freeCursorModeEnabled stays
-// separate (see handleFreeCursorRightArrow()'s comment on why).
-std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar, EditorSession& session,
+// separate (see handleFreeCursorRightArrow()'s comment on why). WI-05 step
+// 1: takes Workspace& instead - every CommandDescriptor::action below is
+// STORED inside CommandPalette and invoked whenever the user later picks
+// that command, so each one resolves workspace.active() fresh at
+// invocation time (see wireNormalMode()'s header comment for why).
+std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar, Workspace& workspace,
                                                      RenderPipeline& renderPipeline,
                                                      bool& freeCursorModeEnabled) {
     std::vector<CommandDescriptor> commands;
@@ -1160,31 +1171,34 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
                           .action          = [&findBar]() { findBar.showWithReplace(); }});
     commands.push_back(CommandDescriptor{
         .id = u"find.next", .title = u"Find Next", .keybindingLabel = u"F3",
-        .action = [hwnd, &session, &renderPipeline, &findBar]() {
-            navigateToMatch(true, hwnd, session, renderPipeline, findBar);
+        .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
+            navigateToMatch(true, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"find.previous", .title = u"Find Previous", .keybindingLabel = u"Shift+F3",
-        .action = [hwnd, &session, &renderPipeline, &findBar]() {
-            navigateToMatch(false, hwnd, session, renderPipeline, findBar);
+        .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
+            navigateToMatch(false, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z",
-        .action = [hwnd, &session, &renderPipeline]() {
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
             if (session.dispatcher().undo()) {
                 syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y",
-        .action = [hwnd, &session, &renderPipeline]() {
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
             if (session.dispatcher().redo()) {
                 syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
-        .action = [hwnd, &session]() {
+        .action = [hwnd, &workspace]() {
+            EditorSession& session = workspace.active();
             if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::TabsToSpaces,
                                                           session.document(), session.dispatcher(),
                                                           session.selection())) {
@@ -1193,7 +1207,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertSpacesToTabs", .title = u"Convert Spaces to Tabs", .keybindingLabel = u"",
-        .action = [hwnd, &session]() {
+        .action = [hwnd, &workspace]() {
+            EditorSession& session = workspace.active();
             if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::SpacesToTabs,
                                                           session.document(), session.dispatcher(),
                                                           session.selection())) {
@@ -1206,7 +1221,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         // header line - no-op otherwise (see the Phase 7i plan's Context
         // point 6 for why gutter-click toggling is deferred to a later
         // sub-phase; this command is the only way to toggle a fold for now).
-        .action = [hwnd, &session, &renderPipeline]() {
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
             const auto line = session.document().offsetToLine(session.selection().primaryCursor().position);
             if (!session.folding().isFoldHeader(line)) {
                 return;
@@ -1217,8 +1233,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     commands.push_back(CommandDescriptor{
         .id = u"edit.toggleFreeCursorMode", .title = u"Toggle Free Cursor Mode",
         .keybindingLabel = u"",
-        .action = [hwnd, &renderPipeline, &session, &freeCursorModeEnabled]() {
+        .action = [hwnd, &renderPipeline, &workspace, &freeCursorModeEnabled]() {
             freeCursorModeEnabled = !freeCursorModeEnabled;
+            EditorSession& session = workspace.active();
             // Turning the mode off (or back on) mid-way through a pending
             // virtual-column count would otherwise leave the caret rendered
             // past the real end of the line with nothing left able to
@@ -1265,13 +1282,16 @@ void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, EditorS
 // Builds the GotoLineBarConfig callbacks (Phase 4b8b) - same extraction
 // rationale as buildFindBarConfig()/buildCommandRegistry() above. WI-04:
 // takes EditorSession& (document/selection/viewport/folding - 4 members).
-GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+// WI-05 step 1: takes Workspace& instead - config.onSubmit below is STORED
+// inside GotoLineBar and invoked later, so it resolves workspace.active()
+// fresh at invocation time (see wireNormalMode()'s header comment for why).
+GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                          GotoLineBar& gotoLineBar) {
     GotoLineBarConfig config{};
-    config.onSubmit = [hwnd, &session, &renderPipeline, &gotoLineBar](std::u16string_view input) {
+    config.onSubmit = [hwnd, &workspace, &renderPipeline, &gotoLineBar](std::u16string_view input) {
         const auto target = neomifes::ui::parseGotoLineInput(input);
         if (target) {
-            jumpToGotoTarget(*target, hwnd, session, renderPipeline);
+            jumpToGotoTarget(*target, hwnd, workspace.active(), renderPipeline);
         }
         gotoLineBar.hide();
         ::SetFocus(hwnd);
@@ -1327,8 +1347,11 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepS
 // as buildFindBarConfig()/buildGotoLineBarConfig() above. WI-04: takes
 // EditorSession& for the document-scoped state jumpToGrepResult() needs;
 // grepState/searchHistory stay separate (Workspace-wide, not
-// document-scoped).
-GrepBarConfig buildGrepBarConfig(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+// document-scoped). WI-05 step 1: takes Workspace& instead -
+// config.onResultActivated below is STORED inside GrepBar and invoked
+// later, so it resolves workspace.active() fresh at invocation time (see
+// wireNormalMode()'s header comment for why).
+GrepBarConfig buildGrepBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                  FindBar& findBar, GrepBar& grepBar, GrepState& grepState,
                                  SearchHistory& searchHistory) {
     GrepBarConfig config{};
@@ -1346,9 +1369,9 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, EditorSession& session, RenderPipeli
             grepBar.setQueryText(*newer);
         }
     };
-    config.onResultActivated = [hwnd, &grepState, &session, &renderPipeline,
+    config.onResultActivated = [hwnd, &grepState, &workspace, &renderPipeline,
                                 &findBar](std::size_t resultIndex) {
-        jumpToGrepResult(resultIndex, hwnd, grepState, session, renderPipeline, findBar);
+        jumpToGrepResult(resultIndex, hwnd, grepState, workspace.active(), renderPipeline, findBar);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -1372,12 +1395,16 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, EditorSession& session, RenderPipeli
 // to its own function - same cognitive-complexity reason as
 // handleKeyDownEvent()/handleCharEvent() above - rather than left inline in
 // onDeferredInit's already-long lambda body. WI-04: takes EditorSession&
-// (document/selection/viewport - 3 members).
-void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, EditorSession& session,
+// (document/selection/viewport - 3 members). WI-05 step 1: takes
+// Workspace& instead - config.onItemSelected below is STORED inside
+// OutlinePane and invoked later, so it resolves workspace.active() fresh at
+// invocation time (see wireNormalMode()'s header comment for why); the rest
+// of this function's own body never touches a session at all.
+void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
                                   RenderPipeline& renderPipeline, OutlinePane& outlinePane) {
     OutlinePaneConfig config{};
-    config.onItemSelected = [hwnd, &session, &renderPipeline](std::uint64_t targetPos) {
-        jumpToOutlinePosition(targetPos, hwnd, session, renderPipeline);
+    config.onItemSelected = [hwnd, &workspace, &renderPipeline](std::uint64_t targetPos) {
+        jumpToOutlinePosition(targetPos, hwnd, workspace.active(), renderPipeline);
     };
     config.onClosed = [hwnd]() { ::SetFocus(hwnd); };
     if (!outlinePane.create(hwnd, hInstance, config)) {
@@ -1442,12 +1469,23 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // isDraggingMinimap) are Workspace-wide or process-wide state that stays
 // outside any one EditorSession - see this file's EditorSession
 // member-placement notes.
+// WI-05 step 1: takes Workspace& instead of EditorSession& - see this
+// declaration's own header comment (normal_mode_wiring.h) for why. Every
+// cfg.* lambda below that touches session state now captures &workspace
+// (not &session) and resolves EditorSession& session = workspace.active()
+// as its own first statement, since MainWindowConfig's callbacks are
+// stored once (MainWindow::create() copies each std::function into its own
+// members - see main_window.h) and then invoked repeatedly across the
+// window's entire lifetime, potentially long after a tab switch has moved
+// workspace.active() to a different EditorSession. cfg.onResize/onCommand/
+// onNotify/onAppMessage never reference session state at all and are left
+// completely unchanged.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
-                    EditorSession& session, HINSTANCE hInstance, FindBar& findBar,
+                    Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
                     bool& freeCursorModeEnabled, bool& isDraggingMinimap) {
-    cfg.onDeferredInit = [&window, &renderPipeline, &session, hInstance, &findBar, &commandPalette,
+    cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane,
                           &freeCursorModeEnabled](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
@@ -1455,13 +1493,21 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             debugLogRenderError("RenderPipeline::attach", attached.error());
             return;
         }
+        // Resolved once here for this lambda's own synchronous body below -
+        // safe (nothing can switch tabs before the window's first deferred
+        // init has even run). The nested paint handler lambda just below
+        // captures &workspace instead, since IT fires on every WM_PAINT
+        // across the window's whole lifetime and must re-resolve fresh each
+        // time (see this function's own header comment).
+        EditorSession& session = workspace.active();
         renderPipeline.setDocument(&session.document());
-        window.setPaintHandler([&renderPipeline, &session](HWND paintHwnd) {
+        window.setPaintHandler([&renderPipeline, &workspace](HWND paintHwnd) {
             const auto rendered = renderPipeline.render();
             if (!rendered) {
                 debugLogRenderError("RenderPipeline::render", rendered.error());
                 return;
             }
+            EditorSession& session = workspace.active();
             // WI-03: kept fresh every successful frame rather than only on
             // WM_SIZE - m_charWidthDips (which visibleColumnCount() depends
             // on) isn't measured until the FIRST render() call completes, so
@@ -1472,7 +1518,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
         });
         const FindBarConfig findBarConfig =
-            buildFindBarConfig(hwnd, session, renderPipeline, findBar, searchHistory);
+            buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory);
         [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
 
         // Same non-fatal treatment as findBar.create() above - a palette
@@ -1480,23 +1526,23 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands =
-            buildCommandRegistry(hwnd, findBar, session, renderPipeline, freeCursorModeEnabled);
+            buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, freeCursorModeEnabled);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
         // Same non-fatal treatment as findBar.create() above.
         const GotoLineBarConfig gotoLineBarConfig =
-            buildGotoLineBarConfig(hwnd, session, renderPipeline, gotoLineBar);
+            buildGotoLineBarConfig(hwnd, workspace, renderPipeline, gotoLineBar);
         [[maybe_unused]] const bool gotoLineBarCreated =
             gotoLineBar.create(hwnd, hInstance, gotoLineBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
-        const GrepBarConfig grepBarConfig = buildGrepBarConfig(hwnd, session, renderPipeline, findBar,
+        const GrepBarConfig grepBarConfig = buildGrepBarConfig(hwnd, workspace, renderPipeline, findBar,
                                                                grepBar, grepState, searchHistory);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
-        createAndPositionOutlinePane(hwnd, hInstance, session, renderPipeline, outlinePane);
+        createAndPositionOutlinePane(hwnd, hInstance, workspace, renderPipeline, outlinePane);
         // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
         // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
         // "Fold/Unfold at Cursor" and the gutter markers work immediately,
@@ -1558,24 +1604,29 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     // WI-02: WM_CLOSE veto - both go through confirmDiscardIfDirty() so an
     // unsaved edit is never silently discarded by closing the window or
-    // dropping a different file onto it.
-    cfg.onClose = [&session](HWND hwnd) { return confirmDiscardIfDirty(hwnd, session); };
-    cfg.onDropFiles = [&session, &renderPipeline, &findBar](HWND hwnd, std::vector<std::wstring> paths) {
-        handleDropFilesEvent(hwnd, std::move(paths), session, renderPipeline, findBar);
+    // dropping a different file onto it. WI-05 step 1: still only ever
+    // checks workspace.active() (Workspace holds exactly one session until
+    // step 3 wires the actual multi-tab close loop) - confirmDiscardIfDirty()
+    // itself keeps taking EditorSession& unchanged (see this function's own
+    // header comment for why that one function is the deliberate exception).
+    cfg.onClose = [&workspace](HWND hwnd) { return confirmDiscardIfDirty(hwnd, workspace.active()); };
+    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, std::vector<std::wstring> paths) {
+        handleDropFilesEvent(hwnd, std::move(paths), workspace.active(), renderPipeline, findBar);
     };
-    cfg.onKeyDown = [&session, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
+    cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
                      &outlinePane, &freeCursorModeEnabled](HWND hwnd, UINT vkCode, bool shiftDown,
                                                            bool ctrlDown) {
-        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, findBar,
+        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace.active(), renderPipeline, findBar,
                           commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled);
     };
-    cfg.onSysKeyDown = [&session, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
-        return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, session, renderPipeline);
+    cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
+        return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, workspace.active(), renderPipeline);
     };
-    cfg.onChar = [&session, &renderPipeline](HWND hwnd, wchar_t ch) {
-        handleCharEvent(hwnd, ch, session, renderPipeline);
+    cfg.onChar = [&workspace, &renderPipeline](HWND hwnd, wchar_t ch) {
+        handleCharEvent(hwnd, ch, workspace.active(), renderPipeline);
     };
-    cfg.onMouseWheel = [&session, &renderPipeline](HWND hwnd, short wheelDelta) {
+    cfg.onMouseWheel = [&workspace, &renderPipeline](HWND hwnd, short wheelDelta) {
+        EditorSession& session = workspace.active();
         session.viewport().scrollTo(neomifes::app::applyMouseWheelScroll(
             wheelDelta, session.viewport().topLine(), session.document().lineCount()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
@@ -1584,17 +1635,18 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // MainWindow::create() only because this handler is set - see
     // MainWindowConfig::onHScroll's comment). Body lives in
     // handleHScrollEvent() (not inline here) - see that function's comment.
-    cfg.onHScroll = [&session, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
-        handleHScrollEvent(hwnd, scrollCode, scrollPos, session, renderPipeline);
+    cfg.onHScroll = [&workspace, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
+        handleHScrollEvent(hwnd, scrollCode, scrollPos, workspace.active(), renderPipeline);
     };
-    cfg.onMouseDown = [&session, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
-                                                                      std::int32_t y, bool shiftDown,
-                                                                      bool altDown, int clickCount) {
-        handleMouseDownEvent(hwnd, x, y, shiftDown, altDown, clickCount, session, renderPipeline,
+    cfg.onMouseDown = [&workspace, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
+                                                                        std::int32_t y, bool shiftDown,
+                                                                        bool altDown, int clickCount) {
+        handleMouseDownEvent(hwnd, x, y, shiftDown, altDown, clickCount, workspace.active(), renderPipeline,
                              isDraggingMinimap);
     };
-    cfg.onMouseDrag = [&session, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
-                                                                      std::int32_t y) {
+    cfg.onMouseDrag = [&workspace, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
+                                                                        std::int32_t y) {
+        EditorSession& session = workspace.active();
         // Highest priority: a minimap drag never falls through to
         // rectangularAnchor/altCursorAnchor/ordinary text-drag handling
         // below - it tracks by Y alone (Phase 7v, see minimapLineAtY()'s

@@ -321,7 +321,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireMeasureFrameMode(cfg, window, renderPipeline, workspace.active().document(), frameProfile,
                              syntheticLineCountUsed);
     } else {
-        wireNormalMode(cfg, window, renderPipeline, workspace.active(), hInstance, findBar, commandPalette,
+        // WI-05 step 1: passes workspace itself (not workspace.active()) -
+        // wireNormalMode() now resolves the active session fresh wherever a
+        // stored/later-invoked callback needs it, so a future tab switch is
+        // reflected everywhere without this call site changing again.
+        wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
                        freeCursorModeEnabled, isDraggingMinimap);
         // Phase 7b/7d: reflect the startup document's language before the
