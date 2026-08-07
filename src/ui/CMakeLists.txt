@@ -4,6 +4,7 @@ add_library(neomifes_ui STATIC
     src/goto_line_bar.cpp
     src/grep_bar.cpp
     src/outline_pane.cpp
+    src/tab_bar.cpp
     src/main_window.cpp
 )
 add_library(neomifes::ui ALIAS neomifes_ui)

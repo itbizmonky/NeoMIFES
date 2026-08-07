@@ -1064,8 +1064,12 @@ void RenderPipeline::drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept {
     }
 
     const float widthDips = static_cast<float>(m_width) / m_dpiScale;
-    dc.FillRectangle(D2D1::RectF(0.0F, 0.0F, widthDips, kBreadcrumbHeightDips),
-                      m_breadcrumbBackgroundBrush.Get());
+    // WI-05: shifted down by m_tabBarHeightDips (0.0F when no tab bar
+    // exists, so this is a no-op pre-WI-05) - see setTabBarHeightDips()'s
+    // comment for why this class must not draw under the native tab strip.
+    dc.FillRectangle(
+        D2D1::RectF(0.0F, m_tabBarHeightDips, widthDips, m_tabBarHeightDips + kBreadcrumbHeightDips),
+        m_breadcrumbBackgroundBrush.Get());
 
     const std::vector<const syntax::OutlineNode*> path =
         syntax::findBreadcrumbPath(primaryIt->position, m_cachedOutline);
@@ -1094,7 +1098,7 @@ void RenderPipeline::drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept {
     if (FAILED(hr) || !layout) {
         return;
     }
-    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, 0.0F), layout.Get(), m_textBrush.Get());
+    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, m_tabBarHeightDips), layout.Get(), m_textBrush.Get());
 }
 
 std::optional<FoldVisual> RenderPipeline::stickyScrollRegionAt(LineNumber topLine) const noexcept {
@@ -1113,16 +1117,16 @@ std::optional<FoldVisual> RenderPipeline::stickyScrollRegionAt(LineNumber topLin
 
 float RenderPipeline::reservedTopHeightDips() const noexcept {
     if (m_document == nullptr) {
-        return kBreadcrumbHeightDips;
+        return m_tabBarHeightDips + kBreadcrumbHeightDips;
     }
     const std::uint64_t totalLines = m_document->lineCount();
     if (totalLines == 0) {
-        return kBreadcrumbHeightDips;
+        return m_tabBarHeightDips + kBreadcrumbHeightDips;
     }
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
     const bool hasSticky = stickyScrollRegionAt(startLine).has_value();
-    return kBreadcrumbHeightDips + (hasSticky ? kStickyScrollHeightDips : 0.0F);
+    return m_tabBarHeightDips + kBreadcrumbHeightDips + (hasSticky ? kStickyScrollHeightDips : 0.0F);
 }
 
 float RenderPipeline::leftColumnOffsetDips() const noexcept {
@@ -1167,8 +1171,10 @@ void RenderPipeline::drawStickyScroll(ID2D1DeviceContext6& dc) noexcept {
     }
 
     const float widthDips = static_cast<float>(m_width) / m_dpiScale;
-    dc.FillRectangle(D2D1::RectF(0.0F, kBreadcrumbHeightDips, widthDips,
-                                  kBreadcrumbHeightDips + kStickyScrollHeightDips),
+    // WI-05: shifted down by m_tabBarHeightDips - same reasoning as
+    // drawBreadcrumb()'s own edit above.
+    dc.FillRectangle(D2D1::RectF(0.0F, m_tabBarHeightDips + kBreadcrumbHeightDips, widthDips,
+                                  m_tabBarHeightDips + kBreadcrumbHeightDips + kStickyScrollHeightDips),
                       m_breadcrumbBackgroundBrush.Get());
     if (!m_dwriteFactory || !m_textFormat || !m_textBrush) {
         return;
@@ -1188,7 +1194,8 @@ void RenderPipeline::drawStickyScroll(ID2D1DeviceContext6& dc) noexcept {
     if (FAILED(hr) || !layout) {
         return;
     }
-    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, kBreadcrumbHeightDips), layout.Get(), m_textBrush.Get());
+    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, m_tabBarHeightDips + kBreadcrumbHeightDips),
+                      layout.Get(), m_textBrush.Get());
 }
 
 float RenderPipeline::minimapLeftDips() const noexcept {

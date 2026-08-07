@@ -140,8 +140,15 @@ bool claimSingleInstance(KernelHandle& mutexHolder) noexcept {
 void initCommonControls() noexcept {
     // ICC_TREEVIEW_CLASSES added for OutlinePane's WC_TREEVIEW (Phase 7g) -
     // this codebase's first control outside ICC_STANDARD_CLASSES.
-    const INITCOMMONCONTROLSEX icc{.dwSize = sizeof(icc),
-                                   .dwICC   = ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES};
+    // ICC_TAB_CLASSES added for ui::TabBar's WC_TABCONTROL (WI-05 step 2) -
+    // without this, WC_TABCONTROLW is never registered as a window class,
+    // so TabBar::create()'s CreateWindowExW silently fails (returns
+    // nullptr) and createAndPositionTabBar() takes its "unavailable this
+    // session" early-return path, leaving RenderPipeline's reserved tab-bar
+    // height rendered as a blank gap - a real dogfooding-caught bug, not a
+    // hypothetical.
+    const INITCOMMONCONTROLSEX icc{
+        .dwSize = sizeof(icc), .dwICC = ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES};
     ::InitCommonControlsEx(&icc);
 }
 

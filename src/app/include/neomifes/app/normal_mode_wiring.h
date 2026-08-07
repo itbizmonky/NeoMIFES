@@ -34,6 +34,7 @@
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
+#include "neomifes/ui/tab_bar.h"
 
 namespace neomifes::app {
 
@@ -92,10 +93,15 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // resolved the correct session) keeps taking EditorSession& unchanged - a
 // deliberately narrower, more precise realization of the same
 // no-stale-tab-reference guarantee, not a blanket rename.
+// WI-05 step 2: takes ui::TabBar& - created/positioned alongside outlinePane
+// in cfg.onDeferredInit and populated with the (still, at this step, always
+// single) tab derived from workspace's session list. No keybindings route
+// through it yet; TCN_SELCHANGE is routed to a no-op placeholder until step
+// 3 wires real tab-switching (see wireNormalMode()'s .cpp body).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
-                    bool& freeCursorModeEnabled, bool& isDraggingMinimap);
+                    ui::TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap);
 
 }  // namespace neomifes::app

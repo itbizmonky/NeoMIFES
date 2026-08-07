@@ -84,6 +84,9 @@ using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
 using neomifes::ui::OutlinePaneConfig;
+using neomifes::ui::TabBar;
+using neomifes::ui::TabBarConfig;
+using neomifes::ui::TabBarItem;
 
 // Bridges core::Viewport/SelectionModel state into RenderPipeline and
 // requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel/
@@ -1417,6 +1420,60 @@ void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Workspace& wor
                                 static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
+// WI-05: builds TabBar's item list from workspace's current session list.
+// Untitled sessions are numbered by their position among ONLY the
+// currently-untitled sessions (1-based) - so 2 simultaneously-open blank
+// tabs read "Untitled 1"/"Untitled 2" rather than both showing "Untitled 1"
+// with no way to tell them apart (formatTabBaseLabel()'s own comment
+// documents this convention; this is the one call site that decides the
+// ordinal). At step 2, workspace always holds exactly one session, so this
+// always returns a single-element vector - already written for the general
+// N-session case step 3 will actually exercise.
+std::vector<TabBarItem> buildTabBarItems(const Workspace& workspace) {
+    std::vector<TabBarItem> items;
+    items.reserve(workspace.sessionCount());
+    std::size_t untitledOrdinal = 0;
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        const EditorSession& session = workspace.sessionAt(i);
+        std::optional<std::wstring> filename;
+        if (session.isUntitled()) {
+            ++untitledOrdinal;
+        } else {
+            filename = session.path().filename().wstring();
+        }
+        items.push_back(TabBarItem{
+            .label   = neomifes::ui::formatTabBaseLabel(filename, untitledOrdinal),
+            .isDirty = session.isDirty(),
+        });
+    }
+    return items;
+}
+
+// WI-05 step 2: creates+positions+populates the tab strip, same "create
+// then prime the first position/size explicitly" shape
+// createAndPositionOutlinePane() above already established (onDeferredInit
+// runs strictly after the one-off startup WM_SIZE, so a widget created here
+// needs its own first onParentResized() call - see that function's own
+// comment for why). Unlike OutlinePane, TabBar also needs an initial
+// setTabs() call here: it is always visible (never toggled), so it must
+// show real data from its very first paint, not just once first interacted
+// with. config.onTabSelected is a placeholder at this step - Workspace
+// still only ever holds one session, so there is nothing yet for a tab
+// selection to switch to; step 3 replaces this with real
+// workspace.activate()+view-restore wiring.
+void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace, TabBar& tabBar) {
+    TabBarConfig config{};
+    config.onTabSelected = [](std::size_t /*index*/) {};
+    if (!tabBar.create(hwnd, hInstance, config)) {
+        return;
+    }
+    RECT clientRect{};
+    ::GetClientRect(hwnd, &clientRect);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    tabBar.onParentResized(static_cast<std::uint32_t>(clientRect.right), dpiScale);
+    tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
+}
+
 // WI-02: cfg.onDropFiles body, pulled out of wireNormalMode() for the same
 // cognitive-complexity reason as handleMouseDownEvent()/handleKeyDownEvent()
 // above. Multi-file drops open only the first path (no multi-tab yet, see
@@ -1484,9 +1541,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
-                    bool& freeCursorModeEnabled, bool& isDraggingMinimap) {
+                    TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap) {
+    // WI-05: a plain statement here (not inside any lambda) - this value
+    // never changes again for the process's lifetime (see
+    // setTabBarHeightDips()'s own comment), so there is no reason to defer
+    // it to onDeferredInit/onResize the way genuinely per-frame state is.
+    renderPipeline.setTabBarHeightDips(TabBar::heightDips());
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
-                          &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane,
+                          &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &freeCursorModeEnabled](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
@@ -1543,6 +1605,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
 
         // Same non-fatal treatment as findBar.create() above.
         createAndPositionOutlinePane(hwnd, hInstance, workspace, renderPipeline, outlinePane);
+        // WI-05 step 2: same non-fatal treatment as findBar.create() above -
+        // a tab strip that fails to create simply isn't available this
+        // session (the editor still works, just without visible tabs).
+        createAndPositionTabBar(hwnd, hInstance, workspace, tabBar);
         // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
         // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
         // "Fold/Unfold at Cursor" and the gutter markers work immediately,
@@ -1561,8 +1627,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // invalidates internally.
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     };
-    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane](
-                       HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
+                    &tabBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
@@ -1574,6 +1640,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         gotoLineBar.onParentResized(w, dpiScale);
         grepBar.onParentResized(w, dpiScale);
         outlinePane.onParentResized(w, h, dpiScale);
+        tabBar.onParentResized(w, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette, &grepBar](HWND, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
@@ -1582,9 +1649,16 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     // Phase 7g: OutlinePane's WC_TREEVIEW is this codebase's first control
     // that notifies via WM_NOTIFY rather than WM_COMMAND - see
-    // MainWindowConfig::onNotify's doc comment (main_window.h).
-    cfg.onNotify = [&outlinePane](HWND, WPARAM wParam, LPARAM lParam) {
-        return outlinePane.handleNotify(wParam, lParam);
+    // MainWindowConfig::onNotify's doc comment (main_window.h). WI-05:
+    // TabBar's WC_TABCONTROL notifies the same way - MainWindowConfig::
+    // onNotify is a single std::function (not a chain), so both are called
+    // unconditionally here, each independently checking "is this mine?" via
+    // NMHDR::hwndFrom (see OutlinePane::handleNotify()/TabBar::handleNotify()'s
+    // own comments for why neither TVN_SELCHANGEDW nor TCN_SELCHANGE require
+    // a specific non-zero reply, so discarding one return value is safe).
+    cfg.onNotify = [&outlinePane, &tabBar](HWND, WPARAM wParam, LPARAM lParam) {
+        outlinePane.handleNotify(wParam, lParam);
+        return tabBar.handleNotify(wParam, lParam);
     };
     // Phase 7c: SyntaxWorker's background-thread parse completion signal.
     // MainWindow forwards every WM_APP+ message it doesn't itself interpret

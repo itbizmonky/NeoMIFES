@@ -157,6 +157,25 @@ public:
     void setLeftColumn(std::uint32_t column) noexcept { m_leftColumn = column; }
     [[nodiscard]] std::uint32_t leftColumn() const noexcept { return m_leftColumn; }
 
+    // WI-05: the tab bar's fixed DIP height (ui::TabBar::heightDips()) - a
+    // native sibling HWND drawn ABOVE this class's own D2D surface (see
+    // outline_pane.h-style widgets vs. this class's swap chain), so this
+    // class must draw NOTHING in [0, m_tabBarHeightDips) or its own
+    // breadcrumb/sticky-scroll strips would be invisibly painted underneath
+    // the opaque tab strip. Folded into reservedTopHeightDips()'s return
+    // value and drawBreadcrumb()/drawStickyScroll()'s own Y origins (both of
+    // which hardcode absolute Y offsets rather than going through
+    // reservedTopHeightDips() - see those functions' bodies). Defaults to
+    // 0.0F so every code path that never calls this (measurement launch
+    // modes, existing tests that construct a RenderPipeline without a
+    // TabBar) keeps its pre-WI-05 layout exactly. Deliberately NOT part of
+    // FrameState's coarse-frame-skip comparison (unlike m_leftColumn/
+    // m_documentGeneration): set exactly once before the window is created
+    // and never again for the process's lifetime, unlike those two members
+    // which genuinely vary frame-to-frame - there is no "changed but not
+    // detected" risk here to guard against.
+    void setTabBarHeightDips(float heightDips) noexcept { m_tabBarHeightDips = heightDips; }
+
     // WI-03: the length (UTF-16 code units) of the longest line among those
     // ACTUALLY drawn last frame (drawVisibleLines() updates this as a side
     // effect of its existing per-line loop, at no extra cost - lineSpan.size()
@@ -777,6 +796,8 @@ private:
     // this stays windowed rather than a whole-document scan.
     std::uint32_t                                     m_leftColumn            = 0;
     std::uint32_t                                     m_maxVisibleLineLength  = 0;
+    // WI-05: see setTabBarHeightDips()'s own comment.
+    float                                              m_tabBarHeightDips     = 0.0F;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
