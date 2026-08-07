@@ -346,7 +346,49 @@ Win32/RenderPipeline非依存の純粋関数(`dispatchMouseDown`/`computeHScroll
 
 **検証:** Debug/Release/ubsan全構成・既存1026テスト全て無変更でgreen(新機能を足していないことの直接証明)、clang-tidy新規警告0。実アプリドッグフーディング(PowerShell経由のWin32 API相互運用によるプロセス起動・ウィンドウ操作・マウスホイールスクロール・ウィンドウクローズ)で退行なしを確認 — キーボード修飾キー合成(Ctrl+S等)を伴う編集/保存の往復検証は環境上の既知の制約により未実施、完了報告に明記済み(詳細は[`build_plan.md`](build_plan.md) WI-04節、[`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.71参照)。
 
-**スコープ外(WI-05以降):** `Workspace::openFile()`/`closeSession()`の実際のキーバインド配線(タブUI)。`GrepState`/`FindBar`等の`Workspace`所属化。
+**スコープ外(WI-04時点):** `Workspace::openFile()`/`closeSession()`の実際のキーバインド配線(WI-05で実装済み、下記§3.7参照)。`GrepState`/`FindBar`等の`Workspace`所属化(引き続きスコープ外)。
+
+### 3.7 タブ UI (`ui::TabBar` + 複数タブ挙動、WI-05実装、2026-08-08)
+
+`Workspace`(WI-04で新設)を実際に複数タブとして機能させる。`WC_TABCONTROL`を採用(既存ウィジェットの標準コントロール路線に合わせた判断)。
+
+```cpp
+// src/ui/include/neomifes/ui/tab_bar.h (新規)
+struct TabBarItem { std::wstring label; bool isDirty = false; };
+struct TabBarConfig { std::function<void(std::size_t index)> onTabSelected; };
+
+[[nodiscard]] inline std::wstring formatTabBaseLabel(
+    const std::optional<std::wstring>& filename, std::size_t untitledOrdinal);
+
+class TabBar {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const TabBarConfig&);
+    void setTabs(std::vector<TabBarItem> items, std::size_t activeIndex) noexcept;
+    void onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept;
+    LRESULT handleNotify(WPARAM, LPARAM) noexcept;  // TCN_SELCHANGE
+    [[nodiscard]] static constexpr float heightDips() noexcept;
+};
+```
+
+**`Workspace`の拡張:** `openBlank()`新設(Ctrl+N相当、失敗しない)。`openFile()`の戻り値を`std::optional<std::size_t>`から`std::variant<std::size_t, document::LoadError>`へ拡張(`document_open.h::openDocumentAt()`と同じ規約に合わせた、`Ctrl+O`が失敗理由をダイアログ表示し続けられる)。
+
+**`resetViewAfterDocumentSwap()`(WI-02由来)と新規`syncViewForActiveSession()`を明確に分離した:** 前者は「同一タブ内で文書を差し替える」(F12/Grep結果クリック)際に検索マッチ/フォールド/ブックマークを**クリアする**、後者は「既にそのタブ自身の状態を持つ既存セッションへ主役を移すだけ」のタブ切替向けで**復元する**。新規タブ(`openBlank()`)は状態が最初から空のため両者の観測結果が偶然一致し、同じ関数で対応できる。`syncViewForActiveSession()`は`renderPipeline.setDocument()`+`setLanguage()`(`SyntaxWorker`の保持木を強制的に作り直しタブ切替時の正しい言語再描画を実現)+ブックマーク/フォールド/マッチ/検索状態の復元+`SetFocus()`という構成。
+
+**キーバインド:** 新規ヘッダオンリー`tab_index_math.h`(`nextTabIndex`/`previousTabIndex`はwraparound、`tabIndexForDigit`は範囲外を`nullopt`でno-op、クランプしない)。`Ctrl+Tab`/`Shift+Tab`/`Ctrl+1`〜`9`/`Ctrl+W`を`handleTabSwitchKey()`/`handleTabCloseKey()`で配線。**`Ctrl+PgUp`/`Ctrl+PgDn`を意図的にタブ切替へ再割り当てした** — `applyMovementKey()`が`VK_PRIOR`/`VK_NEXT`について元々`ctrlDown`を見ておらず(矢印キー/Home/Endとは異なる既存の非対称性)、無条件でページ移動フォールバックへ落ちていたため、`handleTabSwitchKey()`をこのフォールバックより手前へ挿入して転用した。`Ctrl+W`が最後の1枚に対して押された場合は白紙へリセットする(無反応にしない)。
+
+**独立して発見・修正したバグ:** `confirmDiscardIfDirty()`の「保存しない」選択は`isDirty()`をクリアしない設計だが、`Workspace::closeSession()`は独立してdirtyなセッションを拒否する既存契約を持つため、両者が衝突し「保存しない」を選んでも`Ctrl+W`でタブが閉じない実害あるバグになっていた。`handleTabCloseKey()`内で破棄同意直後に`session.document().markSaved()`(実ディスク書き込みなし)を呼び解消した。
+
+**`RenderPipeline::setTabBarHeightDips()`:** タブ帯はネイティブ子ウィンドウとして最上部(y=0)に重なるため、`reservedTopHeightDips()`にタブバー高さを加算し、Breadcrumb/Sticky scrollの描画開始位置を下げる(`drawBreadcrumb()`/`drawStickyScroll()`が直接ハードコードしていたY原点も機械的に置換が必要だった)。
+
+**🔴 ドッグフーディングで発見した2件のバグ(1件修正、1件は未解決issueとして起票):**
+1. `initCommonControls()`に`ICC_TAB_CLASSES`が欠落しており`WC_TABCONTROLW`が未登録のまま`CreateWindowExW`が無言で`nullptr`を返していた実害あるバグ — 修正済み。
+2. **修正後もタブ帯が画面上に見えず、調査の結果`FindBar`(Phase 5b3a以来の既存機能)を含む全ネイティブWin32オーバーレイウィジェットが画面上に一切描画されない、WI-05固有ではない全社的な不具合と判明した。** DXGI flip-model/DWM合成無効化/RDPセッション/低コントラスト/`WM_PAINT`枯渇の5仮説を検証し全て否定したが根本原因は未特定のまま、[`docs/issues/native_overlay_widgets_invisible.md`](../issues/native_overlay_widgets_invisible.md)(🔴 P0、未解決)として起票し本格調査を将来セッションへ引き継いだ。この既知の制約下で、WI-05のDoD検証はWin32 API構造確認(`TCM_GETITEMCOUNT`)と単体テストで代替した。
+
+**影響ファイル:** 新規`src/ui/tab_bar.h/.cpp`・`src/app/tab_index_math.h`、`src/app/workspace.h/.cpp`(拡張)、`src/app/normal_mode_wiring.cpp`(大幅拡張)、`src/render/render_pipeline.h/.cpp`(`setTabBarHeightDips()`)、`src/app/launch_setup.cpp`(`ICC_TAB_CLASSES`)、`tests/unit/app_workspace_test.cpp`(拡張)・`app_tab_index_math_test.cpp`(新規)・`ui_tab_bar_test.cpp`(新規)。
+
+**検証:** Debug/Release/ubsan全構成・1044/1044テスト全green、clang-tidy新規警告0。視覚確認は上記issueによりブロック中(詳細は[`build_plan.md`](build_plan.md) WI-05節、[`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.72参照)。
+
+**スコープ外:** タブへの閉じるボタン(✕、`Ctrl+W`のみでv1完結)、F12/Grep結果クリックの「その場置換」動作(変更なし)、`GrepState`/`FindBar`等の`Workspace`所属化。
 
 ---
 

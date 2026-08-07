@@ -2761,4 +2761,22 @@ WI-03完了・ユーザーから「WI-04に進め」と指示された。`build_
 
 コミット済み`c58245e`(ステップ1)/`8237ec4`(ステップ2)/`2c549d0`(ステップ3)/`3480b5f`(ステップ3b+launch_setup分割)、pushはユーザーの明示指示待ち。次はWI-05(タブUI)。
 
+## Session 83 (2026-08-08): WI-05 (タブ UI) 実装完了、🔴 全社的な不可視ウィジェットissueを発見
+
+WI-04完了・ユーザーから「WI-05に進め」と指示された。Explore agent + Plan agentによる着手前調査で`normal_mode_wiring.cpp`の約46関数全てが固定`EditorSession&`を引数に取っており、タブが複数になった時点で「今アクティブなセッション」を指し続けられないという中心的な設計課題を特定した。4ステップに分割して実装し、各ステップ後にビルド+テスト検証してコミットした(WI-04と同じ規律)。
+
+**ステップ1 (`4f9bced`):** `EditorSession&`引数を機械的に`Workspace&`へ置換。`confirmDiscardIfDirty()`/`performSave()`のみ、`WM_CLOSE`が全セッションを個別に確認する必要があるため`EditorSession&`のまま維持した唯一の例外。既存の1026テスト全て無変更でgreen(新規挙動ゼロの直接証明)。
+
+**ステップ2 (`fe037d7`):** `WC_TABCONTROL`を採用した新規`ui::TabBar`+`RenderPipeline::setTabBarHeightDips()`。**ドッグフーディングで2件の発見があった。** 1件目: `initCommonControls()`に`ICC_TAB_CLASSES`が欠落しており`WC_TABCONTROLW`が未登録のまま`CreateWindowExW`が無言で`nullptr`を返す実害あるバグを発見・修正した。2件目、修正後もタブ帯が見えないままだったため広範な調査(DXGI flip-model/DWM合成無効化/RDPセッション/低コントラスト/`WM_PAINT`枯渇の5仮説を検証)を行い、`AskUserQuestion`でユーザー自身の実機確認を提案したところ、**`FindBar`(Phase 5b3a以来の既存・実績ある機能)を含む全てのネイティブWin32オーバーレイウィジェットが画面上に一切描画されない、WI-05固有ではない全社的な不具合**であるとユーザーが確認した。ユーザーの指示(「docs/issues/に起票して調査を引き継ぐ」)により`docs/issues/native_overlay_widgets_invisible.md`(🔴 P0)を起票し、本格調査(デバッガアタッチ、`WM_PAINT`計装、別環境での再現確認)を将来セッションへ引き継いだ。
+
+**ステップ3 (`62edf0c`):** 実際の複数タブ挙動を実装。`Workspace::openBlank()`新設+`openFile()`戻り値を`std::variant<size_t, LoadError>`へ拡張(`document_open.h::openDocumentAt()`と同じ規約)。新規`syncViewForActiveSession()`(タブ切替時に既存セッションの状態を**復元**)を、既存`resetViewAfterDocumentSwap()`(文書差し替え時に状態を**クリア**)とは明確に別物として新設。新規`tab_index_math.h`で`Ctrl+Tab`/`Shift+Tab`(wraparound)/`Ctrl+1`-`9`(額面通り、Chrome/VSCode式の「9=最後」は不採用)の純粋関数を実装。`Ctrl+PgUp`/`Ctrl+PgDn`は`applyMovementKey()`が元々`ctrlDown`を見ていなかった間隙を突き、タブ切替へ意図的に再割り当てした。**独立して発見・修正したバグ:** `confirmDiscardIfDirty()`の「保存しない」選択は`isDirty()`をクリアしない設計だが、`Workspace::closeSession()`は独立してdirtyなセッションを拒否する既存契約を持つため、「保存しない」を選んでも`Ctrl+W`でタブが閉じない矛盾があった。破棄同意直後に`session.document().markSaved()`(実ディスク書き込みなし)を呼び解消した。`Ctrl+O`/`Ctrl+N`は新規タブ追加のみで既存タブを破壊しないため`confirmDiscardIfDirty()`ゲートを削除。複数ファイルドラッグ&ドロップで全ファイルをタブとして開くよう変更(従来は先頭のみ)。`WM_CLOSE`を全セッション巡回確認へ変更。`TabBar::setTabs()`を毎フレーム呼びライブ更新(●マーカー追従)、`handleSaveKey()`に保存後の`InvalidateRect()`を追加。1041テスト全green(既存1026+新規15、`UndoHistoryIsIndependentPerSession`含む)。
+
+**ステップ4 (`57acef8`):** `ui_tab_bar_test.cpp`新設(`formatTabBaseLabel()`単体テスト3件)。1044テスト全green。`normal_mode_wiring.cpp`内の新規関数自体には従来通り専用テストを追加しない(同ファイル既存関数群と同じ「Win32/RenderPipeline結合コードは実アプリドッグフーディングで検証」という既存の割り切りを踏襲)。
+
+**実測検証:** ローカルDebug/Release/ubsan全構成で1044/1044テスト全green(全4ステップで確認)。変更/新規ファイルへclang-tidy個別実行、新規警告0。**DoD項目のうち視覚確認を要するもの(タブ切替の見た目、●マーカー、警告ダイアログ)は上記の不可視ウィジェットissueによりブロックされたため、Win32 API構造確認(`TCM_GETITEMCOUNT`)と単体テストで代替検証した** — 完了報告に正直に明記済み。
+
+**ドキュメント同期:** `build_plan.md`(WI-05 DoD全項目`[x]`化+実装後の確定事項節新設)、`master_roadmap.md`(§8.5.6に実装後の確定事項追記)、`RESUME_HERE.md`(冒頭ポインタ+§1状態表+新規§3.72完了記録、WI-06着手前に不可視ウィジェットissueを確認するよう明記)、`docs/issues/README.md`(新規issue追加)。
+
+コミット済み`4f9bced`(ステップ1)/`fe037d7`(ステップ2)/`62edf0c`(ステップ3)/`57acef8`(ステップ4)、pushはユーザーの明示指示待ち。次はWI-06(IME完全対応)。
+
 <!-- 次セッションはここに追記 -->

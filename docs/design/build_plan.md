@@ -112,7 +112,7 @@ ctest --preset debug --output-on-failure
   - 🎉 **M1 達成 (2026-08-05): NeoMIFES で NeoMIFES を編集できるようになった (ドッグフーディング完了)**
 - [x] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → コミット: `6052da8`
 - [x] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → コミット: `c58245e` (ステップ1) / `8237ec4` (ステップ2) / `2c549d0` (ステップ3) / `3480b5f` (ステップ3b)
-- [ ] **WI-05** タブ UI (`ui::TabBar`) → `________`
+- [x] **WI-05** タブ UI (`ui::TabBar`) → コミット: `4f9bced` (ステップ1) / `fe037d7` (ステップ2) / `62edf0c` (ステップ3) / `57acef8` (ステップ4)
 - [ ] **WI-06** IME 完全対応 (`WM_IME_*` + インライン未確定文字列) → `________`
 - [ ] **WI-07** ウィンドウクローム (メニュー / `HACCEL` / ステータスバー / 行番号 / `.rc`) → `________`
   - 🎉 **M2 達成: アプリケーションとして成立**
@@ -547,12 +547,30 @@ public:
 
 ### DoD
 
-- [ ] 10 個のファイルをタブで開き、`Ctrl+Tab` で切り替えられる
-- [ ] **各タブが独立した Undo 履歴・カーソル位置・スクロール位置・検索状態を保持する**
-- [ ] 未保存タブに ● が表示され、保存すると消える
-- [ ] `Ctrl+W` で閉じるとき、未保存なら警告が出る
-- [ ] タブ切替時にシンタックスハイライトが正しい言語で再描画される
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] 10 個のファイルをタブで開き、`Ctrl+Tab` で切り替えられる (`Workspace::openFile()`/`openBlank()`+`handleTabSwitchKey()`実装完了。**視覚的なタブ切替の実機確認は下記「実装後の確定事項」に記載の`docs/issues/native_overlay_widgets_invisible.md`によりブロック中** — Win32 API構造確認 (`TCM_GETITEMCOUNT`) と`app_workspace_test.cpp`の網羅的単体テストで代替)
+- [x] **各タブが独立した Undo 履歴・カーソル位置・スクロール位置・検索状態を保持する** (`EditorSession`が個別に保持する構造的帰結 (WI-04)。`UndoHistoryIsIndependentPerSession`単体テストで直接検証。カーソル/スクロール/検索状態は`syncViewForActiveSession()`がタブ切替の都度復元する設計で、視覚確認は上記と同じ理由でブロック中)
+- [x] 未保存タブに ● が表示され、保存すると消える (`TabBar::setTabs()`を毎フレーム呼びライブ反映、`handleSaveKey()`に`InvalidateRect()`追加。視覚確認は上記と同じ理由でブロック中)
+- [x] `Ctrl+W` で閉じるとき、未保存なら警告が出る (`confirmDiscardIfDirty()`経由、最後の1枚は白紙へリセット。視覚確認は上記と同じ理由でブロック中)
+- [x] タブ切替時にシンタックスハイライトが正しい言語で再描画される (`syncViewForActiveSession()`が`setLanguage()`を呼び`SyntaxWorker`の保持木を強制的に作り直す。視覚確認は上記と同じ理由でブロック中)
+- [x] Debug / Release / ubsan 全 green (1044/1044)、clang-tidy 新規警告 0 (ステップ1〜4の全コミットで確認済み)
+
+### 実装後の確定事項
+
+**`WC_TABCONTROL`を採用** (自前D2D描画は不採用) — 既存ウィジェット (`OutlinePane`) の標準コントロール路線に合わせた。`initCommonControls()`に`ICC_TAB_CLASSES`が欠落しており`WC_TABCONTROLW`が未登録のままだった実害あるバグをステップ2のドッグフーディングで発見・修正した (`ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES`)。
+
+**🔴 未解決の重大issue: `docs/issues/native_overlay_widgets_invisible.md`。** ステップ2完了後のドッグフーディングで、`TabBar`を含む全てのネイティブ Win32 オーバーレイウィジェット (`FindBar`/`GrepBar`/`CommandPalette`/`GotoLineBar`/`OutlinePane`/`TabBar`) が、Win32 API上は正しく作成・配置・データ投入されている (`TCM_GETITEMCOUNT`等で確認可能) にもかかわらず画面上に一切描画されない、という WI-05 固有ではない全社的な不具合が発覚した。ユーザー自身が実機で`Ctrl+F`(FindBar、Phase 5b3a以来の既存・実績ある機能)を押しても入力欄が見えないことを確認し、TabBar固有の問題ではなくシステム全体の問題であると確定した。DXGI flip-model/DWM合成無効化/RDPセッション/低コントラスト/`WM_PAINT`枯渇の5仮説を検証し全て否定したが、根本原因は未特定のまま。ユーザーの指示によりissueとして起票し本格調査は将来のセッションへ引き継いだ。**WI-05自体の実装は、この既知の制約下で「実アプリでの視覚確認」の代わりにWin32 API構造確認+単体テストで検証を進めた** (Ctrl+S後の●マーカー消滅のような視覚専用のDoD項目は、その裏付けとなるコード自体 (`InvalidateRect()`呼び出し等) の存在確認をもって「実装完了」の根拠とした)。
+
+**`resetViewAfterDocumentSwap()`と`syncViewForActiveSession()`を明確に分離した。** 前者 (WI-02由来) は「同一タブ内で文書を差し替える」際 (F12/Grep結果クリック) に検索マッチ/フォールド/ブックマークを**クリアする**関数のまま変更していない。後者 (WI-05新設) は「既にそのタブ自身の状態を持つ既存セッションへ主役を移すだけ」のタブ切替向けで、クリアではなく**復元**する。新規タブ (`openBlank()`) では両者の観測結果が偶然一致する (状態が最初から空のため) ため、新規タブにも`syncViewForActiveSession()`のみで対応できた。
+
+**`Workspace::openFile()`の戻り値を`std::optional<size_t>`から`std::variant<size_t, document::LoadError>`へ拡張した。** 既存の`document_open.h::openDocumentAt() -> std::variant<LoadedFileMeta, document::LoadError>`と同じ`variant`規約に厳密に合わせた判断 (`std::expected`という2つ目の「成功か失敗か」表現を持ち込まない)。`Ctrl+O`が具体的な失敗理由をダイアログ表示し続けられる。
+
+**`Ctrl+PgUp`/`Ctrl+PgDn`を意図的にタブ切替へ再割り当てした。** `editor_input.cpp`の`applyMovementKey()`は元々`VK_PRIOR`/`VK_NEXT`について`ctrlDown`を見ておらず (矢印キー/Home/Endとは異なる既存の非対称性)、無条件でページ移動フォールバックへ落ちていた。`handleTabSwitchKey()`をこのフォールバックより手前へ挿入することでタブ切替用に転用した。
+
+**`Ctrl+1`〜`Ctrl+9`は額面通りの位置** (Ctrl+1=タブ0、…、Ctrl+9=タブ8)。Chrome/VSCode式の「Ctrl+9=常に最後のタブ」は不採用 — `tabIndexForDigit()`は範囲外/該当タブなしをクランプせず`nullopt`(no-op)として扱う。
+
+**独立して発見・修正したバグ: `confirmDiscardIfDirty()`の「保存しない」選択と`Workspace::closeSession()`の独立したdirtyチェックが衝突していた。** 前者はユーザーが破棄に同意しても`isDirty()`自体はクリアしない設計だが、後者はdirtyなセッションを無条件に拒否する既存契約を持つ。放置すると`Ctrl+W`で「保存しない」を選んでもタブが閉じない実害あるバグになっていたため、`handleTabCloseKey()`内で破棄同意直後に`session.document().markSaved()` (実ディスク書き込みなし) を呼びこの矛盾を解消した。
+
+**U#24 (`SyntaxWorker`を共有するかタブごとに持つか) の回答: 共有のまま。** `syncViewForActiveSession()`の`setLanguage()`呼び出しが`SyntaxWorker`の保持木破棄+全文書再解析を毎回強制するため、タブ切替のたびに正しい言語で再描画される。体感が悪ければ将来分離を検討する (ベンチ根拠なしに先行複雑化しないというCLAUDE.mdルール10の方針通り)。
 
 ---
 

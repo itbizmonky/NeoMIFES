@@ -4,7 +4,7 @@
 >
 > **本ファイルは「これまでの経緯」の記録が中心 (2,100 行)。実際に手を動かすための指示は `build_plan.md` にある。**
 > `build_plan.md` §0 のコールドスタート手順を実行すれば、次に何をどう作ればよいかが 5〜10 分で確定する。
-> **🎉 M1 達成 (2026-08-05)。WI-03 (横スクロール) 完了・コミット済み (`6052da8`)。WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設) も完了・コミット済み (`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`)。main.cpp は 2,439行→361行まで縮小した。次にやること: WI-05 (タブ UI)** — `build_plan.md` §5 参照。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。WI-02 (ファイルライフサイクル UI) は実装・コミット済み (`3e611d8`)。ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見・報告 → 根本原因を特定・修正・回帰テストで実証、コミット済み (`5712435`)。ユーザーが2バグとも解消したことを再確認した後、**実際に `README.md` を NeoMIFES で開いて編集・`Ctrl+S` 保存・`git diff`/`git status` 確認・`git commit` (`d02138b`、修正コミット`34b79e5`) まで完走した。** これにより 🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した。§3.69参照。WI-03 (横スクロール) は本コードベース初のネイティブスクロールバー(`WS_HSCROLL`)を実装し完了した。§3.70参照。WI-04は当初の3段階計画では500行のDoDに届かず、ステップ3b (`normal_mode_wiring.{h,cpp}`) とさらなる分割 (`launch_setup.{h,cpp}`) を追加して完了した。ドッグフーディングでシンタックスハイライト/ミニマップ/スクロール動作を実機確認済み。§3.71参照。次はWI-05に着手すること。
+> **🎉 M1 達成 (2026-08-05)。WI-03 (横スクロール) 完了 (`6052da8`)。WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設) 完了 (`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`)。WI-05 (タブ UI) も完了 (`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`)。main.cpp は 2,439行→361行まで縮小、複数タブ (`Ctrl+Tab`/`Ctrl+Shift+Tab`/`Ctrl+1`〜`9`/`Ctrl+W`) が実装された。次にやること: WI-06 (IME 完全対応)** — `build_plan.md` §5 参照。**🔴 WI-05 ステップ2のドッグフーディングで、`FindBar`/`GrepBar`/`CommandPalette`/`GotoLineBar`/`OutlinePane`/`TabBar` を含む全ネイティブ Win32 オーバーレイウィジェットが画面上に一切描画されない全社的な不具合が発覚し未解決のまま (`docs/issues/native_overlay_widgets_invisible.md`)。** WI-06 (IME) はメインエディタの D2D 描画領域への直接描画のためこの issue の影響を受けない可能性が高いが、着手前に本 issue を確認すること。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。WI-02 (ファイルライフサイクル UI) は実装・コミット済み (`3e611d8`)。ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見・報告 → 根本原因を特定・修正・回帰テストで実証、コミット済み (`5712435`)。ユーザーが2バグとも解消したことを再確認した後、**実際に `README.md` を NeoMIFES で開いて編集・`Ctrl+S` 保存・`git diff`/`git status` 確認・`git commit` (`d02138b`、修正コミット`34b79e5`) まで完走した。** これにより 🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した。§3.69参照。WI-03 (横スクロール) は本コードベース初のネイティブスクロールバー(`WS_HSCROLL`)を実装し完了した。§3.70参照。WI-04は当初の3段階計画では500行のDoDに届かず、ステップ3b (`normal_mode_wiring.{h,cpp}`) とさらなる分割 (`launch_setup.{h,cpp}`) を追加して完了した。ドッグフーディングでシンタックスハイライト/ミニマップ/スクロール動作を実機確認済み。§3.71参照。**WI-05 (タブUI) はステップ1〜4の4コミットで完了。ステップ2のドッグフーディングで `ICC_TAB_CLASSES` 欠落バグ (修正済み) と上記の全社的な不可視ウィジェットissue (未解決) の2件を発見。ステップ3で `Workspace::openBlank()`/`openFile()`のvariant拡張・`syncViewForActiveSession()`・タブ切替キーバインド一式を実装し、`confirmDiscardIfDirty()`/`closeSession()`のdirtyチェック衝突バグも独立して発見・修正した。§3.72参照。** 次はWI-06に着手すること。
 >
 > ---
 
@@ -154,8 +154,8 @@
 | 8.5a | **文書保存基盤** (`saveFile()`、`isDirty()`。probeでmmap解放は不要と判明し実装からは除外) | ✅ **完了 (WI-01、コミット済み`a4a0445`、pushはユーザー指示待ち、§3.67参照)** |
 | **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | ✅ **完了 (WI-02、コミット済み`3e611d8`、§3.68参照)。ドッグフーディングで2件のバグ発覚→修正・ユーザー確認済み (§3.69参照)、コミット`5712435`/`8199c38`/`a8df325`。ユーザーが実際にNeoMIFESで編集・保存・`git commit`(`d02138b`/`34b79e5`)まで完走し **🎉 M1 達成 (2026-08-05)**。pushはユーザー指示待ち** |
 | **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`EditorSession`/`Workspace`) | ✅ **完了 (WI-04、main.cpp 2,439行→361行、コミット`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`、§3.71参照)** |
-| 8.5d | タブ UI (`ui::TabBar`) | ⏭️ P0 (**次にやること**) |
-| 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 |
+| **8.5d** | **タブ UI** (`ui::TabBar`) | ✅ **完了 (WI-05、コミット`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`、§3.72参照)** |
+| 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 (**次にやること**) |
 | 8.5f | ウィンドウクローム (メニュー/`HACCEL`/ステータスバー/行番号/`.rc`/`.ico`) | ⏭️ P0 |
 | **8.5g** | **横スクロール** (`leftColumn`、`WM_HSCROLL`) | ✅ **完了 (WI-03、コミット`6052da8`、§3.70参照)** |
 | 8.6a〜e | 製品化基盤 (設定/キーバインド/テーマ/自動保存/基本編集の穴埋め) | ⏭️ P1 |
@@ -2241,6 +2241,28 @@ WI-03完了後、ユーザーから「WI-04に進め」と指示された。`bui
 - [x] Debug/Release/ubsan全green、clang-tidy新規警告0
 
 **コミット済み`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`、pushはユーザーの明示指示待ち。** 次はWI-05(タブUI)。
+
+### 3.72 WI-05 (タブ UI) 完了記録 (2026-08-08)
+
+WI-04完了後、ユーザーから「WI-05に進め」と指示された。4ステップに分割して実施 (WI-04と同じ規律)。
+
+**ステップ1 (コミット`4f9bced`):** `normal_mode_wiring.{h,cpp}`内の`EditorSession&`引数を機械的に`Workspace&`へ置換 (関数本体先頭に`auto& session = workspace.active();`を1行追加するのみ)。`confirmDiscardIfDirty()`/`performSave()`は`WM_CLOSE`が全セッションを個別に確認する必要があるため`EditorSession&`のまま維持した唯一の例外。既存挙動を1バイトも変えない純粋な置換であることを1026テスト全green (無変更) で確認。
+
+**ステップ2 (コミット`fe037d7`):** 新規`ui::TabBar`(`WC_TABCONTROL`採用)+`RenderPipeline::setTabBarHeightDips()`。**ドッグフーディングで`initCommonControls()`に`ICC_TAB_CLASSES`が欠落しており`WC_TABCONTROLW`が未登録のまま(`CreateWindowExW`が無言で`nullptr`を返す)だった実害あるバグを発見・修正した。** 修正後もタブ帯が画面上に見えないままだったため追加調査した結果、**`FindBar`(Phase 5b3a以来の既存・実績ある機能)を含む全ネイティブWin32オーバーレイウィジェットが画面上に一切描画されない、WI-05固有ではない全社的な不具合**であるとユーザー自身の実機確認で判明した。DXGI flip-model/DWM合成無効化/RDPセッション/低コントラスト/`WM_PAINT`枯渇の5仮説を検証し全て否定したが根本原因は未特定。ユーザーの指示 (「docs/issues/に起票して調査を引き継ぐ」) により`docs/issues/native_overlay_widgets_invisible.md`(🔴 P0、未解決)を起票し本格調査を将来セッションへ引き継いだ。
+
+**ステップ3 (コミット`62edf0c`):** 実際の複数タブ挙動を実装。`Workspace::openBlank()`新設+`openFile()`の戻り値を`document_open.h::openDocumentAt()`と同じ`std::variant<size_t, LoadError>`規約へ拡張。新規`syncViewForActiveSession()`(タブ切替時に既存セッションの状態を**復元**、既存`resetViewAfterDocumentSwap()`は文書差し替え時に状態を**クリア**する別物のまま維持)。新規`tab_index_math.h`(`nextTabIndex`/`previousTabIndex`のwraparound、`tabIndexForDigit`は額面通りでクランプしない)。`handleTabSwitchKey()`/`handleTabCloseKey()`で`Ctrl+Tab`/`Shift+Tab`/`PgUp`/`PgDn`/`1`-`9`/`W`を配線 (`Ctrl+PgUp`/`PgDn`は`applyMovementKey()`が元々`ctrlDown`を見ていなかった間隙を突いた意図的な再割り当て)。**独立して発見・修正したバグ:** `confirmDiscardIfDirty()`の「保存しない」選択は`isDirty()`をクリアしないが、`Workspace::closeSession()`は独立してdirtyなセッションを拒否する既存契約を持つため、「保存しない」を選んでも`Ctrl+W`でタブが閉じない矛盾があった。破棄同意直後に`session.document().markSaved()`(実ディスク書き込みなし)を呼び解消した。`Ctrl+O`/`Ctrl+N`からは`confirmDiscardIfDirty()`ゲートを削除(新規タブ追加は既存タブを破壊しないため不要と判断)。複数ファイルドラッグ&ドロップで全ファイルをタブとして開くよう変更(従来は先頭のみ)。`WM_CLOSE`は全セッションを巡回確認するよう変更。`TabBar::setTabs()`を毎フレーム呼びライブ更新(●マーカー追従)。1041テスト全green (既存1026+新規15)。
+
+**ステップ4 (コミット`57acef8`):** `ui_tab_bar_test.cpp`新設(`formatTabBaseLabel()`単体テスト3件)。1044テスト全green。`normal_mode_wiring.cpp`内の新規関数自体には従来通り専用テストを追加しない(同ファイル既存~46関数と同じ「Win32/RenderPipeline結合コードは実アプリドッグフーディングで検証」という既存の割り切りを踏襲)。
+
+**完了条件:**
+- [x] 10個のファイルをタブで開き`Ctrl+Tab`で切り替えられる(実装完了・単体テスト済み。視覚確認は上記issueによりブロック中、Win32 API構造確認`TCM_GETITEMCOUNT`で代替)
+- [x] 各タブが独立したUndo履歴・カーソル位置・スクロール位置・検索状態を保持する(`UndoHistoryIsIndependentPerSession`テストで直接検証)
+- [x] 未保存タブに●が表示され保存すると消える(実装完了、視覚確認は上記issueによりブロック中)
+- [x] `Ctrl+W`で閉じるとき未保存なら警告が出る(実装完了、視覚確認は上記issueによりブロック中)
+- [x] タブ切替時にシンタックスハイライトが正しい言語で再描画される(`setLanguage()`が`SyntaxWorker`保持木を強制的に作り直す)
+- [x] Debug/Release/ubsan全green (1044/1044)、clang-tidy新規警告0
+
+**コミット済み`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`、pushはユーザーの明示指示待ち。** 次はWI-06(IME完全対応) — 着手前に`docs/issues/native_overlay_widgets_invisible.md`を確認すること(WI-06はメインエディタのD2D描画領域への直接描画のためこのissueの影響を受けない可能性が高いが未確認)。
 
 ---
 

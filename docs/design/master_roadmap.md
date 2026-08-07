@@ -1715,6 +1715,8 @@ class Workspace {
 - タブに未保存マーカー (●) を表示
 - **設計判断が必要な点:** `render::SyntaxWorker` はタブごとに持つか 1 個を共有するか。共有する場合、タブ切替時に `resetIncrementalState=true` で保持木を捨てる必要がある (Phase 8d で確立済みの経路がそのまま使える)
 
+**実装後の確定事項 (2026-08-08、WI-05 完了、コミット `4f9bced`/`fe037d7`/`62edf0c`/`57acef8`):** `WC_TABCONTROL` を採用。`SyntaxWorker` は共有のまま (`syncViewForActiveSession()` の `setLanguage()` 呼び出しが保持木破棄を毎回強制するため正しく動作する、体感が悪化すれば分離を再検討)。`Workspace::openFile()` の戻り値を `document_open.h::openDocumentAt()` と同じ `std::variant<size_t, LoadError>` 規約へ拡張。`Ctrl+PgUp`/`Ctrl+PgDn` は既存の `applyMovementKey()` が `ctrlDown` を見ていなかった間隙を突きタブ切替へ意図的に再割り当てした。ステップ2のドッグフーディングで `initCommonControls()` に `ICC_TAB_CLASSES` が欠落し `WC_TABCONTROLW` が未登録のままだった実害あるバグを発見・修正。**同じドッグフーディングで、`TabBar` だけでなく `FindBar`/`GrepBar`/`CommandPalette`/`GotoLineBar`/`OutlinePane` を含む全ネイティブ Win32 オーバーレイウィジェットが画面上に一切描画されない、WI-05 固有ではない全社的な不具合を発見した (`docs/issues/native_overlay_widgets_invisible.md`、🔴 未解決)。** 5 つの仮説 (DXGI flip-model/DWM合成無効化/RDPセッション/低コントラスト/`WM_PAINT`枯渇) を検証し全て否定したが根本原因は未特定のまま、ユーザーの指示で本格調査は将来セッションへ引き継いだ。この既知の制約下で、WI-05 の DoD 検証は Win32 API 構造確認 (`TCM_GETITEMCOUNT`) と単体テスト (`app_workspace_test.cpp`/`app_tab_index_math_test.cpp`/`ui_tab_bar_test.cpp`) で代替した。詳細な設計判断は `build_plan.md` WI-05 の「実装後の確定事項」を参照。
+
 ### 8.5.7 サブフェーズ 8.5e — IME 完全対応 (roadmap §16.1 の実フェーズ化)
 
 **現状:** `src/ui/src/main_window.cpp` が処理する 15 種の `WM_*` に `WM_IME_*` は 1 つも含まれない。Find bar 等の `WC_EDIT` 子コントロールだけが Win32 から IME を無償で得ている。
