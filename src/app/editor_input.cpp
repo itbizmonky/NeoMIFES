@@ -9,13 +9,19 @@
 #include <utility>
 #include <vector>
 
+#include <filesystem>
+
+#include "neomifes/app/syntax_language.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
 #include "neomifes/core/folding_model.h"
+#include "neomifes/core/indentation_conversion.h"
+#include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
+#include "neomifes/syntax/outline.h"
 
 namespace neomifes::app {
 
@@ -353,6 +359,91 @@ bool deleteAllSelections(CommandDispatcher& dispatcher, SelectionModel& selectio
     dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
     viewport.ensureVisible(selection.primaryCursor().position, document);
     return true;
+}
+
+bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
+                       SelectionModel& selectionModel, Viewport& viewport, const Document& document,
+                       std::optional<document::TextPos>& altCursorAnchor,
+                       std::optional<document::TextPos>& rectangularAnchor) {
+    if (altDown) {
+        // Alt+Shift+click extends the cursor the last plain Alt+click added
+        // (if any); otherwise (including a bare Alt+Shift+click with no
+        // prior Alt+click to extend) it falls through to adding a new
+        // cursor, same as plain Alt+click. Alt+double/triple-click's
+        // meaning is left undefined rather than guessed at - click count is
+        // not consulted here at all.
+        if (shiftDown) {
+            rectangularAnchor = hit;
+            if (altCursorAnchor) {
+                selectionModel.moveCursorMatching(*altCursorAnchor, hit);
+                viewport.ensureVisible(hit, document);
+                return true;
+            }
+        } else {
+            // Plain Alt+click is not a rectangular-selection gesture - clear
+            // any stale anchor a prior Shift+Alt+click left behind, so a
+            // plain Alt+drag that follows isn't mistaken for one.
+            rectangularAnchor.reset();
+        }
+        const bool changed = handleAltClick(hit, selectionModel, viewport, document);
+        altCursorAnchor    = hit;
+        return changed;
+    }
+    // A plain click abandons any in-progress Alt-cursor extension - the next
+    // drag should extend the primary selection again, not the old target.
+    altCursorAnchor.reset();
+    rectangularAnchor.reset();
+    if (clickCount >= 3) {
+        return handleTripleClick(hit, selectionModel, viewport, document);
+    }
+    if (clickCount == 2) {
+        return handleDoubleClick(hit, selectionModel, viewport, document);
+    }
+    return handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
+}
+
+std::optional<std::uint32_t> computeHScrollTargetColumn(WORD scrollCode, WORD scrollPos,
+                                                         std::uint32_t currentColumn,
+                                                         std::uint32_t pageStep) noexcept {
+    switch (scrollCode) {
+        case SB_LINELEFT:
+            return currentColumn > 0 ? currentColumn - 1 : 0;
+        case SB_LINERIGHT:
+            return currentColumn + 1;
+        case SB_PAGELEFT:
+            return currentColumn > pageStep ? currentColumn - pageStep : 0;
+        case SB_PAGERIGHT:
+            return currentColumn + pageStep;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION:
+            return scrollPos;
+        default:
+            return std::nullopt;
+    }
+}
+
+bool applyIndentationConversion(core::IndentationConversionTarget target, Document& document,
+                                CommandDispatcher& dispatcher, const SelectionModel& selectionModel) {
+    constexpr int kTabWidth = 4;
+    auto edits = core::computeIndentationConversionEdits(target, kTabWidth, document);
+    if (edits.empty()) {
+        return false;
+    }
+    const std::vector<Cursor> cursorsBefore(selectionModel.cursors().begin(),
+                                            selectionModel.cursors().end());
+    dispatcher.dispatch(std::make_unique<core::ReplaceAllCommand>(std::move(edits), cursorsBefore));
+    return true;
+}
+
+std::vector<syntax::OutlineNode> extractCurrentOutline(
+    const Document& document, const std::optional<std::filesystem::path>& currentDocumentPath) {
+    const auto language = currentDocumentPath ? detectLanguage(*currentDocumentPath) : std::nullopt;
+    if (!language) {
+        return {};
+    }
+    const auto            snapshot = document.snapshot();
+    const std::u16string  text = snapshot->extract(TextRange{.start = 0, .end = snapshot->length()});
+    return syntax::extractOutline(text, *language);
 }
 
 }  // namespace neomifes::app

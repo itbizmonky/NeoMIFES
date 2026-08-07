@@ -124,8 +124,6 @@ using neomifes::app::FindReplaceState;
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
 using neomifes::app::Workspace;
-using neomifes::core::CommandDispatcher;
-using neomifes::core::computeIndentationConversionEdits;
 using neomifes::core::Cursor;
 using neomifes::core::FoldingModel;
 using neomifes::core::FoldRegion;
@@ -669,38 +667,17 @@ bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar)
     return false;
 }
 
-// Parses the currently open document into an OutlineNode tree (empty if no
-// language detected - an untitled session, or an unrecognized extension).
-// Factored out of refreshOutlinePane() (Phase 7i) so its result can seed
-// both the outline panel and core::FoldingModel's fold regions from the
-// exact same parse, rather than each computing (and re-parsing) its own.
-// WI-04: signature unchanged (this function moves to editor_input.cpp in a
-// later WI-04 step, which keeps individual-reference parameters rather than
-// EditorSession& - see that module's own file header on why) - only its
-// call sites (below) now derive their arguments from an EditorSession.
-std::vector<neomifes::syntax::OutlineNode> extractCurrentOutline(
-    const Document& document, const std::optional<std::filesystem::path>& currentDocumentPath) {
-    const auto language =
-        currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath) : std::nullopt;
-    if (!language) {
-        return {};
-    }
-    const auto            snapshot = document.snapshot();
-    const std::u16string  text = snapshot->extract(TextRange{.start = 0, .end = snapshot->length()});
-    return neomifes::syntax::extractOutline(text, *language);
-}
-
 // Recomputes and displays the outline for the currently open document
 // (Phase 7g) - called from handleOutlineKey() below whenever the panel is
 // (re-)shown. Same "harmless empty result, no special-casing" convention as
 // buildGrepQueryFromInput() on an empty query. Phase 7i: also refreshes
 // FoldingModel's foldable-region list from the same parse (see
-// extractCurrentOutline()'s comment) - existing folded state is preserved
-// by FoldingModel::setFoldableRegions() matching on headerLine, same
-// "stale after edit until next refresh" limitation as BookmarkManager.
+// neomifes::app::extractCurrentOutline()'s comment) - existing folded state
+// is preserved by FoldingModel::setFoldableRegions() matching on headerLine,
+// same "stale after edit until next refresh" limitation as BookmarkManager.
 // WI-04: takes EditorSession& (document/path/folding - 3 members).
 void refreshOutlinePane(EditorSession& session, neomifes::ui::OutlinePane& outlinePane) {
-    const auto nodes = extractCurrentOutline(session.document(), session.pathIfNamed());
+    const auto nodes = neomifes::app::extractCurrentOutline(session.document(), session.pathIfNamed());
     outlinePane.showWith(neomifes::app::buildOutlineItems(nodes));
     session.folding().setFoldableRegions(neomifes::app::buildFoldRegions(nodes, session.document()));
 }
@@ -1016,38 +993,14 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Edito
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// Convert Tabs to Spaces / Convert Spaces to Tabs command-palette actions
-// (Phase 4b8d). Applies to the whole document; tabWidth is fixed at 4 -
-// there is no settings system to source a configurable value from (same
-// rationale as elsewhere in this file), so a future settings UI would wire
-// its value in here rather than this being a design gap. Reuses
-// core::ReplaceAllCommand (Phase 5b2) rather than a bespoke command class -
-// see indentation_conversion.h's header comment. No-ops (no lines need
-// conversion) skip dispatch entirely, same convention as replaceAllMatches()
-// above returning early on an empty match set. WI-04: signature unchanged
-// (individual references, not EditorSession&) - this function moves to
-// editor_input.cpp in a later WI-04 step alongside its HWND/InvalidateRect
-// removal, matching that module's Win32-independent parameter convention.
-void applyIndentationConversion(IndentationConversionTarget target, HWND hwnd, Document& document,
-                                CommandDispatcher& dispatcher, const SelectionModel& selectionModel) {
-    constexpr int kTabWidth = 4;
-    auto edits = computeIndentationConversionEdits(target, kTabWidth, document);
-    if (edits.empty()) {
-        return;
-    }
-    const std::vector<Cursor> cursorsBefore(selectionModel.cursors().begin(),
-                                            selectionModel.cursors().end());
-    dispatcher.dispatch(std::make_unique<ReplaceAllCommand>(std::move(edits), cursorsBefore));
-    ::InvalidateRect(hwnd, nullptr, FALSE);
-}
-
 // Checks whether a WM_LBUTTONDOWN landed on a foldable gutter row and, if
 // so, toggles that region and repaints, returning true so the caller skips
-// its ordinary hitTest()/dispatchMouseDown() cursor-placement path entirely
-// (Phase 7j). Pulled out of wireNormalMode's onMouseDown lambda to keep
-// that function's cognitive complexity down, same rationale as
-// dispatchMouseDown() below. WI-04: only ever needs FoldingModel (1
-// EditorSession member) - left as an individual parameter.
+// its ordinary hitTest()/neomifes::app::dispatchMouseDown() cursor-placement
+// path entirely (Phase 7j). Pulled out of wireNormalMode's onMouseDown
+// lambda to keep that function's cognitive complexity down, same rationale
+// as neomifes::app::dispatchMouseDown() (WI-04: moved to editor_input.cpp).
+// WI-04: only ever needs FoldingModel (1 EditorSession member) - left as an
+// individual parameter.
 bool tryToggleFoldMarker(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeline& renderPipeline,
                          FoldingModel& foldingModel) {
     const auto foldHeaderLine = renderPipeline.hitTestFoldMarker(x, y);
@@ -1080,74 +1033,6 @@ bool tryHandleMinimapClick(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipe
     return true;
 }
 
-// Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
-// applies it. Pulled out of wireNormalMode's onMouseDown lambda to keep that
-// function's cognitive complexity down (same rationale as
-// loadStartupDocument()/prepareDocument() above) - Phase 4b5b's altDown
-// branch pushed the inline version over clang-tidy's threshold.
-//
-// `altCursorAnchor` (Phase 4b6d) is wireNormalMode's session-lifetime state
-// tracking the anchor of the cursor a prior plain Alt+click added, so a
-// later Alt+Shift+click (and onMouseDrag below, for Alt+drag) can extend
-// that specific cursor - SelectionModel::moveAllTo()/moveAll() always apply
-// to every cursor uniformly, so this targeted extension needs the caller to
-// remember which cursor is "active" across separate mouse events.
-//
-// `rectangularAnchor` (Phase 4b8a) is the equivalent session-lifetime state
-// for Shift+Alt+drag rectangular selection - chosen over the roadmap's
-// literal "Alt+drag" spec specifically to avoid colliding with the existing
-// altCursorAnchor gesture above (confirmed with the user). It is only ever
-// *set* here, on a Shift+Alt+click - never acted upon here, since a click
-// alone (no drag) is deliberately left to fall through to the existing
-// altCursorAnchor/handleAltClick logic unchanged. If the click does turn
-// into a drag, onMouseDrag's rectangularAnchor branch (checked first, see
-// below) fully replaces the cursor set via setRectangularSelection(),
-// superseding whatever this function did as a side effect - so the
-// fallthrough below is harmless rather than a real behavior change. WI-04:
-// signature unchanged (individual references) - this function moves to
-// editor_input.cpp in a later WI-04 step, matching that module's
-// convention.
-bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
-                       SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                       std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                       std::optional<neomifes::document::TextPos>& rectangularAnchor) {
-    if (altDown) {
-        // Alt+Shift+click extends the cursor the last plain Alt+click added
-        // (if any); otherwise (including a bare Alt+Shift+click with no
-        // prior Alt+click to extend) it falls through to adding a new
-        // cursor, same as plain Alt+click. Alt+double/triple-click's
-        // meaning is left undefined rather than guessed at - click count is
-        // not consulted here at all.
-        if (shiftDown) {
-            rectangularAnchor = hit;
-            if (altCursorAnchor) {
-                selectionModel.moveCursorMatching(*altCursorAnchor, hit);
-                viewport.ensureVisible(hit, document);
-                return true;
-            }
-        } else {
-            // Plain Alt+click is not a rectangular-selection gesture - clear
-            // any stale anchor a prior Shift+Alt+click left behind, so a
-            // plain Alt+drag that follows isn't mistaken for one.
-            rectangularAnchor.reset();
-        }
-        const bool changed = neomifes::app::handleAltClick(hit, selectionModel, viewport, document);
-        altCursorAnchor    = hit;
-        return changed;
-    }
-    // A plain click abandons any in-progress Alt-cursor extension - the next
-    // drag should extend the primary selection again, not the old target.
-    altCursorAnchor.reset();
-    rectangularAnchor.reset();
-    if (clickCount >= 3) {
-        return neomifes::app::handleTripleClick(hit, selectionModel, viewport, document);
-    }
-    if (clickCount == 2) {
-        return neomifes::app::handleDoubleClick(hit, selectionModel, viewport, document);
-    }
-    return neomifes::app::handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
-}
-
 // Handles WM_LBUTTONDOWN. Pulled out of wireNormalMode's onMouseDown lambda
 // for the same cognitive-complexity reason as handleKeyDownEvent() above -
 // Phase 7j's tryToggleFoldMarker() check pushed the inline version over
@@ -1177,9 +1062,9 @@ void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftD
     // itself always changes the selection, so the repaint below already
     // clears any stale virtual-offset caret.
     session.freeCursorVirtualColumns().reset();
-    const bool changed =
-        dispatchMouseDown(*hit, shiftDown, altDown, clickCount, session.selection(), session.viewport(),
-                          session.document(), session.altCursorAnchor(), session.rectangularAnchor());
+    const bool changed = neomifes::app::dispatchMouseDown(
+        *hit, shiftDown, altDown, clickCount, session.selection(), session.viewport(), session.document(),
+        session.altCursorAnchor(), session.rectangularAnchor());
     if (changed) {
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
@@ -1469,33 +1354,6 @@ void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeli
     }
 }
 
-// WI-03: standard Win32 scroll-code decode for WM_HSCROLL - nullopt for
-// SB_ENDSCROLL and anything else unrecognized (a no-op). Every switch branch
-// returns directly (no intermediate "declare then overwrite" variable) so
-// clang-analyzer-deadcode.DeadStores has nothing to flag - an initial value
-// that's unconditionally overwritten before any read is exactly what that
-// check exists to catch, and a straight `switch { case: return X; ... }`
-// shape simply never creates one. WI-04: signature unchanged (pure
-// function) - this function moves to editor_input.cpp in a later WI-04 step.
-[[nodiscard]] std::optional<std::uint32_t> computeHScrollTargetColumn(
-    WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept {
-    switch (scrollCode) {
-        case SB_LINELEFT:
-            return currentColumn > 0 ? currentColumn - 1 : 0;
-        case SB_LINERIGHT:
-            return currentColumn + 1;
-        case SB_PAGELEFT:
-            return currentColumn > pageStep ? currentColumn - pageStep : 0;
-        case SB_PAGERIGHT:
-            return currentColumn + pageStep;
-        case SB_THUMBTRACK:
-        case SB_THUMBPOSITION:
-            return scrollPos;
-        default:
-            return std::nullopt;
-    }
-}
-
 // WI-03: handles WM_HSCROLL (this window's first-ever scrollbar). Page step
 // uses renderPipeline.visibleColumnCount() (falls back to 1 column if the
 // text area hasn't been sized/measured yet, so PageLeft/PageRight always
@@ -1510,8 +1368,8 @@ void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeli
 void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSession& session,
                         RenderPipeline& renderPipeline) {
     const std::uint32_t pageStep = std::max<std::uint32_t>(renderPipeline.visibleColumnCount(), 1);
-    const auto newColumn =
-        computeHScrollTargetColumn(scrollCode, scrollPos, session.viewport().leftColumn(), pageStep);
+    const auto newColumn = neomifes::app::computeHScrollTargetColumn(
+        scrollCode, scrollPos, session.viewport().leftColumn(), pageStep);
     if (!newColumn) {
         return;  // SB_ENDSCROLL etc - nothing to do
     }
@@ -1677,14 +1535,20 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
         .action = [hwnd, &session]() {
-            applyIndentationConversion(IndentationConversionTarget::TabsToSpaces, hwnd, session.document(),
-                                       session.dispatcher(), session.selection());
+            if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::TabsToSpaces,
+                                                          session.document(), session.dispatcher(),
+                                                          session.selection())) {
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertSpacesToTabs", .title = u"Convert Spaces to Tabs", .keybindingLabel = u"",
         .action = [hwnd, &session]() {
-            applyIndentationConversion(IndentationConversionTarget::SpacesToTabs, hwnd, session.document(),
-                                       session.dispatcher(), session.selection());
+            if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::SpacesToTabs,
+                                                          session.document(), session.dispatcher(),
+                                                          session.selection())) {
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"view.toggleFoldAtCursor", .title = u"Fold/Unfold at Cursor", .keybindingLabel = u"",
@@ -1984,7 +1848,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // (refreshOutlinePane() re-seeds this later from the same parse
         // pattern whenever the panel is opened - see that function's comment).
         session.folding().setFoldableRegions(neomifes::app::buildFoldRegions(
-            extractCurrentOutline(session.document(), session.pathIfNamed()), session.document()));
+            neomifes::app::extractCurrentOutline(session.document(), session.pathIfNamed()), session.document()));
         syncFoldingState(hwnd, renderPipeline, session.folding());
         // Phase 7h: pushes the startup cursor state (position 0, isPrimary)
         // into RenderPipeline before the first paint - without this,

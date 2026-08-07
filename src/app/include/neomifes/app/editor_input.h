@@ -14,9 +14,12 @@
 
 #include <windows.h>
 
+#include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "neomifes/document/text_pos.h"
 
@@ -29,7 +32,12 @@ class CommandDispatcher;
 class SelectionModel;
 class Viewport;
 class FoldingModel;
+enum class IndentationConversionTarget;
 }  // namespace neomifes::core
+
+namespace neomifes::syntax {
+struct OutlineNode;
+}  // namespace neomifes::syntax
 
 namespace neomifes::app {
 
@@ -125,5 +133,52 @@ bool handlePaste(std::u16string_view text, core::CommandDispatcher& dispatcher,
 // dispatching if no cursor had a selection to delete.
 bool deleteAllSelections(core::CommandDispatcher& dispatcher, core::SelectionModel& selection,
                          core::Viewport& viewport, const document::Document& document);
+
+// Picks which click interpretation applies to a hit-tested WM_LBUTTONDOWN and
+// applies it (WI-04: moved here from main.cpp unchanged - Win32/RenderPipeline
+// independent). `altCursorAnchor` (Phase 4b6d) is the caller's session-lifetime
+// state tracking the anchor of the cursor a prior plain Alt+click added, so a
+// later Alt+Shift+click (and drag) can extend that specific cursor -
+// SelectionModel::moveAllTo()/moveAll() always apply to every cursor
+// uniformly, so this targeted extension needs the caller to remember which
+// cursor is "active" across separate mouse events. `rectangularAnchor` (Phase
+// 4b8a) is the equivalent session-lifetime state for Shift+Alt+drag
+// rectangular selection - only ever *set* here, on a Shift+Alt+click, never
+// acted upon here (a click alone falls through to the existing
+// altCursorAnchor/handleAltClick logic unchanged).
+bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
+                       core::SelectionModel& selectionModel, core::Viewport& viewport,
+                       const document::Document& document,
+                       std::optional<document::TextPos>& altCursorAnchor,
+                       std::optional<document::TextPos>& rectangularAnchor);
+
+// WI-03: standard Win32 scroll-code decode for WM_HSCROLL - nullopt for
+// SB_ENDSCROLL and anything else unrecognized (a no-op). WI-04: moved here
+// from main.cpp unchanged (pure function).
+[[nodiscard]] std::optional<std::uint32_t> computeHScrollTargetColumn(
+    WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept;
+
+// Convert Tabs to Spaces / Convert Spaces to Tabs command-palette actions
+// (Phase 4b8d). Applies to the whole document; tabWidth is fixed at 4 - there
+// is no settings system to source a configurable value from. Reuses
+// core::ReplaceAllCommand (Phase 5b2) rather than a bespoke command class -
+// see indentation_conversion.h's header comment. Returns false (no-op, no
+// dispatch) if no lines need conversion. WI-04: moved here from main.cpp,
+// with its HWND parameter and ::InvalidateRect() call removed and a bool
+// return added in their place - matching handlePaste()/handleChar()'s
+// existing "return whether the document changed, caller repaints" convention
+// used throughout this module. The one call site (main.cpp) now performs the
+// repaint itself when this returns true.
+bool applyIndentationConversion(core::IndentationConversionTarget target, document::Document& document,
+                                core::CommandDispatcher& dispatcher, const core::SelectionModel& selectionModel);
+
+// Parses the currently open document into an OutlineNode tree (empty if no
+// language detected - an untitled session, or an unrecognized extension).
+// Feeds both the outline panel and core::FoldingModel's fold regions from the
+// exact same parse, rather than each computing (and re-parsing) its own.
+// WI-04: moved here from main.cpp unchanged (Win32/RenderPipeline
+// independent).
+[[nodiscard]] std::vector<syntax::OutlineNode> extractCurrentOutline(
+    const document::Document& document, const std::optional<std::filesystem::path>& currentDocumentPath);
 
 }  // namespace neomifes::app
