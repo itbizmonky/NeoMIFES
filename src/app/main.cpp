@@ -32,6 +32,14 @@
 //                  dialog / recent-files UI is a later phase.
 //
 // Search Engine integration arrives in a later phase.
+//
+// WI-04: "the currently open document"'s state (Document/SelectionModel/
+// CommandDispatcher/Viewport/FoldingModel/BookmarkManager/find-replace
+// state/file path) now lives in a single neomifes::app::EditorSession
+// (editor_session.h) instead of ~15 separate wWinMain locals - the first
+// step toward WI-05's tab UI, which needs more than one of these alive at
+// once. This WI is a pure refactor: no behavior changes, only where the
+// state lives and how it's threaded through this file's helper functions.
 
 #include <windows.h>
 #include <commctrl.h>
@@ -61,6 +69,7 @@
 
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/editor_input.h"
+#include "neomifes/app/editor_session.h"
 #include "neomifes/app/file_dialogs.h"
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
@@ -108,9 +117,11 @@
 
 namespace {
 
+using neomifes::app::DocumentFileState;
+using neomifes::app::EditorSession;
+using neomifes::app::FindReplaceState;
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
-using neomifes::core::BookmarkManager;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::computeIndentationConversionEdits;
 using neomifes::core::Cursor;
@@ -129,8 +140,6 @@ using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::LoadResult;
 using neomifes::document::TextRange;
-using neomifes::encoding::Encoding;
-using neomifes::encoding::LineEnding;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
@@ -212,22 +221,6 @@ struct LaunchArgs {
     // renders (Phase 3b). File->Open dialog / recent-files UI is out of
     // scope here - this is the smallest useful slice.
     std::optional<std::filesystem::path> openPath;
-};
-
-// WI-02: the document::saveFile()-relevant metadata for the currently open
-// document - what Ctrl+S should reuse without prompting. Deliberately
-// does NOT duplicate the existing currentDocumentPath local (wWinMain) -
-// that variable is already threaded through many pre-existing functions
-// (handleTagJumpKey/handleOutlineKey/extractCurrentOutline/etc., Phase
-// 5c2-7i) for language detection, and renaming it everywhere for this WI
-// would be a large, purely-mechanical diff with no functional benefit.
-// openAndResetTo() (below) is the single place that keeps this struct and
-// currentDocumentPath in sync for every "opened a different file" case;
-// handleNewDocumentKey() is the only other writer (Ctrl+N resets both).
-struct DocumentFileState {
-    Encoding   encoding   = Encoding::Utf8;
-    LineEnding lineEnding = LineEnding::Crlf;  // build_plan.md: new document default
-    bool       writeBom   = false;
 };
 
 // Very small hand-rolled parser. We deliberately avoid CommandLineToArgvW-derived
@@ -334,7 +327,9 @@ int runMessageLoop() noexcept {
 // successful load (not unconditionally from `args.openPath` regardless of
 // outcome, as this function's caller used to do further down in wWinMain -
 // see prepareDocument()'s own comment for why that distinction now matters
-// for data safety, not just cosmetic language detection).
+// for data safety, not just cosmetic language detection). WI-04: still
+// populates plain out-params (not an EditorSession) - this runs BEFORE the
+// EditorSession the caller will construct even exists.
 Document loadStartupDocument(const LaunchArgs& args, DocumentFileState& fileStateOut,
                              std::optional<std::filesystem::path>& currentDocumentPathOut) {
     Document document;
@@ -452,10 +447,14 @@ void wireMeasureStartupOrMemoryMode(MainWindowConfig& cfg, StartupProfile& profi
 // site is unaffected) carries the primary cursor's free-cursor virtual
 // column count, if any, onto its CursorVisual; every other cursor always
 // gets 0 (free cursor mode is single-primary-cursor only, per the approved
-// plan).
+// plan). WI-04: takes EditorSession& instead of separate SelectionModel&/
+// Viewport& refs - this is the shared tail of nearly every handler in this
+// file, so every one of those call sites already has `session` in scope.
 void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
-                                  const SelectionModel& selection, const Viewport& viewport,
+                                  const EditorSession& session,
                                   std::uint32_t primaryVirtualColumnOffset = 0) {
+    const SelectionModel& selection = session.selection();
+    const Viewport&        viewport  = session.viewport();
     renderPipeline.setTopLine(viewport.topLine());
     // WI-03: horizontal counterpart to setTopLine() above, same "driven
     // every frame from Viewport" wiring.
@@ -484,6 +483,9 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
 // individually - maxVisibleLineLength()/visibleColumnCount() are only
 // current AFTER a render pass has walked the (possibly newly scrolled-to)
 // visible lines, so re-deriving them any earlier would use stale values.
+// WI-04: only ever needs Viewport (1 EditorSession member) - left as an
+// individual parameter rather than EditorSession&, unlike
+// syncRenderStateAndInvalidate() above.
 void syncHorizontalScrollBar(HWND hwnd, const RenderPipeline& renderPipeline,
                              const Viewport& viewport) noexcept {
     SCROLLINFO si{};
@@ -501,6 +503,8 @@ void syncHorizontalScrollBar(HWND hwnd, const RenderPipeline& renderPipeline,
 // core:: session-state setter (setBookmarkedLines(), setCursorVisuals())
 // already follows. Called after every FoldingModel mutation (toggle, or a
 // fresh region list from refreshOutlinePane()/refreshFoldingRegions()).
+// WI-04: only ever needs FoldingModel (1 EditorSession member) - left as an
+// individual parameter, same rationale as syncHorizontalScrollBar() above.
 void syncFoldingState(HWND hwnd, RenderPipeline& renderPipeline, const FoldingModel& foldingModel) {
     std::vector<FoldVisual> visuals;
     visuals.reserve(foldingModel.regions().size());
@@ -515,34 +519,12 @@ void syncFoldingState(HWND hwnd, RenderPipeline& renderPipeline, const FoldingMo
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// Bundles the Find/Replace feature's session-lifetime state (Phase 5b3b) -
-// replaces 3 separate reference parameters (currentQuery didn't exist
-// before; currentMatches/currentMatchIndex were threaded individually) that
-// had pushed wireNormalMode to 12 parameters. currentQuery is new: it is
-// needed so replaceCurrentMatch() can re-run the identical search after a
-// document mutation shifts offsets (previously each search's Query was
-// discarded immediately after SearchService::findAll()).
-struct FindReplaceState {
-    Query               currentQuery;
-    std::vector<Match>  currentMatches;
-    std::size_t          currentMatchIndex = 0;
-};
-
-// Grep results pane state (Phase 5c3) - kept separate from FindReplaceState
-// since Grep and Find are independent, simultaneously-visible overlays (no
-// mutual exclusion exists anywhere in this codebase - see grep_bar.h's class
-// comment) with unrelated result shapes (search::GrepMatch vs. search::Match).
-// GrepBar itself never sees search::GrepMatch (stays decoupled from
-// neomifes::search, same rationale as FindBar - see FindReplaceState's own
-// comment above), so this state has to live here.
-struct GrepState {
-    std::vector<GrepMatch> currentResults;
-};
-
 // Rebuilds RenderPipeline's match highlight set from `state.currentMatches`,
 // marking `state.currentMatchIndex` as the "active" one (Phase 5b3a).
 // Pulled out of runFindQuery()/navigateToMatch() since both need to do this
-// identically.
+// identically. WI-04: only ever needs FindReplaceState (1 EditorSession
+// member) - left as an individual parameter, same rationale as
+// syncFoldingState() above.
 void syncMatchVisuals(const FindReplaceState& state, RenderPipeline& renderPipeline) {
     std::vector<MatchVisual> visuals;
     visuals.reserve(state.currentMatches.size());
@@ -556,17 +538,18 @@ void syncMatchVisuals(const FindReplaceState& state, RenderPipeline& renderPipel
 // Moves the selection/viewport to `state.currentMatches[state.currentMatchIndex]`
 // and pushes the resulting state to FindBar/RenderPipeline (Phase 5b3a).
 // Shared by runFindQuery() (jump to the first match after a new search) and
-// navigateToMatch() (F3/Shift+F3) - both end up wanting exactly this.
-void jumpToMatch(HWND hwnd, const FindReplaceState& state, SelectionModel& selectionModel,
-                 Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
-                 FindBar& findBar) {
+// navigateToMatch() (F3/Shift+F3) - both end up wanting exactly this. WI-04:
+// takes EditorSession& (touches findReplaceState/selection/viewport/
+// document - 4 members) instead of 4 separate refs.
+void jumpToMatch(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline, FindBar& findBar) {
+    const auto& state = session.findReplaceState();
     const Match& match = state.currentMatches[state.currentMatchIndex];
-    selectionModel.setCursors(
+    session.selection().setCursors(
         {Cursor{.position = match.range.end, .anchor = match.range.start, .isPrimary = true}});
-    viewport.ensureVisible(match.range.start, document);
+    session.viewport().ensureVisible(match.range.start, session.document());
     findBar.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
     syncMatchVisuals(state, renderPipeline);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
 // Runs SearchService::findAll() and updates `state.currentQuery`/
@@ -576,10 +559,12 @@ void jumpToMatch(HWND hwnd, const FindReplaceState& state, SelectionModel& selec
 // body, which always jumped to match #0. replaceCurrentMatch() needs the
 // search-and-update-state half without the jump, since it wants to land on
 // "the match nearest the one just replaced", not unconditionally #0).
-void refreshMatches(const Query& query, const Document& document, FindReplaceState& state,
-                    RenderPipeline& renderPipeline, FindBar& findBar) {
+// WI-04: takes EditorSession& (document/findReplaceState).
+void refreshMatches(const Query& query, EditorSession& session, RenderPipeline& renderPipeline,
+                    FindBar& findBar) {
+    auto& state              = session.findReplaceState();
     state.currentQuery      = query;
-    state.currentMatches    = SearchService::findAll(document, query);
+    state.currentMatches    = SearchService::findAll(session.document(), query);
     state.currentMatchIndex = 0;
     findBar.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
     syncMatchVisuals(state, renderPipeline);
@@ -587,20 +572,20 @@ void refreshMatches(const Query& query, const Document& document, FindReplaceSta
 
 // Runs SearchService::findAll() for FindBar's onQueryChanged callback and
 // jumps to the first match, if any (Phase 5b3a). An empty/no-match result
-// clears all highlighting and shows FindBar's "no results" state.
+// clears all highlighting and shows FindBar's "no results" state. WI-04:
+// takes EditorSession& (document/findReplaceState/selection/viewport).
 void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord, bool regex, HWND hwnd,
-                  const Document& document, FindReplaceState& state, SelectionModel& selectionModel,
-                  Viewport& viewport, RenderPipeline& renderPipeline, FindBar& findBar) {
+                  EditorSession& session, RenderPipeline& renderPipeline, FindBar& findBar) {
     refreshMatches(Query{.pattern       = std::u16string(query),
                         .caseSensitive = caseSensitive,
                         .wholeWord     = wholeWord,
                         .regex         = regex},
-                  document, state, renderPipeline, findBar);
-    if (state.currentMatches.empty()) {
+                  session, renderPipeline, findBar);
+    if (session.findReplaceState().currentMatches.empty()) {
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
-    jumpToMatch(hwnd, state, selectionModel, viewport, document, renderPipeline, findBar);
+    jumpToMatch(hwnd, session, renderPipeline, findBar);
 }
 
 // F3 (forward=true) / Shift+F3 (forward=false), wrapping around - shared by
@@ -608,24 +593,26 @@ void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord,
 // focus) and the F3/Shift+F3 branch of handleFindBarKey() below (fired
 // while the document editing area has focus instead) - same "one shared
 // helper, two call sites" pattern as dispatchMouseDown()/handleClipboardKey().
-void navigateToMatch(bool forward, HWND hwnd, FindReplaceState& state, SelectionModel& selectionModel,
-                     Viewport& viewport, const Document& document, RenderPipeline& renderPipeline,
+// WI-04: takes EditorSession& (findReplaceState/selection/viewport/document).
+void navigateToMatch(bool forward, HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
                      FindBar& findBar) {
+    auto& state = session.findReplaceState();
     if (state.currentMatches.empty()) {
         return;
     }
     state.currentMatchIndex = forward
         ? neomifes::ui::nextMatchIndex(state.currentMatchIndex, state.currentMatches.size())
         : neomifes::ui::previousMatchIndex(state.currentMatchIndex, state.currentMatches.size());
-    jumpToMatch(hwnd, state, selectionModel, viewport, document, renderPipeline, findBar);
+    jumpToMatch(hwnd, session, renderPipeline, findBar);
 }
 
 // Escape while the find edit has focus (FindBarConfig::onClosed) - hides
 // the bar, clears match highlighting, and restores focus to the document
-// editing area (FindBar itself does not know where that is).
-void closeFindBar(HWND hwnd, FindBar& findBar, FindReplaceState& state, RenderPipeline& renderPipeline) {
+// editing area (FindBar itself does not know where that is). WI-04: takes
+// EditorSession& (findReplaceState).
+void closeFindBar(HWND hwnd, FindBar& findBar, EditorSession& session, RenderPipeline& renderPipeline) {
     findBar.hide();
-    state.currentMatches.clear();
+    session.findReplaceState().currentMatches.clear();
     renderPipeline.setMatchVisuals({});
     ::SetFocus(hwnd);
     ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -636,9 +623,9 @@ void closeFindBar(HWND hwnd, FindBar& findBar, FindReplaceState& state, RenderPi
 // these same keys are ALSO handled inside FindBar's own subclass proc when
 // the find edit itself has focus). Returns true if the key was one this
 // handles, mirroring handleClipboardKey()'s ClipboardKeyResult.handled shape.
+// WI-04: takes EditorSession& (findReplaceState/selection/viewport/document).
 bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
-                      FindReplaceState& state, SelectionModel& selectionModel, Viewport& viewport,
-                      const Document& document, RenderPipeline& renderPipeline) {
+                      EditorSession& session, RenderPipeline& renderPipeline) {
     // !shiftDown is redundant today (handleGrepKey() is checked earlier in
     // handleKeyDownEvent()'s dispatch chain and already claims Ctrl+Shift+F
     // via an early return), but makes this condition self-documenting and
@@ -648,8 +635,7 @@ bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Fin
         return true;
     }
     if (vkCode == VK_F3) {
-        navigateToMatch(!shiftDown, hwnd, state, selectionModel, viewport, document, renderPipeline,
-                        findBar);
+        navigateToMatch(!shiftDown, hwnd, session, renderPipeline, findBar);
         return true;
     }
     return false;
@@ -682,10 +668,14 @@ bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar)
 }
 
 // Parses the currently open document into an OutlineNode tree (empty if no
-// language detected - currentDocumentPath unset, or an unrecognized
-// extension). Factored out of refreshOutlinePane() (Phase 7i) so its result
-// can seed both the outline panel and core::FoldingModel's fold regions from
-// the exact same parse, rather than each computing (and re-parsing) its own.
+// language detected - an untitled session, or an unrecognized extension).
+// Factored out of refreshOutlinePane() (Phase 7i) so its result can seed
+// both the outline panel and core::FoldingModel's fold regions from the
+// exact same parse, rather than each computing (and re-parsing) its own.
+// WI-04: signature unchanged (this function moves to editor_input.cpp in a
+// later WI-04 step, which keeps individual-reference parameters rather than
+// EditorSession& - see that module's own file header on why) - only its
+// call sites (below) now derive their arguments from an EditorSession.
 std::vector<neomifes::syntax::OutlineNode> extractCurrentOutline(
     const Document& document, const std::optional<std::filesystem::path>& currentDocumentPath) {
     const auto language =
@@ -706,12 +696,11 @@ std::vector<neomifes::syntax::OutlineNode> extractCurrentOutline(
 // extractCurrentOutline()'s comment) - existing folded state is preserved
 // by FoldingModel::setFoldableRegions() matching on headerLine, same
 // "stale after edit until next refresh" limitation as BookmarkManager.
-void refreshOutlinePane(const Document& document,
-                        const std::optional<std::filesystem::path>& currentDocumentPath,
-                        neomifes::ui::OutlinePane& outlinePane, FoldingModel& foldingModel) {
-    const auto nodes = extractCurrentOutline(document, currentDocumentPath);
+// WI-04: takes EditorSession& (document/path/folding - 3 members).
+void refreshOutlinePane(EditorSession& session, neomifes::ui::OutlinePane& outlinePane) {
+    const auto nodes = extractCurrentOutline(session.document(), session.pathIfNamed());
     outlinePane.showWith(neomifes::app::buildOutlineItems(nodes));
-    foldingModel.setFoldableRegions(neomifes::app::buildFoldRegions(nodes, document));
+    session.folding().setFoldableRegions(neomifes::app::buildFoldRegions(nodes, session.document()));
 }
 
 // Ctrl+Shift+O while the document editing area has focus (Phase 7g) -
@@ -719,19 +708,18 @@ void refreshOutlinePane(const Document& document,
 // press while visible hides it) rather than only ever showing. An outline
 // view is a persistent navigation aid the user dismisses with the same key
 // they opened it with, not a one-shot search/command tool - see
-// outline_pane.h's class comment.
-bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, const Document& document,
-                      const std::optional<std::filesystem::path>& currentDocumentPath,
-                      neomifes::ui::OutlinePane& outlinePane, FoldingModel& foldingModel,
-                      RenderPipeline& renderPipeline) {
+// outline_pane.h's class comment. WI-04: takes EditorSession& (document/
+// path/folding - 3 members).
+bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
+                      neomifes::ui::OutlinePane& outlinePane, RenderPipeline& renderPipeline) {
     if (!ctrlDown || !shiftDown || vkCode != 'O') {
         return false;
     }
     if (outlinePane.isVisible()) {
         outlinePane.hide();
     } else {
-        refreshOutlinePane(document, currentDocumentPath, outlinePane, foldingModel);
-        syncFoldingState(hwnd, renderPipeline, foldingModel);
+        refreshOutlinePane(session, outlinePane);
+        syncFoldingState(hwnd, renderPipeline, session.folding());
     }
     return true;
 }
@@ -741,15 +729,15 @@ bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, con
 // OutlinePane echoes back is already a 0-based document::TextPos into the
 // SAME open document, not a cross-file jump. The panel is deliberately left
 // open afterward (see outline_pane.h's class comment) - this function never
-// touches it.
-void jumpToOutlinePosition(std::uint64_t targetPos, HWND hwnd, const Document& document,
-                           SelectionModel& selectionModel, Viewport& viewport,
+// touches it. WI-04: takes EditorSession& (document/selection/viewport - 3
+// members).
+void jumpToOutlinePosition(std::uint64_t targetPos, HWND hwnd, EditorSession& session,
                            RenderPipeline& renderPipeline) {
     const auto pos =
-        std::min(static_cast<neomifes::document::TextPos>(targetPos), document.length());
-    selectionModel.moveAllTo(pos);
-    viewport.ensureVisible(pos, document);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        std::min(static_cast<neomifes::document::TextPos>(targetPos), session.document().length());
+    session.selection().moveAllTo(pos);
+    session.viewport().ensureVisible(pos, session.document());
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
 // Ctrl+G while the document editing area has focus (Phase 4b8b) - same
@@ -768,131 +756,127 @@ bool handleGotoLineKey(UINT vkCode, bool ctrlDown, GotoLineBar& gotoLineBar) {
 // `previous()` already wrap around and return the nearest bookmark
 // *strictly* after/before the current line, so re-pressing F2 while
 // sitting on a bookmarked line correctly cycles to the next one rather than
-// staying put.
-bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, BookmarkManager& bookmarks,
-                       SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                       RenderPipeline& renderPipeline, FoldingModel& foldingModel) {
+// staying put. WI-04: takes EditorSession& (bookmarks/selection/viewport/
+// document/folding - 5 members).
+bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
+                       RenderPipeline& renderPipeline) {
     if (vkCode != VK_F2) {
         return false;
     }
-    const auto currentLine = document.offsetToLine(selectionModel.primaryCursor().position);
+    const Document& document    = session.document();
+    const auto      currentLine = document.offsetToLine(session.selection().primaryCursor().position);
     if (ctrlDown) {
-        bookmarks.toggle(currentLine);
-        renderPipeline.setBookmarkedLines(
-            std::vector<neomifes::document::LineNumber>(bookmarks.lines().begin(), bookmarks.lines().end()));
+        session.bookmarks().toggle(currentLine);
+        renderPipeline.setBookmarkedLines(std::vector<neomifes::document::LineNumber>(
+            session.bookmarks().lines().begin(), session.bookmarks().lines().end()));
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
-    const auto target = shiftDown ? bookmarks.previous(currentLine) : bookmarks.next(currentLine);
+    const auto target =
+        shiftDown ? session.bookmarks().previous(currentLine) : session.bookmarks().next(currentLine);
     if (target) {
         const auto pos = document.lineToOffset(*target);
-        selectionModel.moveAllTo(pos);
-        viewport.ensureVisible(pos, document);
+        session.selection().moveAllTo(pos);
+        session.viewport().ensureVisible(pos, document);
         // Phase 7i: a bookmark can land inside content that's since been
         // folded - reveal it rather than leaving the cursor on a hidden line.
-        if (foldingModel.revealLine(*target)) {
-            syncFoldingState(hwnd, renderPipeline, foldingModel);
+        if (session.folding().revealLine(*target)) {
+            syncFoldingState(hwnd, renderPipeline, session.folding());
         }
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
     return true;
 }
 
 // WI-02: the "the document just changed to a different file" reset,
-// shared by every caller that swaps `document`'s content out from under
-// the view (F12 tag-jump, Grep-result-click, and - once wired below -
-// Ctrl+O/drag-drop-open). Originally duplicated verbatim at the F12/Grep
-// call sites (Phase 5c2-7i); a 3rd/4th caller needing the identical
-// sequence is exactly this codebase's own "extract once 3+ callers exist"
-// trigger (see visibleLineAtRow()/reservedTopHeightDips()'s own history).
+// shared by every caller that swaps the session's document content out from
+// under the view (F12 tag-jump, Grep-result-click, and Ctrl+O/drag-drop-
+// open). Originally duplicated verbatim at the F12/Grep call sites (Phase
+// 5c2-7i); a 3rd/4th caller needing the identical sequence is exactly this
+// codebase's own "extract once 3+ callers exist" trigger (see
+// visibleLineAtRow()/reservedTopHeightDips()'s own history).
 //
 // Deliberately does NOT reset dispatcher/bookmarks/anchors/
-// freeCursorVirtualColumns - those are openDocumentAt()'s own internal
-// responsibility when a file was actually loaded. A "reset to blank"
-// caller (Ctrl+N) never calls openDocumentAt() at all (there is no file to
-// load) and MUST perform that half itself - see handleNewDocumentKey()'s
-// own comment for the concrete data-corruption path (a stale Undo
-// splicing the previous file's deleted text into the new blank document)
-// that skipping it caused during this WI's design review.
-void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, FoldingModel& foldingModel,
-                                FindReplaceState& findReplaceState, FindBar& findBar,
-                                const std::optional<std::filesystem::path>& currentDocumentPath) {
+// freeCursorVirtualColumns - those are EditorSession::openFile()'s own
+// internal responsibility when a file was actually loaded (WI-04: was
+// document_open.cpp's openDocumentAt()'s responsibility pre-WI-04, now
+// wrapped by EditorSession::openFile()). A "reset to blank" caller (Ctrl+N)
+// never calls openFile() at all (there is no file to load) and MUST perform
+// that half itself via EditorSession::resetToBlank() - see
+// handleNewDocumentKey()'s own comment for the concrete data-corruption
+// path (a stale Undo splicing the previous file's deleted text into the new
+// blank document) that skipping it caused during WI-02's design review.
+// WI-04: takes EditorSession& (folding/findReplaceState/language - 3
+// members, was FoldingModel&/FindReplaceState&/optional<path> separately).
+void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session,
+                                FindBar& findBar) {
+    auto& findReplaceState = session.findReplaceState();
     findReplaceState.currentMatches.clear();
     findReplaceState.currentMatchIndex = 0;
     findBar.setMatchCount(0, 0);
     renderPipeline.setMatchVisuals({});
     renderPipeline.setBookmarkedLines({});
-    foldingModel.setFoldableRegions({});
-    syncFoldingState(hwnd, renderPipeline, foldingModel);
-    renderPipeline.setLanguage(currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath)
-                                                    : std::nullopt);
+    session.folding().setFoldableRegions({});
+    syncFoldingState(hwnd, renderPipeline, session.folding());
+    renderPipeline.setLanguage(session.language());
     ::SetFocus(hwnd);
 }
 
-// WI-02: opens `path` into `document` via neomifes::app::openDocumentAt()
-// (optionally jumping to targetLine/targetColumn - both already 0-based,
-// same convention openDocumentAt() itself documents), and on success
-// updates `currentDocumentPath`/`fileState` from the returned
-// LoadedFileMeta and runs resetViewAfterDocumentSwap() + a final repaint.
-// Returns the LoadError on failure, leaving document/currentDocumentPath/
-// fileState completely untouched (matches openDocumentAt()'s own no-
-// partial-mutation-on-failure contract) - callers decide whether to
-// surface it (F12/Grep-click keep their pre-existing silent no-op below;
-// Ctrl+O/drag-drop-open show message_dialogs.h's showOpenErrorDialog()).
-std::optional<LoadError> openAndResetTo(
-    const std::filesystem::path& path, std::optional<neomifes::document::LineNumber> targetLine,
-    std::optional<std::uint64_t> targetColumn, HWND hwnd, Document& document,
-    CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
-    RenderPipeline& renderPipeline, BookmarkManager& bookmarks, FoldingModel& foldingModel,
-    FindReplaceState& findReplaceState, FindBar& findBar,
-    std::optional<neomifes::document::TextPos>& altCursorAnchor,
-    std::optional<neomifes::document::TextPos>& rectangularAnchor,
-    std::optional<std::uint32_t>& freeCursorVirtualColumns,
-    std::optional<std::filesystem::path>& currentDocumentPath, DocumentFileState& fileState) {
-    auto result = neomifes::app::openDocumentAt(path, targetLine, targetColumn, document, dispatcher,
-                                                selectionModel, viewport, bookmarks, altCursorAnchor,
-                                                rectangularAnchor, freeCursorVirtualColumns);
-    auto* const meta = std::get_if<neomifes::app::LoadedFileMeta>(&result);
-    if (meta == nullptr) {
-        return std::get<LoadError>(result);
+// WI-02: opens `path` into the session's Document via
+// EditorSession::openFile() (optionally jumping to targetLine/targetColumn -
+// both already 0-based, same convention that method documents), and on
+// success runs resetViewAfterDocumentSwap() + a final repaint. Returns the
+// LoadError on failure, leaving the session completely untouched (matches
+// EditorSession::openFile()'s own no-partial-mutation-on-failure contract) -
+// callers decide whether to surface it (F12/Grep-click keep their
+// pre-existing silent no-op below; Ctrl+O/drag-drop-open show
+// message_dialogs.h's showOpenErrorDialog()). WI-04: renamed from
+// openAndResetTo() and collapsed from 17 parameters to 7 - most of its old
+// body now lives inside EditorSession::openFile()/resetViewAfterDocumentSwap().
+std::optional<LoadError> openFileAndSyncView(const std::filesystem::path& path,
+                                             std::optional<neomifes::document::LineNumber> targetLine,
+                                             std::optional<std::uint64_t> targetColumn, HWND hwnd,
+                                             EditorSession& session, RenderPipeline& renderPipeline,
+                                             FindBar& findBar) {
+    auto error = session.openFile(path, targetLine, targetColumn);
+    if (error) {
+        return error;
     }
-    currentDocumentPath  = path;
-    fileState.encoding   = meta->encoding;
-    fileState.lineEnding = meta->lineEnding;
-    fileState.writeBom   = meta->hadBom;
-    resetViewAfterDocumentSwap(hwnd, renderPipeline, foldingModel, findReplaceState, findBar,
-                               currentDocumentPath);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    resetViewAfterDocumentSwap(hwnd, renderPipeline, session, findBar);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     return std::nullopt;
 }
 
 // WI-02: shared save routine for Ctrl+S/Ctrl+Shift+S (and the "Save" choice
 // of confirmDiscardIfDirty()'s unsaved-changes prompt below). `forceSaveAs`
-// (or a document that has never been saved anywhere, i.e. `!currentDocumentPath`)
+// (or a document that has never been saved anywhere, i.e. `session.isUntitled()`)
 // prompts via file_dialogs.h's showSaveFileDialog() for a destination first;
 // otherwise reuses the existing path silently. Returns false on a cancelled
 // dialog or a failed document::saveFile() call (in which case
 // message_dialogs.h's showSaveErrorDialog() has already reported it to the
-// user) - never silently swallows a failure (CLAUDE.md rule 3).
-bool performSave(HWND hwnd, Document& document, DocumentFileState& fileState,
-                 std::optional<std::filesystem::path>& currentDocumentPath, bool forceSaveAs) {
+// user) - never silently swallows a failure (CLAUDE.md rule 3). WI-04:
+// takes EditorSession& (document/fileState/path - 3 members) and calls
+// EditorSession::setSavedPath() instead of assigning a local optional<path>
+// directly.
+bool performSave(HWND hwnd, EditorSession& session, bool forceSaveAs) {
     std::filesystem::path targetPath;
-    if (forceSaveAs || !currentDocumentPath) {
-        const auto chosen = neomifes::app::showSaveFileDialog(hwnd, currentDocumentPath);
+    if (forceSaveAs || session.isUntitled()) {
+        const auto chosen = neomifes::app::showSaveFileDialog(hwnd, session.pathIfNamed());
         if (!chosen) {
             return false;  // dialog cancelled - not an error, just no-op
         }
         targetPath = *chosen;
     } else {
-        targetPath = *currentDocumentPath;
+        targetPath = session.path();
     }
-    const auto error = neomifes::document::saveFile(document, targetPath, fileState.encoding,
-                                                     fileState.lineEnding, fileState.writeBom);
+    const auto& fileState = session.fileState();
+    const auto  error     = neomifes::document::saveFile(session.document(), targetPath, fileState.encoding,
+                                                       fileState.lineEnding, fileState.writeBom);
     if (error) {
         neomifes::app::showSaveErrorDialog(hwnd, *error);
         return false;
     }
-    currentDocumentPath = targetPath;
+    session.setSavedPath(targetPath);
     return true;
 }
 
@@ -902,18 +886,17 @@ bool performSave(HWND hwnd, Document& document, DocumentFileState& fileState,
 // message_dialogs.h's showUnsavedChangesDialog(); the Save choice routes
 // through performSave() above so a cancelled Save-As dialog or a failed
 // save also blocks the destructive operation - unsaved work is never
-// discarded behind a save that didn't actually happen.
-bool confirmDiscardIfDirty(HWND hwnd, Document& document, DocumentFileState& fileState,
-                           std::optional<std::filesystem::path>& currentDocumentPath) {
-    if (!document.isDirty()) {
+// discarded behind a save that didn't actually happen. WI-04: takes
+// EditorSession& (document/fileState/path - 3 members).
+bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session) {
+    if (!session.isDirty()) {
         return true;
     }
     const std::wstring documentName =
-        currentDocumentPath ? currentDocumentPath->filename().wstring() : L"Untitled";
+        session.isUntitled() ? L"Untitled" : session.path().filename().wstring();
     switch (neomifes::app::showUnsavedChangesDialog(hwnd, documentName)) {
         case neomifes::app::UnsavedChangesChoice::Save:
-            return performSave(hwnd, document, fileState, currentDocumentPath,
-                               /*forceSaveAs=*/!currentDocumentPath.has_value());
+            return performSave(hwnd, session, /*forceSaveAs=*/session.isUntitled());
         case neomifes::app::UnsavedChangesChoice::DontSave:
             return true;
         case neomifes::app::UnsavedChangesChoice::Cancel:
@@ -926,30 +909,25 @@ bool confirmDiscardIfDirty(HWND hwnd, Document& document, DocumentFileState& fil
 // handleBookmarkKey()'s F2 above, but here the line's TEXT (not just its
 // number) is inspected: if it contains an MSVC-diagnostic-style location
 // reference ("path(line)"/"path(line,column)", util::parseTagJumpReference()),
-// opens that file via openAndResetTo() (WI-02, wrapping
-// neomifes::app::openDocumentAt(), Phase 5c2) and jumps to the referenced
-// position. Always returns true once vkCode==VK_F12 is confirmed - F12 is
-// unclaimed everywhere else in this dispatch chain, so there is nothing to
-// fall through to whether or not a reference was found/opened (same
-// silent-no-op contract openDocumentAt() itself guarantees on a
-// stale/missing path).
-bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatcher& dispatcher,
-                      SelectionModel& selectionModel, Viewport& viewport, BookmarkManager& bookmarks,
-                      RenderPipeline& renderPipeline, FindBar& findBar,
-                      FindReplaceState& findReplaceState, FoldingModel& foldingModel,
-                      std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                      std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                      std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                      std::optional<std::filesystem::path>& currentDocumentPath,
-                      DocumentFileState& fileState) {
+// opens that file via openFileAndSyncView() (WI-02/WI-04, wrapping
+// EditorSession::openFile()) and jumps to the referenced position. Always
+// returns true once vkCode==VK_F12 is confirmed - F12 is unclaimed
+// everywhere else in this dispatch chain, so there is nothing to fall
+// through to whether or not a reference was found/opened (same
+// silent-no-op contract EditorSession::openFile() itself guarantees on a
+// stale/missing path). WI-04: takes EditorSession& (essentially every
+// member).
+bool handleTagJumpKey(HWND hwnd, UINT vkCode, EditorSession& session, RenderPipeline& renderPipeline,
+                      FindBar& findBar) {
     if (vkCode != VK_F12) {
         return false;
     }
-    const auto cursorPos = selectionModel.primaryCursor().position;
-    const auto line      = document.offsetToLine(cursorPos);
-    const auto lineStart = document.lineToOffset(line);
-    const auto lineEnd   = (line + 1 < document.lineCount()) ? document.lineToOffset(line + 1) - 1
-                                                             : document.length();
+    const Document& document  = session.document();
+    const auto      cursorPos = session.selection().primaryCursor().position;
+    const auto      line      = document.offsetToLine(cursorPos);
+    const auto      lineStart = document.lineToOffset(line);
+    const auto      lineEnd   = (line + 1 < document.lineCount()) ? document.lineToOffset(line + 1) - 1
+                                                                  : document.length();
     const std::u16string lineText = document.snapshot()->extract(
         neomifes::document::TextRange{.start = lineStart, .end = lineEnd});
 
@@ -961,12 +939,10 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
         neomifes::app::resolveTagJumpPath(reference->path, std::filesystem::current_path());
     const std::optional<std::uint64_t> targetColumn =
         reference->column ? std::optional<std::uint64_t>(*reference->column - 1) : std::nullopt;
-    // stale/missing path - openAndResetTo() leaves everything untouched on
-    // failure, same silent no-op as before this WI.
-    (void)openAndResetTo(resolvedPath, reference->line - 1, targetColumn, hwnd, document, dispatcher,
-                         selectionModel, viewport, renderPipeline, bookmarks, foldingModel,
-                         findReplaceState, findBar, altCursorAnchor, rectangularAnchor,
-                         freeCursorVirtualColumns, currentDocumentPath, fileState);
+    // stale/missing path - openFileAndSyncView() leaves everything untouched
+    // on failure, same silent no-op as before this WI.
+    (void)openFileAndSyncView(resolvedPath, reference->line - 1, targetColumn, hwnd, session,
+                              renderPipeline, findBar);
     return true;
 }
 
@@ -976,26 +952,26 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, Document& document, CommandDispatc
 // re-runs state.currentQuery and jumps to whichever match now occupies the
 // same index (clamped, since a replace can only ever remove exactly one
 // match, so the count shrinks by at most 1 - see the plan's Context section
-// for the out-of-bounds trace).
-void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, Document& document,
-                         CommandDispatcher& dispatcher, FindReplaceState& state,
-                         SelectionModel& selectionModel, Viewport& viewport,
+// for the out-of-bounds trace). WI-04: takes EditorSession& (document/
+// dispatcher/findReplaceState/selection/viewport - 5 members).
+void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, EditorSession& session,
                          RenderPipeline& renderPipeline, FindBar& findBar) {
+    auto& state = session.findReplaceState();
     if (state.currentMatches.empty()) {
         return;
     }
-    const std::size_t replacedIndex = state.currentMatchIndex;
-    const Match&       match         = state.currentMatches[replacedIndex];
-    const std::u16string expanded = expandReplacementTemplate(replacementTemplate, document, match);
-    dispatcher.dispatch(std::make_unique<ReplaceRangeCommand>(match.range, expanded));
+    const std::size_t    replacedIndex = state.currentMatchIndex;
+    const Match&           match         = state.currentMatches[replacedIndex];
+    const std::u16string expanded = expandReplacementTemplate(replacementTemplate, session.document(), match);
+    session.dispatcher().dispatch(std::make_unique<ReplaceRangeCommand>(match.range, expanded));
 
-    refreshMatches(state.currentQuery, document, state, renderPipeline, findBar);
+    refreshMatches(state.currentQuery, session, renderPipeline, findBar);
     if (state.currentMatches.empty()) {
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
         return;
     }
     state.currentMatchIndex = std::min(replacedIndex, state.currentMatches.size() - 1);
-    jumpToMatch(hwnd, state, selectionModel, viewport, document, renderPipeline, findBar);
+    jumpToMatch(hwnd, session, renderPipeline, findBar);
 }
 
 // Ctrl+Enter while the replace edit has focus (FindBarConfig::onReplaceAll,
@@ -1011,13 +987,15 @@ void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, Doc
 // Does not re-search afterward: match highlighting is simply cleared, same
 // as closeFindBar() - re-matching the just-replaced text against the same
 // query would be confusing (looks like the replace silently didn't work)
-// rather than informative.
-void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Document& document,
-                       CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
-                       FindReplaceState& state, RenderPipeline& renderPipeline, FindBar& findBar) {
+// rather than informative. WI-04: takes EditorSession& (document/dispatcher/
+// selection/findReplaceState - 4 members).
+void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, EditorSession& session,
+                       RenderPipeline& renderPipeline, FindBar& findBar) {
+    auto& state = session.findReplaceState();
     if (state.currentMatches.empty()) {
         return;
     }
+    const Document& document = session.document();
     std::vector<PerCursorEdit> edits;
     edits.reserve(state.currentMatches.size());
     for (const Match& match : state.currentMatches) {
@@ -1025,9 +1003,9 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Docum
                                       .insertedText = expandReplacementTemplate(replacementTemplate,
                                                                                 document, match)});
     }
-    const std::vector<Cursor> cursorsBefore(selectionModel.cursors().begin(),
-                                            selectionModel.cursors().end());
-    dispatcher.dispatch(std::make_unique<ReplaceAllCommand>(std::move(edits), cursorsBefore));
+    const std::vector<Cursor> cursorsBefore(session.selection().cursors().begin(),
+                                            session.selection().cursors().end());
+    session.dispatcher().dispatch(std::make_unique<ReplaceAllCommand>(std::move(edits), cursorsBefore));
 
     state.currentMatches.clear();
     state.currentMatchIndex = 0;
@@ -1044,7 +1022,10 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Docum
 // core::ReplaceAllCommand (Phase 5b2) rather than a bespoke command class -
 // see indentation_conversion.h's header comment. No-ops (no lines need
 // conversion) skip dispatch entirely, same convention as replaceAllMatches()
-// above returning early on an empty match set.
+// above returning early on an empty match set. WI-04: signature unchanged
+// (individual references, not EditorSession&) - this function moves to
+// editor_input.cpp in a later WI-04 step alongside its HWND/InvalidateRect
+// removal, matching that module's Win32-independent parameter convention.
 void applyIndentationConversion(IndentationConversionTarget target, HWND hwnd, Document& document,
                                 CommandDispatcher& dispatcher, const SelectionModel& selectionModel) {
     constexpr int kTabWidth = 4;
@@ -1063,7 +1044,8 @@ void applyIndentationConversion(IndentationConversionTarget target, HWND hwnd, D
 // its ordinary hitTest()/dispatchMouseDown() cursor-placement path entirely
 // (Phase 7j). Pulled out of wireNormalMode's onMouseDown lambda to keep
 // that function's cognitive complexity down, same rationale as
-// dispatchMouseDown() below.
+// dispatchMouseDown() below. WI-04: only ever needs FoldingModel (1
+// EditorSession member) - left as an individual parameter.
 bool tryToggleFoldMarker(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeline& renderPipeline,
                          FoldingModel& foldingModel) {
     const auto foldHeaderLine = renderPipeline.hitTestFoldMarker(x, y);
@@ -1081,17 +1063,18 @@ bool tryToggleFoldMarker(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeli
 // path entirely (Phase 7v) - same "priority-check, consume, and return"
 // shape as tryToggleFoldMarker() above. Does not touch SelectionModel: a
 // minimap click is a scroll-position operation, not a cursor-placement one
-// (matches the common convention other minimap-bearing editors use).
+// (matches the common convention other minimap-bearing editors use). WI-04:
+// takes EditorSession& (viewport - 1 member) so it can reuse
+// syncRenderStateAndInvalidate() rather than duplicating its body.
 bool tryHandleMinimapClick(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipeline& renderPipeline,
-                           Viewport& viewport, const SelectionModel& selectionModel,
-                           bool& isDraggingMinimap) {
+                           EditorSession& session, bool& isDraggingMinimap) {
     const auto targetLine = renderPipeline.hitTestMinimap(x, y);
     if (!targetLine) {
         return false;
     }
     isDraggingMinimap = true;
-    viewport.scrollTo(*targetLine);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    session.viewport().scrollTo(*targetLine);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     return true;
 }
 
@@ -1118,7 +1101,10 @@ bool tryHandleMinimapClick(HWND hwnd, std::int32_t x, std::int32_t y, RenderPipe
 // into a drag, onMouseDrag's rectangularAnchor branch (checked first, see
 // below) fully replaces the cursor set via setRectangularSelection(),
 // superseding whatever this function did as a side effect - so the
-// fallthrough below is harmless rather than a real behavior change.
+// fallthrough below is harmless rather than a real behavior change. WI-04:
+// signature unchanged (individual references) - this function moves to
+// editor_input.cpp in a later WI-04 step, matching that module's
+// convention.
 bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool altDown, int clickCount,
                        SelectionModel& selectionModel, Viewport& viewport, const Document& document,
                        std::optional<neomifes::document::TextPos>& altCursorAnchor,
@@ -1163,23 +1149,21 @@ bool dispatchMouseDown(neomifes::document::TextPos hit, bool shiftDown, bool alt
 // Handles WM_LBUTTONDOWN. Pulled out of wireNormalMode's onMouseDown lambda
 // for the same cognitive-complexity reason as handleKeyDownEvent() above -
 // Phase 7j's tryToggleFoldMarker() check pushed the inline version over
-// clang-tidy's threshold.
+// clang-tidy's threshold. WI-04: takes EditorSession& (selection/viewport/
+// document/altCursorAnchor/rectangularAnchor/freeCursorVirtualColumns/
+// folding - 7 members).
 void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
-                          int clickCount, SelectionModel& selectionModel, Viewport& viewport,
-                          const Document& document, RenderPipeline& renderPipeline,
-                          std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                          std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                          std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                          FoldingModel& foldingModel, bool& isDraggingMinimap) {
+                          int clickCount, EditorSession& session, RenderPipeline& renderPipeline,
+                          bool& isDraggingMinimap) {
     // Every new mouse-down is the start of a fresh gesture - this is the one
     // reliable reset point for this flag (MainWindow exposes no onMouseUp
     // hook; see isDraggingMinimap's declaration comment in wWinMain). Only
     // tryHandleMinimapClick() below sets it back to true.
     isDraggingMinimap = false;
-    if (tryToggleFoldMarker(hwnd, x, y, renderPipeline, foldingModel)) {
+    if (tryToggleFoldMarker(hwnd, x, y, renderPipeline, session.folding())) {
         return;
     }
-    if (tryHandleMinimapClick(hwnd, x, y, renderPipeline, viewport, selectionModel, isDraggingMinimap)) {
+    if (tryHandleMinimapClick(hwnd, x, y, renderPipeline, session, isDraggingMinimap)) {
         return;
     }
     const auto hit = renderPipeline.hitTest(x, y);
@@ -1190,11 +1174,12 @@ void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftD
     // columns (Phase 4b8e is keyboard-only) - discard silently; the click
     // itself always changes the selection, so the repaint below already
     // clears any stale virtual-offset caret.
-    freeCursorVirtualColumns.reset();
-    const bool changed = dispatchMouseDown(*hit, shiftDown, altDown, clickCount, selectionModel,
-                                          viewport, document, altCursorAnchor, rectangularAnchor);
+    session.freeCursorVirtualColumns().reset();
+    const bool changed =
+        dispatchMouseDown(*hit, shiftDown, altDown, clickCount, session.selection(), session.viewport(),
+                          session.document(), session.altCursorAnchor(), session.rectangularAnchor());
     if (changed) {
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
 }
 
@@ -1204,32 +1189,35 @@ void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftD
 // approved plan - no mouse support, no multi-cursor, no Shift-extend or
 // Ctrl+Right word-jump into virtual space), increments a virtual column
 // count instead of the usual "do nothing at end of line/document" behavior.
-// No document mutation happens here - the virtual columns are main.cpp
-// session state until onChar materializes them (see applyFreeCursorChar()
-// below) - so this only ever needs a repaint, never dispatcher.dispatch().
+// No document mutation happens here - the virtual columns are session state
+// until onChar materializes them (see applyFreeCursorChar() below) - so
+// this only ever needs a repaint, never dispatcher.dispatch(). WI-04: takes
+// EditorSession& (freeCursorVirtualColumns/selection/document/viewport - 4
+// members); freeCursorModeEnabled stays a separate bool - it is a
+// wWinMain-scope editing-mode toggle, not part of any one EditorSession
+// (see this file's EditorSession member-placement notes).
 bool handleFreeCursorRightArrow(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
-                                bool freeCursorModeEnabled,
-                                std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                                const SelectionModel& selectionModel, const Document& document,
-                                RenderPipeline& renderPipeline, const Viewport& viewport) {
+                                bool freeCursorModeEnabled, EditorSession& session,
+                                RenderPipeline& renderPipeline) {
     if (!freeCursorModeEnabled || vkCode != VK_RIGHT || shiftDown || ctrlDown ||
-        selectionModel.cursors().size() != 1) {
+        session.selection().cursors().size() != 1) {
         return false;
     }
-    const Cursor& cursor = selectionModel.primaryCursor();
+    const Cursor& cursor = session.selection().primaryCursor();
     if (cursor.hasSelection()) {
         return false;
     }
-    const auto line = document.offsetToLine(cursor.position);
-    const auto lineEndExclusive = (line + 1 < document.lineCount())
-                                       ? document.lineToOffset(line + 1) - 1
-                                       : document.length();
+    const Document& document          = session.document();
+    const auto      line              = document.offsetToLine(cursor.position);
+    const auto      lineEndExclusive = (line + 1 < document.lineCount())
+                                           ? document.lineToOffset(line + 1) - 1
+                                           : document.length();
     if (cursor.position != lineEndExclusive) {
         return false;  // not at the real end of the line yet - normal movement applies
     }
-    freeCursorVirtualColumns = freeCursorVirtualColumns.value_or(0) + 1;
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport,
-                                 *freeCursorVirtualColumns);
+    auto& virtualColumns = session.freeCursorVirtualColumns();
+    virtualColumns        = virtualColumns.value_or(0) + 1;
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session, *virtualColumns);
     return true;
 }
 
@@ -1243,10 +1231,9 @@ bool handleFreeCursorRightArrow(HWND hwnd, UINT vkCode, bool shiftDown, bool ctr
 // general multi-cursor case. Mirrors handleChar()'s own \r->\n translation
 // and C0-control filter (Enter/Tab accepted, everything else below 0x20
 // ignored - Backspace/Escape/etc. arrive via WM_KEYDOWN instead) since this
-// bypasses handleChar() entirely rather than wrapping it.
-void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd,
-                         CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                         Viewport& viewport, const Document& document,
+// bypasses handleChar() entirely rather than wrapping it. WI-04: takes
+// EditorSession& (dispatcher/selection/viewport/document - 4 members).
+void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, EditorSession& session,
                          RenderPipeline& renderPipeline) {
     if (ch < 0x20 && ch != u'\r' && ch != u'\t') {
         return;
@@ -1257,11 +1244,11 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd,
     }
     std::u16string text(virtualColumns, u' ');
     text.push_back(inserted);
-    const auto pos = selectionModel.primaryCursor().position;
-    dispatcher.dispatch(
+    const auto pos = session.selection().primaryCursor().position;
+    session.dispatcher().dispatch(
         std::make_unique<ReplaceRangeCommand>(TextRange{.start = pos, .end = pos}, text));
-    viewport.ensureVisible(selectionModel.primaryCursor().position, document);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    session.viewport().ensureVisible(session.selection().primaryCursor().position, session.document());
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
 // Whether a Ctrl+C/X/V keystroke was recognized at all, and (only when it
@@ -1278,30 +1265,32 @@ struct ClipboardKeyResult {
 // editor_input.cpp is deliberately kept free of Win32 calls so it stays
 // headlessly testable (see editor_input.h's file header). Applies to every
 // cursor (Phase 4b7c) via textToCopy()/handlePaste()/deleteAllSelections().
-ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
-                                      CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                                      Viewport& viewport, const Document& document) {
+// WI-04: takes EditorSession& (dispatcher/selection/viewport/document - 4
+// members).
+ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& session) {
     if (!ctrlDown || (vkCode != 'C' && vkCode != 'X' && vkCode != 'V')) {
         return {};
     }
+    const Document& document = session.document();
     if (vkCode == 'V') {
         const auto text = neomifes::platform::getClipboardText(hwnd);
         if (!text) {
             return {.handled = true, .changed = false};
         }
-        neomifes::app::handlePaste(*text, dispatcher, selectionModel, viewport, document);
+        neomifes::app::handlePaste(*text, session.dispatcher(), session.selection(), session.viewport(),
+                                   document);
         return {.handled = true, .changed = true};
     }
     // Copy or Cut. If the clipboard write fails, don't delete any selection
     // for Cut either - that would destroy text the user never actually got
     // a copy of.
-    const auto text = neomifes::app::textToCopy(selectionModel, document);
+    const auto text = neomifes::app::textToCopy(session.selection(), document);
     if (!text || !neomifes::platform::setClipboardText(hwnd, *text)) {
         return {.handled = true, .changed = false};
     }
     if (vkCode == 'X') {
-        const bool changed =
-            neomifes::app::deleteAllSelections(dispatcher, selectionModel, viewport, document);
+        const bool changed = neomifes::app::deleteAllSelections(session.dispatcher(), session.selection(),
+                                                                 session.viewport(), document);
         return {.handled = true, .changed = changed};
     }
     return {.handled = true, .changed = false};
@@ -1313,96 +1302,72 @@ ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown,
 // `shiftDown`. Always returns true once Ctrl+S is confirmed (return value
 // of performSave() itself is intentionally ignored here - no window-title
 // "saved" indicator exists yet to update either way, out of scope for
-// this WI).
-bool handleSaveKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Document& document,
-                   DocumentFileState& fileState,
-                   std::optional<std::filesystem::path>& currentDocumentPath) {
+// this WI). WI-04: takes EditorSession& (document/fileState/path - 3
+// members).
+bool handleSaveKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session) {
     if (!ctrlDown || vkCode != 'S') {
         return false;
     }
-    (void)performSave(hwnd, document, fileState, currentDocumentPath, /*forceSaveAs=*/shiftDown);
+    (void)performSave(hwnd, session, /*forceSaveAs=*/shiftDown);
     return true;
 }
 
 // Ctrl+O (WI-02) - confirmDiscardIfDirty() first (so an unsaved edit is
 // never silently discarded by opening a different file), then
 // file_dialogs.h's showOpenFileDialog() for the destination, then
-// openAndResetTo() (Phase 5c2's openDocumentAt(), wrapped) same as F12/
-// Grep-result-click. Unlike those two silent-no-op callers, a failed open
-// here is user-INITIATED (not a stale background reference), so it is
-// surfaced via message_dialogs.h's showOpenErrorDialog().
-bool handleOpenKey(HWND hwnd, UINT vkCode, bool ctrlDown, Document& document,
-                   CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
-                   RenderPipeline& renderPipeline, BookmarkManager& bookmarks, FoldingModel& foldingModel,
-                   FindReplaceState& findReplaceState, FindBar& findBar,
-                   std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                   std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                   std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                   std::optional<std::filesystem::path>& currentDocumentPath,
-                   DocumentFileState& fileState) {
+// openFileAndSyncView() (WI-04, wrapping EditorSession::openFile()) same as
+// F12/Grep-result-click. Unlike those two silent-no-op callers, a failed
+// open here is user-INITIATED (not a stale background reference), so it is
+// surfaced via message_dialogs.h's showOpenErrorDialog(). WI-04: takes
+// EditorSession& (essentially every member).
+bool handleOpenKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& session,
+                   RenderPipeline& renderPipeline, FindBar& findBar) {
     if (!ctrlDown || vkCode != 'O') {
         return false;
     }
-    if (!confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath)) {
+    if (!confirmDiscardIfDirty(hwnd, session)) {
         return true;  // user cancelled the unsaved-changes prompt
     }
     const auto chosen = neomifes::app::showOpenFileDialog(hwnd);
     if (!chosen) {
         return true;  // Open dialog cancelled - nothing to do
     }
-    const auto error = openAndResetTo(*chosen, std::nullopt, std::nullopt, hwnd, document, dispatcher,
-                                      selectionModel, viewport, renderPipeline, bookmarks, foldingModel,
-                                      findReplaceState, findBar, altCursorAnchor, rectangularAnchor,
-                                      freeCursorVirtualColumns, currentDocumentPath, fileState);
+    const auto error =
+        openFileAndSyncView(*chosen, std::nullopt, std::nullopt, hwnd, session, renderPipeline, findBar);
     if (error) {
         neomifes::app::showOpenErrorDialog(hwnd, *error);
     }
     return true;
 }
 
-// Ctrl+N (WI-02) - confirmDiscardIfDirty() first, then resets `document` to
-// a fresh blank Document IN PLACE (move-assignment onto the existing
-// object, not a locally-scoped replacement - CommandDispatcher and other
-// collaborators were bound to this specific Document instance at
-// construction and must keep pointing at it). Ctrl+N never calls
-// openDocumentAt() (there is no file to load), so it does not get that
-// function's internal reset for free - this mirrors it explicitly
-// (dispatcher.resetUndoHistory()/bookmarks.clear()/both selection anchors/
-// freeCursorVirtualColumns, exactly as document_open.cpp's openDocumentAt()
-// does after its own move-assignment). Skipping this was a real
-// data-corruption path found during this WI's design review: a stale Undo
-// entry from the PREVIOUS document splices its deleted text into the new
-// blank document's start on Ctrl+Z (PieceTable::insert() silently clamps
-// an out-of-range offset to 0 rather than rejecting it) - see
-// resetViewAfterDocumentSwap()'s own comment.
-bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, Document& document,
-                          CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                          Viewport& viewport, RenderPipeline& renderPipeline, BookmarkManager& bookmarks,
-                          FoldingModel& foldingModel, FindReplaceState& findReplaceState, FindBar& findBar,
-                          std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                          std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                          std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                          std::optional<std::filesystem::path>& currentDocumentPath,
-                          DocumentFileState& fileState) {
+// Ctrl+N (WI-02) - confirmDiscardIfDirty() first, then resets the session's
+// Document to a fresh blank Document IN PLACE via EditorSession::resetToBlank()
+// (move-assignment onto the existing object, not a locally-scoped
+// replacement - CommandDispatcher and other collaborators were bound to
+// this specific Document instance at construction and must keep pointing at
+// it - see editor_session.h's own header comment). Ctrl+N never calls
+// EditorSession::openFile() (there is no file to load), so it does not get
+// that method's internal reset for free - resetToBlank() mirrors it
+// explicitly (dispatcher.resetUndoHistory()/bookmarks.clear()/both
+// selection anchors/freeCursorVirtualColumns, exactly as
+// EditorSession::openFile() does after its own move-assignment). Skipping
+// this was a real data-corruption path found during WI-02's design review:
+// a stale Undo entry from the PREVIOUS document splices its deleted text
+// into the new blank document's start on Ctrl+Z (PieceTable::insert()
+// silently clamps an out-of-range offset to 0 rather than rejecting it) -
+// see resetViewAfterDocumentSwap()'s own comment. WI-04: takes
+// EditorSession& (essentially every member).
+bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& session,
+                          RenderPipeline& renderPipeline, FindBar& findBar) {
     if (!ctrlDown || vkCode != 'N') {
         return false;
     }
-    if (!confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath)) {
+    if (!confirmDiscardIfDirty(hwnd, session)) {
         return true;  // user cancelled the unsaved-changes prompt
     }
-    document = Document{};
-    dispatcher.resetUndoHistory();
-    bookmarks.clear();
-    altCursorAnchor.reset();
-    rectangularAnchor.reset();
-    freeCursorVirtualColumns.reset();
-    selectionModel.moveAllTo(0);
-    viewport.ensureVisible(0, document);
-    currentDocumentPath.reset();
-    fileState = DocumentFileState{};
-    resetViewAfterDocumentSwap(hwnd, renderPipeline, foldingModel, findReplaceState, findBar,
-                               currentDocumentPath);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    session.resetToBlank();
+    resetViewAfterDocumentSwap(hwnd, renderPipeline, session, findBar);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     return true;
 }
 
@@ -1413,22 +1378,17 @@ bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, Document& docum
 // counted toward wireNormalMode's own cognitive complexity even when the
 // branching it does is itself delegated to helper functions, so leaving any
 // nontrivial control flow in the lambda itself re-creates the problem
-// dispatchMouseDown()/handleClipboardKey() were extracted to avoid.
-void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
-                        CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                        Viewport& viewport, Document& document, RenderPipeline& renderPipeline,
-                        FindBar& findBar, FindReplaceState& findReplaceState,
-                        CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
-                        OutlinePane& outlinePane, BookmarkManager& bookmarks,
-                        FoldingModel& foldingModel, bool freeCursorModeEnabled,
-                        std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                        std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                        std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                        std::optional<std::filesystem::path>& currentDocumentPath,
-                        DocumentFileState& fileState) {
-    if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled,
-                                   freeCursorVirtualColumns, selectionModel, document, renderPipeline,
-                                   viewport)) {
+// dispatchMouseDown()/handleClipboardKey() were extracted to avoid. WI-04:
+// takes EditorSession& (all session-scoped state) plus the widget/mode
+// references that are NOT part of any one EditorSession (see this file's
+// EditorSession member-placement notes for why FindBar/CommandPalette/
+// GotoLineBar/GrepBar/OutlinePane/freeCursorModeEnabled stay separate).
+void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
+                        RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
+                        GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
+                        bool freeCursorModeEnabled) {
+    if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled, session,
+                                   renderPipeline)) {
         return;
     }
     // Any other key discards a pending virtual-column count (Phase 4b8e) -
@@ -1437,9 +1397,9 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     // on whichever branch below happens to run) so the caret doesn't stay
     // visually stranded past the real end of the line when the branch that
     // does run turns out to be a no-op (e.g. Ctrl+Z with nothing to undo).
-    if (freeCursorVirtualColumns.has_value()) {
-        freeCursorVirtualColumns.reset();
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    if (session.freeCursorVirtualColumns().has_value()) {
+        session.freeCursorVirtualColumns().reset();
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
     if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
         return;
@@ -1447,52 +1407,42 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
     if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar)) {
         return;
     }
-    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, document, currentDocumentPath, outlinePane,
-                         foldingModel, renderPipeline)) {
+    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, renderPipeline)) {
         return;
     }
     if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
         return;
     }
-    if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, bookmarks, selectionModel, viewport,
-                          document, renderPipeline, foldingModel)) {
+    if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline)) {
         return;
     }
-    if (handleTagJumpKey(hwnd, vkCode, document, dispatcher, selectionModel, viewport, bookmarks,
-                         renderPipeline, findBar, findReplaceState, foldingModel, altCursorAnchor,
-                         rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath, fileState)) {
+    if (handleTagJumpKey(hwnd, vkCode, session, renderPipeline, findBar)) {
         return;
     }
-    if (handleSaveKey(hwnd, vkCode, shiftDown, ctrlDown, document, fileState, currentDocumentPath)) {
+    if (handleSaveKey(hwnd, vkCode, shiftDown, ctrlDown, session)) {
         return;
     }
-    if (handleOpenKey(hwnd, vkCode, ctrlDown, document, dispatcher, selectionModel, viewport,
-                      renderPipeline, bookmarks, foldingModel, findReplaceState, findBar, altCursorAnchor,
-                      rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath, fileState)) {
+    if (handleOpenKey(hwnd, vkCode, ctrlDown, session, renderPipeline, findBar)) {
         return;
     }
-    if (handleNewDocumentKey(hwnd, vkCode, ctrlDown, document, dispatcher, selectionModel, viewport,
-                             renderPipeline, bookmarks, foldingModel, findReplaceState, findBar,
-                             altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns,
-                             currentDocumentPath, fileState)) {
+    if (handleNewDocumentKey(hwnd, vkCode, ctrlDown, session, renderPipeline, findBar)) {
         return;
     }
-    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceState, selectionModel,
-                         viewport, document, renderPipeline)) {
+    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, session, renderPipeline)) {
         return;
     }
-    const auto clipboardResult =
-        handleClipboardKey(hwnd, vkCode, ctrlDown, dispatcher, selectionModel, viewport, document);
+    const auto clipboardResult = handleClipboardKey(hwnd, vkCode, ctrlDown, session);
     if (clipboardResult.handled) {
         if (clipboardResult.changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
         }
         return;
     }
-    const bool changed = neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, dispatcher,
-                                                      selectionModel, viewport, document, &foldingModel);
+    const bool changed =
+        neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, session.dispatcher(), session.selection(),
+                                     session.viewport(), session.document(), &session.folding());
     if (changed) {
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
 }
 
@@ -1500,20 +1450,20 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
 // above) takes priority over the regular insert-at-every-cursor path
 // (neomifes::app::handleChar()) whenever a virtual-column count is pending.
 // Pulled out of wireNormalMode's onChar lambda for the same cognitive-
-// complexity reason as handleKeyDownEvent() above.
-void handleCharEvent(HWND hwnd, wchar_t ch, CommandDispatcher& dispatcher,
-                     SelectionModel& selectionModel, Viewport& viewport, const Document& document,
-                     RenderPipeline& renderPipeline,
-                     std::optional<std::uint32_t>& freeCursorVirtualColumns) {
-    if (freeCursorVirtualColumns) {
-        applyFreeCursorChar(ch, *freeCursorVirtualColumns, hwnd, dispatcher, selectionModel, viewport,
-                           document, renderPipeline);
-        freeCursorVirtualColumns.reset();
+// complexity reason as handleKeyDownEvent() above. WI-04: takes
+// EditorSession& (dispatcher/selection/viewport/document/
+// freeCursorVirtualColumns - 5 members).
+void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeline& renderPipeline) {
+    auto& virtualColumns = session.freeCursorVirtualColumns();
+    if (virtualColumns) {
+        applyFreeCursorChar(ch, *virtualColumns, hwnd, session, renderPipeline);
+        virtualColumns.reset();
         return;
     }
-    const bool changed = neomifes::app::handleChar(ch, dispatcher, selectionModel, viewport, document);
+    const bool changed = neomifes::app::handleChar(ch, session.dispatcher(), session.selection(),
+                                                   session.viewport(), session.document());
     if (changed) {
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
 }
 
@@ -1523,7 +1473,8 @@ void handleCharEvent(HWND hwnd, wchar_t ch, CommandDispatcher& dispatcher,
 // clang-analyzer-deadcode.DeadStores has nothing to flag - an initial value
 // that's unconditionally overwritten before any read is exactly what that
 // check exists to catch, and a straight `switch { case: return X; ... }`
-// shape simply never creates one.
+// shape simply never creates one. WI-04: signature unchanged (pure
+// function) - this function moves to editor_input.cpp in a later WI-04 step.
 [[nodiscard]] std::optional<std::uint32_t> computeHScrollTargetColumn(
     WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept {
     switch (scrollCode) {
@@ -1551,17 +1502,19 @@ void handleCharEvent(HWND hwnd, wchar_t ch, CommandDispatcher& dispatcher,
 // lambda) - the scroll-code switch's nesting pushed wireNormalMode's own
 // cognitive complexity over clang-tidy's threshold, same "pull the lambda
 // body out" fix this codebase's other onXxx handlers already needed (see
-// handleKeyDownEvent()/handleCharEvent() above).
-void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, Viewport& viewport,
-                        const SelectionModel& selectionModel, RenderPipeline& renderPipeline) {
+// handleKeyDownEvent()/handleCharEvent() above). WI-04: takes
+// EditorSession& (viewport/selection - 2 members), for consistency with
+// syncRenderStateAndInvalidate()'s own EditorSession& shape.
+void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSession& session,
+                        RenderPipeline& renderPipeline) {
     const std::uint32_t pageStep = std::max<std::uint32_t>(renderPipeline.visibleColumnCount(), 1);
     const auto newColumn =
-        computeHScrollTargetColumn(scrollCode, scrollPos, viewport.leftColumn(), pageStep);
+        computeHScrollTargetColumn(scrollCode, scrollPos, session.viewport().leftColumn(), pageStep);
     if (!newColumn) {
         return;  // SB_ENDSCROLL etc - nothing to do
     }
-    viewport.scrollToColumn(*newColumn);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    session.viewport().scrollToColumn(*newColumn);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
 // Handles WM_SYSKEYDOWN (Phase 4b8g): Shift+Alt+arrows extends/starts a
@@ -1580,17 +1533,17 @@ void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, Viewport& vi
 // Shift+Alt+Up/Down does not remember the column to return to once a longer
 // line follows - each step re-derives purely from the immediately preceding
 // step's own (possibly already-clamped) column, same simplification the
-// approved plan documents.
-bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, SelectionModel& selectionModel,
-                           Viewport& viewport, const Document& document,
-                           RenderPipeline& renderPipeline,
-                           std::optional<neomifes::document::TextPos>& rectangularAnchor) {
+// approved plan documents. WI-04: takes EditorSession& (selection/viewport/
+// document/rectangularAnchor - 4 members).
+bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession& session,
+                           RenderPipeline& renderPipeline) {
     if (!shiftDown) {
         return false;
     }
+    const Document& document = session.document();
     if (vkCode == 'I') {
-        selectionModel.convertToLineEndCursors(document);
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        session.selection().convertToLineEndCursors(document);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
         return true;
     }
     MovementKind kind{};
@@ -1601,13 +1554,14 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, SelectionMode
         case VK_DOWN:  kind = MovementKind::Down;  break;
         default:       return false;
     }
+    auto& rectangularAnchor = session.rectangularAnchor();
     if (!rectangularAnchor) {
-        rectangularAnchor = selectionModel.primaryCursor().position;
+        rectangularAnchor = session.selection().primaryCursor().position;
     }
-    const auto newActive = moveTextPos(kind, document, selectionModel.primaryCursor().position);
-    selectionModel.setRectangularSelection(*rectangularAnchor, newActive, document);
-    viewport.ensureVisible(newActive, document);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    const auto newActive = moveTextPos(kind, document, session.selection().primaryCursor().position);
+    session.selection().setRectangularSelection(*rectangularAnchor, newActive, document);
+    session.viewport().ensureVisible(newActive, document);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     return true;
 }
 
@@ -1615,17 +1569,16 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, SelectionMode
 // wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
 // reason documented above handleKeyDownEvent(). All captured references
 // outlive the returned FindBarConfig (they are wWinMain-scope locals; the
-// config itself is only used immediately, inside findBar.create()).
-FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatcher& dispatcher,
-                                 SelectionModel& selectionModel, Viewport& viewport,
-                                 RenderPipeline& renderPipeline, FindBar& findBar,
-                                 FindReplaceState& findReplaceState, SearchHistory& searchHistory) {
+// config itself is only used immediately, inside findBar.create()). WI-04:
+// takes EditorSession& (document/dispatcher/selection/viewport/
+// findReplaceState - 5 members).
+FindBarConfig buildFindBarConfig(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+                                 FindBar& findBar, SearchHistory& searchHistory) {
     FindBarConfig config{};
-    config.onQueryChanged = [hwnd, &document, &findReplaceState, &selectionModel, &viewport,
-                             &renderPipeline, &findBar](std::u16string_view query, bool caseSensitive,
-                                                        bool wholeWord, bool regex) {
-        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, document, findReplaceState,
-                    selectionModel, viewport, renderPipeline, findBar);
+    config.onQueryChanged = [hwnd, &session, &renderPipeline, &findBar](std::u16string_view query,
+                                                                        bool caseSensitive, bool wholeWord,
+                                                                        bool regex) {
+        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, session, renderPipeline, findBar);
     };
     // Recording happens here (Enter/F3 while the find edit itself has
     // focus), not inside navigateToMatch() - this is the one call site that
@@ -1646,30 +1599,23 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
             findBar.setQueryText(*newer);
         }
     };
-    config.onFindNext = [hwnd, &findReplaceState, &selectionModel, &viewport, &document,
-                         &renderPipeline, &findBar, &searchHistory]() {
-        searchHistory.record(findReplaceState.currentQuery.pattern);
-        navigateToMatch(true, hwnd, findReplaceState, selectionModel, viewport, document,
-                        renderPipeline, findBar);
+    config.onFindNext = [hwnd, &session, &renderPipeline, &findBar, &searchHistory]() {
+        searchHistory.record(session.findReplaceState().currentQuery.pattern);
+        navigateToMatch(true, hwnd, session, renderPipeline, findBar);
     };
-    config.onFindPrevious = [hwnd, &findReplaceState, &selectionModel, &viewport, &document,
-                             &renderPipeline, &findBar, &searchHistory]() {
-        searchHistory.record(findReplaceState.currentQuery.pattern);
-        navigateToMatch(false, hwnd, findReplaceState, selectionModel, viewport, document,
-                        renderPipeline, findBar);
+    config.onFindPrevious = [hwnd, &session, &renderPipeline, &findBar, &searchHistory]() {
+        searchHistory.record(session.findReplaceState().currentQuery.pattern);
+        navigateToMatch(false, hwnd, session, renderPipeline, findBar);
     };
-    config.onClosed = [hwnd, &findBar, &findReplaceState, &renderPipeline]() {
-        closeFindBar(hwnd, findBar, findReplaceState, renderPipeline);
+    config.onClosed = [hwnd, &findBar, &session, &renderPipeline]() {
+        closeFindBar(hwnd, findBar, session, renderPipeline);
     };
-    config.onReplaceCurrent = [hwnd, &document, &dispatcher, &findReplaceState, &selectionModel,
-                               &viewport, &renderPipeline, &findBar](std::u16string_view replacementText) {
-        replaceCurrentMatch(replacementText, hwnd, document, dispatcher, findReplaceState,
-                           selectionModel, viewport, renderPipeline, findBar);
+    config.onReplaceCurrent = [hwnd, &session, &renderPipeline,
+                               &findBar](std::u16string_view replacementText) {
+        replaceCurrentMatch(replacementText, hwnd, session, renderPipeline, findBar);
     };
-    config.onReplaceAll = [hwnd, &document, &dispatcher, &selectionModel, &findReplaceState,
-                           &renderPipeline, &findBar](std::u16string_view replacementText) {
-        replaceAllMatches(replacementText, hwnd, document, dispatcher, selectionModel, findReplaceState,
-                         renderPipeline, findBar);
+    config.onReplaceAll = [hwnd, &session, &renderPipeline, &findBar](std::u16string_view replacementText) {
+        replaceAllMatches(replacementText, hwnd, session, renderPipeline, findBar);
     };
     return config;
 }
@@ -1685,12 +1631,13 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Document& document, CommandDispatche
 // Open/Save has no runtime UI - see this file's header comment), matching
 // CLAUDE.md rule 3 (no speculative implementation). Pulled out of
 // wireNormalMode's onDeferredInit lambda for the same cognitive-complexity
-// reason documented above handleKeyDownEvent().
-std::vector<CommandDescriptor> buildCommandRegistry(
-    HWND hwnd, FindBar& findBar, CommandDispatcher& dispatcher, FindReplaceState& findReplaceState,
-    SelectionModel& selectionModel, Viewport& viewport, Document& document,
-    RenderPipeline& renderPipeline, FoldingModel& foldingModel, bool& freeCursorModeEnabled,
-    std::optional<std::uint32_t>& freeCursorVirtualColumns) {
+// reason documented above handleKeyDownEvent(). WI-04: takes EditorSession&
+// (dispatcher/findReplaceState/selection/viewport/document/folding/
+// freeCursorVirtualColumns - 7 members); freeCursorModeEnabled stays
+// separate (see handleFreeCursorRightArrow()'s comment on why).
+std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar, EditorSession& session,
+                                                     RenderPipeline& renderPipeline,
+                                                     bool& freeCursorModeEnabled) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{.id              = u"find.show",
                                          .title           = u"Find",
@@ -1703,43 +1650,39 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                           .action          = [&findBar]() { findBar.showWithReplace(); }});
     commands.push_back(CommandDescriptor{
         .id = u"find.next", .title = u"Find Next", .keybindingLabel = u"F3",
-        .action = [hwnd, &findReplaceState, &selectionModel, &viewport, &document, &renderPipeline,
-                   &findBar]() {
-            navigateToMatch(true, hwnd, findReplaceState, selectionModel, viewport, document,
-                            renderPipeline, findBar);
+        .action = [hwnd, &session, &renderPipeline, &findBar]() {
+            navigateToMatch(true, hwnd, session, renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"find.previous", .title = u"Find Previous", .keybindingLabel = u"Shift+F3",
-        .action = [hwnd, &findReplaceState, &selectionModel, &viewport, &document, &renderPipeline,
-                   &findBar]() {
-            navigateToMatch(false, hwnd, findReplaceState, selectionModel, viewport, document,
-                            renderPipeline, findBar);
+        .action = [hwnd, &session, &renderPipeline, &findBar]() {
+            navigateToMatch(false, hwnd, session, renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z",
-        .action = [hwnd, &dispatcher, &selectionModel, &viewport, &renderPipeline]() {
-            if (dispatcher.undo()) {
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        .action = [hwnd, &session, &renderPipeline]() {
+            if (session.dispatcher().undo()) {
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y",
-        .action = [hwnd, &dispatcher, &selectionModel, &viewport, &renderPipeline]() {
-            if (dispatcher.redo()) {
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        .action = [hwnd, &session, &renderPipeline]() {
+            if (session.dispatcher().redo()) {
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
-        .action = [hwnd, &document, &dispatcher, &selectionModel]() {
-            applyIndentationConversion(IndentationConversionTarget::TabsToSpaces, hwnd, document,
-                                       dispatcher, selectionModel);
+        .action = [hwnd, &session]() {
+            applyIndentationConversion(IndentationConversionTarget::TabsToSpaces, hwnd, session.document(),
+                                       session.dispatcher(), session.selection());
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertSpacesToTabs", .title = u"Convert Spaces to Tabs", .keybindingLabel = u"",
-        .action = [hwnd, &document, &dispatcher, &selectionModel]() {
-            applyIndentationConversion(IndentationConversionTarget::SpacesToTabs, hwnd, document,
-                                       dispatcher, selectionModel);
+        .action = [hwnd, &session]() {
+            applyIndentationConversion(IndentationConversionTarget::SpacesToTabs, hwnd, session.document(),
+                                       session.dispatcher(), session.selection());
         }});
     commands.push_back(CommandDescriptor{
         .id = u"view.toggleFoldAtCursor", .title = u"Fold/Unfold at Cursor", .keybindingLabel = u"",
@@ -1747,28 +1690,27 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         // header line - no-op otherwise (see the Phase 7i plan's Context
         // point 6 for why gutter-click toggling is deferred to a later
         // sub-phase; this command is the only way to toggle a fold for now).
-        .action = [hwnd, &document, &selectionModel, &renderPipeline, &foldingModel]() {
-            const auto line = document.offsetToLine(selectionModel.primaryCursor().position);
-            if (!foldingModel.isFoldHeader(line)) {
+        .action = [hwnd, &session, &renderPipeline]() {
+            const auto line = session.document().offsetToLine(session.selection().primaryCursor().position);
+            if (!session.folding().isFoldHeader(line)) {
                 return;
             }
-            foldingModel.toggleFold(line);
-            syncFoldingState(hwnd, renderPipeline, foldingModel);
+            session.folding().toggleFold(line);
+            syncFoldingState(hwnd, renderPipeline, session.folding());
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.toggleFreeCursorMode", .title = u"Toggle Free Cursor Mode",
         .keybindingLabel = u"",
-        .action = [hwnd, &renderPipeline, &selectionModel, &viewport, &freeCursorModeEnabled,
-                   &freeCursorVirtualColumns]() {
+        .action = [hwnd, &renderPipeline, &session, &freeCursorModeEnabled]() {
             freeCursorModeEnabled = !freeCursorModeEnabled;
             // Turning the mode off (or back on) mid-way through a pending
             // virtual-column count would otherwise leave the caret rendered
             // past the real end of the line with nothing left able to
             // materialize or reset it - same "discard on unrelated action"
             // rule as handleKeyDownEvent()'s reset above.
-            if (freeCursorVirtualColumns) {
-                freeCursorVirtualColumns.reset();
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            if (session.freeCursorVirtualColumns()) {
+                session.freeCursorVirtualColumns().reset();
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
         }});
     return commands;
@@ -1780,10 +1722,11 @@ std::vector<CommandDescriptor> buildCommandRegistry(
 // here at the single point of use. An out-of-range line clamps to the last
 // line (same "never throw on a stale/bad user input" convention as
 // SelectionModel's own clamping); a column beyond the target line's actual
-// length clamps to that line's end.
-void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, Document& document,
-                      SelectionModel& selectionModel, Viewport& viewport,
-                      RenderPipeline& renderPipeline, FoldingModel& foldingModel) {
+// length clamps to that line's end. WI-04: takes EditorSession& (document/
+// selection/viewport/folding - 4 members).
+void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, EditorSession& session,
+                      RenderPipeline& renderPipeline) {
+    const Document& document = session.document();
     const auto lastLine  = document.lineCount() > 0 ? document.lineCount() - 1 : 0;
     const auto line      = std::min(target.line - 1, lastLine);
     const auto lineStart = document.lineToOffset(line);
@@ -1792,29 +1735,27 @@ void jumpToGotoTarget(const neomifes::ui::GotoTarget& target, HWND hwnd, Documen
     const auto column = target.column.value_or(1) - 1;
     const auto pos     = std::min(lineStart + column, lineEnd);
 
-    selectionModel.moveAllTo(pos);
-    viewport.ensureVisible(pos, document);
+    session.selection().moveAllTo(pos);
+    session.viewport().ensureVisible(pos, document);
     // Phase 7i: Ctrl+G can target a line that's since been folded - reveal it
     // (same document, so unlike the cross-file jumps this can genuinely
     // still be a real, meaningful line to unfold rather than clear).
-    if (foldingModel.revealLine(line)) {
-        syncFoldingState(hwnd, renderPipeline, foldingModel);
+    if (session.folding().revealLine(line)) {
+        syncFoldingState(hwnd, renderPipeline, session.folding());
     }
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
 // Builds the GotoLineBarConfig callbacks (Phase 4b8b) - same extraction
-// rationale as buildFindBarConfig()/buildCommandRegistry() above.
-GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Document& document, SelectionModel& selectionModel,
-                                         Viewport& viewport, RenderPipeline& renderPipeline,
-                                         GotoLineBar& gotoLineBar, FoldingModel& foldingModel) {
+// rationale as buildFindBarConfig()/buildCommandRegistry() above. WI-04:
+// takes EditorSession& (document/selection/viewport/folding - 4 members).
+GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+                                         GotoLineBar& gotoLineBar) {
     GotoLineBarConfig config{};
-    config.onSubmit = [hwnd, &document, &selectionModel, &viewport, &renderPipeline, &foldingModel,
-                       &gotoLineBar](std::u16string_view input) {
+    config.onSubmit = [hwnd, &session, &renderPipeline, &gotoLineBar](std::u16string_view input) {
         const auto target = neomifes::ui::parseGotoLineInput(input);
         if (target) {
-            jumpToGotoTarget(*target, hwnd, document, selectionModel, viewport, renderPipeline,
-                            foldingModel);
+            jumpToGotoTarget(*target, hwnd, session, renderPipeline);
         }
         gotoLineBar.hide();
         ::SetFocus(hwnd);
@@ -1831,7 +1772,14 @@ GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Document& document, Selectio
 // class comment for why this is Enter-triggered rather than live/debounced:
 // a directory-wide Grep is far more expensive than Find bar's single-document
 // incremental search, and this codebase has no async infrastructure to keep
-// the UI responsive while one runs.
+// the UI responsive while one runs. WI-04: unchanged - GrepState is
+// document-independent (a Workspace-wide search results pane, not part of
+// any one EditorSession - see this file's EditorSession member-placement
+// notes).
+struct GrepState {
+    std::vector<GrepMatch> currentResults;
+};
+
 void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText, GrepState& grepState,
                   GrepBar& grepBar, SearchHistory& searchHistory) {
     // Enter is GrepBar's only trigger (no debounce/live-refresh - see
@@ -1850,48 +1798,36 @@ void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText,
 }
 
 // GrepBarConfig::onResultActivated (Phase 5c3) - opens the file a Grep
-// result points to via neomifes::app::openDocumentAt() (Phase 5c2), then
-// performs the reset sequence that function's header comment explicitly
-// leaves to the caller: RenderPipeline's cached match/bookmark visuals and
-// FindBar's match count are separate from what openDocumentAt() itself
-// already resets internally (undo history, BookmarkManager, both selection
-// anchors, free-cursor virtual columns - see document_open.h). Mirrors
-// replaceAllMatches()'s reset sequence above.
-void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, GrepState& grepState, Document& document,
-                      CommandDispatcher& dispatcher, SelectionModel& selectionModel, Viewport& viewport,
-                      BookmarkManager& bookmarks, RenderPipeline& renderPipeline, FindBar& findBar,
-                      FindReplaceState& findReplaceState, FoldingModel& foldingModel,
-                      std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                      std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                      std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                      std::optional<std::filesystem::path>& currentDocumentPath,
-                      DocumentFileState& fileState) {
+// result points to via openFileAndSyncView() (WI-04, wrapping
+// EditorSession::openFile()), then performs the reset sequence that
+// method's header comment explicitly leaves to the caller: RenderPipeline's
+// cached match/bookmark visuals and FindBar's match count are separate from
+// what EditorSession::openFile() itself already resets internally (undo
+// history, BookmarkManager, both selection anchors, free-cursor virtual
+// columns). Mirrors replaceAllMatches()'s reset sequence above. WI-04:
+// takes EditorSession& (essentially every member); grepState stays separate
+// (document-independent, see runGrepQuery()'s comment).
+void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepState, EditorSession& session,
+                      RenderPipeline& renderPipeline, FindBar& findBar) {
     if (resultIndex >= grepState.currentResults.size()) {
         return;
     }
     const GrepMatch& match = grepState.currentResults[resultIndex];
-    // Stale result (file moved/deleted since the Grep ran) - openAndResetTo()
+    // Stale result (file moved/deleted since the Grep ran) - openFileAndSyncView()
     // leaves everything untouched on failure, same silent no-op contract as
     // before this WI. No error-toast UI exists yet to surface this.
-    (void)openAndResetTo(match.path, match.line, match.columnRange.start, hwnd, document, dispatcher,
-                         selectionModel, viewport, renderPipeline, bookmarks, foldingModel,
-                         findReplaceState, findBar, altCursorAnchor, rectangularAnchor,
-                         freeCursorVirtualColumns, currentDocumentPath, fileState);
+    (void)openFileAndSyncView(match.path, match.line, match.columnRange.start, hwnd, session,
+                              renderPipeline, findBar);
 }
 
 // Builds the GrepBarConfig callbacks (Phase 5c3) - same extraction rationale
-// as buildFindBarConfig()/buildGotoLineBarConfig() above.
-GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatcher& dispatcher,
-                                 SelectionModel& selectionModel, Viewport& viewport,
-                                 BookmarkManager& bookmarks, RenderPipeline& renderPipeline,
-                                 FindBar& findBar, FindReplaceState& findReplaceState, GrepBar& grepBar,
-                                 GrepState& grepState, SearchHistory& searchHistory,
-                                 FoldingModel& foldingModel,
-                                 std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                                 std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                                 std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                                 std::optional<std::filesystem::path>& currentDocumentPath,
-                                 DocumentFileState& fileState) {
+// as buildFindBarConfig()/buildGotoLineBarConfig() above. WI-04: takes
+// EditorSession& for the document-scoped state jumpToGrepResult() needs;
+// grepState/searchHistory stay separate (Workspace-wide, not
+// document-scoped).
+GrepBarConfig buildGrepBarConfig(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+                                 FindBar& findBar, GrepBar& grepBar, GrepState& grepState,
+                                 SearchHistory& searchHistory) {
     GrepBarConfig config{};
     config.onRunQuery = [&grepState, &grepBar, &searchHistory](std::u16string_view queryText,
                                                                 std::u16string_view folderText) {
@@ -1907,14 +1843,9 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
             grepBar.setQueryText(*newer);
         }
     };
-    config.onResultActivated = [hwnd, &grepState, &document, &dispatcher, &selectionModel, &viewport,
-                                &bookmarks, &renderPipeline, &findBar, &findReplaceState, &foldingModel,
-                                &altCursorAnchor, &rectangularAnchor, &freeCursorVirtualColumns,
-                                &currentDocumentPath, &fileState](std::size_t resultIndex) {
-        jumpToGrepResult(resultIndex, hwnd, grepState, document, dispatcher, selectionModel, viewport,
-                        bookmarks, renderPipeline, findBar, findReplaceState, foldingModel,
-                        altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath,
-                        fileState);
+    config.onResultActivated = [hwnd, &grepState, &session, &renderPipeline,
+                                &findBar](std::size_t resultIndex) {
+        jumpToGrepResult(resultIndex, hwnd, grepState, session, renderPipeline, findBar);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -1937,14 +1868,13 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Document& document, CommandDispatche
 // them is out of scope here - see the Phase 7g completion notes.) Pulled out
 // to its own function - same cognitive-complexity reason as
 // handleKeyDownEvent()/handleCharEvent() above - rather than left inline in
-// onDeferredInit's already-long lambda body.
-void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Document& document,
-                                  SelectionModel& selectionModel, Viewport& viewport,
+// onDeferredInit's already-long lambda body. WI-04: takes EditorSession&
+// (document/selection/viewport - 3 members).
+void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, EditorSession& session,
                                   RenderPipeline& renderPipeline, OutlinePane& outlinePane) {
     OutlinePaneConfig config{};
-    config.onItemSelected = [hwnd, &document, &selectionModel, &viewport,
-                             &renderPipeline](std::uint64_t targetPos) {
-        jumpToOutlinePosition(targetPos, hwnd, document, selectionModel, viewport, renderPipeline);
+    config.onItemSelected = [hwnd, &session, &renderPipeline](std::uint64_t targetPos) {
+        jumpToOutlinePosition(targetPos, hwnd, session, renderPipeline);
     };
     config.onClosed = [hwnd]() { ::SetFocus(hwnd); };
     if (!outlinePane.create(hwnd, hInstance, config)) {
@@ -1960,27 +1890,18 @@ void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Document& docu
 // WI-02: cfg.onDropFiles body, pulled out of wireNormalMode() for the same
 // cognitive-complexity reason as handleMouseDownEvent()/handleKeyDownEvent()
 // above. Multi-file drops open only the first path (no multi-tab yet, see
-// build_plan.md's explicit WI-02 scope cut - multi-tab is WI-05).
-void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, Document& document,
-                          CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                          Viewport& viewport, RenderPipeline& renderPipeline, BookmarkManager& bookmarks,
-                          FoldingModel& foldingModel, FindReplaceState& findReplaceState, FindBar& findBar,
-                          std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                          std::optional<neomifes::document::TextPos>& rectangularAnchor,
-                          std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                          std::optional<std::filesystem::path>& currentDocumentPath,
-                          DocumentFileState& fileState) {
+// build_plan.md's explicit WI-02 scope cut - multi-tab is WI-05). WI-04:
+// takes EditorSession& (essentially every member).
+void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, EditorSession& session,
+                          RenderPipeline& renderPipeline, FindBar& findBar) {
     if (paths.empty()) {
         return;
     }
-    if (!confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath)) {
+    if (!confirmDiscardIfDirty(hwnd, session)) {
         return;
     }
-    const auto error = openAndResetTo(paths.front(), std::nullopt, std::nullopt, hwnd, document,
-                                      dispatcher, selectionModel, viewport, renderPipeline, bookmarks,
-                                      foldingModel, findReplaceState, findBar, altCursorAnchor,
-                                      rectangularAnchor, freeCursorVirtualColumns, currentDocumentPath,
-                                      fileState);
+    const auto error = openFileAndSyncView(paths.front(), std::nullopt, std::nullopt, hwnd, session,
+                                           renderPipeline, findBar);
     if (error) {
         neomifes::app::showOpenErrorDialog(hwnd, *error);
     }
@@ -1990,30 +1911,30 @@ void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, Document& 
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
 // findBar.create() (Phase 5b3a) - a Find bar that fails to create simply
-// isn't available this session, no retry policy either.
+// isn't available this session, no retry policy either. WI-04: takes
+// EditorSession& instead of the ~15 separate refs it used to (document/
+// dispatcher/selection/viewport/altCursorAnchor/rectangularAnchor/
+// bookmarks/foldingModel/freeCursorVirtualColumns/findReplaceState); the
+// remaining individual parameters (findBar/commandPalette/gotoLineBar/
+// grepBar/grepState/searchHistory/outlinePane/freeCursorModeEnabled/
+// isDraggingMinimap) are Workspace-wide or process-wide state that stays
+// outside any one EditorSession - see this file's EditorSession
+// member-placement notes.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
-                    Document& document, CommandDispatcher& dispatcher, SelectionModel& selectionModel,
-                    Viewport& viewport, std::optional<neomifes::document::TextPos>& altCursorAnchor,
-                    std::optional<neomifes::document::TextPos>& rectangularAnchor, HINSTANCE hInstance,
-                    FindBar& findBar, FindReplaceState& findReplaceState, CommandPalette& commandPalette,
-                    GotoLineBar& gotoLineBar, GrepBar& grepBar, GrepState& grepState,
-                    SearchHistory& searchHistory, OutlinePane& outlinePane, BookmarkManager& bookmarks,
-                    FoldingModel& foldingModel, bool& freeCursorModeEnabled,
-                    std::optional<std::uint32_t>& freeCursorVirtualColumns,
-                    std::optional<std::filesystem::path>& currentDocumentPath, DocumentFileState& fileState,
-                    bool& isDraggingMinimap) {
-    cfg.onDeferredInit = [&window, &renderPipeline, &document, &dispatcher, hInstance, &findBar,
-                          &selectionModel, &viewport, &findReplaceState, &commandPalette, &gotoLineBar,
-                          &grepBar, &grepState, &searchHistory, &outlinePane, &bookmarks, &foldingModel,
-                          &altCursorAnchor, &rectangularAnchor, &freeCursorModeEnabled,
-                          &freeCursorVirtualColumns, &currentDocumentPath, &fileState](HWND hwnd) {
+                    EditorSession& session, HINSTANCE hInstance, FindBar& findBar,
+                    CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
+                    GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
+                    bool& freeCursorModeEnabled, bool& isDraggingMinimap) {
+    cfg.onDeferredInit = [&window, &renderPipeline, &session, hInstance, &findBar, &commandPalette,
+                          &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane,
+                          &freeCursorModeEnabled](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
             return;
         }
-        renderPipeline.setDocument(&document);
-        window.setPaintHandler([&renderPipeline, &viewport](HWND paintHwnd) {
+        renderPipeline.setDocument(&session.document());
+        window.setPaintHandler([&renderPipeline, &session](HWND paintHwnd) {
             const auto rendered = renderPipeline.render();
             if (!rendered) {
                 debugLogRenderError("RenderPipeline::render", rendered.error());
@@ -2025,50 +1946,44 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             // relying on resize() alone would leave this at 0 until the user
             // manually resized the window. See syncHorizontalScrollBar()'s
             // comment for why the scrollbar sync itself belongs here too.
-            viewport.setVisibleColumnCount(renderPipeline.visibleColumnCount());
-            syncHorizontalScrollBar(paintHwnd, renderPipeline, viewport);
+            session.viewport().setVisibleColumnCount(renderPipeline.visibleColumnCount());
+            syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
         });
         const FindBarConfig findBarConfig =
-            buildFindBarConfig(hwnd, document, dispatcher, selectionModel, viewport, renderPipeline,
-                               findBar, findReplaceState, searchHistory);
+            buildFindBarConfig(hwnd, session, renderPipeline, findBar, searchHistory);
         [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
 
         // Same non-fatal treatment as findBar.create() above - a palette
         // that fails to create simply isn't available this session.
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
-        auto commands = buildCommandRegistry(hwnd, findBar, dispatcher, findReplaceState, selectionModel,
-                                             viewport, document, renderPipeline, foldingModel,
-                                             freeCursorModeEnabled, freeCursorVirtualColumns);
+        auto commands =
+            buildCommandRegistry(hwnd, findBar, session, renderPipeline, freeCursorModeEnabled);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
         // Same non-fatal treatment as findBar.create() above.
-        const GotoLineBarConfig gotoLineBarConfig = buildGotoLineBarConfig(
-            hwnd, document, selectionModel, viewport, renderPipeline, gotoLineBar, foldingModel);
+        const GotoLineBarConfig gotoLineBarConfig =
+            buildGotoLineBarConfig(hwnd, session, renderPipeline, gotoLineBar);
         [[maybe_unused]] const bool gotoLineBarCreated =
             gotoLineBar.create(hwnd, hInstance, gotoLineBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
-        const GrepBarConfig grepBarConfig =
-            buildGrepBarConfig(hwnd, document, dispatcher, selectionModel, viewport, bookmarks,
-                              renderPipeline, findBar, findReplaceState, grepBar, grepState,
-                              searchHistory, foldingModel, altCursorAnchor, rectangularAnchor,
-                              freeCursorVirtualColumns, currentDocumentPath, fileState);
+        const GrepBarConfig grepBarConfig = buildGrepBarConfig(hwnd, session, renderPipeline, findBar,
+                                                               grepBar, grepState, searchHistory);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
-        createAndPositionOutlinePane(hwnd, hInstance, document, selectionModel, viewport, renderPipeline,
-                                     outlinePane);
+        createAndPositionOutlinePane(hwnd, hInstance, session, renderPipeline, outlinePane);
         // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
         // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
         // "Fold/Unfold at Cursor" and the gutter markers work immediately,
         // without requiring the user to first open the outline panel
         // (refreshOutlinePane() re-seeds this later from the same parse
         // pattern whenever the panel is opened - see that function's comment).
-        foldingModel.setFoldableRegions(
-            neomifes::app::buildFoldRegions(extractCurrentOutline(document, currentDocumentPath), document));
-        syncFoldingState(hwnd, renderPipeline, foldingModel);
+        session.folding().setFoldableRegions(neomifes::app::buildFoldRegions(
+            extractCurrentOutline(session.document(), session.pathIfNamed()), session.document()));
+        syncFoldingState(hwnd, renderPipeline, session.folding());
         // Phase 7h: pushes the startup cursor state (position 0, isPrimary)
         // into RenderPipeline before the first paint - without this,
         // m_cursorVisuals stays empty (its default) until the user's first
@@ -2076,7 +1991,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // Phase 7h) the Breadcrumb strip invisible on a freshly opened file.
         // Supersedes the bare InvalidateRect() this replaced - this already
         // invalidates internally.
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane](
                        HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
@@ -2122,70 +2037,50 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // WI-02: WM_CLOSE veto - both go through confirmDiscardIfDirty() so an
     // unsaved edit is never silently discarded by closing the window or
     // dropping a different file onto it.
-    cfg.onClose = [&document, &fileState, &currentDocumentPath](HWND hwnd) {
-        return confirmDiscardIfDirty(hwnd, document, fileState, currentDocumentPath);
+    cfg.onClose = [&session](HWND hwnd) { return confirmDiscardIfDirty(hwnd, session); };
+    cfg.onDropFiles = [&session, &renderPipeline, &findBar](HWND hwnd, std::vector<std::wstring> paths) {
+        handleDropFilesEvent(hwnd, std::move(paths), session, renderPipeline, findBar);
     };
-    cfg.onDropFiles = [&document, &dispatcher, &selectionModel, &viewport, &renderPipeline, &bookmarks,
-                       &foldingModel, &findReplaceState, &findBar, &altCursorAnchor, &rectangularAnchor,
-                       &freeCursorVirtualColumns, &currentDocumentPath,
-                       &fileState](HWND hwnd, std::vector<std::wstring> paths) {
-        handleDropFilesEvent(hwnd, std::move(paths), document, dispatcher, selectionModel, viewport,
-                             renderPipeline, bookmarks, foldingModel, findReplaceState, findBar,
-                             altCursorAnchor, rectangularAnchor, freeCursorVirtualColumns,
-                             currentDocumentPath, fileState);
+    cfg.onKeyDown = [&session, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
+                     &outlinePane, &freeCursorModeEnabled](HWND hwnd, UINT vkCode, bool shiftDown,
+                                                           bool ctrlDown) {
+        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, findBar,
+                          commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled);
     };
-    cfg.onKeyDown = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline, &findBar,
-                     &findReplaceState, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
-                     &bookmarks, &foldingModel, &freeCursorModeEnabled, &freeCursorVirtualColumns,
-                     &altCursorAnchor, &rectangularAnchor, &currentDocumentPath,
-                     &fileState](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
-        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, dispatcher, selectionModel, viewport,
-                          document, renderPipeline, findBar, findReplaceState, commandPalette,
-                          gotoLineBar, grepBar, outlinePane, bookmarks, foldingModel,
-                          freeCursorModeEnabled, freeCursorVirtualColumns, altCursorAnchor,
-                          rectangularAnchor, currentDocumentPath, fileState);
+    cfg.onSysKeyDown = [&session, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
+        return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, session, renderPipeline);
     };
-    cfg.onSysKeyDown = [&selectionModel, &viewport, &document, &renderPipeline, &rectangularAnchor](
-                           HWND hwnd, UINT vkCode, bool shiftDown) {
-        return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, selectionModel, viewport, document,
-                                     renderPipeline, rectangularAnchor);
+    cfg.onChar = [&session, &renderPipeline](HWND hwnd, wchar_t ch) {
+        handleCharEvent(hwnd, ch, session, renderPipeline);
     };
-    cfg.onChar = [&dispatcher, &selectionModel, &viewport, &document, &renderPipeline,
-                 &freeCursorVirtualColumns](HWND hwnd, wchar_t ch) {
-        handleCharEvent(hwnd, ch, dispatcher, selectionModel, viewport, document, renderPipeline,
-                       freeCursorVirtualColumns);
-    };
-    cfg.onMouseWheel = [&viewport, &selectionModel, &renderPipeline, &document](HWND hwnd, short wheelDelta) {
-        viewport.scrollTo(
-            neomifes::app::applyMouseWheelScroll(wheelDelta, viewport.topLine(), document.lineCount()));
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+    cfg.onMouseWheel = [&session, &renderPipeline](HWND hwnd, short wheelDelta) {
+        session.viewport().scrollTo(neomifes::app::applyMouseWheelScroll(
+            wheelDelta, session.viewport().topLine(), session.document().lineCount()));
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     };
     // WI-03: this window's first-ever scrollbar (WS_HSCROLL, added by
     // MainWindow::create() only because this handler is set - see
     // MainWindowConfig::onHScroll's comment). Body lives in
     // handleHScrollEvent() (not inline here) - see that function's comment.
-    cfg.onHScroll = [&viewport, &selectionModel, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
-        handleHScrollEvent(hwnd, scrollCode, scrollPos, viewport, selectionModel, renderPipeline);
+    cfg.onHScroll = [&session, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
+        handleHScrollEvent(hwnd, scrollCode, scrollPos, session, renderPipeline);
     };
-    cfg.onMouseDown = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor, &freeCursorVirtualColumns, &foldingModel, &isDraggingMinimap](
-                          HWND hwnd, std::int32_t x, std::int32_t y, bool shiftDown, bool altDown,
-                          int clickCount) {
-        handleMouseDownEvent(hwnd, x, y, shiftDown, altDown, clickCount, selectionModel, viewport,
-                             document, renderPipeline, altCursorAnchor, rectangularAnchor,
-                             freeCursorVirtualColumns, foldingModel, isDraggingMinimap);
+    cfg.onMouseDown = [&session, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
+                                                                      std::int32_t y, bool shiftDown,
+                                                                      bool altDown, int clickCount) {
+        handleMouseDownEvent(hwnd, x, y, shiftDown, altDown, clickCount, session, renderPipeline,
+                             isDraggingMinimap);
     };
-    cfg.onMouseDrag = [&selectionModel, &viewport, &document, &renderPipeline, &altCursorAnchor,
-                       &rectangularAnchor, &freeCursorVirtualColumns, &isDraggingMinimap](
-                          HWND hwnd, std::int32_t x, std::int32_t y) {
+    cfg.onMouseDrag = [&session, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
+                                                                      std::int32_t y) {
         // Highest priority: a minimap drag never falls through to
         // rectangularAnchor/altCursorAnchor/ordinary text-drag handling
         // below - it tracks by Y alone (Phase 7v, see minimapLineAtY()'s
         // comment on why X is ignored once a drag has started).
         if (isDraggingMinimap) {
             if (const auto targetLine = renderPipeline.minimapLineAtY(y)) {
-                viewport.scrollTo(*targetLine);
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+                session.viewport().scrollTo(*targetLine);
+                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
             return;
         }
@@ -2193,7 +2088,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         if (!hit) {
             return;
         }
-        freeCursorVirtualColumns.reset();
+        session.freeCursorVirtualColumns().reset();
         // Checked in this priority order: a rectangular-selection drag
         // (Phase 4b8a, Shift+Alt+drag) takes precedence over a plain
         // Alt+drag cursor extension (Phase 4b6d), which takes precedence
@@ -2203,25 +2098,28 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // why a Shift+Alt+click that turns into a drag safely supersedes
         // whatever the down-click itself did.
         bool changed = false;
+        const Document& document = session.document();
+        auto& rectangularAnchor    = session.rectangularAnchor();
+        auto& altCursorAnchor      = session.altCursorAnchor();
         if (rectangularAnchor) {
-            selectionModel.setRectangularSelection(*rectangularAnchor, *hit, document);
+            session.selection().setRectangularSelection(*rectangularAnchor, *hit, document);
             // The rectangle just replaced the entire cursor set, so any
             // altCursorAnchor left over from an earlier plain Alt+click no
             // longer identifies a real cursor - clear it so the next
             // unrelated Shift+Alt+click doesn't silently no-op.
             altCursorAnchor.reset();
-            viewport.ensureVisible(*hit, document);
+            session.viewport().ensureVisible(*hit, document);
             changed = true;
         } else if (altCursorAnchor) {
-            selectionModel.moveCursorMatching(*altCursorAnchor, *hit);
-            viewport.ensureVisible(*hit, document);
+            session.selection().moveCursorMatching(*altCursorAnchor, *hit);
+            session.viewport().ensureVisible(*hit, document);
             changed = true;
         } else {
-            changed =
-                neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, selectionModel, viewport, document);
+            changed = neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, session.selection(),
+                                                      session.viewport(), document);
         }
         if (changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, selectionModel, viewport);
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
         }
     };
 }
@@ -2229,7 +2127,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
 // Reuses onDeferredInit exactly like the Normal path does for real
 // rendering - no new MainWindow hooks, no mouse/keyboard plumbing. The
 // entire synthetic-scroll measurement loop runs synchronously inside this
-// one callback, then closes the window.
+// one callback, then closes the window. WI-04: still takes a plain
+// Document& (not EditorSession&) - only ever needs setDocument(), and this
+// mode never touches SelectionModel/CommandDispatcher/etc. at all.
 void wireMeasureFrameMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                           Document& document, FrameProfile& frameProfile,
                           std::uint64_t syntheticLineCount) {
@@ -2274,18 +2174,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // harmless even on modes that never create a FindBar (Measure*).
     initCommonControls();
 
-    // Declared before window/renderPipeline so it outlives both (reverse
-    // destruction order) - RenderPipeline::setDocument() below hands out a
-    // non-owning pointer that must not dangle while the message loop runs.
-    //
-    // WI-02: currentDocumentPath/fileState are declared here (not further
-    // down where currentDocumentPath used to live alone) because
-    // prepareDocument() populates all three together from the same
-    // loadFile() call - see loadStartupDocument()'s comment on why
-    // currentDocumentPath must only be set on a SUCCESSFUL load (a stale
-    // path pointing at an empty `document` would make a later Ctrl+S wipe
-    // the original file, not just mis-color syntax highlighting the way an
-    // incorrect path did before saveFile() existed).
+    // WI-02: currentDocumentPath/fileState are populated together with
+    // `document` by prepareDocument() (same loadFile() call) - see
+    // loadStartupDocument()'s comment on why currentDocumentPath must only
+    // be set on a SUCCESSFUL load (a stale path pointing at an empty
+    // `document` would make a later Ctrl+S wipe the original file, not just
+    // mis-color syntax highlighting the way an incorrect path did before
+    // saveFile() existed). All three are consumed immediately below to
+    // construct `session` and are not read again afterward.
     std::uint64_t                        syntheticLineCountUsed = 0;
     std::optional<std::filesystem::path> currentDocumentPath;
     DocumentFileState                    fileState;
@@ -2293,35 +2189,31 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         prepareDocument(args, syntheticLineCountUsed, fileState, currentDocumentPath);
     FrameProfile  frameProfile{};
 
-    // Editor Core state (Phase 4b1) - Normal-mode-only in practice (only
-    // wireNormalMode's hooks ever touch these), but declared unconditionally
-    // like `document` above since CommandDispatcher must be constructed
-    // with a valid Document& regardless of launch mode.
-    SelectionModel    selectionModel{0};
-    CommandDispatcher dispatcher{document, selectionModel};
-    Viewport          viewport;
-    // Phase 4b6d: anchor of the cursor a plain Alt+click most recently
-    // added, so a later Alt+Shift+click or Alt+drag can extend that one
-    // cursor specifically. Reset to nullopt by any non-Alt click.
-    std::optional<neomifes::document::TextPos> altCursorAnchor;
-    // Phase 4b8a: anchor of an in-progress Shift+Alt+drag rectangular
-    // selection. Kept as a separate optional (not folded into
-    // altCursorAnchor) since the two gestures are deliberately independent -
-    // see dispatchMouseDown()'s comment.
-    std::optional<neomifes::document::TextPos> rectangularAnchor;
+    // WI-04: "the currently open document"'s complete state (Document/
+    // SelectionModel/CommandDispatcher/Viewport/FoldingModel/
+    // BookmarkManager/find-replace state/file path - previously ~15
+    // separate wWinMain locals) now lives in one EditorSession. Declared
+    // before window/renderPipeline so it outlives both (reverse destruction
+    // order) - RenderPipeline::setDocument() below hands out a non-owning
+    // pointer into session.document() that must not dangle while the
+    // message loop runs, same reasoning as the pre-WI-04 `document` local.
+    EditorSession session(std::move(document), fileState, currentDocumentPath);
+
     // Phase 7v: true while a minimap click-and-drag is in progress. Reset to
     // false at the top of every handleMouseDownEvent() call (the only
     // reliable reset point - MainWindow exposes no onMouseUp hook, see
     // handleMouseDownEvent()'s comment) and set back to true only by
     // tryHandleMinimapClick() when the down-click itself lands on the strip.
+    // WI-04: stays a wWinMain local, not an EditorSession member - it is a
+    // gesture on RenderPipeline's single minimap widget (Workspace-wide),
+    // not per-document state (see this file's EditorSession
+    // member-placement notes).
     bool isDraggingMinimap = false;
-    // Find bar state (Phase 5b3a, bundled into FindReplaceState in Phase
-    // 5b3b) - lives here (not inside FindBar itself) so FindBar can stay
-    // decoupled from neomifes::search, same rationale as core::ReplaceAllCommand
-    // staying decoupled from neomifes::search in Phase 5b2 (see
-    // docs/history/TIMELINE.md's Phase 5b3a entry).
-    FindBar           findBar;
-    FindReplaceState findReplaceState;
+    // Find bar state (Phase 5b3a) - lives here (not inside FindBar itself)
+    // so FindBar can stay decoupled from neomifes::search, same rationale as
+    // core::ReplaceAllCommand staying decoupled from neomifes::search in
+    // Phase 5b2 (see docs/history/TIMELINE.md's Phase 5b3a entry).
+    FindBar findBar;
     // Command palette state (Phase 5b3c) - a second, independent overlay
     // reusing the WC_EDIT+SetWindowSubclass pattern findBar established
     // (see command_palette.h's class comment for how it differs: a second
@@ -2333,7 +2225,9 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Ctrl+Shift+F Grep results pane (Phase 5c3) - two WC_EDIT + one
     // WC_LISTBOX, see grep_bar.h's class comment. grepState holds the actual
     // search::GrepMatch data GrepBar itself never sees (same rationale as
-    // findReplaceState above).
+    // findReplaceState). WI-04: stays a wWinMain local, not an
+    // EditorSession member - Grep searches the whole project, not the
+    // currently open document (see runGrepQuery()'s comment).
     GrepBar   grepBar;
     GrepState grepState;
     // Symbol outline panel (Ctrl+Shift+O, Phase 7g) - a single WC_TREEVIEW,
@@ -2359,30 +2253,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
             searchHistory = SearchHistory::loadFrom(*searchHistoryPath);
         }
     }
-    // Line bookmarks (Phase 4b8c, Ctrl+F2/F2/Shift+F2) - headless, no Win32
-    // overlay of its own; RenderPipeline::setBookmarkedLines() is pushed
-    // from handleBookmarkKey() whenever the set changes.
-    BookmarkManager bookmarks;
-    // Foldable symbol regions (Phase 7i) - headless, same "no Win32 overlay
-    // of its own" shape as bookmarks above; RenderPipeline::setFoldRegions()
-    // is pushed from syncFoldingState() whenever the region list or a
-    // folded flag changes.
-    FoldingModel foldingModel;
-    // Free cursor mode (Phase 4b8e, simplified - see approved plan). Both
-    // are session-lifetime UI state, not document state: freeCursorModeEnabled
-    // is toggled via the command palette ("Toggle Free Cursor Mode"), and
-    // freeCursorVirtualColumns tracks how many columns past the real end of
-    // the primary cursor's line it is currently drawn at, materializing into
-    // real spaces the moment a character is typed (applyFreeCursorChar()).
-    bool                          freeCursorModeEnabled = false;
-    std::optional<std::uint32_t> freeCursorVirtualColumns;
-    // Phase 7b: which file (if any) `document` was loaded from - Document
-    // itself never tracks this (see syntax_language.h's file comment), and
-    // RenderPipeline::setLanguage() needs it to decide which language (if
-    // any) to color the current document as. WI-02: now declared/populated
-    // together with `document`/`fileState` near the top of wWinMain (see
-    // that declaration's comment) rather than here, so it stays accurate
-    // for the new Ctrl+S capability too.
+    // Free cursor mode (Phase 4b8e, simplified - see approved plan). Toggled
+    // via the command palette ("Toggle Free Cursor Mode") - session-lifetime
+    // UI state, not document state (see handleFreeCursorRightArrow()'s
+    // comment), so it stays a wWinMain local rather than an EditorSession
+    // member.
+    bool freeCursorModeEnabled = false;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -2394,20 +2270,17 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     if (args.mode == LaunchMode::MeasureStartup || args.mode == LaunchMode::MeasureMemory) {
         wireMeasureStartupOrMemoryMode(cfg, profile, window);
     } else if (args.mode == LaunchMode::MeasureFrame) {
-        wireMeasureFrameMode(cfg, window, renderPipeline, document, frameProfile,
+        wireMeasureFrameMode(cfg, window, renderPipeline, session.document(), frameProfile,
                              syntheticLineCountUsed);
     } else {
-        wireNormalMode(cfg, window, renderPipeline, document, dispatcher, selectionModel, viewport,
-                       altCursorAnchor, rectangularAnchor, hInstance, findBar, findReplaceState,
-                       commandPalette, gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
-                       bookmarks, foldingModel, freeCursorModeEnabled, freeCursorVirtualColumns,
-                       currentDocumentPath, fileState, isDraggingMinimap);
+        wireNormalMode(cfg, window, renderPipeline, session, hInstance, findBar, commandPalette,
+                       gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
+                       freeCursorModeEnabled, isDraggingMinimap);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
         // call before RenderPipeline is attached.
-        renderPipeline.setLanguage(currentDocumentPath ? neomifes::app::detectLanguage(*currentDocumentPath)
-                                                        : std::nullopt);
+        renderPipeline.setLanguage(session.language());
     }
 
     if (!window.create(hInstance, cfg)) {
