@@ -2739,4 +2739,26 @@ pushはユーザーの明示指示待ち。次はWI-03(横スクロール)へ進
 
 コミット済み`6052da8`(実装)。ドキュメント同期は別コミットで追記予定。pushはユーザーの明示指示待ち。次はWI-04(`main.cpp`解体 + `EditorSession`/`Workspace`新設)へ進む。
 
+---
+
+## Session 82 (2026-08-07): WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設) 実装完了
+
+WI-03完了・ユーザーから「WI-04に進め」と指示された。`build_plan.md`/`master_roadmap.md`§8.5.5が既に大枠のクラス設計を規定していたPlan-of-Recordを、Explore agent + Plan agentによる着手前調査で実装可能な粒度まで具体化し、ユーザー承認済みの計画に沿って実装した。**新機能を1つも足さない純粋リファクタリング**であり、`main.cpp`を2,439行から361行(85%削減)へ縮小した。
+
+**着手前調査で確定した設計上の制約:** `core::CommandDispatcher`は構築時に`Document&`/`SelectionModel&`の生ポインタを固定保持し(`command.h`の`ExecutionContext`)、以後再解決しない。このため新設`EditorSession`はmove/コピー禁止とし、`Workspace`は`std::vector<std::unique_ptr<EditorSession>>`でヒープ固定配置する設計にした(既存の「Ctrl+Nは`Document{}`を既存インスタンスへmove代入する」という設計もこの制約に由来すると確認済み)。`EditorSession::language()`は意図的に非キャッシュ(WI-04着手前のmain.cppも常に`detectLanguage(path)`をその場で再計算しており、キャッシュを追加すると「2箇所で更新を忘れて食い違う」というkTabWidth二重定義と同種の新しい負債を生む)。
+
+**4段階の「安全な進め方」で実装、各段階後にビルド+テスト検証してコミット:** ステップ1(`EditorSession`新設+`wWinMain`のローカル変数15個を移設)→ステップ2(`Workspace`で包む、新規`tests/unit/app_workspace_test.cpp`追加)→ステップ3(Win32/RenderPipeline非依存の純粋関数4つを`editor_input.cpp`へ移設)→ステップ3b(`wireNormalMode()`とその呼び出し先クラスタ約46関数を新規`normal_mode_wiring.h`/`.cpp`へ移設)。ステップ1着手直後、`EditorSession::openFile()`/`resetToBlank()`が`FindReplaceState`を`FindReplaceState{}`で丸ごとリセットしてしまい、既存の`resetViewAfterDocumentSwap()`が`currentQuery`を意図的に保持し続ける(`currentMatches`/`currentMatchIndex`のみクリアする)という既存の narrower スコープと食い違う回帰を自己検出・ビルド前に修正した。
+
+**計画時点では想定していなかった追加ステップが2回発生し、いずれも透明にドキュメント化した(スコープ拡大ではなくDoD「500行以下」達成のための精緻化):** ステップ1〜3完了時点で`main.cpp`は約2,183行までしか落ちず、`wireNormalMode()`クラスタの分離(ステップ3b)が必須と判明。ステップ3b完了後もなお564行残ったため、`wWinMain`のウィンドウ生成**前**に走るプロセス起動ロジック(`LaunchMode`/`LaunchArgs`/`parseArgs()`/`claimSingleInstance()`/`initCommonControls()`/`enableHighDpi()`/`prepareDocument()`)を新規`src/app/launch_setup.h`/`.cpp`へさらに分割し、両方を同一コミット(`3480b5f`)へ含めた。加えて`build_plan.md`が示していたファイルパス`src/app/src/workspace.cpp`が実在しない(`src/app/`直下が実際の慣習)ことも実装中に判明し訂正した。
+
+**唯一のシグネチャ変更:** `applyIndentationConversion()`から`HWND`引数と内部の`InvalidateRect()`呼び出しを削除し、`handlePaste()`/`handleChar()`と同じ「変更有無を`bool`で返し呼び出し側が再描画する」規約へ統一(呼び出し元1箇所のみ、実質無風)。
+
+**実測検証:** ローカルDebug/Release/ubsan全構成で既存1026テスト全て無変更でgreen(4段階すべてのチェックポイントで確認、新機能を足していないことの直接証明)。変更/新規ファイルへclang-tidy個別実行、新規警告0(`misc-unused-using-decls`が`main.cpp`書き換えの過程で複数回検出され都度削除)。
+
+**実アプリドッグフーディング:** PowerShell経由のWin32 API相互運用(`EnumWindows`+`GetWindowThreadProcessId`によるプロセスのウィンドウハンドル特定、`System.Drawing`によるスクリーンショット、`SendMessage`による`WM_MOUSEWHEEL`/`WM_CLOSE`)でプロセス起動・マウスホイールスクロール・ウィンドウクローズが退行なく動作することを確認した。過去セッションの知見(キーボード修飾キー合成入力は不調)を踏まえ、Ctrl+S/Ctrl+Oのような修飾キーを伴う編集・保存往復検証は今回実施しなかった — 完了報告に明記済み。
+
+**ドキュメント同期:** `build_plan.md`(WI-04 DoD全項目`[x]`化+実装後の確定事項節新設)、`master_roadmap.md`(§8.5.5に実装後の確定事項追記、§2フェーズ早見表の8.5c/8.5g行を訂正)、`RESUME_HERE.md`(冒頭ポインタ+§1状態表+新規§3.71完了記録)、`detailed_design.md`(新規§3.6、および今回同時に発見したWI-03未記載分を新規§5.4として追加、§10.24のミニマップ節の横スクロール関連の事実誤り箇所を訂正)。
+
+コミット済み`c58245e`(ステップ1)/`8237ec4`(ステップ2)/`2c549d0`(ステップ3)/`3480b5f`(ステップ3b+launch_setup分割)、pushはユーザーの明示指示待ち。次はWI-05(タブUI)。
+
 <!-- 次セッションはここに追記 -->

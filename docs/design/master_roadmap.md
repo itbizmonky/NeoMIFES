@@ -273,11 +273,11 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **— ここまでエンジン層。以下 v2.1 で再編 (`gap_analysis.md` §7) —** | | | |
 | **8.5a** | **文書保存基盤** (`document::saveFile()`、mmap 解放 + `ReplaceFileW` アトミック置換、`isDirty()`、エンコード/改行/BOM 指定書き出し) | ⏭️ **最優先 (P0)** | §8.5 |
 | **8.5b** | **ファイルライフサイクル UI** (Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N、`IFileDialog`、`WM_DROPFILES`、未保存警告) | ✅ **完了・🎉 M1達成 (2026-08-05)** | §8.5 |
-| **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`app::EditorSession` / `app::Workspace` 新設。2,053 行の `main.cpp` から状態を移設) | ⏭️ **P0** | §8.5 |
-| **8.5d** | **タブ UI** (`ui::TabBar`、Ctrl+Tab / Ctrl+W / Ctrl+PgUp・PgDn) | ⏭️ **P0** | §8.5 |
+| **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`app::EditorSession` / `app::Workspace` 新設。main.cpp を 2,439 行 → 361 行へ縮小) | ✅ **完了 (WI-04, 2026-08-07)** | §8.5 |
+| **8.5d** | **タブ UI** (`ui::TabBar`、Ctrl+Tab / Ctrl+W / Ctrl+PgUp・PgDn) | ⏭️ **P0 (次候補)** | §8.5 |
 | **8.5e** | **IME 完全対応** (`WM_IME_*`、未確定文字列のインライン描画、`CANDIDATEFORM` キャレット追従) | ⏭️ **P0** | §8.5, §16.1 |
 | **8.5f** | **ウィンドウクローム** (メニューバー / `HACCEL` / ステータスバー / タイトル / コンテキストメニュー / `.rc`・`.ico`・`.manifest`) | ⏭️ **P0** | §8.5 |
-| **8.5g** | **横スクロール** (`leftColumn`、`WM_HSCROLL`。長い行の右端への到達) | ⏭️ **P0** | §8.5 |
+| **8.5g** | **横スクロール** (`leftColumn`、`WM_HSCROLL`。長い行の右端への到達) | ✅ **完了 (WI-03, 2026-08-05)** | §8.5 |
 | **8.6a** | **設定システム** (`core::Settings`、JSON。ハードコード定数 13 箇所を移行、`kTabWidth` 二重定義を解消) | ⏭️ P1 | §8.6 |
 | **8.6b** | **キーバインド設定** (`HACCEL` の設定ファイル化、秀丸/サクラ/VSCode プリセット) | ⏭️ P1 | §8.6, §13.1 |
 | **8.6c** | **テーマ** (ダーク / ライト / ハイコントラスト。ハードコード `D2D1_COLOR_F` を `Theme` 経由へ) | ⏭️ P1 | §8.6, §13.6 |
@@ -1705,6 +1705,8 @@ class Workspace {
 **`main.cpp` に残すもの:** `wWinMain`、ウィンドウ生成、メッセージループ、`Workspace` と `RenderPipeline` の所有のみ。キーバインド処理は `src/app/editor_input.cpp` と新設のコマンドテーブルへ移す。
 
 **CLAUDE.md 絶対ルール 4 の遵守:** 本サブフェーズは新機能を 1 つも足さない**純粋なリファクタリング**である。既存の全テストが無変更で green を保つことが唯一の完了条件。
+
+**実装後の確定事項 (2026-08-07、WI-04 完了、コミット `c58245e`/`8237ec4`/`2c549d0`/`3480b5f`):** 上記スケッチ通り `EditorSession`/`Workspace` を新設し、`main.cpp` を **2,439 行 → 361 行** まで縮小した (着手時点の実測は本節記載の 2,053 行ではなく 2,439 行だった — WI-03 完了時点までに増えていたぶんを本 WI 冒頭で実測・訂正)。**当初の「安全な進め方」3 段階(EditorSession 新設 → Workspace 新設 → キーバインド群を editor_input.cpp へ移設)だけでは約 650 行までしか縮まらないと実装途中で判明した** — `wireNormalMode()` とその依存関数群(約 46 関数・約 1,780 行)は `RenderPipeline`/`HWND`/`ui::` ウィジェットに依存しており、Win32 非依存を維持する `editor_input.cpp` には移せないため。これらを新規 `src/app/normal_mode_wiring.h`/`.cpp` へ切り出すステップ3bを追加し、さらに `wWinMain` 本体より前に走るプロセス起動前処理(コマンドライン解析・多重起動チェック・DPI/共通コントロール初期化・起動時 Document 構築)を `src/app/launch_setup.h`/`.cpp` へ分離して初めて 500 行の DoD を満たせた。いずれも本節の既定方針「main.cpp に残すのは wWinMain/ウィンドウ生成/メッセージループ/Workspace と RenderPipeline の所有のみ」を字義通り満たすための精緻化。**ファイル配置も訂正:** `src/app/src/workspace.cpp` ではなく実際の慣習通り `src/app/workspace.cpp`(平坦なディレクトリ構成)とした。詳細な設計判断(状態の振り分け根拠・`CommandDispatcher` のポインタ安定性制約による move/コピー禁止・`EditorSession::language()` を意図的にキャッシュしない理由)は `build_plan.md` WI-04 の「実装後の確定事項」を参照。
 
 ### 8.5.6 サブフェーズ 8.5d — タブ UI
 

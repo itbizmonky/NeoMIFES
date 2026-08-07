@@ -111,7 +111,7 @@ ctest --preset debug --output-on-failure
 - [x] **WI-02** ファイルライフサイクル UI (Ctrl+S / Ctrl+O / Ctrl+N / D&D / 未保存警告) → コミット: `3e611d8`。ドッグフーディングで2件の実害あるバグを発見・修正 (`5712435`/`8199c38`/`a8df325`)、ユーザーが実際に編集・保存・コミット (`d02138b`/`34b79e5`) まで完走し 🎉 M1 達成
   - 🎉 **M1 達成 (2026-08-05): NeoMIFES で NeoMIFES を編集できるようになった (ドッグフーディング完了)**
 - [x] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → コミット: `6052da8`
-- [ ] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → `________`
+- [x] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → コミット: `c58245e` (ステップ1) / `8237ec4` (ステップ2) / `2c549d0` (ステップ3) / `3480b5f` (ステップ3b)
 - [ ] **WI-05** タブ UI (`ui::TabBar`) → `________`
 - [ ] **WI-06** IME 完全対応 (`WM_IME_*` + インライン未確定文字列) → `________`
 - [ ] **WI-07** ウィンドウクローム (メニュー / `HACCEL` / ステータスバー / 行番号 / `.rc`) → `________`
@@ -495,11 +495,25 @@ public:
 
 ### DoD
 
-- [ ] **`src/app/main.cpp` が 500 行以下** (現状 2,053 行)
-- [ ] **既存の全テストが無変更で green** (新機能を足していないことの証明)
-- [ ] 実アプリの挙動が WI-03 完了時点と完全に同一 (ドッグフーディングで確認)
-- [ ] `Workspace` の単体テストが追加されている
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] **`src/app/main.cpp` が 500 行以下** (2,439 行 → **361 行**。着手時点の実測は 2,053 行ではなく 2,439 行だった — WI-03 完了時点で既にその行数まで増えていたため、本 WI 冒頭で実測し訂正した)
+- [x] **既存の全テストが無変更で green** (新機能を足していないことの証明。ステップ1〜3b の各コミットで毎回 1026 テスト全 green を確認)
+- [x] 実アプリの挙動が WI-03 完了時点と完全に同一 (ドッグフーディングで確認 — 下記「実装後の確定事項」参照)
+- [x] `Workspace` の単体テストが追加されている (`tests/unit/app_workspace_test.cpp`、13 ケース)
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0 (ステップ1〜3b の全コミットで確認済み)
+
+### 実装後の確定事項
+
+**ファイル配置の訂正:** 本節が当初示していた `src/app/src/workspace.cpp` は誤り。実際の `src/app/` に `src/` サブディレクトリは存在しない (既存の `document_open.cpp`/`editor_input.cpp` 等はすべて `src/app/` 直下)。新規ファイルは実際の慣習に合わせ `src/app/workspace.cpp`/`src/app/editor_session.cpp` とした。
+
+**3 段階では 500 行に届かず、ステップ3b を追加した:** 当初の「安全な進め方」(EditorSession 新設 → Workspace 新設 → キーバインド群を editor_input.cpp へ移設) の 3 段階だけでは `main.cpp` は約 650 行までしか縮まらないと実装途中で判明した。理由は `wireNormalMode()` とその依存関数群 (`buildFindBarConfig`/`buildCommandRegistry`/`handleKeyDownEvent` 等、約 46 関数・約 1,780 行) がいずれも `RenderPipeline`/`HWND`/`ui::` ウィジェットに依存しており、Win32 非依存を維持する `editor_input.cpp` (`app_editor_input_test.cpp` がその性質にヘッドレスで依存) には移せないため。これらを新規 `src/app/normal_mode_wiring.h`/`.cpp` へ切り出すステップ3bを追加した。さらにステップ3b 単独でも main.cpp は 564 行までしか縮まらなかったため、`wWinMain` 本体より前に実行される「プロセス起動前処理」(コマンドライン解析・多重起動チェック・DPI/共通コントロール初期化・起動時 Document 構築、約 190 行) を `src/app/launch_setup.h`/`.cpp` へ追加分割し、最終的に 361 行まで到達した。いずれも「main.cpp に残すのは wWinMain/ウィンドウ生成/メッセージループ/Workspace と RenderPipeline の所有のみ」という本節の既定方針を字義通り満たすための精緻化であり、スコープ追加ではない。
+
+**状態の振り分け根拠:** `EditorSession` には Document/SelectionModel/CommandDispatcher/Viewport/FoldingModel/BookmarkManager に加え、`FindReplaceState` (検索状態) と `altCursorAnchor`/`rectangularAnchor`/`freeCursorVirtualColumns` (前文書内の位置に紐づくアンカー類) も含めた — いずれも `resetViewAfterDocumentSwap()`/`document_open.h` が文書切替の都度リセットしていた実際の既存動作から逆算した判断であり、WI-05 の「各タブが独立した検索状態を保持する」という前提も先取りする。逆に `GrepState`/`freeCursorModeEnabled`/`isDraggingMinimap`/各種 UI ウィジェット (FindBar/CommandPalette/GotoLineBar/GrepBar/OutlinePane/SearchHistory) は `EditorSession` に含めず `wWinMain`/`wireNormalMode()` 側に残した — Grep はプロジェクト全体検索で文書非依存、フリーカーソルモード/ミニマップドラッグは UI ジェスチャ状態、各ウィジェットは Workspace 全体で 1 個の実体という理由による。
+
+**`CommandDispatcher` のポインタ安定性制約:** `core::CommandDispatcher` は構築時に `Document&`/`SelectionModel&` を生ポインタとして束縛し、以後再解決しない。そのため `EditorSession` は move/コピー禁止 (`= delete`) にし、`Workspace` は `std::vector<std::unique_ptr<EditorSession>>` でヒープ固定配置した。
+
+**`EditorSession::language()` は意図的にキャッシュしない:** 既存コードが `detectLanguage(path)` を呼び出し箇所ごとに都度再計算していた挙動 (キャッシュフィールドが存在しなかった) をそのまま踏襲した。これにより「2 箇所で更新を忘れて食い違う」という新しい同期バグのクラスを増やさずに済む (CLAUDE.md が警告する `kTabWidth` 二重定義と同種の負債の先取り回避)。
+
+**ドッグフーディング (実アプリ動作確認):** ステップ3b 完了後、NeoMIFES 自身の `src/app/main.cpp` (リファクタ後のバージョン) を `--open` で実際に開き、シンタックスハイライト・ミニマップ・ガター・水平/垂直スクロールバーの描画、およびマウスホイールスクロール操作を実機スクリーンショット2枚で視覚確認した。`WM_CLOSE` で正常終了し、作業ツリーへの意図しない変更が発生しないことも確認した。キーボード修飾キー合成 (Ctrl+S 等) を伴う編集・保存の完全な往復までは自動化環境の制約により実施していない — 既存メモリ (`reference_no_win32_gui_automation`) が記録する既知の制約と同じ理由。
 
 ---
 

@@ -287,6 +287,67 @@ void showOpenErrorDialog(HWND owner, document::LoadError error);
 
 **スコープ外:** Save Asダイアログでのエンコード/改行選択UI (WI-07)、複数ファイルドラッグ&ドロップでのマルチタブ展開 (WI-05)。
 
+### 3.6 `EditorSession` / `Workspace` + `main.cpp` 解体 (WI-04実装、2026-08-07)
+
+`wWinMain`が「1つの開いている文書」に紐づく状態(Document/SelectionModel/CommandDispatcher/Viewport/FoldingModel/BookmarkManager/検索状態/ファイルパス等、約15個のローカル変数)を直接保持していた構造を解消する**新機能を1つも足さない純粋リファクタリング**。`main.cpp`を2,439行から361行(85%削減)へ縮小した。
+
+```cpp
+// src/app/include/neomifes/app/editor_session.h (新規)
+class EditorSession {
+public:
+    EditorSession();  // 空・untitledセッション
+    EditorSession(document::Document document, DocumentFileState fileState,
+                  const std::optional<std::filesystem::path>& path);
+    EditorSession(const EditorSession&)            = delete;
+    EditorSession(EditorSession&&)                 = delete;  // 後述の制約により禁止
+    // document()/selection()/dispatcher()/viewport()/folding()/bookmarks()/
+    // findReplaceState()/fileState()/altCursorAnchor()/rectangularAnchor()/
+    // freeCursorVirtualColumns() アクセサ、language()(非キャッシュ、後述)、
+    // openFile()(document_open.h::openDocumentAt()の薄いラッパー)、
+    // resetToBlank()(Ctrl+N相当)
+};
+
+// src/app/include/neomifes/app/workspace.h (新規)
+class Workspace {
+public:
+    explicit Workspace(document::Document initialDocument = {}, DocumentFileState initialFileState = {},
+                       const std::optional<std::filesystem::path>& initialPath = std::nullopt);
+    Workspace(const Workspace&) = delete; Workspace(Workspace&&) = delete;
+    [[nodiscard]] EditorSession& active() noexcept;
+    [[nodiscard]] std::optional<std::size_t> openFile(const std::filesystem::path& path);
+    bool closeSession(std::size_t index) noexcept;
+    void activate(std::size_t index) noexcept;
+    [[nodiscard]] bool hasUnsavedChanges() const noexcept;
+private:
+    std::vector<std::unique_ptr<EditorSession>> m_sessions;  // WI-04時点では常に要素数1
+    std::size_t m_activeIndex = 0;
+};
+```
+
+**`CommandDispatcher`のポインタ安定性制約 (設計の核心):** `core::CommandDispatcher`は構築時に`Document&`/`SelectionModel&`を生ポインタとして捕捉し、以後再解決しない(`command.h`の`ExecutionContext`)。このため`EditorSession`はmove/コピー禁止とし、`Workspace`は`std::vector<std::unique_ptr<EditorSession>>`でヒープ固定配置する(`unique_ptr`の再配置は指し先のアドレスを動かさない)。既存の「Ctrl+Nは`Document{}`を既存インスタンスへmove代入する(新規構築しない)」という設計判断も同じ制約に由来する。
+
+**`EditorSession::language()`は意図的に非キャッシュ** — WI-04着手前の`main.cpp`はどこにも言語のキャッシュフィールドを持たず、2箇所(起動時・タグジャンプ後)とも`detectLanguage(path)`をその場で再計算していた。キャッシュを追加すると「2箇所で更新を忘れて食い違う」という新しい同期バグのクラスを作ってしまう(CLAUDE.mdが警告する`kTabWidth`二重定義と同種の負債の先取り回避)ため、既存の「毎回計算する」挙動をそのまま踏襲した。
+
+**状態の振り分け:** `document`/`fileState`/`selectionModel`/`dispatcher`/`viewport`/`bookmarks`/`foldingModel`/各種アンカー/`FindReplaceState`は`EditorSession`へ移設(いずれも既存の`resetViewAfterDocumentSwap()`/`openDocumentAt()`が文書スワップの度にリセットしていた=文書紐づき、`FindReplaceState`をここに含めたのはWI-05「各タブが独立した検索状態を持つ」の前提を先取りする判断)。`GrepState`(プロジェクト全体検索)/`freeCursorModeEnabled`(エディタの動作モード)/`isDraggingMinimap`(一時的マウスジェスチャ)/`FindBar`等のWin32ウィジェット実体/`SearchHistory`は`main.cpp`に残置(Workspace全体で1つ、文書スワップで一切触られない既存の実際の挙動から逆算)。
+
+**`main.cpp`の最終構造:** `wWinMain`本体(`Workspace`/`RenderPipeline`所有・ウィンドウ生成・メッセージループ)、`runMessageLoop()`、`--measure-startup`/`--measure-memory`/`--measure-frame`用のヘルパー2つのみ。以下2ファイルへ分割:
+
+- **新規`src/app/normal_mode_wiring.h`/`.cpp`(約1,650行)** — `wireNormalMode()`とその呼び出し先クラスタ(`buildCommandRegistry`/`handleKeyDownEvent`/`openFileAndSyncView`/`performSave`/`confirmDiscardIfDirty`等、約46関数)。いずれも`HWND`/`RenderPipeline`/`ui::`ウィジェットに依存するため、Win32非依存を設計原則とする`editor_input.cpp`(`app_editor_input_test.cpp`がヘッドレステストに依存)には移せない。`EditorSession`のメンバを3個以上直接触る関数は引数を`EditorSession&`1つに集約(例: `openAndResetTo()`の17引数→`openFileAndSyncView()`の7引数)。
+- **新規`src/app/launch_setup.h`/`.cpp`** — `wWinMain`のウィンドウ生成**前**に走るプロセス起動ロジック(`LaunchMode`/`LaunchArgs`/`parseArgs()`/`claimSingleInstance()`/`initCommonControls()`/`enableHighDpi()`/`prepareDocument()`)。
+
+Win32/RenderPipeline非依存の純粋関数(`dispatchMouseDown`/`computeHScrollTargetColumn`/`extractCurrentOutline`)は既存の`editor_input.cpp`へ移設。`applyIndentationConversion()`は`HWND`引数と内部の`InvalidateRect()`呼び出しを削除し、`handlePaste()`/`handleChar()`と同じ「変更有無を`bool`で返し、呼び出し側が再描画する」規約へ統一(呼び出し元1箇所のみ、本WI唯一のシグネチャ変更)。
+
+**実装後に判明した計画との食い違い(いずれも透明にドキュメント化、スコープ拡大ではなく既定DoD達成のための精緻化):**
+1. 元の3ステップ計画(EditorSession→Workspace→純粋関数の`editor_input.cpp`移設)だけでは`main.cpp`が約650行までしか落ちず、DoD「500行以下」未達と判明 → `normal_mode_wiring`への切り出し(ステップ3b)を追加。
+2. ステップ3bだけでも564行残り、さらに`launch_setup`への分割が必要と判明。
+3. `build_plan.md`が示していたファイルパス`src/app/src/workspace.cpp`は実在せず、実際の慣習(`src/app/`直下、`document_open.cpp`等と同じ)に合わせ`src/app/workspace.cpp`とした。
+
+**影響ファイル:** 新規`editor_session.h/.cpp`・`workspace.h/.cpp`・`normal_mode_wiring.h/.cpp`・`launch_setup.h/.cpp`、`editor_input.h/.cpp`(4関数追加)、`main.cpp`(全面書き換え、2,439行→361行)、`tests/unit/app_workspace_test.cpp`(新規)。
+
+**検証:** Debug/Release/ubsan全構成・既存1026テスト全て無変更でgreen(新機能を足していないことの直接証明)、clang-tidy新規警告0。実アプリドッグフーディング(PowerShell経由のWin32 API相互運用によるプロセス起動・ウィンドウ操作・マウスホイールスクロール・ウィンドウクローズ)で退行なしを確認 — キーボード修飾キー合成(Ctrl+S等)を伴う編集/保存の往復検証は環境上の既知の制約により未実施、完了報告に明記済み(詳細は[`build_plan.md`](build_plan.md) WI-04節、[`RESUME_HERE.md`](../handoff/RESUME_HERE.md) §3.71参照)。
+
+**スコープ外(WI-05以降):** `Workspace::openFile()`/`closeSession()`の実際のキーバインド配線(タブUI)。`GrepState`/`FindBar`等の`Workspace`所属化。
+
 ---
 
 ## 4. Rendering Engine 詳細
@@ -858,6 +919,21 @@ std::optional<document::TextPos> rectangularAnchor;
 - **4b8g (キーボード矩形選択拡張 + Shift+Alt+I):** `MainWindow`に`onSysKeyDown`フック(`WM_SYSKEYDOWN`)を新設 — 未消費時は必ず`DefWindowProcW`へフォールスルーし、Alt+F4等のシステムキー既定動作を保持する設計を徹底。`SelectionModel`のprivate`moveOne()`を公開自由関数`document::TextPos moveTextPos(MovementKind, const Document&, TextPos, LineNumber pageSize=0)`へ格上げし、`moveAll()`もこれを呼ぶよう変更。`Shift+Alt+矢印`ハンドラは`moveTextPos()`で新active位置を計算し、Phase 4b8aの`rectangularAnchor`状態を再利用して`setRectangularSelection()`を呼ぶ — マウスとキーボードの矩形選択拡張が同じ状態変数を共有。新規`SelectionModel::convertToLineEndCursors()`が`Shift+Alt+I`で現在のカーソル/選択範囲(`position`と`anchor`の両方を考慮)が跨る各行の実行末に1カーソルずつ配置。**既知の制約:** キーボードでの矩形拡大は「短い行を経由した後の元の意図列」を記憶しない(通常の垂直移動が持つ列保持とは異なる簡略実装)。
 
 これでPhase 4b8はroadmap上の保留項目を残さず完全に完了した(6サブフェーズ、`docs/history/TIMELINE.md`のセッション記録参照)。
+
+### 5.4 横スクロール (WI-03実装、2026-08-06)
+
+画面幅を超える行を編集・閲覧するための横スクロール機構。本コードベース初の`WS_HSCROLL`スクロールバー。
+
+- **`core::Viewport`**: `m_leftColumn`(UTF-16コード単位でのスクロール列)を追加。`scrollToColumn()`/`setVisibleColumnCount()`/`leftColumn()`新設。`ensureVisible()`は既存の行方向ロジック(`pos - doc.lineToOffset(line)`)と全く同じ要領で列方向にも対応(`RenderPipeline::computeCaretDraws()`と同じ既存パターンの踏襲)。
+- **`viewport_math.h`**: `computeVisibleColumnCount()`新設(既存`computeVisibleLineCount()`の横方向版、同じ`constexpr noexcept`形式)。
+- **`RenderPipeline`**: `m_leftColumn`/`setLeftColumn()`/`leftColumnOffsetDips()`(`m_leftColumn * m_charWidthDips`、7箇所のX座標オフセット計算から共有ヘルパーとして抽出)。`m_maxVisibleLineLength`/`maxVisibleLineLength()` — `drawVisibleLines()`が可視行を走査するついでに追跡し、横スクロールバーの範囲として公開(10GBファイル対応のため全文書スキャンはしない、可視範囲外へスクロールすればその都度範囲も追従する割り切り)。`FrameState`へ`leftColumn`フィールドを追加(粗粒度フレームスキップが横スクロール単独の変化を取りこぼさないため、以前セッションで発見・修正した`m_documentGeneration`欠落と同種の危険パターンの再発防止)。
+- **ガタークリップ:** `drawTextLine()`のグリフ描画部分(`drawMatchesOnLine()`〜`drawCaretsOnLine()`)を`ID2D1DeviceContext6::PushAxisAlignedClip`/`PopAxisAlignedClip`で`[kGutterWidthDips, widthDips)`にクリップ。ガター自体(`drawGutterOnLine()`のブックマークドット・フォールドシェブロン)は背景を塗らず既存コンテンツへ直接描画するため、`-leftColumnDips`オフセット導入前は問題にならなかったが、右へスクロールした行のグリフがガター領域へはみ出しうると着手前調査で判明し追加した(WI-02のドッグフーディングで発覚した2バグと同じ「未クランプ/未クリップの構造的穴」パターンの事前予防)。
+- **`MainWindow`**: `onHScroll`フック新設、`WM_HSCROLL`(`SB_LINELEFT`/`SB_LINERIGHT`/`SB_PAGELEFT`/`SB_PAGERIGHT`/`SB_THUMBTRACK`/`SB_THUMBPOSITION`)配線、`WS_HSCROLL`スタイル追加。
+- **`main.cpp`配線:** `syncRenderStateAndInvalidate()`(`setTopLine()`を呼ぶ唯一の実運用箇所)に`renderPipeline.setLeftColumn(viewport.leftColumn())`を追加するだけで済んだ(`cfg.onHScroll`ラムダも同型)。
+
+**スコープ外(意図的):** word wrap、CJK等可変幅グリフの厳密な列計算(既存の等幅フォント近似をそのまま踏襲)、スクロールバー範囲の全文書スキャンによる厳密化。
+
+**影響ファイル:** `src/core/{viewport.h,viewport.cpp}`、`src/render/{viewport_math.h,render_pipeline.h,render_pipeline.cpp}`、`src/ui/{main_window.h,main_window.cpp}`、`src/app/main.cpp`。
 
 ---
 
@@ -2793,7 +2869,7 @@ void RenderPipeline::drawMinimapLines(ID2D1DeviceContext6& dc, float left, LineN
 void RenderPipeline::drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float left, float widthDips,
                                                    LineNumber windowStart, float rowHeightDips) noexcept;
 ```
-roadmapスケッチの「`D2D1_BITMAP_INTERPOLATION_MODE_LINEAR`によるGPUスケーリング」は不採用 — 「1/8スケールで直接描画」という同スケッチ内の別の記述と技術的に矛盾しており(オフスクリーン全サイズ描画→縮小 vs 最初から低解像度で直接描画は別技術)、Breadcrumb/Sticky scrollが同種のroadmapスケッチより遥かにシンプルな直接D2Dプリミティブ描画に落ち着いた前例に倣った。`drawMinimapLines()`は`drawTokensOnLine()`と同じ「ソート済み`m_tokens`に対する前進のみのスイープ」パターンで各行の代表色(その行で最初に見つかった着色トークンの色、なければ中間グレー、空行なら何も描かない)を求め、幅だけ行の長さに比例させた単色1本の`FillRectangle`を描く(密度表現の精緻化はスコープ外)。**`drawVisibleLines()`側の変更は不要** — `drawTextLine()`は元々65536DIPの巨大レイアウトボックスでNO_WRAP描画しており実クリップは常にレンダーターゲットの物理境界任せなので、ミニマップは`drawVisibleLines()`の**後**に不透明な背景矩形で右端を上書きするだけで済む(Breadcrumb/Sticky scrollの「Y軸上部を予約する」方式とは異なる、意図的に緩い設計 — 本コードベースには横スクロール機構が無いため「隠れたテキストにアクセスする手段が失われる」という懸念も無関係)。
+roadmapスケッチの「`D2D1_BITMAP_INTERPOLATION_MODE_LINEAR`によるGPUスケーリング」は不採用 — 「1/8スケールで直接描画」という同スケッチ内の別の記述と技術的に矛盾しており(オフスクリーン全サイズ描画→縮小 vs 最初から低解像度で直接描画は別技術)、Breadcrumb/Sticky scrollが同種のroadmapスケッチより遥かにシンプルな直接D2Dプリミティブ描画に落ち着いた前例に倣った。`drawMinimapLines()`は`drawTokensOnLine()`と同じ「ソート済み`m_tokens`に対する前進のみのスイープ」パターンで各行の代表色(その行で最初に見つかった着色トークンの色、なければ中間グレー、空行なら何も描かない)を求め、幅だけ行の長さに比例させた単色1本の`FillRectangle`を描く(密度表現の精緻化はスコープ外)。**`drawVisibleLines()`側の変更は不要** — `drawTextLine()`は元々65536DIPの巨大レイアウトボックスでNO_WRAP描画しており実クリップは常にレンダーターゲットの物理境界任せなので、ミニマップは`drawVisibleLines()`の**後**に不透明な背景矩形で右端を上書きするだけで済む(Breadcrumb/Sticky scrollの「Y軸上部を予約する」方式とは異なる、意図的に緩い設計 — この記述はPhase 7w当時(横スクロール機構が存在しなかった)の前提に基づく。**事実訂正 (WI-03、2026-08-06):** 本コードベースには横スクロール機構(`m_leftColumn`/`WM_HSCROLL`、§5.4参照)が実際には存在するが、ミニマップは意図的にその影響を受けない — §7w「文書全体俯瞰型」は常に`[0, totalLines)`全体を`m_leftColumn`に関わらず表す設計であり(`drawMinimap()`自身のコメント参照)、右にスクロールしたテキストがミニマップの下から「覗く」必要はそもそも無いため、ガターのクリップ(`drawTextLine()`の`PushAxisAlignedClip`)のような追従保護は不要のまま)。
 
 **ヒットテストの分離(クリック開始 vs ドラッグ継続):**
 ```cpp
