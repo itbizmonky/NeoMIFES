@@ -30,7 +30,7 @@ Workspace::Workspace(document::Document initialDocument, DocumentFileState initi
         std::make_unique<EditorSession>(std::move(initialDocument), initialFileState, initialPath));
 }
 
-std::optional<std::size_t> Workspace::openFile(const std::filesystem::path& path) {
+std::variant<std::size_t, document::LoadError> Workspace::openFile(const std::filesystem::path& path) {
     const std::filesystem::path target = canonicalOrSelf(path);
     for (std::size_t i = 0; i < m_sessions.size(); ++i) {
         if (m_sessions[i]->isUntitled()) {
@@ -42,10 +42,16 @@ std::optional<std::size_t> Workspace::openFile(const std::filesystem::path& path
         }
     }
     auto session = std::make_unique<EditorSession>();
-    if (session->openFile(path)) {  // truthy LoadError -> failure
-        return std::nullopt;
+    if (const std::optional<document::LoadError> error = session->openFile(path)) {
+        return *error;
     }
     m_sessions.push_back(std::move(session));
+    m_activeIndex = m_sessions.size() - 1;
+    return m_activeIndex;
+}
+
+std::size_t Workspace::openBlank() {
+    m_sessions.push_back(std::make_unique<EditorSession>());
     m_activeIndex = m_sessions.size() - 1;
     return m_activeIndex;
 }

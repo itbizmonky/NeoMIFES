@@ -21,6 +21,7 @@
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
 #include "neomifes/app/syntax_language.h"
+#include "neomifes/app/tab_index_math.h"
 #include "neomifes/app/tag_jump.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
@@ -454,6 +455,33 @@ void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, Edito
     ::SetFocus(hwnd);
 }
 
+// WI-05: pushes `session`'s OWN already-existing view state into
+// RenderPipeline/FindBar - the tab-switch counterpart to
+// resetViewAfterDocumentSwap() above. Deliberately NOT reused for a tab
+// switch: that function CLEARS matches/folds/bookmarks/language, which is
+// correct when the SAME EditorSession's Document is being replaced with a
+// different file's content, but wrong here - a tab switch moves the
+// "active" role to an EditorSession that already has its own matches/
+// folds/bookmarks/language, which must be RESTORED as-is, not wiped. Also
+// used for newly-created/opened sessions (Ctrl+O/Ctrl+N/drag-drop below) -
+// a brand new EditorSession's state (empty matches/folds/bookmarks) is
+// indistinguishable from "restore" in that case, so the same function
+// covers both without a separate code path.
+void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session,
+                              FindBar& findBar) {
+    renderPipeline.setDocument(&session.document());
+    renderPipeline.setLanguage(session.language());
+    renderPipeline.setBookmarkedLines(std::vector<neomifes::document::LineNumber>(
+        session.bookmarks().lines().begin(), session.bookmarks().lines().end()));
+    syncFoldingState(hwnd, renderPipeline, session.folding());
+    syncMatchVisuals(session.findReplaceState(), renderPipeline);
+    findBar.setMatchCount(session.findReplaceState().currentMatchIndex,
+                          session.findReplaceState().currentMatches.size());
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    syncHorizontalScrollBar(hwnd, renderPipeline, session.viewport());
+    ::SetFocus(hwnd);
+}
+
 // WI-02: opens `path` into the session's Document via
 // EditorSession::openFile() (optionally jumping to targetLine/targetColumn -
 // both already 0-based, same convention that method documents), and on
@@ -847,66 +875,142 @@ bool handleSaveKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Editor
     if (!ctrlDown || vkCode != 'S') {
         return false;
     }
-    (void)performSave(hwnd, session, /*forceSaveAs=*/shiftDown);
+    if (performSave(hwnd, session, /*forceSaveAs=*/shiftDown)) {
+        // WI-05: the tab strip's ● unsaved-changes marker (TabBar::setTabs(),
+        // driven by EditorSession::isDirty() - see wireNormalMode()'s paint
+        // handler) is only refreshed on the next repaint. Ctrl+S itself
+        // doesn't otherwise touch anything RenderPipeline redraws, so
+        // without this the marker would linger on-screen until some
+        // unrelated repaint happened to come along.
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+    }
     return true;
 }
 
-// Ctrl+O (WI-02) - confirmDiscardIfDirty() first (so an unsaved edit is
-// never silently discarded by opening a different file), then
-// file_dialogs.h's showOpenFileDialog() for the destination, then
-// openFileAndSyncView() (WI-04, wrapping EditorSession::openFile()) same as
-// F12/Grep-result-click. Unlike those two silent-no-op callers, a failed
-// open here is user-INITIATED (not a stale background reference), so it is
-// surfaced via message_dialogs.h's showOpenErrorDialog(). WI-04: takes
-// EditorSession& (essentially every member).
-bool handleOpenKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& session,
+// Ctrl+O (WI-02; WI-05: opens into a NEW tab via Workspace::openFile()
+// instead of replacing the active session's Document in place).
+// Workspace::openFile() de-dups against already-open tabs on its own
+// (re-activates the existing tab rather than opening a duplicate) - see its
+// own header comment. Deliberately does NOT call confirmDiscardIfDirty()
+// first (unlike its pre-WI-05 form): opening a file into a new/existing
+// OTHER tab never touches the currently-active tab's content, so there is
+// nothing to confirm discarding. A failed open is user-INITIATED (not a
+// stale background reference like F12/Grep-result-click), so it is
+// surfaced via message_dialogs.h's showOpenErrorDialog().
+bool handleOpenKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
                    RenderPipeline& renderPipeline, FindBar& findBar) {
     if (!ctrlDown || vkCode != 'O') {
         return false;
-    }
-    if (!confirmDiscardIfDirty(hwnd, session)) {
-        return true;  // user cancelled the unsaved-changes prompt
     }
     const auto chosen = neomifes::app::showOpenFileDialog(hwnd);
     if (!chosen) {
         return true;  // Open dialog cancelled - nothing to do
     }
-    const auto error =
-        openFileAndSyncView(*chosen, std::nullopt, std::nullopt, hwnd, session, renderPipeline, findBar);
-    if (error) {
+    const auto result = workspace.openFile(*chosen);
+    if (const auto* error = std::get_if<LoadError>(&result)) {
         neomifes::app::showOpenErrorDialog(hwnd, *error);
+        return true;
     }
+    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
     return true;
 }
 
-// Ctrl+N (WI-02) - confirmDiscardIfDirty() first, then resets the session's
-// Document to a fresh blank Document IN PLACE via EditorSession::resetToBlank()
-// (move-assignment onto the existing object, not a locally-scoped
-// replacement - CommandDispatcher and other collaborators were bound to
-// this specific Document instance at construction and must keep pointing at
-// it - see editor_session.h's own header comment). Ctrl+N never calls
-// EditorSession::openFile() (there is no file to load), so it does not get
-// that method's internal reset for free - resetToBlank() mirrors it
-// explicitly (dispatcher.resetUndoHistory()/bookmarks.clear()/both
-// selection anchors/freeCursorVirtualColumns, exactly as
-// EditorSession::openFile() does after its own move-assignment). Skipping
-// this was a real data-corruption path found during WI-02's design review:
-// a stale Undo entry from the PREVIOUS document splices its deleted text
-// into the new blank document's start on Ctrl+Z (PieceTable::insert()
-// silently clamps an out-of-range offset to 0 rather than rejecting it) -
-// see resetViewAfterDocumentSwap()'s own comment. WI-04: takes
-// EditorSession& (essentially every member).
-bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& session,
+// Ctrl+N (WI-02; WI-05: opens a new blank tab via Workspace::openBlank()
+// instead of resetting the active session's Document in place). Same
+// "no confirmDiscardIfDirty() gate" reasoning as handleOpenKey() above - a
+// new tab never touches any existing tab's content. Workspace::openBlank()
+// never fails (no I/O), so unlike handleOpenKey() there is no error path to
+// handle here.
+bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
                           RenderPipeline& renderPipeline, FindBar& findBar) {
     if (!ctrlDown || vkCode != 'N') {
         return false;
     }
-    if (!confirmDiscardIfDirty(hwnd, session)) {
+    static_cast<void>(workspace.openBlank());
+    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
+    return true;
+}
+
+// Ctrl+Tab/Ctrl+Shift+Tab (wrap-around next/previous), Ctrl+PgUp/Ctrl+PgDn
+// (same wrap-around next/previous, an alternate binding), Ctrl+1..Ctrl+9
+// (jump to that tab's literal position, no-op if none exists there - see
+// tabIndexForDigit()'s own comment on why this does NOT clamp to the last
+// tab) (WI-05). Ctrl+PgUp/Ctrl+PgDn is a deliberate behavior change:
+// editor_input.cpp's applyMovementKey() does not check ctrlDown for
+// VK_PRIOR/VK_NEXT (unlike VK_LEFT/RIGHT/HOME/END), so both already reach
+// handleKeyDownEvent()'s final fallback unconditionally today - this
+// function is inserted into the dispatch chain BEFORE that fallback so
+// Ctrl+PgUp/Ctrl+PgDn is claimed for tab-switching instead. Always returns
+// true once ctrlDown and one of these keys is recognized (even when the
+// resulting switch is a no-op - a single open tab, or a digit with no tab
+// at that position) so Ctrl+PgUp/Ctrl+PgDn never falls through to page
+// movement and Ctrl+1..9 (entirely unused elsewhere, confirmed by grep)
+// never falls through to anything else either.
+bool handleTabSwitchKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
+                        RenderPipeline& renderPipeline, FindBar& findBar) {
+    if (!ctrlDown) {
+        return false;
+    }
+    std::optional<std::size_t> target;
+    if (vkCode == VK_TAB) {
+        target = shiftDown ? previousTabIndex(workspace.activeIndex(), workspace.sessionCount())
+                            : nextTabIndex(workspace.activeIndex(), workspace.sessionCount());
+    } else if (vkCode == VK_PRIOR) {
+        target = previousTabIndex(workspace.activeIndex(), workspace.sessionCount());
+    } else if (vkCode == VK_NEXT) {
+        target = nextTabIndex(workspace.activeIndex(), workspace.sessionCount());
+    } else if (vkCode >= '1' && vkCode <= '9') {
+        target = tabIndexForDigit(static_cast<int>(vkCode - '0'), workspace.sessionCount());
+    } else {
+        return false;
+    }
+    if (target && *target != workspace.activeIndex()) {
+        workspace.activate(*target);
+        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
+    }
+    return true;
+}
+
+// Ctrl+W (WI-05). confirmDiscardIfDirty() first (same "never silently
+// discard unsaved work" gate Ctrl+O/Ctrl+N used before WI-05 routed them
+// through Workspace::openFile()/openBlank() instead - Ctrl+W still mutates
+// the CURRENTLY active tab, unlike those two, so the gate still applies
+// here). If this is the last remaining tab, Workspace::closeSession()
+// unconditionally refuses (see its own contract) - reset it to blank
+// instead (mirrors Ctrl+N) so Ctrl+W always has a visible effect rather
+// than silently doing nothing.
+bool handleTabCloseKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
+                       RenderPipeline& renderPipeline, FindBar& findBar) {
+    if (!ctrlDown || vkCode != 'W') {
+        return false;
+    }
+    if (!confirmDiscardIfDirty(hwnd, workspace.active())) {
         return true;  // user cancelled the unsaved-changes prompt
     }
-    session.resetToBlank();
-    resetViewAfterDocumentSwap(hwnd, renderPipeline, session, findBar);
-    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    if (workspace.sessionCount() <= 1) {
+        workspace.active().resetToBlank();
+        resetViewAfterDocumentSwap(hwnd, renderPipeline, workspace.active(), findBar);
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, workspace.active());
+        return true;
+    }
+    // confirmDiscardIfDirty() above already obtained the user's explicit
+    // consent to discard via its own Save/Don't Save/Cancel prompt - if
+    // they chose Don't Save, the session is still isDirty() (declining to
+    // save doesn't retroactively mark it clean). Workspace::closeSession()
+    // has its OWN independent dirty check (a safety net for callers that
+    // close a session WITHOUT going through confirmDiscardIfDirty() first,
+    // see its own contract) - mark the about-to-be-destroyed session's
+    // document saved so that gate doesn't redundantly (and silently) block
+    // a close the user already explicitly approved. This performs no
+    // actual disk write - the EditorSession is seconds away from being
+    // erased from Workspace's vector entirely.
+    if (workspace.active().isDirty()) {
+        workspace.active().document().markSaved();
+    }
+    const std::size_t activeIndex = workspace.activeIndex();
+    if (workspace.closeSession(activeIndex)) {
+        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
+    }
     return true;
 }
 
@@ -922,11 +1026,19 @@ bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& 
 // widget/mode references that are NOT part of any one EditorSession (see
 // this file's EditorSession member-placement notes for why FindBar/
 // CommandPalette/GotoLineBar/GrepBar/OutlinePane/freeCursorModeEnabled stay
-// separate).
-void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
+// separate). WI-05: takes Workspace& instead - handleTabSwitchKey()/
+// handleTabCloseKey() below need it directly (they call
+// workspace.activate()/closeSession()), so `session` is resolved fresh as
+// this function's own first statement rather than being passed in already
+// resolved. Every handler called BEFORE those two still safely uses this
+// same `session` reference - only handleTabSwitchKey()/handleTabCloseKey()
+// can change workspace.active(), and both cases `return` immediately
+// afterward, so `session` is never read again once stale.
+void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
                         bool freeCursorModeEnabled) {
+    EditorSession& session = workspace.active();
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled, session,
                                    renderPipeline)) {
         return;
@@ -962,13 +1074,19 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, E
     if (handleSaveKey(hwnd, vkCode, shiftDown, ctrlDown, session)) {
         return;
     }
-    if (handleOpenKey(hwnd, vkCode, ctrlDown, session, renderPipeline, findBar)) {
+    if (handleOpenKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
         return;
     }
-    if (handleNewDocumentKey(hwnd, vkCode, ctrlDown, session, renderPipeline, findBar)) {
+    if (handleNewDocumentKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
         return;
     }
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, session, renderPipeline)) {
+        return;
+    }
+    if (handleTabSwitchKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar)) {
+        return;
+    }
+    if (handleTabCloseKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
         return;
     }
     const auto clipboardResult = handleClipboardKey(hwnd, vkCode, ctrlDown, session);
@@ -1457,13 +1575,17 @@ std::vector<TabBarItem> buildTabBarItems(const Workspace& workspace) {
 // comment for why). Unlike OutlinePane, TabBar also needs an initial
 // setTabs() call here: it is always visible (never toggled), so it must
 // show real data from its very first paint, not just once first interacted
-// with. config.onTabSelected is a placeholder at this step - Workspace
-// still only ever holds one session, so there is nothing yet for a tab
-// selection to switch to; step 3 replaces this with real
-// workspace.activate()+view-restore wiring.
-void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace, TabBar& tabBar) {
+// with. WI-05 step 3: config.onTabSelected is real now - TCN_SELCHANGE
+// (fired when the user clicks a different tab) activates that session and
+// restores its view via syncViewForActiveSession(), same as
+// handleTabSwitchKey()'s keyboard path.
+void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
+                             RenderPipeline& renderPipeline, FindBar& findBar, TabBar& tabBar) {
     TabBarConfig config{};
-    config.onTabSelected = [](std::size_t /*index*/) {};
+    config.onTabSelected = [hwnd, &workspace, &renderPipeline, &findBar](std::size_t index) {
+        workspace.activate(index);
+        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
+    };
     if (!tabBar.create(hwnd, hInstance, config)) {
         return;
     }
@@ -1476,22 +1598,27 @@ void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspac
 
 // WI-02: cfg.onDropFiles body, pulled out of wireNormalMode() for the same
 // cognitive-complexity reason as handleMouseDownEvent()/handleKeyDownEvent()
-// above. Multi-file drops open only the first path (no multi-tab yet, see
-// build_plan.md's explicit WI-02 scope cut - multi-tab is WI-05). WI-04:
-// takes EditorSession& (essentially every member).
-void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, EditorSession& session,
+// above. WI-05: opens EVERY dropped path into its own tab via
+// Workspace::openFile() (previously only the first path, see build_plan.md's
+// original WI-02 scope cut) - the last path opened/activated ends up active
+// (Workspace::openFile() updates activeIndex() on every call, VSCode's own
+// "last dropped file wins focus" convention), so no extra bookkeeping is
+// needed beyond a single trailing syncViewForActiveSession() call. No
+// confirmDiscardIfDirty() gate, same reasoning as handleOpenKey() above -
+// opening into new/existing OTHER tabs never touches the currently-active
+// tab's content.
+void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, Workspace& workspace,
                           RenderPipeline& renderPipeline, FindBar& findBar) {
     if (paths.empty()) {
         return;
     }
-    if (!confirmDiscardIfDirty(hwnd, session)) {
-        return;
+    for (const auto& path : paths) {
+        const auto result = workspace.openFile(path);
+        if (const auto* error = std::get_if<LoadError>(&result)) {
+            neomifes::app::showOpenErrorDialog(hwnd, *error);
+        }
     }
-    const auto error = openFileAndSyncView(paths.front(), std::nullopt, std::nullopt, hwnd, session,
-                                           renderPipeline, findBar);
-    if (error) {
-        neomifes::app::showOpenErrorDialog(hwnd, *error);
-    }
+    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
 }
 
 }  // namespace
@@ -1563,7 +1690,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // time (see this function's own header comment).
         EditorSession& session = workspace.active();
         renderPipeline.setDocument(&session.document());
-        window.setPaintHandler([&renderPipeline, &workspace](HWND paintHwnd) {
+        window.setPaintHandler([&renderPipeline, &workspace, &tabBar](HWND paintHwnd) {
             const auto rendered = renderPipeline.render();
             if (!rendered) {
                 debugLogRenderError("RenderPipeline::render", rendered.error());
@@ -1578,6 +1705,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             // comment for why the scrollbar sync itself belongs here too.
             session.viewport().setVisibleColumnCount(renderPipeline.visibleColumnCount());
             syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
+            // WI-05 step 3: rebuilt from Workspace's actual session list every
+            // frame (not just on tab-count changes) - the simplest way to keep
+            // the ● unsaved-changes marker and each tab's label in sync with
+            // EditorSession::isDirty()/path() without a separate "did
+            // anything tab-relevant change" tracking mechanism. WM_PAINT is
+            // already OS-coalesced, so no additional throttling is needed.
+            tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
         });
         const FindBarConfig findBarConfig =
             buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory);
@@ -1608,7 +1742,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // WI-05 step 2: same non-fatal treatment as findBar.create() above -
         // a tab strip that fails to create simply isn't available this
         // session (the editor still works, just without visible tabs).
-        createAndPositionTabBar(hwnd, hInstance, workspace, tabBar);
+        createAndPositionTabBar(hwnd, hInstance, workspace, renderPipeline, findBar, tabBar);
         // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
         // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
         // "Fold/Unfold at Cursor" and the gutter markers work immediately,
@@ -1676,21 +1810,30 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         renderPipeline.applyAsyncSyntaxTokens(std::move(*tokens));
         ::InvalidateRect(hwnd, nullptr, FALSE);
     };
-    // WI-02: WM_CLOSE veto - both go through confirmDiscardIfDirty() so an
-    // unsaved edit is never silently discarded by closing the window or
-    // dropping a different file onto it. WI-05 step 1: still only ever
-    // checks workspace.active() (Workspace holds exactly one session until
-    // step 3 wires the actual multi-tab close loop) - confirmDiscardIfDirty()
-    // itself keeps taking EditorSession& unchanged (see this function's own
-    // header comment for why that one function is the deliberate exception).
-    cfg.onClose = [&workspace](HWND hwnd) { return confirmDiscardIfDirty(hwnd, workspace.active()); };
+    // WI-02: WM_CLOSE veto - goes through confirmDiscardIfDirty() so an
+    // unsaved edit is never silently discarded by closing the window. WI-05
+    // step 3: checks EVERY open tab, not just the active one - closing the
+    // window discards every tab at once, so every one of them needs its own
+    // chance to prompt Save/Don't Save/Cancel. confirmDiscardIfDirty()
+    // itself is a no-op (returns true immediately) for a tab that isn't
+    // dirty, so this loop costs nothing extra for the common case of a
+    // single clean tab. Stops at the first Cancel (the whole close is
+    // vetoed, remaining tabs are left exactly as they were).
+    cfg.onClose = [&workspace](HWND hwnd) {
+        for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+            if (!confirmDiscardIfDirty(hwnd, workspace.sessionAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    };
     cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, std::vector<std::wstring> paths) {
-        handleDropFilesEvent(hwnd, std::move(paths), workspace.active(), renderPipeline, findBar);
+        handleDropFilesEvent(hwnd, std::move(paths), workspace, renderPipeline, findBar);
     };
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
                      &outlinePane, &freeCursorModeEnabled](HWND hwnd, UINT vkCode, bool shiftDown,
                                                            bool ctrlDown) {
-        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace.active(), renderPipeline, findBar,
+        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                           commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {

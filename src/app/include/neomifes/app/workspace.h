@@ -1,27 +1,21 @@
 #pragma once
 
 // Workspace - the set of open EditorSessions plus which one is active
-// (WI-04). One window == one Workspace. Only ever holds exactly one
-// EditorSession today - tab UI (WI-05) is what will grow this to more than
-// one - but this class is fully implemented and unit-tested now (not a
-// stub) since main.cpp already needs SOME container to own the startup
-// EditorSession with a stable address (see editor_session.h's header
-// comment on why EditorSession itself can't be moved/copied).
-//
-// Existing keybindings (Ctrl+O etc.) intentionally do NOT route through
-// Workspace::openFile() yet - they still call active().openFile(...)
-// directly, unchanged from before this class existed (WI-04 is a pure
-// refactor; this constructor/openFile() plumbing is unused by main.cpp
-// until WI-05 wires tab creation to it).
+// (WI-04, tab-switching wired up in WI-05). One window == one Workspace.
+// EditorSession itself can't be moved/copied (see editor_session.h's header
+// comment), so sessions live behind unique_ptr for a stable address across
+// std::vector reallocation.
 
 #include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "neomifes/app/editor_session.h"
 #include "neomifes/document/document.h"
+#include "neomifes/document/file_loader.h"
 
 namespace neomifes::app {
 
@@ -50,10 +44,21 @@ public:
     // comparison, so relative/absolute spellings of the same file match) -
     // activates that tab (unchanged) and returns its index. Otherwise opens
     // a new EditorSession for `path`, appends it, activates it, and returns
-    // its index. Returns nullopt on load failure and leaves the Workspace
+    // its index. Returns the LoadError on failure and leaves the Workspace
     // completely untouched (EditorSession::openFile()'s own
-    // no-partial-mutation-on-failure contract, preserved here).
-    [[nodiscard]] std::optional<std::size_t> openFile(const std::filesystem::path& path);
+    // no-partial-mutation-on-failure contract, preserved here) - WI-05:
+    // widened from optional<size_t> to variant<size_t, LoadError> so
+    // Ctrl+O's showOpenErrorDialog() can keep reporting the specific
+    // failure reason, matching this codebase's established
+    // variant<Success, LoadError> convention (document_open.h's
+    // openDocumentAt()) rather than introducing std::expected as a second
+    // "success or failure" vocabulary for the same error type.
+    [[nodiscard]] std::variant<std::size_t, document::LoadError> openFile(
+        const std::filesystem::path& path);
+
+    // Appends a new blank/untitled EditorSession and activates it. Never
+    // fails (no I/O) - the Ctrl+N/new-tab counterpart to openFile().
+    [[nodiscard]] std::size_t openBlank();
 
     // Refuses (returns false, no-op) if `index` is out of range, is the
     // last remaining session, or is dirty (caller's job to confirm
