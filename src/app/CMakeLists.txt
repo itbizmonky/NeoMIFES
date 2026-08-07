@@ -52,6 +52,8 @@ set_target_properties(neomifes_app_input PROPERTIES
 
 add_executable(NeoMIFES WIN32
     main.cpp
+    launch_setup.cpp
+    normal_mode_wiring.cpp
     startup_profile.cpp
     frame_profile.cpp
     file_dialogs.cpp
