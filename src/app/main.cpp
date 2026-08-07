@@ -78,6 +78,7 @@
 #include "neomifes/app/outline_bridge.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tag_jump.h"
+#include "neomifes/app/workspace.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -122,6 +123,7 @@ using neomifes::app::EditorSession;
 using neomifes::app::FindReplaceState;
 using neomifes::app::FrameProfile;
 using neomifes::app::StartupProfile;
+using neomifes::app::Workspace;
 using neomifes::core::CommandDispatcher;
 using neomifes::core::computeIndentationConversionEdits;
 using neomifes::core::Cursor;
@@ -2192,12 +2194,17 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // WI-04: "the currently open document"'s complete state (Document/
     // SelectionModel/CommandDispatcher/Viewport/FoldingModel/
     // BookmarkManager/find-replace state/file path - previously ~15
-    // separate wWinMain locals) now lives in one EditorSession. Declared
-    // before window/renderPipeline so it outlives both (reverse destruction
-    // order) - RenderPipeline::setDocument() below hands out a non-owning
-    // pointer into session.document() that must not dangle while the
-    // message loop runs, same reasoning as the pre-WI-04 `document` local.
-    EditorSession session(std::move(document), fileState, currentDocumentPath);
+    // separate wWinMain locals) now lives in one EditorSession, owned by a
+    // Workspace (workspace.h) - the container WI-05's tab UI will grow to
+    // hold more than one session; today it always holds exactly one.
+    // Declared before window/renderPipeline so it outlives both (reverse
+    // destruction order) - RenderPipeline::setDocument() below hands out a
+    // non-owning pointer into workspace.active().document() that must not
+    // dangle while the message loop runs, same reasoning as the pre-WI-04
+    // `document` local. Existing keybindings (Ctrl+O etc.) still operate on
+    // workspace.active() directly - see workspace.h's header comment on why
+    // Workspace::openFile()/closeSession() stay unused until WI-05.
+    Workspace workspace(std::move(document), fileState, currentDocumentPath);
 
     // Phase 7v: true while a minimap click-and-drag is in progress. Reset to
     // false at the top of every handleMouseDownEvent() call (the only
@@ -2270,17 +2277,17 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     if (args.mode == LaunchMode::MeasureStartup || args.mode == LaunchMode::MeasureMemory) {
         wireMeasureStartupOrMemoryMode(cfg, profile, window);
     } else if (args.mode == LaunchMode::MeasureFrame) {
-        wireMeasureFrameMode(cfg, window, renderPipeline, session.document(), frameProfile,
+        wireMeasureFrameMode(cfg, window, renderPipeline, workspace.active().document(), frameProfile,
                              syntheticLineCountUsed);
     } else {
-        wireNormalMode(cfg, window, renderPipeline, session, hInstance, findBar, commandPalette,
+        wireNormalMode(cfg, window, renderPipeline, workspace.active(), hInstance, findBar, commandPalette,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane,
                        freeCursorModeEnabled, isDraggingMinimap);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
         // call before RenderPipeline is attached.
-        renderPipeline.setLanguage(session.language());
+        renderPipeline.setLanguage(workspace.active().language());
     }
 
     if (!window.create(hInstance, cfg)) {
