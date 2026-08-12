@@ -22,11 +22,16 @@ bool TabBar::create(HWND parent, HINSTANCE hInstance, const TabBarConfig& config
 
     // WS_VISIBLE set immediately (unlike OutlinePane, which starts hidden
     // and is toggled by show()/hide()) - the tab strip is always shown, see
-    // this class's header comment.
-    HWND tab = ::CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | TCS_TABS | TCS_SINGLELINE,
-                                 0, 0, 10, 10, parent,
-                                 reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kTabControlId)), hInstance,
-                                 nullptr);
+    // this class's header comment. TCS_TABS | TCS_SINGLELINE both happen to
+    // expand to 0 (tabs-not-buttons and single-line are already the
+    // WC_TABCONTROLW default); isolated on its own line (with NOLINT) and
+    // kept for documentation value rather than collapsed away, same as
+    // FindBar::ensureFont()'s kPitchAndFamily.
+    // NOLINTNEXTLINE(misc-redundant-expression)
+    constexpr DWORD kTabStyle = TCS_TABS | TCS_SINGLELINE;
+    HWND tab = ::CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | kTabStyle, 0, 0, 10, 10,
+                                 parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kTabControlId)),
+                                 hInstance, nullptr);
     if (tab == nullptr) {
         return false;
     }
