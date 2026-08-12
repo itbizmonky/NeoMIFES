@@ -71,7 +71,7 @@ ctest --preset debug --output-on-failure
 ### 2.1 やること
 
 1. **推測で実装しない。** 分からないことは実コードを `grep` するか、使い捨て probe プログラムで実測してから書く (CLAUDE.md 絶対ルール 3)
-2. **push 前に必ずローカル検証する。** Debug / Release / ubsan の 3 プリセットで `ctest` が全 green、変更ファイルへの clang-tidy が新規警告 0
+2. **push 前に必ずローカル検証する。** Debug / Release / ubsan の 3 プリセットで `ctest` が全 green、変更ファイルへの clang-tidy が新規警告 0。**WI を複数ステップに分けた場合、フル3構成の検証は「WI完了時(最終コミット直前)」に1回で足りる。各中間ステップでは Debug 構成のみで素早く確認する**(詳細は §4.3)。性能・Undefined Behavior のリスクが高いと判断した中間ステップ(生ポインタ操作・並行処理・ベンチマーク対象コード等)は、そのステップ単独で ubsan を追加してよい
 3. **1 コミット = 1 責務。** WI 1 件 = 1 コミットを基本とする
 4. **push はユーザーの明示指示を待つ。** エージェントは自発的に push しない
 5. **完了時にドキュメントを同期する** (§4.5 の手順)
@@ -160,6 +160,8 @@ ctest --preset debug --output-on-failure
 
 ### 4.3 検証 (必須・省略不可)
 
+**検証の粒度 (2026-08-12改訂):** WI を複数ステップに分けている場合、**中間ステップは Debug 構成の build+ctest のみ**でよい (下記コマンドの1行目だけを実行)。**Debug/Release/ubsan のフル3構成は、WI 完了時 (最終コミット直前) に1回まとめて実行する。** これは検証を省略するのではなく、同じ検証を何度も繰り返さないための順序変更である — コミット前には必ずフル3構成が green であることを確認する。単一ステップの WI (分割しない場合) は、これまで通りそのままフル3構成を実行する。性能・Undefined Behavior のリスクが高いステップ (生ポインタ操作・並行処理・ベンチマーク対象コード等) は、そのステップ単独で ubsan を追加してよい。
+
 ```powershell
 $vsPath = "C:\Program Files\Microsoft Visual Studio\18\Community"
 Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll" -ErrorAction Stop
@@ -176,6 +178,8 @@ clang-tidy (**変更したファイルだけ**。全ファイル一括はタイ�
 $tidy = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\Llvm\x64\bin\clang-tidy.exe"
 & $tidy -p build\debug --quiet --extra-arg=-Wno-unused-command-line-argument <変更したファイル>
 ```
+
+**実行はサブエージェントへの委任を基本とする (2026-08-12改訂)。** ビルド・テスト・clang-tidy の実行自体は、Agent ツール (subagent_type: general-purpose、run_in_background) にバックグラウンドで投げ、「green/red 判定 + 失敗があれば失敗内容の要約」のみをメイン会話へ持ち帰らせる。生のビルドログ/ctest出力/clang-tidy出力をメイン会話に直接貼らない。これによりコンテキスト消費を抑えつつ、検証自体の網羅性は変えない。
 
 **加えて、その WI の DoD に書かれた実アプリ確認を行う。**
 
