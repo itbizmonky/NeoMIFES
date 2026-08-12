@@ -118,6 +118,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .bookmarkedLines = m_bookmarkedLines,
         .foldRegions     = m_foldRegions,
         .leftColumn      = m_leftColumn,
+        .imeComposition  = m_imeComposition,
     };
 }
 
@@ -179,6 +180,8 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_minimapViewportBrush.Reset();
     m_minimapTextBrush.Reset();
     m_minimapUnpopulatedBrush.Reset();
+    m_imeCompositionBackgroundBrush.Reset();
+    m_imeTargetClauseBrush.Reset();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -577,6 +580,34 @@ RenderExpected<void> RenderPipeline::ensureMinimapBrushes(ID2D1DeviceContext6& d
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureImeCompositionBrushes(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_imeCompositionBackgroundBrush) {
+        // WI-06: opaque, distinguishable from both the editor background
+        // (RGB 30,30,30) and the Breadcrumb/minimap chrome color (RGB
+        // 37,37,38) - a touch lighter still, closer to VSCode's own IME
+        // composition indicator.
+        constexpr D2D1_COLOR_F kImeCompositionBackgroundColor = {45.0F / 255.0F, 45.0F / 255.0F, 48.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kImeCompositionBackgroundColor,
+                                                     m_imeCompositionBackgroundBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_imeTargetClauseBrush) {
+        // WI-06: translucent blue, distinct from both the selection blue
+        // (RGB 0,120,215, alpha 0.4) and match yellow (RGB 255,220,0, alpha
+        // 0.35) above so all three remain visually distinguishable if they
+        // ever coincide.
+        constexpr D2D1_COLOR_F kImeTargetClauseColor = {100.0F / 255.0F, 150.0F / 255.0F, 220.0F / 255.0F, 0.45F};
+        const HRESULT hr =
+            dc.CreateSolidColorBrush(kImeTargetClauseColor, m_imeTargetClauseBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexcept {
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F) {
         return {0, 0};
@@ -672,6 +703,13 @@ void RenderPipeline::ensureSyntaxTokensCoverVisibleRange() noexcept {
 }
 
 void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
+    // WI-06: reset unconditionally before any early return below - see
+    // imeCandidateAnchorPx()'s doc comment for why a stale value must never
+    // survive past the frame that produced it (e.g. the composition's
+    // anchor line scrolling off-screen, or the document being detached
+    // mid-composition). Re-set by drawImeCompositionOnLine() later in this
+    // same call if the composition's anchor line is actually drawn below.
+    m_imeCandidateAnchorPx = std::nullopt;
     if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
         !m_dwriteFactory) {
         return;
@@ -774,6 +812,10 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips - leftColumnOffsetDips(), y), *layoutResult,
                       m_textBrush.Get());
     drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
+    // WI-06: overlay, drawn on top of the caret(s) above - no-op unless the
+    // active composition's anchor is on this line. See
+    // drawImeCompositionOnLine()'s own declaration comment.
+    drawImeCompositionOnLine(dc, **layoutResult, y, line, lineStart);
     // Phase 7i: a folded header shows its own text (drawn above) plus a
     // short " {...}" marker past it, standing in for the hidden body. Stays
     // inside the clip (WI-03) - it's text-derived content, same as the
@@ -812,6 +854,89 @@ void RenderPipeline::drawFoldedHeaderMarker(ID2D1DeviceContext6& dc, float x, fl
         return;
     }
     dc.DrawTextLayout(D2D1::Point2F(x, y), layout.Get(), m_textBrush.Get());
+}
+
+void RenderPipeline::drawImeCompositionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& realLineLayout,
+                                              float y, LineNumber line, TextPos lineStart) noexcept {
+    if (!m_imeComposition || !m_document || !m_dwriteFactory || !m_textFormat || !m_textBrush ||
+        !m_imeCompositionBackgroundBrush || !m_imeTargetClauseBrush) {
+        return;
+    }
+    const ImeComposition& composition = *m_imeComposition;
+    if (m_document->offsetToLine(composition.anchorRange.start) != line) {
+        return;
+    }
+    const auto column = static_cast<std::uint32_t>(composition.anchorRange.start - lineStart);
+
+    // Anchor pixel origin = where the caret sits in the REAL line's layout
+    // (same HitTestTextPosition() call drawCaretOnLine() makes) - the
+    // composition text is an OVERLAY, not a splice, so it must align with
+    // the actual glyphs it's drawn on top of, not with its own disposable
+    // layout's coordinate space.
+    DWRITE_HIT_TEST_METRICS anchorMetrics{};
+    float anchorX = 0.0F;
+    float anchorY = 0.0F;
+    if (FAILED(realLineLayout.HitTestTextPosition(column, FALSE, &anchorX, &anchorY, &anchorMetrics))) {
+        return;
+    }
+    // See drawCaretOnLine()'s comment - layout-local coordinates need the
+    // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly.
+    const float leftDip = kGutterWidthDips - leftColumnOffsetDips() + anchorX;
+
+    const std::wstring_view wText = util::toWstringView(composition.text);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    const HRESULT hr = m_dwriteFactory->CreateTextLayout(
+        wText.data(), static_cast<UINT32>(wText.size()), m_textFormat.Get(), kMaxLayoutWidthDips,
+        kMaxLayoutHeightDips, layout.GetAddressOf());
+    if (FAILED(hr) || !layout) {
+        return;
+    }
+    if (!wText.empty()) {
+        // DirectWrite's native underline formatting - no manual line-drawing
+        // needed (unlike drawGutterOnLine()'s fold-marker triangle, the only
+        // other hand-drawn-line precedent in this file, which is a
+        // decorative glyph rather than text underlining).
+        layout->SetUnderline(TRUE, DWRITE_TEXT_RANGE{.startPosition = 0, .length = static_cast<UINT32>(wText.size())});
+    }
+
+    DWRITE_TEXT_METRICS compositionMetrics{};
+    if (FAILED(layout->GetMetrics(&compositionMetrics))) {
+        return;
+    }
+    // Opaque background sized to the composition's OWN measured width -
+    // occludes whatever real trailing glyphs on this line it overlaps. An
+    // accepted, documented overlay trade-off (see this method's declaration
+    // comment) - not sized to cover a wider pre-existing selection.
+    dc.FillRectangle(D2D1::RectF(leftDip, y, leftDip + compositionMetrics.width, y + m_lineHeightDips),
+                     m_imeCompositionBackgroundBrush.Get());
+
+    if (composition.targetClauseRange) {
+        const auto [clauseStart, clauseEnd] = *composition.targetClauseRange;
+        DWRITE_HIT_TEST_METRICS startMetrics{};
+        DWRITE_HIT_TEST_METRICS endMetrics{};
+        float startX = 0.0F;
+        float startY = 0.0F;
+        float endX   = 0.0F;
+        float endY   = 0.0F;
+        if (SUCCEEDED(layout->HitTestTextPosition(clauseStart, FALSE, &startX, &startY, &startMetrics)) &&
+            SUCCEEDED(layout->HitTestTextPosition(clauseEnd, FALSE, &endX, &endY, &endMetrics))) {
+            dc.FillRectangle(D2D1::RectF(leftDip + startX, y, leftDip + endX, y + m_lineHeightDips),
+                             m_imeTargetClauseBrush.Get());
+        }
+    }
+
+    dc.DrawTextLayout(D2D1::Point2F(leftDip, y), layout.Get(), m_textBrush.Get());
+
+    // Side effect (Phase 7w's m_maxVisibleLineLength precedent: computed
+    // once during the draw walk that already has every coordinate needed).
+    // DEVICE PIXELS (not DIPs) - MainWindow::setImeCandidatePosition()'s
+    // contract - positioned directly below the composition text so the IME
+    // candidate list appears under what the user is actively typing.
+    const float belowY = y + m_lineHeightDips;
+    m_imeCandidateAnchorPx = POINT{
+        .x = static_cast<LONG>(leftDip * m_dpiScale),
+        .y = static_cast<LONG>(belowY * m_dpiScale),
+    };
 }
 
 std::vector<RenderPipeline::CaretDraw> RenderPipeline::computeCaretDraws() const noexcept {
@@ -1593,6 +1718,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!minimapBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return minimapBrushResult;
+    }
+    auto imeCompositionBrushResult = ensureImeCompositionBrushes(*dc);
+    if (!imeCompositionBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return imeCompositionBrushResult;
     }
 
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the

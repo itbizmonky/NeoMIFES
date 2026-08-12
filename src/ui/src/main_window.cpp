@@ -1,10 +1,15 @@
 #include "neomifes/ui/main_window.h"
 
 #include <windows.h>
+#include <imm.h>       // ImmGetContext/ImmGetCompositionStringW/ImmSetCandidateWindow (WM_IME_*, WI-06)
 #include <shellapi.h>  // DragAcceptFiles/DragQueryFileW/DragFinish (WM_DROPFILES, WI-02)
 #include <windowsx.h>  // GET_X_LPARAM/GET_Y_LPARAM (WM_LBUTTONDOWN, Phase 4b2)
 
 #include <utility>
+#include <vector>
+
+#include "neomifes/platform/ime_context.h"
+#include "neomifes/util/wchar_cast.h"
 
 namespace neomifes::ui {
 
@@ -71,6 +76,10 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onNotify       = config.onNotify;
     m_onClose        = config.onClose;
     m_onDropFiles    = config.onDropFiles;
+    m_onImeStartComposition = config.onImeStartComposition;
+    m_onImeComposition      = config.onImeComposition;
+    m_onImeResult           = config.onImeResult;
+    m_onImeEndComposition   = config.onImeEndComposition;
 
     // WI-03: WS_HSCROLL only added when a handler is actually configured -
     // must be decided before CreateWindowExW (unlike DragAcceptFiles below,
@@ -198,6 +207,26 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_DROPFILES:
             handleDropFiles(wParam);
+            return 0;
+        // WI-06: never forwarded to DefWindowProcW (unlike every case above
+        // except WM_ERASEBKGND) - this class owns composition drawing/
+        // candidate-window positioning entirely, so there is no OS default
+        // behavior worth preserving. WM_IME_STARTCOMPOSITION unconditionally
+        // suppresses the OS's own default composition UI regardless of
+        // whether onImeStartComposition is configured (see that field's doc
+        // comment). Critically, letting WM_IME_COMPOSITION reach
+        // DefWindowProcW would make Windows auto-generate one WM_CHAR per
+        // GCS_RESULTSTR code unit, defeating the "commit as one Undo step"
+        // contract handleImeComposition()'s onImeResult callback exists to
+        // provide instead.
+        case WM_IME_STARTCOMPOSITION:
+            handleImeStartComposition();
+            return 0;
+        case WM_IME_COMPOSITION:
+            handleImeComposition(lParam);
+            return 0;
+        case WM_IME_ENDCOMPOSITION:
+            handleImeEndComposition();
             return 0;
         case WM_DESTROY:
             m_hwnd = nullptr;
@@ -395,6 +424,96 @@ void MainWindow::handleDropFiles(WPARAM wParam) noexcept {
         m_onDropFiles(m_hwnd, std::move(paths));
     }
     ::DragFinish(hDrop);
+}
+
+void MainWindow::handleImeStartComposition() noexcept {
+    if (m_onImeStartComposition) {
+        m_onImeStartComposition(m_hwnd);
+    }
+}
+
+namespace {
+
+// Contiguous run of ATTR_TARGET_CONVERTED/ATTR_TARGET_NOTCONVERTED within a
+// GCS_COMPATTR byte array (one byte per GCS_COMPSTR character) - the "clause
+// currently being edited" build_plan.md's WI-06 DoD calls out for
+// highlighting. nullopt if no such run exists (e.g. before the IME has
+// picked a conversion target yet).
+[[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> findImeTargetClause(
+    const std::vector<BYTE>& attrs) noexcept {
+    std::size_t start = 0;
+    while (start < attrs.size() && attrs[start] != ATTR_TARGET_CONVERTED &&
+           attrs[start] != ATTR_TARGET_NOTCONVERTED) {
+        ++start;
+    }
+    if (start >= attrs.size()) {
+        return std::nullopt;
+    }
+    std::size_t end = start;
+    while (end < attrs.size() &&
+           (attrs[end] == ATTR_TARGET_CONVERTED || attrs[end] == ATTR_TARGET_NOTCONVERTED)) {
+        ++end;
+    }
+    return std::make_pair(static_cast<std::uint32_t>(start), static_cast<std::uint32_t>(end));
+}
+
+}  // namespace
+
+void MainWindow::handleImeComposition(LPARAM lParam) noexcept {
+    const platform::ImeContext ime(m_hwnd);
+    if (!ime) {
+        return;
+    }
+    const auto flags = static_cast<DWORD>(lParam);
+
+    // GCS_RESULTSTR and GCS_COMPSTR are independent bits and can both be set
+    // on the same message (e.g. the IME commits one clause while starting a
+    // new composition) - each is handled unconditionally on its own bit.
+    if ((flags & GCS_RESULTSTR) != 0 && m_onImeResult) {
+        const LONG byteLen = ::ImmGetCompositionStringW(ime.get(), GCS_RESULTSTR, nullptr, 0);
+        if (byteLen > 0) {
+            std::wstring text(static_cast<std::size_t>(byteLen) / sizeof(wchar_t), L'\0');
+            ::ImmGetCompositionStringW(ime.get(), GCS_RESULTSTR, text.data(), static_cast<DWORD>(byteLen));
+            m_onImeResult(m_hwnd, std::u16string(util::fromWstringView(text)));
+        }
+    }
+
+    if ((flags & GCS_COMPSTR) != 0 && m_onImeComposition) {
+        const LONG strByteLen = ::ImmGetCompositionStringW(ime.get(), GCS_COMPSTR, nullptr, 0);
+        std::wstring text;
+        if (strByteLen > 0) {
+            text.resize(static_cast<std::size_t>(strByteLen) / sizeof(wchar_t));
+            ::ImmGetCompositionStringW(ime.get(), GCS_COMPSTR, text.data(), static_cast<DWORD>(strByteLen));
+        }
+
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> targetClause;
+        const LONG attrByteLen = ::ImmGetCompositionStringW(ime.get(), GCS_COMPATTR, nullptr, 0);
+        if (attrByteLen > 0) {
+            std::vector<BYTE> attrs(static_cast<std::size_t>(attrByteLen));
+            ::ImmGetCompositionStringW(ime.get(), GCS_COMPATTR, attrs.data(), static_cast<DWORD>(attrByteLen));
+            targetClause = findImeTargetClause(attrs);
+        }
+
+        m_onImeComposition(m_hwnd, std::u16string(util::fromWstringView(text)), targetClause);
+    }
+}
+
+void MainWindow::handleImeEndComposition() noexcept {
+    if (m_onImeEndComposition) {
+        m_onImeEndComposition(m_hwnd);
+    }
+}
+
+void MainWindow::setImeCandidatePosition(POINT clientPx) noexcept {
+    const platform::ImeContext ime(m_hwnd);
+    if (!ime) {
+        return;
+    }
+    CANDIDATEFORM form{};
+    form.dwIndex      = 0;
+    form.dwStyle      = CFS_CANDIDATEPOS;
+    form.ptCurrentPos = clientPx;
+    ::ImmSetCandidateWindow(ime.get(), &form);
 }
 
 }  // namespace neomifes::ui

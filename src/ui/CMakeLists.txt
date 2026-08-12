@@ -27,6 +27,11 @@ target_link_libraries(neomifes_ui
         # find_bar.cpp: SetWindowSubclass/DefSubclassProc (Phase 5b3a, this
         # project's first child HWND).
         comctl32
+        # main_window.cpp: ImmGetContext/ImmGetCompositionStringW/
+        # ImmSetCandidateWindow/ImmReleaseContext (WM_IME_*, WI-06). All raw
+        # Imm32 calls live in this class - see main_window.h's header
+        # comment - so this is the only target that needs imm32 linked.
+        imm32
 )
 
 set_target_properties(neomifes_ui PROPERTIES

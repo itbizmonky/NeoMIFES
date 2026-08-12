@@ -64,6 +64,7 @@ using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::TextRange;
 using neomifes::render::FoldVisual;
+using neomifes::render::ImeComposition;
 using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
 using neomifes::search::expandReplacementTemplate;
@@ -1037,7 +1038,18 @@ bool handleTabCloseKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspa
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
-                        bool freeCursorModeEnabled) {
+                        bool freeCursorModeEnabled, bool imeComposing) {
+    // WI-06: checked before EVERYTHING else in this dispatch chain (even
+    // handleFreeCursorRightArrow()) - while an IME is actively composing,
+    // Windows still delivers WM_KEYDOWN for some keys (arrows, Enter, Escape
+    // are consumed by the IME itself before this fires, but not
+    // universally), and none of this chain's handlers (tab switching,
+    // Undo/Redo, cursor movement, ...) should run mid-composition. A side
+    // effect: Ctrl+Tab/other tab-switch keys are also suppressed while
+    // composing (see wireNormalMode()'s header comment on imeComposing).
+    if (imeComposing) {
+        return;
+    }
     EditorSession& session = workspace.active();
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled, session,
                                    renderPipeline)) {
@@ -1111,7 +1123,18 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
 // complexity reason as handleKeyDownEvent() above. WI-04: takes
 // EditorSession& (dispatcher/selection/viewport/document/
 // freeCursorVirtualColumns - 5 members).
-void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeline& renderPipeline) {
+// WI-06: `imeComposing` guard here is a defensive backstop, not the primary
+// mechanism - by design, committed IME text never reaches WM_CHAR at all
+// (MainWindow's WM_IME_COMPOSITION handler never forwards to
+// DefWindowProcW, see main_window.h's WI-06 header comment), so this
+// early-out should never actually trigger in practice. Kept anyway in case
+// some IME/keyboard-layout combination produces an unexpected WM_CHAR while
+// composing.
+void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeline& renderPipeline,
+                     bool imeComposing) {
+    if (imeComposing) {
+        return;
+    }
     auto& virtualColumns = session.freeCursorVirtualColumns();
     if (virtualColumns) {
         applyFreeCursorChar(ch, *virtualColumns, hwnd, session, renderPipeline);
@@ -1621,6 +1644,132 @@ void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, Workspace&
     syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
 }
 
+// WI-06: cfg.onImeStartComposition body. Captures the PRE-collapse primary
+// cursor's selection (if any) as the range composing will eventually
+// replace, BEFORE calling collapseToPrimary() - collapseToPrimary() itself
+// sets the surviving cursor's anchor==position (see selection_model.cpp),
+// so capturing the range after that call would always yield an empty
+// range and silently drop whatever text was selected when the user started
+// typing. The captured range is stored as ImeComposition::anchorRange (via
+// an initial empty-text composition) rather than a separate wWinMain-level
+// variable - RenderPipeline already owns exactly this "fixed for the whole
+// composition session" value (see ImeComposition's own header comment), so
+// handleImeCompositionEvent()/handleImeResultEvent() below read it back
+// from there instead of duplicating storage.
+void handleImeStartComposition(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
+                               bool& imeComposing) {
+    const Cursor& primaryBefore = session.selection().primaryCursor();
+    const TextRange anchorRange{.start = std::min(primaryBefore.position, primaryBefore.anchor),
+                                .end   = std::max(primaryBefore.position, primaryBefore.anchor)};
+    session.selection().collapseToPrimary();
+    renderPipeline.setImeComposition(ImeComposition{
+        .anchorRange       = anchorRange,
+        .text              = u"",
+        .targetClauseRange = std::nullopt,
+    });
+    imeComposing = true;
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
+// WI-06: cfg.onImeComposition body - GCS_COMPSTR (the composition string
+// changed). No-op if no composition was ever started (defensive only -
+// WM_IME_STARTCOMPOSITION always precedes WM_IME_COMPOSITION per Win32's
+// own message ordering, see main_window.h's WI-06 comment). Reuses the
+// anchorRange handleImeStartComposition() already stored - see this
+// function's own comment for why that is the single source of truth
+// instead of a separately threaded variable.
+void handleImeCompositionEvent(HWND hwnd, std::u16string text,
+                               std::optional<std::pair<std::uint32_t, std::uint32_t>> targetClauseRange,
+                               RenderPipeline& renderPipeline) {
+    const auto& current = renderPipeline.imeComposition();
+    if (!current) {
+        return;
+    }
+    renderPipeline.setImeComposition(ImeComposition{
+        .anchorRange       = current->anchorRange,
+        .text              = std::move(text),
+        .targetClauseRange = targetClauseRange,
+    });
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// WI-06: cfg.onImeResult body - GCS_RESULTSTR (the IME just committed
+// text). Dispatches exactly ONE ReplaceRangeCommand against the captured
+// anchorRange - this is what makes the commit a single Undo step (the
+// composition text itself was never written to Document, see
+// ImeComposition's header comment) and, since ReplaceRangeCommand replaces
+// [anchorRange.start, anchorRange.end), what makes composing over an
+// initial selection behave like ordinary typeover. No-op if no composition
+// was ever started (same defensive-only reasoning as
+// handleImeCompositionEvent() above).
+void handleImeResultEvent(HWND hwnd, std::u16string resultText, EditorSession& session,
+                          RenderPipeline& renderPipeline) {
+    if (!renderPipeline.imeComposition()) {
+        return;
+    }
+    const TextRange anchorRange = renderPipeline.imeComposition()->anchorRange;
+    session.dispatcher().dispatch(std::make_unique<ReplaceRangeCommand>(anchorRange, std::move(resultText)));
+    renderPipeline.setImeComposition(std::nullopt);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
+// WI-06: repositions the IME candidate window every frame an in-progress
+// composition actually drew one - imeCandidateAnchorPx() is a side effect
+// of drawImeCompositionOnLine() (only set when render() actually walked
+// past the composition's line), so this must run AFTER render() succeeds,
+// not from the onImeComposition hook itself (which fires before the next
+// paint has happened). Pulled out of wireNormalMode()'s nested paint-handler
+// lambda for the same cognitive-complexity-budget reason wireImeHooks()
+// below was - a nested `if` inside a lambda inside wireNormalMode() still
+// counts toward wireNormalMode()'s own complexity (see wireImeHooks()'s
+// comment).
+void updateImeCandidatePosition(MainWindow& window, const RenderPipeline& renderPipeline) noexcept {
+    if (const auto candidateAnchor = renderPipeline.imeCandidateAnchorPx()) {
+        window.setImeCandidatePosition(*candidateAnchor);
+    }
+}
+
+// WI-06: assigns the 4 IME hooks - pulled out of wireNormalMode() itself
+// for the same "keep cfg.* assignment bodies out of that one giant function"
+// reason handleKeyDownEvent()/handleHScrollEvent() above were already
+// extracted for (wireNormalMode()'s own cognitive complexity is at the
+// clang-tidy threshold; 4 more inline lambda bodies pushed it over). See
+// main_window.h's own WI-06 header comment for why MainWindow decodes the
+// raw Imm32 payload itself, so these lambdas only ever see already-decoded
+// values (std::u16string text, optional target-clause range). onImeResult
+// resolves workspace.active() fresh (not the session captured by
+// onImeStartComposition) purely for consistency with every other stored
+// callback in this function - in practice the two always agree, since
+// imeComposing (threaded through wireNormalMode()'s own cfg.onKeyDown)
+// suppresses the keyboard-driven tab-switch keys that could otherwise move
+// workspace.active() mid-composition (mouse clicks on the tab strip are a
+// known, accepted gap - see handleImeStartComposition()'s comment).
+void wireImeHooks(MainWindowConfig& cfg, Workspace& workspace, RenderPipeline& renderPipeline,
+                  bool& imeComposing) {
+    cfg.onImeStartComposition = [&workspace, &renderPipeline, &imeComposing](HWND hwnd) {
+        handleImeStartComposition(hwnd, workspace.active(), renderPipeline, imeComposing);
+    };
+    cfg.onImeComposition = [&renderPipeline](
+                               HWND hwnd, std::u16string text,
+                               std::optional<std::pair<std::uint32_t, std::uint32_t>> targetClauseRange) {
+        handleImeCompositionEvent(hwnd, std::move(text), targetClauseRange, renderPipeline);
+    };
+    cfg.onImeResult = [&workspace, &renderPipeline](HWND hwnd, std::u16string resultText) {
+        handleImeResultEvent(hwnd, std::move(resultText), workspace.active(), renderPipeline);
+    };
+    cfg.onImeEndComposition = [&renderPipeline, &imeComposing](HWND hwnd) {
+        // Clears any leftover overlay even on a committed session (already
+        // cleared by handleImeResultEvent() above, so this is a no-op then)
+        // - the one case where it's NOT already clear is a cancelled
+        // composition (Escape etc.), which never reaches onImeResult at all
+        // (see ImeComposition's header comment: only GCS_RESULTSTR writes to
+        // Document).
+        renderPipeline.setImeComposition(std::nullopt);
+        imeComposing = false;
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+    };
+}
+
 }  // namespace
 
 // No logging engine exists yet (basic_design.md sec.6.5 is a later phase);
@@ -1668,7 +1817,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
-                    TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap) {
+                    TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap,
+                    bool& imeComposing) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -1690,12 +1840,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // time (see this function's own header comment).
         EditorSession& session = workspace.active();
         renderPipeline.setDocument(&session.document());
-        window.setPaintHandler([&renderPipeline, &workspace, &tabBar](HWND paintHwnd) {
+        window.setPaintHandler([&window, &renderPipeline, &workspace, &tabBar](HWND paintHwnd) {
             const auto rendered = renderPipeline.render();
             if (!rendered) {
                 debugLogRenderError("RenderPipeline::render", rendered.error());
                 return;
             }
+            updateImeCandidatePosition(window, renderPipeline);
             EditorSession& session = workspace.active();
             // WI-03: kept fresh every successful frame rather than only on
             // WM_SIZE - m_charWidthDips (which visibleColumnCount() depends
@@ -1830,17 +1981,23 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, std::vector<std::wstring> paths) {
         handleDropFilesEvent(hwnd, std::move(paths), workspace, renderPipeline, findBar);
     };
+    // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
+    // pulled into a standalone function rather than assigned inline here
+    // (same cognitive-complexity-budget reasoning as handleKeyDownEvent()/
+    // handleHScrollEvent() above).
+    wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &freeCursorModeEnabled](HWND hwnd, UINT vkCode, bool shiftDown,
-                                                           bool ctrlDown) {
+                     &outlinePane, &freeCursorModeEnabled, &imeComposing](HWND hwnd, UINT vkCode,
+                                                                          bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                          commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled);
+                          commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled,
+                          imeComposing);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
         return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, workspace.active(), renderPipeline);
     };
-    cfg.onChar = [&workspace, &renderPipeline](HWND hwnd, wchar_t ch) {
-        handleCharEvent(hwnd, ch, workspace.active(), renderPipeline);
+    cfg.onChar = [&workspace, &renderPipeline, &imeComposing](HWND hwnd, wchar_t ch) {
+        handleCharEvent(hwnd, ch, workspace.active(), renderPipeline, imeComposing);
     };
     cfg.onMouseWheel = [&workspace, &renderPipeline](HWND hwnd, short wheelDelta) {
         EditorSession& session = workspace.active();

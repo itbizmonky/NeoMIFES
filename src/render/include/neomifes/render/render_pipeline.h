@@ -107,6 +107,35 @@ struct FoldVisual {
     friend constexpr bool operator==(const FoldVisual&, const FoldVisual&) = default;
 };
 
+// An in-progress IME composition (WI-06) - the unconfirmed text a Japanese/
+// CJK IME is still converting, never written to Document (only the eventual
+// committed string is - see main_window.h's onImeResult). Drawn as an
+// overlay on top of the real line at `anchorRange`, not spliced into it (see
+// drawImeCompositionOnLine()'s header comment for why true reflow was
+// rejected). Deliberately document::-typed only, same "independent,
+// concurrently runnable engines" reasoning as CursorVisual/MatchVisual above
+// - RenderPipeline does not know about Win32 IME types (HIMC etc.), the app
+// layer decodes those via MainWindow's onImeComposition hook and builds this.
+struct ImeComposition {
+    // Where in the DOCUMENT this visually inserts - captured once at
+    // WM_IME_STARTCOMPOSITION time (the primary cursor's selection, if any,
+    // so composing replaces it the same way ordinary typeover would). Stays
+    // fixed for the whole composition session; `text` below is what actually
+    // changes as the user keeps typing.
+    document::TextRange anchorRange;
+    // GCS_COMPSTR - the current unconfirmed string. Never written to
+    // Document.
+    std::u16string text;
+    // [start, end) code-unit range WITHIN `text` (not within the document)
+    // identifying the clause currently being edited (GCS_COMPATTR's
+    // ATTR_TARGET_CONVERTED/ATTR_TARGET_NOTCONVERTED run) - highlighted with
+    // a distinct background. nullopt if the IME hasn't picked a conversion
+    // target yet (e.g. right after the first keystroke).
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> targetClauseRange;
+
+    friend bool operator==(const ImeComposition&, const ImeComposition&) = default;
+};
+
 class RenderPipeline {
 public:
     // Queries the current client-area size and DPI itself (GetClientRect /
@@ -247,6 +276,33 @@ public:
     // before Phase 7i).
     void setFoldRegions(std::vector<FoldVisual> regions) noexcept {
         m_foldRegions = std::move(regions);
+    }
+
+    // The current IME composition to overlay-draw, or nullopt while nothing
+    // is being composed (WI-06). Same non-owning, document::-typed-only
+    // shape as setMatchVisuals()/setFoldRegions() above - the app layer
+    // rebuilds this from MainWindow's onImeStartComposition/onImeComposition/
+    // onImeEndComposition hooks and pushes the whole value each time.
+    void setImeComposition(std::optional<ImeComposition> composition) noexcept {
+        m_imeComposition = std::move(composition);
+    }
+    [[nodiscard]] const std::optional<ImeComposition>& imeComposition() const noexcept {
+        return m_imeComposition;
+    }
+
+    // Client-area DEVICE PIXEL position (see MainWindow::setImeCandidatePosition()'s
+    // contract - not DIPs) the app layer should anchor the IME candidate
+    // window at, computed as a side effect of the last drawImeCompositionOnLine()
+    // call (Phase 7w's m_maxVisibleLineLength precedent: "computed during
+    // the draw walk, exposed via getter" rather than a separate query path
+    // that would need to redo the same layout work). nullopt whenever there
+    // is no active composition, OR the composition's anchor line has
+    // scrolled off-screen this frame (drawVisibleLines() resets this at the
+    // top of every call, before the draw walk - see its body) - callers
+    // must not reposition the candidate window using a stale value from a
+    // previous frame.
+    [[nodiscard]] std::optional<POINT> imeCandidateAnchorPx() const noexcept {
+        return m_imeCandidateAnchorPx;
     }
 
     // Enables/disables syntax-token coloring and selects which grammar to
@@ -393,6 +449,14 @@ private:
         // FrameState happens to change) - leftColumn is added here the
         // moment m_leftColumn is introduced, not after the fact.
         std::uint32_t leftColumn = 0;
+        // WI-06: same rationale as leftColumn above - a composition-only
+        // change (the user keeps typing into an active IME session, with
+        // topLine/cursor/document all otherwise unchanged) must not be
+        // coarse-frame-skipped either. See leftColumn's own comment for why
+        // this bug class (a mutated field NOT included here silently
+        // disabling redraw) is added proactively rather than discovered
+        // later.
+        std::optional<ImeComposition> imeComposition;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -418,6 +482,12 @@ private:
     // minimap strip (drawMinimap()). Token colors themselves reuse the
     // existing tokenBrush() palette - no new per-TokenKind brushes.
     [[nodiscard]] RenderExpected<void> ensureMinimapBrushes(ID2D1DeviceContext6& dc) noexcept;
+    // WI-06: background (behind the whole composition string, occluding
+    // whatever real trailing glyphs it overlaps) + target-clause-highlight
+    // brushes for drawImeCompositionOnLine(). Composition TEXT itself reuses
+    // m_textBrush (see drawFoldedHeaderMarker()'s identical choice for its
+    // own synthesized marker text) - no separate brush needed for that part.
+    [[nodiscard]] RenderExpected<void> ensureImeCompositionBrushes(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7i: true if `line` sits strictly inside a currently-folded
     // m_foldRegions entry (never true for a region's own headerLine).
     // Shared by drawVisibleLines()'s line walk and hitTest()'s yDip->line
@@ -754,6 +824,27 @@ private:
     // Called from drawVisibleLines() right after a folded header line's own
     // DrawTextLayout call, `x` positioned past that line's measured width.
     void drawFoldedHeaderMarker(ID2D1DeviceContext6& dc, float x, float y) noexcept;
+    // Draws the current m_imeComposition (if any) as an OVERLAY on top of
+    // `realLineLayout`'s already-drawn glyphs - not spliced into them (see
+    // ImeComposition's own header comment for why true reflow was rejected,
+    // WI-06). No-op unless m_imeComposition's anchorRange starts on `line`.
+    // Uses `realLineLayout`'s HitTestTextPosition() (same call
+    // drawCaretOnLine() makes) to find where the composition text should
+    // begin - a fresh, disposable IDWriteTextLayout (same pattern
+    // drawFoldedHeaderMarker() uses; this string is transient IME state,
+    // never part of TextLayoutCache) is then built for the composition
+    // string itself, underlined via SetUnderline(), with an opaque
+    // background sized to its own measured width (sized to itself, not to
+    // whatever real text it overlaps - an accepted, documented overlay
+    // trade-off) and a translucent highlight behind targetClauseRange if
+    // present. Also updates m_imeCandidateAnchorPx as a side effect (Phase
+    // 7w's m_maxVisibleLineLength precedent: computed once during the draw
+    // walk that already has every coordinate needed, rather than a second
+    // query path redoing the same layout work). Called from drawTextLine()
+    // right after drawCaretsOnLine(), inside the same clip region (this is
+    // text-derived content, same as the glyphs it overlays).
+    void drawImeCompositionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& realLineLayout, float y,
+                                  document::LineNumber line, document::TextPos lineStart) noexcept;
 
     HWND                         m_hwnd     = nullptr;
     std::uint32_t                m_width    = 0;
@@ -802,6 +893,14 @@ private:
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
     std::vector<FoldVisual>                           m_foldRegions;      // empty: folding disabled (Phase 7i)
+    // WI-06: nullopt - no active IME composition (the common case). See
+    // setImeComposition()/drawImeCompositionOnLine().
+    std::optional<ImeComposition>                     m_imeComposition;
+    // WI-06: reset to nullopt at the top of every drawVisibleLines() call,
+    // set by drawImeCompositionOnLine() as a side effect - see
+    // imeCandidateAnchorPx()'s own doc comment for why a stale value must
+    // never survive past the frame that produced it.
+    std::optional<POINT>                              m_imeCandidateAnchorPx;
     // Phase 7b/7c/7d: gate + cache for syntax-token coloring.
     // refreshDocumentCacheIfStale() clears m_tokens and fires an async
     // SyntaxWorker::requestParse() when this has a value and the document
@@ -889,6 +988,11 @@ private:
     // visually distinguishable from m_minimapTextBrush (a line that WAS
     // covered but had no colored token to show).
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_minimapUnpopulatedBrush;
+    // WI-06: IME composition overlay brushes, same device-bound reset
+    // lifecycle as the brushes above. See ensureImeCompositionBrushes()/
+    // drawImeCompositionOnLine().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_imeCompositionBackgroundBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_imeTargetClauseBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
     // Phase 4b8e: one fixed-pitch character's advance width, probed once
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()

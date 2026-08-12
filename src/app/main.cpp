@@ -312,6 +312,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // handleFreeCursorRightArrow() comment), so it stays a wWinMain local
     // rather than an EditorSession member.
     bool freeCursorModeEnabled = false;
+    // WI-06: true for the duration of an in-progress IME composition - same
+    // "session-lifetime UI state, not document state" reasoning as
+    // freeCursorModeEnabled just above (see
+    // normal_mode_wiring.cpp's handleKeyDownEvent()/handleCharEvent()
+    // comments for what this gates).
+    bool imeComposing = false;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -333,7 +339,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // reflected everywhere without this call site changing again.
         wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar,
-                       freeCursorModeEnabled, isDraggingMinimap);
+                       freeCursorModeEnabled, isDraggingMinimap, imeComposing);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

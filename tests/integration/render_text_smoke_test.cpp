@@ -25,6 +25,7 @@ namespace {
 using neomifes::document::Document;
 using neomifes::document::TextRange;
 using neomifes::render::CursorVisual;
+using neomifes::render::ImeComposition;
 using neomifes::render::RenderPipeline;
 using neomifes::syntax::Language;
 
@@ -496,6 +497,81 @@ TEST(RenderTextSmokeTest, ScrollingFarBeyondTheInitiallyRequestedRangeStillRende
     ASSERT_TRUE(secondRender.has_value())
         << "render() after scrolling into an uncovered range failed: "
         << neomifes::render::describe(secondRender.error());
+}
+
+// WI-06: exercises setImeComposition() -> render() -> drawImeCompositionOnLine()
+// end-to-end with a real in-progress composition (target clause set) - same
+// "render() succeeds, no pixel-level assertion" scope as the rest of this
+// file (see file header). Live MS-IME behavior (candidate window position,
+// underline/highlight correctness) is verified manually (WI-06 step 4), not
+// here.
+TEST(RenderTextSmokeTest, ImeCompositionRendersWithoutError) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+
+    pipeline.setImeComposition(ImeComposition{
+        .anchorRange       = TextRange{.start = 6, .end = 6},  // start of "line1"
+        .text              = u"にほんご",      // "にほんご"
+        .targetClauseRange = std::pair<std::uint32_t, std::uint32_t>(0, 2),
+    });
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with an in-progress IME composition failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+// WI-06 regression test, same technique as
+// CaretOnlyMovementForcesRedrawInsteadOfFrameSkip above: FrameState::
+// imeComposition exists specifically so that a composition-only state
+// change (Document/topLine/cursor/etc. all unchanged) is not swallowed by
+// the Phase 3c coarse frame-skip - without it, typing the FIRST character
+// of a composition (with the caret not otherwise moving) would silently
+// fail to redraw.
+TEST(RenderTextSmokeTest, ImeCompositionOnlyChangeForcesRedrawInsteadOfFrameSkip) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // Composition only - Document/topLine/cursor/etc. all stay identical.
+    pipeline.setImeComposition(ImeComposition{
+        .anchorRange       = TextRange{.start = 0, .end = 0},
+        .text              = u"あ",  // "あ"
+        .targetClauseRange = std::nullopt,
+    });
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (composition set) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "IME composition-only change was frame-skipped instead of triggering a redraw";
 }
 
 // Phase 7d: same shape as the C++ case above, confirming setLanguage()'s

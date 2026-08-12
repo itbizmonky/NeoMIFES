@@ -98,10 +98,18 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // single) tab derived from workspace's session list. No keybindings route
 // through it yet; TCN_SELCHANGE is routed to a no-op placeholder until step
 // 3 wires real tab-switching (see wireNormalMode()'s .cpp body).
+// WI-06: takes bool& imeComposing - same "session-lifetime UI state, not
+// document state" reasoning as freeCursorModeEnabled/isDraggingMinimap (see
+// their own comments above). true for the duration of an in-progress IME
+// composition (WM_IME_STARTCOMPOSITION..WM_IME_ENDCOMPOSITION); gates
+// handleKeyDownEvent()/handleCharEvent() so ordinary key/char dispatch never
+// runs while an IME is actively composing (see those functions' .cpp
+// comments).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
-                    ui::TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap);
+                    ui::TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap,
+                    bool& imeComposing);
 
 }  // namespace neomifes::app
