@@ -74,6 +74,7 @@ using neomifes::search::Match;
 using neomifes::search::Query;
 using neomifes::search::SearchService;
 using neomifes::ui::CommandDescriptor;
+using neomifes::ui::CommandId;
 using neomifes::ui::CommandPalette;
 using neomifes::ui::CommandPaletteConfig;
 using neomifes::ui::FindBar;
@@ -1364,24 +1365,29 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     commands.push_back(CommandDescriptor{.id              = u"find.show",
                                          .title           = u"Find",
                                          .keybindingLabel = u"Ctrl+F",
+                                         .commandId       = CommandId::FindShow,
                                          .action          = [&findBar]() { findBar.show(); }});
     commands.push_back(
         CommandDescriptor{.id              = u"find.replace",
                           .title           = u"Find and Replace",
                           .keybindingLabel = u"Ctrl+H",
+                          .commandId       = CommandId::FindReplace,
                           .action          = [&findBar]() { findBar.showWithReplace(); }});
     commands.push_back(CommandDescriptor{
         .id = u"find.next", .title = u"Find Next", .keybindingLabel = u"F3",
+        .commandId = CommandId::FindNext,
         .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
             navigateToMatch(true, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"find.previous", .title = u"Find Previous", .keybindingLabel = u"Shift+F3",
+        .commandId = CommandId::FindPrevious,
         .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
             navigateToMatch(false, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z",
+        .commandId = CommandId::Undo,
         .action = [hwnd, &workspace, &renderPipeline]() {
             EditorSession& session = workspace.active();
             if (session.dispatcher().undo()) {
@@ -1390,6 +1396,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y",
+        .commandId = CommandId::Redo,
         .action = [hwnd, &workspace, &renderPipeline]() {
             EditorSession& session = workspace.active();
             if (session.dispatcher().redo()) {
@@ -1398,6 +1405,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
+        .commandId = CommandId::None,
         .action = [hwnd, &workspace]() {
             EditorSession& session = workspace.active();
             if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::TabsToSpaces,
@@ -1408,6 +1416,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertSpacesToTabs", .title = u"Convert Spaces to Tabs", .keybindingLabel = u"",
+        .commandId = CommandId::None,
         .action = [hwnd, &workspace]() {
             EditorSession& session = workspace.active();
             if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::SpacesToTabs,
@@ -1418,6 +1427,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         }});
     commands.push_back(CommandDescriptor{
         .id = u"view.toggleFoldAtCursor", .title = u"Fold/Unfold at Cursor", .keybindingLabel = u"",
+        .commandId = CommandId::None,
         // Phase 7i: v1 requires the primary cursor to sit exactly on a fold
         // header line - no-op otherwise (see the Phase 7i plan's Context
         // point 6 for why gutter-click toggling is deferred to a later
@@ -1434,6 +1444,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     commands.push_back(CommandDescriptor{
         .id = u"edit.toggleFreeCursorMode", .title = u"Toggle Free Cursor Mode",
         .keybindingLabel = u"",
+        .commandId = CommandId::None,
         .action = [hwnd, &renderPipeline, &workspace, &freeCursorModeEnabled]() {
             freeCursorModeEnabled = !freeCursorModeEnabled;
             EditorSession& session = workspace.active();

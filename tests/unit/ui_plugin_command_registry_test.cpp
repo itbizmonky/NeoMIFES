@@ -13,6 +13,7 @@ CommandDescriptor makeDescriptor(std::u16string_view id, std::u16string_view tit
         .id              = std::u16string(id),
         .title           = std::u16string(title),
         .keybindingLabel = u"",
+        .commandId       = CommandId::None,
         .action          = []() {},
     };
 }

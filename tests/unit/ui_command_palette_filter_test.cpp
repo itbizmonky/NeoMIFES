@@ -7,6 +7,7 @@
 namespace {
 
 using neomifes::ui::CommandDescriptor;
+using neomifes::ui::CommandId;
 using neomifes::ui::filterAndRankCommands;
 
 // .action is intentionally left as its default (no-op) - filterAndRankCommands()
@@ -16,16 +17,26 @@ using neomifes::ui::filterAndRankCommands;
 // designated-initializer that omits any struct field, unlike MSVC.
 std::vector<CommandDescriptor> sampleCommands() {
     return {
-        CommandDescriptor{
-            .id = u"find.show", .title = u"Find", .keybindingLabel = u"Ctrl+F", .action = nullptr},
+        CommandDescriptor{.id              = u"find.show",
+                          .title           = u"Find",
+                          .keybindingLabel = u"Ctrl+F",
+                          .commandId       = CommandId::FindShow,
+                          .action          = nullptr},
         CommandDescriptor{.id              = u"find.replace",
                           .title           = u"Find and Replace",
                           .keybindingLabel = u"Ctrl+H",
+                          .commandId       = CommandId::FindReplace,
                           .action          = nullptr},
-        CommandDescriptor{
-            .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z", .action = nullptr},
-        CommandDescriptor{
-            .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y", .action = nullptr},
+        CommandDescriptor{.id              = u"edit.undo",
+                          .title           = u"Undo",
+                          .keybindingLabel = u"Ctrl+Z",
+                          .commandId       = CommandId::Undo,
+                          .action          = nullptr},
+        CommandDescriptor{.id              = u"edit.redo",
+                          .title           = u"Redo",
+                          .keybindingLabel = u"Ctrl+Y",
+                          .commandId       = CommandId::Redo,
+                          .action          = nullptr},
     };
 }
 

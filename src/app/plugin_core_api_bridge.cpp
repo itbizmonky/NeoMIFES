@@ -108,6 +108,11 @@ void registerCommandImpl(NeoMifesPluginContext* ctx, const wchar_t* id, const wc
             .id              = std::u16string(util::fromWstringView(std::wstring_view(id))),
             .title           = std::u16string(util::fromWstringView(std::wstring_view(title))),
             .keybindingLabel = u"",
+            // WI-07: plugin-registered commands have no keyboard shortcut of
+            // their own (they only surface in the command palette), so this
+            // stays CommandId::None - see command_descriptor.h's field
+            // comment.
+            .commandId = ui::CommandId::None,
             .action =
                 [callback, ctx]() {
                     bool crashed = false;
