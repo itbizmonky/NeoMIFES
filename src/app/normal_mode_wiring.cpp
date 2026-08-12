@@ -751,6 +751,63 @@ void handleMouseDownEvent(HWND hwnd, std::int32_t x, std::int32_t y, bool shiftD
     }
 }
 
+// Handles WM_MOUSEMOVE while a drag is in progress (onMouseDrag). Pulled
+// out of wireNormalMode() for the same cognitive-complexity-budget reason
+// as handleMouseDownEvent()/handleHScrollEvent() above. `isDraggingMinimap`
+// is read-only here (only handleMouseDownEvent()/tryHandleMinimapClick()
+// ever set it) - taken by value rather than by reference.
+void handleMouseDragEvent(HWND hwnd, std::int32_t x, std::int32_t y, EditorSession& session,
+                          RenderPipeline& renderPipeline, bool isDraggingMinimap) {
+    // Highest priority: a minimap drag never falls through to
+    // rectangularAnchor/altCursorAnchor/ordinary text-drag handling below -
+    // it tracks by Y alone (Phase 7v, see minimapLineAtY()'s comment on why
+    // X is ignored once a drag has started).
+    if (isDraggingMinimap) {
+        if (const auto targetLine = renderPipeline.minimapLineAtY(y)) {
+            session.viewport().scrollTo(*targetLine);
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+        }
+        return;
+    }
+    const auto hit = renderPipeline.hitTest(x, y);
+    if (!hit) {
+        return;
+    }
+    // Checked in this priority order: a rectangular-selection drag (Phase
+    // 4b8a, Shift+Alt+drag) takes precedence over a plain Alt+drag cursor
+    // extension (Phase 4b6d), which takes precedence over the default
+    // drag-extends-primary-selection behavior (Phase 4b3). At most one of
+    // rectangularAnchor/altCursorAnchor is ever meaningfully set at a time -
+    // see neomifes::app::dispatchMouseDown()'s comment for why a
+    // Shift+Alt+click that turns into a drag safely supersedes whatever the
+    // down-click itself did.
+    session.freeCursorVirtualColumns().reset();
+    bool changed = false;
+    const Document& document    = session.document();
+    auto&           rectangularAnchor = session.rectangularAnchor();
+    auto&           altCursorAnchor   = session.altCursorAnchor();
+    if (rectangularAnchor) {
+        session.selection().setRectangularSelection(*rectangularAnchor, *hit, document);
+        // The rectangle just replaced the entire cursor set, so any
+        // altCursorAnchor left over from an earlier plain Alt+click no
+        // longer identifies a real cursor - clear it so the next unrelated
+        // Shift+Alt+click doesn't silently no-op.
+        altCursorAnchor.reset();
+        session.viewport().ensureVisible(*hit, document);
+        changed = true;
+    } else if (altCursorAnchor) {
+        session.selection().moveCursorMatching(*altCursorAnchor, *hit);
+        session.viewport().ensureVisible(*hit, document);
+        changed = true;
+    } else {
+        changed = neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, session.selection(),
+                                                  session.viewport(), document);
+    }
+    if (changed) {
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    }
+}
+
 // Phase 4b8e (フリーカーソル簡略版): Right-arrow past the real end of the
 // current line, while Free Cursor Mode is on and there is exactly one
 // cursor with no active selection (deliberately narrow scope per the
@@ -1630,7 +1687,7 @@ void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspac
 // confirmDiscardIfDirty() gate, same reasoning as handleOpenKey() above -
 // opening into new/existing OTHER tabs never touches the currently-active
 // tab's content.
-void handleDropFilesEvent(HWND hwnd, std::vector<std::wstring> paths, Workspace& workspace,
+void handleDropFilesEvent(HWND hwnd, const std::vector<std::wstring>& paths, Workspace& workspace,
                           RenderPipeline& renderPipeline, FindBar& findBar) {
     if (paths.empty()) {
         return;
@@ -1978,8 +2035,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         }
         return true;
     };
-    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, std::vector<std::wstring> paths) {
-        handleDropFilesEvent(hwnd, std::move(paths), workspace, renderPipeline, findBar);
+    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, const std::vector<std::wstring>& paths) {
+        handleDropFilesEvent(hwnd, paths, workspace, renderPipeline, findBar);
     };
     // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
     // pulled into a standalone function rather than assigned inline here
@@ -2020,55 +2077,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     cfg.onMouseDrag = [&workspace, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
                                                                         std::int32_t y) {
-        EditorSession& session = workspace.active();
-        // Highest priority: a minimap drag never falls through to
-        // rectangularAnchor/altCursorAnchor/ordinary text-drag handling
-        // below - it tracks by Y alone (Phase 7v, see minimapLineAtY()'s
-        // comment on why X is ignored once a drag has started).
-        if (isDraggingMinimap) {
-            if (const auto targetLine = renderPipeline.minimapLineAtY(y)) {
-                session.viewport().scrollTo(*targetLine);
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
-            }
-            return;
-        }
-        const auto hit = renderPipeline.hitTest(x, y);
-        if (!hit) {
-            return;
-        }
-        session.freeCursorVirtualColumns().reset();
-        // Checked in this priority order: a rectangular-selection drag
-        // (Phase 4b8a, Shift+Alt+drag) takes precedence over a plain
-        // Alt+drag cursor extension (Phase 4b6d), which takes precedence
-        // over the default drag-extends-primary-selection behavior (Phase
-        // 4b3). At most one of rectangularAnchor/altCursorAnchor is ever
-        // meaningfully set at a time - see neomifes::app::dispatchMouseDown()'s
-        // comment for why a Shift+Alt+click that turns into a drag safely
-        // supersedes whatever the down-click itself did.
-        bool changed = false;
-        const Document& document = session.document();
-        auto& rectangularAnchor    = session.rectangularAnchor();
-        auto& altCursorAnchor      = session.altCursorAnchor();
-        if (rectangularAnchor) {
-            session.selection().setRectangularSelection(*rectangularAnchor, *hit, document);
-            // The rectangle just replaced the entire cursor set, so any
-            // altCursorAnchor left over from an earlier plain Alt+click no
-            // longer identifies a real cursor - clear it so the next
-            // unrelated Shift+Alt+click doesn't silently no-op.
-            altCursorAnchor.reset();
-            session.viewport().ensureVisible(*hit, document);
-            changed = true;
-        } else if (altCursorAnchor) {
-            session.selection().moveCursorMatching(*altCursorAnchor, *hit);
-            session.viewport().ensureVisible(*hit, document);
-            changed = true;
-        } else {
-            changed = neomifes::app::handleMouseDown(*hit, /*shiftDown=*/true, session.selection(),
-                                                      session.viewport(), document);
-        }
-        if (changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
-        }
+        handleMouseDragEvent(hwnd, x, y, workspace.active(), renderPipeline, isDraggingMinimap);
     };
 }
 
