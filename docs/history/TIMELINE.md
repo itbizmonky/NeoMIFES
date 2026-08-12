@@ -2787,6 +2787,10 @@ WI-06ステップ1〜3(`ImeContext` RAII・`MainWindowConfig`の4フック・`Re
 
 **参考情報としてユーザーに共有した観察(ルール変更はせず):** Plan Modeの計画ファイル自体が過去の全フェーズ(Phase 7i〜WI-06)の詳細な設計論拠を累積保持しており、毎セッションの初期コンテキストとして読み込まれ続けている。これはCLAUDE.md/build_plan.mdの管轄外(Plan Modeツール自体の挙動)のため今回は対象外とした。
 
-コミット未実施(ドキュメント編集のみ、次回コミット予定)。次はWI-06ステップ4完了待ち→ドキュメント同期→WI-07。
+運用ルール改訂をコミット(`1dc62d0`)した直後、ユーザーの「進めてください」を受けて念のためCI状況を確認したところ、**先ほどpushした7コミットに対しGitHub Actionsのclang-tidyジョブが失敗していた**(release/debug/ubsanは green)ことが判明した。WI-05の4コミットが本セッションまで一度もpushされておらずCI未検証のまま3セッション分積み上がっていたため、`wireNormalMode()`(タブUI配線の追加でcognitive complexityが30、閾値25)と`handleDropFilesEvent()`(WI-05のマルチファイルD&D対応で`paths`引数が値渡しのまま`performance-unnecessary-value-param`)の2件がmainブランチのCIで初めて可視化された形。
+
+新しい検証プロセス(サブエージェント委任)を早速実践し、ビルド・テスト・clang-tidyの実行と結果確認をバックグラウンドAgentへ委任した。`cfg.onMouseDrag`ラムダの本体(ミニマップドラッグ/矩形選択/Alt+ドラッグ分岐、約50行)を`handleMouseDragEvent()`へ抽出し複雑度を30→17へ削減、`handleDropFilesEvent()`の引数を`const&`化。**1回目の修正で新たな指摘が発生した**(`std::move(paths)`を呼び出し元から削除した結果、`cfg.onDropFiles`ラムダ自身の引数が今度は`performance-unnecessary-value-param`の対象になった)ため、同じエージェントをSendMessageで継続し追加修正+再検証、最終的にDebug/Release/ubsan全1044/1044 green・clang-tidy新規警告0を確認した(コミット`94e2259`)。pushはユーザーの明示指示待ち — mainのCIは現時点でこの新コミットがpushされるまで赤いまま。
+
+コミット2件(`1dc62d0`運用ルール改訂・`94e2259`CI修正)、push未実施。次はこの2件のpush確認→WI-06ステップ4完了待ち→ドキュメント同期→WI-07。
 
 <!-- 次セッションはここに追記 -->
