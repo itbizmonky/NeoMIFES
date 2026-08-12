@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-08 (WI-05 ステップ2、ネイティブオーバーレイウィジェット不可視 issue 追加)
+**最終更新:** 2026-08-12 (WI-06完了、IME issue 解決済みへ移動)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -16,7 +16,6 @@
 | Issue | 概要 | 対応 Phase |
 |---|---|---|
 | [アプリケーションシェルが未実装](no_application_shell.md) | ファイルを開くUI / タブ / メニュー / ステータスバー / 行番号 / 横スクロール / アイコンが全て無い。`main.cpp` が 2,053 行 | 8.5b〜8.5g |
-| [メインエディタが IME を処理しない](no_ime_support_in_main_editor.md) | 未確定文字列がインライン表示されず、候補ウィンドウがキャレットに追従しない | 8.5e |
 | [ネイティブオーバーレイウィジェットが画面上に一切描画されない](native_overlay_widgets_invisible.md) | FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane/TabBar(WI-05)が作成・配置は成功するが視覚的に不可視。原因未特定 (flip-model/DWM/RDP/低コントラストは否定済み) | 未定 (デバッガによる本格調査要) |
 
 ## P1 — 商用品質を満たさない
@@ -55,6 +54,7 @@
 | [`NeoMifesCoreApi` と `Document` の API ギャップ](plugin_core_api_document_gap.md) | 🟢 Phase 8b (2026-08-02、ADR-016) |
 | [SQL 文法の `parser.c` 未コミット問題](sql_grammar_needs_tree_sitter_cli.md) | 🟢 Phase 7y (2026-08-04、ADR-021 ベンダリング方式) |
 | [文書保存機能が存在しない](no_document_save_capability.md) | 🟢 WI-01+WI-02 (2026-08-05、🎉 M1達成。ドッグフーディングでバグ2件発見・修正、実際に編集・保存・コミットまで実証) |
+| [メインエディタが IME を処理しない](no_ime_support_in_main_editor.md) | 🟢 WI-06 (2026-08-12)。実機MS-IME確認完了、下線付きインライン表示・候補ウィンドウ追従・1 Undoステップ確定を確認 |
 
 ---
 

@@ -4,7 +4,7 @@
 >
 > **本ファイルは「これまでの経緯」の記録が中心 (2,100 行)。実際に手を動かすための指示は `build_plan.md` にある。**
 > `build_plan.md` §0 のコールドスタート手順を実行すれば、次に何をどう作ればよいかが 5〜10 分で確定する。
-> **🎉 M1 達成 (2026-08-05)。WI-03 (横スクロール) 完了 (`6052da8`)。WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設) 完了 (`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`)。WI-05 (タブ UI) も完了 (`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`)。main.cpp は 2,439行→361行まで縮小、複数タブ (`Ctrl+Tab`/`Ctrl+Shift+Tab`/`Ctrl+1`〜`9`/`Ctrl+W`) が実装された。次にやること: WI-06 (IME 完全対応)** — `build_plan.md` §5 参照。**🔴 WI-05 ステップ2のドッグフーディングで、`FindBar`/`GrepBar`/`CommandPalette`/`GotoLineBar`/`OutlinePane`/`TabBar` を含む全ネイティブ Win32 オーバーレイウィジェットが画面上に一切描画されない全社的な不具合が発覚し未解決のまま (`docs/issues/native_overlay_widgets_invisible.md`)。** WI-06 (IME) はメインエディタの D2D 描画領域への直接描画のためこの issue の影響を受けない可能性が高いが、着手前に本 issue を確認すること。WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。WI-02 (ファイルライフサイクル UI) は実装・コミット済み (`3e611d8`)。ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見・報告 → 根本原因を特定・修正・回帰テストで実証、コミット済み (`5712435`)。ユーザーが2バグとも解消したことを再確認した後、**実際に `README.md` を NeoMIFES で開いて編集・`Ctrl+S` 保存・`git diff`/`git status` 確認・`git commit` (`d02138b`、修正コミット`34b79e5`) まで完走した。** これにより 🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した。§3.69参照。WI-03 (横スクロール) は本コードベース初のネイティブスクロールバー(`WS_HSCROLL`)を実装し完了した。§3.70参照。WI-04は当初の3段階計画では500行のDoDに届かず、ステップ3b (`normal_mode_wiring.{h,cpp}`) とさらなる分割 (`launch_setup.{h,cpp}`) を追加して完了した。ドッグフーディングでシンタックスハイライト/ミニマップ/スクロール動作を実機確認済み。§3.71参照。**WI-05 (タブUI) はステップ1〜4の4コミットで完了。ステップ2のドッグフーディングで `ICC_TAB_CLASSES` 欠落バグ (修正済み) と上記の全社的な不可視ウィジェットissue (未解決) の2件を発見。ステップ3で `Workspace::openBlank()`/`openFile()`のvariant拡張・`syncViewForActiveSession()`・タブ切替キーバインド一式を実装し、`confirmDiscardIfDirty()`/`closeSession()`のdirtyチェック衝突バグも独立して発見・修正した。§3.72参照。** 次はWI-06に着手すること。
+> **🎉 M1 達成 (2026-08-05)。WI-03 (横スクロール) 完了 (`6052da8`)。WI-04 (`main.cpp` 解体 + `EditorSession`/`Workspace` 新設) 完了 (`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`)。WI-05 (タブ UI) も完了 (`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`)。WI-06 (IME完全対応) も完了 (`0baccaa`、CI修正 `94e2259`/`f233f02`、実機MS-IME確認済み 2026-08-12)。main.cpp は 2,439行→361行まで縮小、複数タブ・IMEインライン変換が実装された。次にやること: WI-07 (ウィンドウクローム、🎉 M2)** — `build_plan.md` §5 参照。**🔴 WI-05 ステップ2のドッグフーディングで、`FindBar`/`GrepBar`/`CommandPalette`/`GotoLineBar`/`OutlinePane`/`TabBar` を含む全ネイティブ Win32 オーバーレイウィジェットが画面上に一切描画されない全社的な不具合が発覚し未解決のまま (`docs/issues/native_overlay_widgets_invisible.md`)。** WI-07 (メニューバー/ステータスバー等のネイティブコントロール) はこの issue の影響を受ける可能性が高いため、着手前に必ず本 issue を確認すること。**さらに2026-08-12、WI-05の4コミットが本セッションまで一度もpushされずCI未検証のまま蓄積していたことが判明し、CIで3件のclang-tidy debtが発覚・修正した(詳細は`build_plan.md` WI-06実装後の確定事項/TIMELINE.md Session 84)。教訓: 今後はWI完了ごとに早めにpushし、CI検証を溜め込まないこと。**WI-01 (文書保存基盤) は完了・コミット済み (`a4a0445`)。WI-02 (ファイルライフサイクル UI) は実装・コミット済み (`3e611d8`)。ユーザーが実際にドッグフーディングを試み、2件の実害あるバグ (Ctrl+O後の画面未反映/マウスホイールEOF超過スクロール) を発見・報告 → 根本原因を特定・修正・回帰テストで実証、コミット済み (`5712435`)。ユーザーが2バグとも解消したことを再確認した後、**実際に `README.md` を NeoMIFES で開いて編集・`Ctrl+S` 保存・`git diff`/`git status` 確認・`git commit` (`d02138b`、修正コミット`34b79e5`) まで完走した。** これにより 🎉 M1 (NeoMIFES で NeoMIFES を編集できる) を正式に達成した。§3.69参照。WI-03 (横スクロール) は本コードベース初のネイティブスクロールバー(`WS_HSCROLL`)を実装し完了した。§3.70参照。WI-04は当初の3段階計画では500行のDoDに届かず、ステップ3b (`normal_mode_wiring.{h,cpp}`) とさらなる分割 (`launch_setup.{h,cpp}`) を追加して完了した。ドッグフーディングでシンタックスハイライト/ミニマップ/スクロール動作を実機確認済み。§3.71参照。**WI-05 (タブUI) はステップ1〜4の4コミットで完了。ステップ2のドッグフーディングで `ICC_TAB_CLASSES` 欠落バグ (修正済み) と上記の全社的な不可視ウィジェットissue (未解決) の2件を発見。ステップ3で `Workspace::openBlank()`/`openFile()`のvariant拡張・`syncViewForActiveSession()`・タブ切替キーバインド一式を実装し、`confirmDiscardIfDirty()`/`closeSession()`のdirtyチェック衝突バグも独立して発見・修正した。§3.72参照。** 次はWI-06に着手すること。
 >
 > ---
 
@@ -155,8 +155,8 @@
 | **8.5b** | **ファイルライフサイクル UI** (Ctrl+S/O/N、`IFileDialog`、D&D、未保存警告) | ✅ **完了 (WI-02、コミット済み`3e611d8`、§3.68参照)。ドッグフーディングで2件のバグ発覚→修正・ユーザー確認済み (§3.69参照)、コミット`5712435`/`8199c38`/`a8df325`。ユーザーが実際にNeoMIFESで編集・保存・`git commit`(`d02138b`/`34b79e5`)まで完走し **🎉 M1 達成 (2026-08-05)**。pushはユーザー指示待ち** |
 | **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`EditorSession`/`Workspace`) | ✅ **完了 (WI-04、main.cpp 2,439行→361行、コミット`c58245e`/`8237ec4`/`2c549d0`/`3480b5f`、§3.71参照)** |
 | **8.5d** | **タブ UI** (`ui::TabBar`) | ✅ **完了 (WI-05、コミット`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`、§3.72参照)** |
-| 8.5e | IME 完全対応 (`WM_IME_*`、インライン未確定文字列) | ⏭️ P0 (**次にやること**) |
-| 8.5f | ウィンドウクローム (メニュー/`HACCEL`/ステータスバー/行番号/`.rc`/`.ico`) | ⏭️ P0 |
+| **8.5e** | **IME 完全対応** (`WM_IME_*`、インライン未確定文字列) | ✅ **完了 (WI-06、コミット`0baccaa`/`94e2259`/`f233f02`、実機MS-IME確認済み2026-08-12、§3.73参照)** |
+| 8.5f | ウィンドウクローム (メニュー/`HACCEL`/ステータスバー/行番号/`.rc`/`.ico`) | ⏭️ P0 (**次にやること**) |
 | **8.5g** | **横スクロール** (`leftColumn`、`WM_HSCROLL`) | ✅ **完了 (WI-03、コミット`6052da8`、§3.70参照)** |
 | 8.6a〜e | 製品化基盤 (設定/キーバインド/テーマ/自動保存/基本編集の穴埋め) | ⏭️ P1 |
 | **12'** | **MVP 出荷判定** | ⏭️ 新設 |
@@ -2263,6 +2263,18 @@ WI-04完了後、ユーザーから「WI-05に進め」と指示された。4ス
 - [x] Debug/Release/ubsan全green (1044/1044)、clang-tidy新規警告0
 
 **コミット済み`4f9bced`/`fe037d7`/`62edf0c`/`57acef8`、pushはユーザーの明示指示待ち。** 次はWI-06(IME完全対応) — 着手前に`docs/issues/native_overlay_widgets_invisible.md`を確認すること(WI-06はメインエディタのD2D描画領域への直接描画のためこのissueの影響を受けない可能性が高いが未確認)。
+
+### 3.73 WI-06 (IME完全対応) 完了記録 + CI debt解消 (2026-08-12)
+
+WI-05完了後、ユーザーから「次のPhaseに進め」と指示された。着手前調査(実機D2D描画領域はネイティブオーバーレイウィジェット不可視issueの影響を受けないと確認)を経てWI-06(IME完全対応)に着手。`WM_IME_STARTCOMPOSITION`/`WM_IME_COMPOSITION`/`WM_IME_ENDCOMPOSITION`を`MainWindow`で処理し`DefWindowProcW`へ一切フォワードしない設計(確定文字列の1 Undoステップ化がここから機械的に導かれる)、未確定文字列は`drawBreadcrumb()`と同型の使い捨てオーバーレイ描画、`HIMC`用に新規`platform::ImeContext`、複数カーソルは`collapseToPrimary()`採用。ステップ1〜3(3コミットにまとめる計画通り`0baccaa`)を実装し、実装中に発見した`captureFrameState()`の`.imeComposition`欠落バグ(WI-03の`leftColumn`欠落と同型の粗粒度フレームスキップ再発パターン)も同コミットで修正。
+
+ユーザーの「pushせよ」指示で、WI-05の4コミット(3セッション前から未push)と合わせ計7コミットをpush。**ここで初めてWI-05がCI検証され、CIのclang-tidyジョブが失敗した。** `normal_mode_wiring.cpp`の`performance-unnecessary-value-param`(`handleDropFilesEvent`の値渡し引数)と`readability-function-cognitive-complexity`(`wireNormalMode`が30、閾値25)の2件を修正(`cfg.onMouseDrag`ラムダの本体を新規`handleMouseDragEvent()`へ抽出し複雑度17まで削減)、コミット`94e2259`でpush。**再度CIを確認したところ、今度は`tab_bar.cpp`の`misc-redundant-expression`(`TCS_TABS | TCS_SINGLELINE`が両方0に展開)が発覚した。** CIが`src/`+`tests/`配下の全`.cpp`を1つずつ検証し最初の失敗で停止する仕組みだと判明したため、同じ往復を繰り返さないようローカルで**CIと全く同じ範囲(147ファイル)を一括スキャン**し、他に潜在debtが無いことを確認してから修正・コミット`f233f02`・push。最終的にDebug/Release/ubsan/clang-tidyの4ジョブ全てgreenを確認した(実行ID`31561127964`)。
+
+**教訓:** WI-03〜WI-06が複数セッションにわたりpush未実施のまま蓄積した結果、CIが一度に複数件の未検証debtを検出することになった。今後はWI完了ごとの早いpushを徹底する(このセッション冒頭で行った運用ルール改訂 — 検証の段階化+サブエージェント委任 — とは別の教訓であることに注意)。
+
+ステップ4(実機MS-IME確認)はユーザーが実施し「問題無いように見える」との報告を受けた(未確定文字列の下線表示・候補ウィンドウ追従・1 Undoステップでの確定・Escapeキャンセルを確認、スクリーンショットは未取得・口頭確認で代替)。
+
+**コミット済み(`0baccaa`/`94e2259`/`cced77f`/`f233f02`/`d679676`)、push済み・CI green確認済み。** `docs/issues/no_ime_support_in_main_editor.md`は解決済みへ移動。次はWI-07(ウィンドウクローム、🎉 M2) — 着手前に`docs/issues/native_overlay_widgets_invisible.md`を必ず確認すること(WI-07はメニュー/ステータスバー等のネイティブコントロールを新設するため、この issue の影響を直接受ける可能性が高い)。
 
 ---
 

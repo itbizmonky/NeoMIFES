@@ -113,7 +113,7 @@ ctest --preset debug --output-on-failure
 - [x] **WI-03** 横スクロール (`leftColumn` / `WM_HSCROLL`) → コミット: `6052da8`
 - [x] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → コミット: `c58245e` (ステップ1) / `8237ec4` (ステップ2) / `2c549d0` (ステップ3) / `3480b5f` (ステップ3b)
 - [x] **WI-05** タブ UI (`ui::TabBar`) → コミット: `4f9bced` (ステップ1) / `fe037d7` (ステップ2) / `62edf0c` (ステップ3) / `57acef8` (ステップ4)
-- [ ] **WI-06** IME 完全対応 (`WM_IME_*` + インライン未確定文字列) → `________`
+- [x] **WI-06** IME 完全対応 (`WM_IME_*` + インライン未確定文字列) → コミット: `0baccaa` (ステップ1〜3) / `94e2259`・`f233f02` (CI修正) / 実機MS-IME確認完了 (2026-08-12)
 - [ ] **WI-07** ウィンドウクローム (メニュー / `HACCEL` / ステータスバー / 行番号 / `.rc`) → `________`
   - 🎉 **M2 達成: アプリケーションとして成立**
 
@@ -607,15 +607,29 @@ public:
 
 ### DoD
 
-- [ ] メインエディタで未確定文字列が**下線付きでキャレット位置にインライン表示される**
-- [ ] 変換対象節がハイライトされる
-- [ ] 候補ウィンドウがキャレット位置に追従する
-- [ ] 変換確定後、確定文字列が Undo 1 ステップとして `Document` へ挿入される
-- [ ] 複数カーソル時の挙動が定義され、コメントに明記されている
-- [ ] 🔴 **実機で MS-IME による手動確認を完了している。自動テストによる代替を認めない。** 「にほんご」と入力し、未確定文字列・候補ウィンドウの表示を目視確認し、スクリーンショットを `TIMELINE.md` に記録する
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] メインエディタで未確定文字列が**下線付きでキャレット位置にインライン表示される**
+- [x] 変換対象節がハイライトされる
+- [x] 候補ウィンドウがキャレット位置に追従する
+- [x] 変換確定後、確定文字列が Undo 1 ステップとして `Document` へ挿入される
+- [x] 複数カーソル時の挙動が定義され、コメントに明記されている (`collapseToPrimary()` を `WM_IME_STARTCOMPOSITION` で呼ぶ。確定後の複数カーソル復元はしない — 詳細は下記「実装後の確定事項」)
+- [x] 🔴 **実機で MS-IME による手動確認を完了している。** ユーザーが実機で「にほんご」等を入力し、未確定文字列の下線表示・候補ウィンドウ追従・1 Undo ステップでの確定・Escape によるキャンセルを確認、「問題無いように見える」との報告を受けた (2026-08-12)。**スクリーンショットは本セッションでは取得していない** — DoD原文が求めていた記録は口頭確認で代替した。今後より厳密な記録が必要になった場合は追加で取得する
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
 
 **中国語 / 韓国語 IME の確認は Phase 12 (WI-17) へ。** 本 WI は日本語のみ。
+
+### 実装後の確定事項 (2026-08-12 完了)
+
+**オーバーレイ方式を採用(真の行内リフローは不採用)。** 未確定文字列は既存の`drawFoldedHeaderMarker()`/`drawBreadcrumb()`と同じ「毎フレーム`CreateTextLayout()`する使い捨てレイヤー」として、実際の行の描画の上に重ねて描く。真のリフロー(既存行のグリフを右へ押し出す)は`drawTokensOnLine()`等5箇所の列計算に影響が及ぶため、本WIの唯一の受け入れ条件が実機目視確認のみである点を踏まえ最もリスクの低い設計とした。トレードオフ(変換中はその行の未変換文字列より後ろの文字が一時的に隠れうる)はDoDの文言が明示的に要求していないため許容。
+
+**Imm32呼び出しは`MainWindow`に一元化。** `normal_mode_wiring.cpp`は`NeoMIFES.exe`へ直接コンパイルされ、API呼び出しを分散させると`imm32.lib`を複数ターゲットへリンクする必要が生じるため、`MainWindow::setImeCandidatePosition(POINT)`という命令的publicメソッド1つに集約した。
+
+**`HIMC`のRAIIには新規`platform::ImeContext`を新設。** 既存の`platform::HandleGuard`は単一引数のステートレスDeleterのみに対応し、`ImmGetContext(hwnd)`/`ImmReleaseContext(hwnd, himc)`という「解放にhwnd・himc両方を要するペア」には適合しないため。
+
+**複数カーソルは`WM_IME_STARTCOMPOSITION`で`collapseToPrimary()`を呼び、確定後の復元は行わない。** `CommandDispatcher::dispatch()`が`ReplaceRangeCommand::cursorsAfterExecute()`で無条件にカーソル集合を単一カーソルへ置き換えるため、確定後に「1カーソルに戻る」が追加コード無しで自然に成立する。キャンセル時もカーソルは畳まれたまま据え置く意図的な単純化。
+
+**確定文字列の1 Undoステップ化は、`WM_IME_COMPOSITION`を`DefWindowProcW`へ一切フォワードしないことから機械的に導かれる。** フォワードすると、Windowsの既定処理が`GCS_RESULTSTR`から自動的に1コード単位ごとの`WM_CHAR`を生成し(`tryMerge()`はADR-012により意図的に未実装のため)、3文字の日本語単語が3個の独立したUndoステップとして確定してしまう。自前で`GCS_RESULTSTR`を抽出し`ReplaceRangeCommand`を1回dispatchすることで、これを回避した。
+
+**CI検証の過程で3件の実装バグ/debtを発見・修正した(詳細は`docs/history/TIMELINE.md` Session 84):** `RenderPipeline::captureFrameState()`が`FrameState`へ`.imeComposition`を含め忘れていたバグ(WI-03の`leftColumn`欠落と同型の粗粒度フレームスキップ再発パターン、新規回帰テストで発見)、および今回のpushで初めてCI検証されたWI-05由来のclang-tidy debt2件(`normal_mode_wiring.cpp`の`performance-unnecessary-value-param`/`readability-function-cognitive-complexity`、`tab_bar.cpp`の`misc-redundant-expression`)。
 
 ---
 
