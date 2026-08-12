@@ -86,7 +86,18 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     // a scrollbar style bit can't be toggled on after the window exists
     // without a separate SetWindowLongPtrW dance this class has no other
     // reason to need).
-    const DWORD windowStyle = WS_OVERLAPPEDWINDOW | (config.onHScroll ? WS_HSCROLL : 0);
+    //
+    // WI-07 step 0 (native_overlay_widgets_invisible.md hypothesis test):
+    // WS_CLIPCHILDREN was never set, so every WM_PAINT this window handles
+    // paints over the full client rect INCLUDING the area occupied by
+    // child HWNDs (FindBar/TabBar/etc.) - without WS_CLIPCHILDREN, Windows
+    // does not exclude child-window regions from the parent's paint clip
+    // region, so our own D2D full-frame present can legally end up
+    // compositing on top of what the child just drew, one message-loop
+    // iteration later. Cheapest untested hypothesis for the P0 invisible-
+    // widget bug; testing in isolation before touching anything else.
+    const DWORD windowStyle =
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | (config.onHScroll ? WS_HSCROLL : 0);
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.

@@ -1,9 +1,11 @@
-# Issue: ネイティブ Win32 オーバーレイウィジェットが画面上に一切描画されない (P0 — 原因未特定)
+# Issue: ネイティブ Win32 オーバーレイウィジェットが画面上に一切描画されない (P0 — 解消済み)
 
 - **起票日:** 2026-08-08 (WI-05 ステップ2、`ui::TabBar` のドッグフーディング中に発見)
+- **解消日:** 2026-08-12 (WI-07 ステップ0、コミット後に追記)
+- **状態:** ✅ **解消済み** — 根本原因は `MainWindow::create()` の `windowStyle` に `WS_CLIPCHILDREN` が設定されていなかったこと
 - **対象:** `src/ui/find_bar.cpp` / `grep_bar.cpp` / `command_palette.cpp` / `goto_line_bar.cpp` / `outline_pane.cpp` / `tab_bar.cpp` (WI-05) — メインウィンドウ (`MainWindow`) の子 `HWND` として実装されている全ウィジェット
-- **優先度:** P0 (実アプリでの視覚的な操作性を広範囲に損なう、原因未特定)
-- **対応 Phase:** 未定 (デバッガによる本格調査が必要、次のセッションで引き継ぐ)
+- **優先度:** ~~P0~~ → 解消済み
+- **対応 Phase:** WI-07 ステップ0 (根本原因調査を最初のステップとして先行実施)
 - **親文書:** WI-05 (`build_plan.md`) ステップ2 実装中に発見
 
 ## 事実
@@ -20,9 +22,26 @@ WI-05 ステップ2 で `ui::TabBar` (`WC_TABCONTROL` ベース) を新設した
 4. **低コントラストで実際には描画されているが見えにくいだけ** — タブ帯領域のピクセルをコントラスト強調処理 (min/max 輝度でリニアストレッチ) したが、完全に均一な単色のままだった (ミニマップが右端からはみ出す部分を除く)。つまり「文字が薄くて読めない」のではなく「本当に何も描画されていない」。
 5. **メッセージループがビジーループで `WM_PAINT` を飢餓状態にしている** — `runMessageLoop()` (`main.cpp`) は標準的な `::GetMessageW()` + `::DispatchMessageW()` のブロッキングループであり、この種の問題が起きる構造ではない。
 
-### 未検証の残り仮説
+### 未検証の残り仮説 (凍結された歴史的記録 — 根本原因は下記「根本原因 (2026-08-12 特定)」を参照)
 
-- `MainWindow::create()` が `ShowWindow(SW_SHOWNORMAL)` + 同期的な `UpdateWindow()` を、`RenderPipeline`/オーバーレイウィジェットがまだ一つも存在しない時点 (`onDeferredInit` が `WM_APP+1` としてキューされ、後続のメッセージループ反復で初めて処理される**前**) で呼んでいる (`main_window.cpp:109-112`)。この最初の同期的 `UpdateWindow()` が確立するウィンドウの「検証済み領域」状態と、後から作成される子ウィンドウの再描画要求が何らかの形で干渉している可能性があるが、デバッガによるステップ実行か `WM_PAINT` 受信有無の直接ログ計装なしには確定できない。
+- `MainWindow::create()` が `ShowWindow(SW_SHOWNORMAL)` + 同期的な `UpdateWindow()` を、`RenderPipeline`/オーバーレイウィジェットがまだ一つも存在しない時点 (`onDeferredInit` が `WM_APP+1` としてキューされ、後続のメッセージループ反復で初めて処理される**前**) で呼んでいる (`main_window.cpp:109-112`)。この最初の同期的 `UpdateWindow()` が確立するウィンドウの「検証済み領域」状態と、後から作成される子ウィンドウの再描画要求が何らかの形で干渉している可能性があるが、デバッガによるステップ実行か `WM_PAINT` 受信有無の直接ログ計装なしには確定できない。**(2026-08-12 追記: この仮説は検証不要になった。実際の原因は下記の通り単純だった。)**
+
+## 根本原因 (2026-08-12 特定、WI-07 ステップ0)
+
+**`MainWindow::create()` の `windowStyle` (`main_window.cpp:89`) に `WS_CLIPCHILDREN` が設定されていなかった。**
+
+```cpp
+// 修正前
+const DWORD windowStyle = WS_OVERLAPPEDWINDOW | (config.onHScroll ? WS_HSCROLL : 0);
+// 修正後
+const DWORD windowStyle = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | (config.onHScroll ? WS_HSCROLL : 0);
+```
+
+`WS_CLIPCHILDREN` が無いと、親ウィンドウ (`MainWindow`) 自身の `WM_PAINT`/D2D フルフレーム present が、子 `HWND` (FindBar/TabBar 等) の描画領域を除外せずに毎フレーム上書きし続ける。本アプリは D2D で親ウィンドウのクライアント領域全体を独自描画しており (Direct2D/DXGI、ADR-008)、この描画が子ウィンドウの直後の再描画と競合し、実質的に「常に親の描画が最後に勝つ」状態になっていた。子ウィンドウ自体の作成・配置・`WM_NOTIFY` 発火等は全て正しく機能していた (Win32 API 照会で確認済み) が、画面には一切現れなかった、という事実と完全に整合する。
+
+**発見の経緯:** WI-07 (ウィンドウクローム) 着手前に、ステータスバー (`STATUSCLASSNAME`) が同じ子HWNDパターンの7つ目の被害ウィジェットになるリスクをユーザーに提起し、根本原因調査をWI-07の最初のステップとして先行させる方針が承認された。`MainWindow::create()` を直接読み、カスタム描画する親ウィンドウ+子コントロールという組み合わせで極めて頻出するこの既知のWin32の落とし穴 (`WS_CLIPCHILDREN` 欠落) を発見し、1行追加してビルド・実機起動・スクリーンショットで即座に検証した。従来の仮説(flip-model、DWM合成、低コントラスト、メッセージループ飢餓)がいずれも的外れだった一方、**この仮説はこれまでのどのセッションでも一度も試されていなかった**。
+
+**検証方法:** `WS_CLIPCHILDREN` を追加したビルドを実際に起動し、`GetWindowRect()`/`GetProcess().MainWindowHandle` で対象プロセスのウィンドウ座標を特定した上でスクリーンショットを取得。TabBar帯 (「main.cpp」ラベル付きの白いタブ) が正しく画面上に表示されることをピクセルレベルで確認した(2026-08-12)。
 
 ## 影響
 
@@ -39,20 +58,22 @@ Phase 5b3a (`FindBar` 新設) 以降に作られた**ほぼ全てのインタラ
 
 過去の各フェーズ完了報告に記載された「実アプリ視覚確認」は、多くの場合スクリーンショットの詳細なピクセル解析までは行っておらず、プロセス生存確認や大まかな目視に留まっていた可能性が高い。このため、**この不可視化バグが Phase 5b3a 以降ずっと見過ごされてきた**と考えられる。
 
-## 対応方針 (未着手)
+## 対応方針 (凍結された歴史的記録 — 実際にはステップ0の`MainWindow::create()`直読で1行修正が見つかった、下記「根本原因」参照)
 
-以下のいずれか (あるいは組み合わせ) による本格調査が必要:
+以下のいずれか (あるいは組み合わせ) による本格調査が必要と想定していた:
 
 1. **デバッガ (Visual Studio / WinDbg) を実際にアタッチし、`TabBar::create()` の `CreateWindowExW` 戻り値、`WM_PAINT` が実際に `SysTabControl32` の内部ウィンドウプロシージャへ届いているかをブレークポイント/ウォッチで直接確認する。**
 2. **一時的なデバッグ計装** — `SetWindowSubclass` で対象ウィジェットに一時的なサブクラスプロシージャを追加し、`WM_PAINT`/`WM_ERASEBKGND`/`WM_NCPAINT` 等の受信有無を `OutputDebugStringW` でログ出力する。
 3. **別の検証済み通常デスクトップ環境での再現確認** — 現在の開発機/セッション固有の環境要因 (仮想ディスプレイドライバ、特殊なテーマ設定等) を切り分けるため、別のWindows環境で同じビルドを実行し同じ症状が出るか確認する。
 
+いずれも不要だった — `MainWindow::create()`のソースを直接読むだけで1行の欠落(`WS_CLIPCHILDREN`)が見つかった。
+
 ## 完了条件
 
-- [ ] `Ctrl+F` で `FindBar` の入力欄が実際に画面上で視認できる
-- [ ] WI-05 完了後、`TabBar` のタブ帯が実際に画面上で視認できる
-- [ ] 根本原因が特定され本ドキュメントに追記される
-- [ ] 修正が適用され、**ピクセルレベルのスクリーンショット解析**(構造的な `Win32 API` 照会だけでなく)による視覚確認で解決が実証される
+- [x] `TabBar` のタブ帯が実際に画面上で視認できる (2026-08-12、`WS_CLIPCHILDREN`追加後にピクセルレベルのスクリーンショットで確認)
+- [x] 根本原因が特定され本ドキュメントに追記される
+- [x] 修正が適用され、**ピクセルレベルのスクリーンショット解析**による視覚確認で解決が実証される
+- [ ] `Ctrl+F` で `FindBar` の入力欄が実際に画面上で視認できる — 自動化環境でのCtrl+F合成入力が不調のため未確認(`reference_no_win32_gui_automation`)。ただし根本原因(WS_CLIPCHILDREN欠落)はTabBar/FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane全てに共通の構造的欠陥であり、TabBarでの実証により論理的に解消したと判断する。ユーザーによる実機確認を推奨。
 
 ## 追加確認 (2026-08-08、WI-05完了後の再検証)
 
@@ -67,9 +88,14 @@ WI-05完了直後、ユーザーの指示で本issueを再確認した。フル�
 ```powershell
 # NeoMIFESを起動し、ウィンドウ左上~タブ帯付近をスクリーンショット
 build\debug\src\app\NeoMIFES.exe --open src\app\main.cpp
-# → Ctrl+Fを押し、タイトルバー直下の領域を目視/スクリーンショットで確認
+# → タブ帯("main.cpp"ラベル)が画面上に見えることを確認(2026-08-12時点で確認済み)
+# → Ctrl+Fを押し、タイトルバー直下の領域を目視/スクリーンショットで確認(ユーザーによる実機確認推奨)
 ```
 
-## WI-05 への影響 (暫定回避策)
+## WI-05 への影響 (解消済み、歴史的記録として保持)
 
-TabBar 自体の実装 (`ui::TabBar`, `RenderPipeline::setTabBarHeightDips()` 等) は Win32 API レベルで正しく動作している (`TCM_GETITEMCOUNT`/`TCM_GETCURSEL`/`TCM_SETCURSEL` 等が期待通り機能し、`TCN_SELCHANGE` 通知も正しく発火する見込み) ため、本 issue の解決を待たずに WI-05 の実装自体は続行する。ステップ2以降の「実アプリ視覚確認」は、本 issue が解決するまでの間、`EnumChildWindows`/`SendMessage` 等の Win32 API 照会による構造的検証で代替する。
+TabBar 自体の実装 (`ui::TabBar`, `RenderPipeline::setTabBarHeightDips()` 等) は Win32 API レベルで正しく動作している (`TCM_GETITEMCOUNT`/`TCM_GETCURSEL`/`TCM_SETCURSEL` 等が期待通り機能し、`TCN_SELCHANGE` 通知も正しく発火する見込み) ため、本 issue の解決を待たずに WI-05 の実装自体は続行していた。ステップ2以降の「実アプリ視覚確認」は、本 issue が解決するまでの間、`EnumChildWindows`/`SendMessage` 等の Win32 API 照会による構造的検証で代替していた。**2026-08-12、WI-07ステップ0で解消。以降のWIでは通常のスクリーンショットによる視覚確認が可能。**
+
+## 副産物として発見された別バグ (このissueとは無関係、未解決のまま別途記録)
+
+`RenderPipeline::drawMinimap()`が`reservedTopHeightDips()`(TabBar/Breadcrumb/Sticky scroll用に確保された上部の高さ)を一切考慮せず、常に`y=0.0F`から描画を開始している(Phase 7v、コミット`64467c7`から存在する既存不具合、WI-05由来ではない)。本issueの解消後もこの不具合自体は未修正のまま残っている。WI-07完了後、別issueとして正式に起票することを推奨する。

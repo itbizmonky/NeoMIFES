@@ -657,6 +657,10 @@ public:
 
 **アイコンについて:** `.ico` は自前で用意する必要がある。デザインが決められない場合は、暫定として単色背景に "N" の字を置いた最小限のものを作り、**issue に「アイコンの正式デザイン」として起票して先送りしてよい** (体裁上、既定アイコンのままよりは遥かに良い)。
 
+### 実装ログ (進行中)
+
+- **ステップ0 (2026-08-12) 完了:** 着手前に発見した P0 issue [`native_overlay_widgets_invisible.md`](../issues/native_overlay_widgets_invisible.md) の根本原因調査を先行実施。原因は `MainWindow::create()` の `windowStyle` に `WS_CLIPCHILDREN` が欠落していたこと(`src/ui/src/main_window.cpp:89`)。1行追加で解消し、実機スクリーンショットでTabBar帯の可視化を確認。issueは解決済みへ移動。ステータスバー実装(本WI)がこの構造的欠陥の7つ目の被害ウィジェットになるリスクは解消された。
+
 ### 影響ファイル
 
 - 新規 `resources/neomifes.rc` / `neomifes.ico` / `neomifes.manifest`
