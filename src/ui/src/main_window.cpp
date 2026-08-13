@@ -76,6 +76,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onNotify       = config.onNotify;
     m_onClose        = config.onClose;
     m_onDropFiles    = config.onDropFiles;
+    m_onContextMenu  = config.onContextMenu;
     m_onImeStartComposition = config.onImeStartComposition;
     m_onImeComposition      = config.onImeComposition;
     m_onImeResult           = config.onImeResult;
@@ -218,6 +219,9 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_DROPFILES:
             handleDropFiles(wParam);
+            return 0;
+        case WM_CONTEXTMENU:
+            handleContextMenu(lParam);
             return 0;
         // WI-06: never forwarded to DefWindowProcW (unlike every case above
         // except WM_ERASEBKGND) - this class owns composition drawing/
@@ -435,6 +439,31 @@ void MainWindow::handleDropFiles(WPARAM wParam) noexcept {
         m_onDropFiles(m_hwnd, std::move(paths));
     }
     ::DragFinish(hDrop);
+}
+
+void MainWindow::handleContextMenu(LPARAM lParam) noexcept {
+    if (!m_onContextMenu) {
+        return;
+    }
+    auto x = static_cast<std::int32_t>(GET_X_LPARAM(lParam));
+    auto y = static_cast<std::int32_t>(GET_Y_LPARAM(lParam));
+    if (x == -1 && y == -1) {
+        // Keyboard-triggered (Shift+F10/VK_APPS) - MSDN: WM_CONTEXTMENU's
+        // lParam carries no meaningful position in that case. Falls back to
+        // the current cursor position (still somewhere on-screen, unlike
+        // leaving x/y at -1) rather than computing a caret-relative
+        // position - see MainWindowConfig::onContextMenu's doc comment for
+        // why that's out of scope.
+        POINT cursor{};
+        if (::GetCursorPos(&cursor)) {
+            x = cursor.x;
+            y = cursor.y;
+        } else {
+            x = 0;
+            y = 0;
+        }
+    }
+    m_onContextMenu(m_hwnd, x, y);
 }
 
 void MainWindow::handleImeStartComposition() noexcept {

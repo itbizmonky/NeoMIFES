@@ -188,6 +188,22 @@ struct MainWindowConfig {
     // such cross-layer knowledge). Only registered (DragAcceptFiles(TRUE))
     // when this is actually set - see create()'s implementation.
     std::function<void(HWND, std::vector<std::wstring>)> onDropFiles;
+    // Optional: invoked from WM_CONTEXTMENU (WI-07 step9) with the SCREEN
+    // coordinate to show a popup menu at (TrackPopupMenu's own coordinate
+    // space - unlike onMouseDown/onMouseDrag's client-area pixels, since the
+    // caller hands this straight to TrackPopupMenu without an intervening
+    // ClientToScreen() call). WM_CONTEXTMENU's own lParam is already in
+    // screen coordinates for a mouse-triggered right-click; for a keyboard-
+    // triggered one (Shift+F10/VK_APPS, lParam == (-1,-1)) MainWindow
+    // substitutes the current cursor position via GetCursorPos() instead of
+    // computing a caret-relative position - out of scope for this step (see
+    // command_dispatch.h's own comment on what WI-07 step9 covers). Always
+    // returns 0 from wndProc (no DefWindowProcW fallback) - same "this class
+    // owns the behavior entirely" reasoning as onImeStartComposition below,
+    // except unconditional even when unconfigured (no default Win32 popup
+    // exists for a Direct2D-painted client area with no WC_EDIT focus to
+    // fall back to).
+    std::function<void(HWND, std::int32_t xScreen, std::int32_t yScreen)> onContextMenu;
     // Optional: invoked from WM_IME_STARTCOMPOSITION (WI-06). No payload -
     // this only signals "a composition session began". MainWindow always
     // returns 0 for this message regardless of whether a handler is
@@ -293,6 +309,10 @@ private:
     LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
     [[nodiscard]] bool handleClose() noexcept;
     void handleDropFiles(WPARAM wParam) noexcept;
+    // Decodes WM_CONTEXTMENU's lParam (screen coordinates, or (-1,-1) for a
+    // keyboard-triggered invocation - see MainWindowConfig::onContextMenu's
+    // doc comment for the GetCursorPos() fallback in that case).
+    void handleContextMenu(LPARAM lParam) noexcept;
     void handleImeStartComposition() noexcept;
     // Extracts GCS_COMPSTR/GCS_COMPATTR (-> m_onImeComposition) and/or
     // GCS_RESULTSTR (-> m_onImeResult) from the live composition, per
@@ -318,6 +338,7 @@ private:
     std::function<LRESULT(HWND, WPARAM, LPARAM)>                      m_onNotify;
     std::function<bool(HWND)>                                         m_onClose;
     std::function<void(HWND, std::vector<std::wstring>)>              m_onDropFiles;
+    std::function<void(HWND, std::int32_t, std::int32_t)>             m_onContextMenu;
     std::function<void(HWND)>                                         m_onImeStartComposition;
     std::function<void(HWND, std::u16string, std::optional<std::pair<std::uint32_t, std::uint32_t>>)>
         m_onImeComposition;

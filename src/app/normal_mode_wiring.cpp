@@ -1722,6 +1722,44 @@ void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, Workspace& works
                               static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
+// WI-07 step9: right-click context menu - reuses menu_bar.h's kEditMenuItems
+// verbatim (Undo/Redo/Cut/Copy/Paste, same CommandIds/labels the Edit menu
+// itself already shows) so the two can never drift apart. TrackPopupMenu
+// (TPM_RETURNCMD) returns the selected item's raw id - since every id here
+// IS already a CommandId (unlike showChoiceMenu<T>() below, which assigns
+// synthetic 1-based ids), the return value is handed to dispatchCommand()
+// directly with no index-to-value translation, matching the approved
+// design ("TPM_RETURNCMDの戻り値をdispatchCommand()へそのまま渡す"). `screenPt`
+// is MainWindowConfig::onContextMenu's own screen-coordinate contract -
+// MainWindow itself already substitutes the cursor position for a
+// keyboard-triggered invocation (Shift+F10), see that field's doc comment.
+// No caret movement to the click position - deliberately out of scope for
+// this step.
+void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, RenderPipeline& renderPipeline,
+                         FindBar& findBar) {
+    HMENU menu = ::CreatePopupMenu();
+    if (menu == nullptr) {
+        return;
+    }
+    for (const MenuItemSpec& item : kEditMenuItems) {
+        ::AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(item.commandId), item.label);
+    }
+    // Same SetForegroundWindow()/PostMessageW(WM_NULL) idiom showChoiceMenu<T>()
+    // (WI-07 step6, above) already established for a modal TrackPopupMenu()
+    // to dismiss correctly on an outside click.
+    ::SetForegroundWindow(hwnd);
+    const int selected = ::TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, screenPt.x,
+                                          screenPt.y, 0, hwnd, nullptr);
+    ::PostMessageW(hwnd, WM_NULL, 0, 0);
+    ::DestroyMenu(menu);
+    if (selected <= 0) {
+        return;  // dismissed without a choice (Escape, click-away)
+    }
+    const CommandDispatchContext ctx{
+        .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+    dispatchCommand(static_cast<CommandId>(selected), ctx);
+}
+
 // WI-07 step4: derives every ui::StatusBarParts field from EditorSession's
 // already-existing state - no new state introduced here. WI-07 step5:
 // overwriteMode now reflects the real EditorSession::overwriteMode() toggle
@@ -2415,6 +2453,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, const std::vector<std::wstring>& paths) {
         handleDropFilesEvent(hwnd, paths, workspace, renderPipeline, findBar);
+    };
+    // WI-07 step9: right-click context menu - see showEditContextMenu()'s
+    // own comment above for why xScreen/yScreen pass straight through with
+    // no additional coordinate handling here.
+    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar](HWND hwnd, std::int32_t xScreen,
+                                                                 std::int32_t yScreen) {
+        showEditContextMenu(hwnd, POINT{.x = xScreen, .y = yScreen}, workspace, renderPipeline, findBar);
     };
     // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
     // pulled into a standalone function rather than assigned inline here
