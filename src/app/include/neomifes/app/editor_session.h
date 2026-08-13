@@ -112,6 +112,19 @@ public:
         return m_freeCursorVirtualColumns;
     }
 
+    // WI-07 step5: true while this session is in Overwrite (OVR) mode -
+    // VK_INSERT toggles it (normal_mode_wiring.cpp), handleCharEvent()
+    // branches between handleChar()/applyOverwriteChar() on it, and the
+    // status bar's INS/OVR part (buildStatusBarParts()) reads it. Session-
+    // lifetime UI state, not document state - same reasoning as
+    // altCursorAnchor()/rectangularAnchor()/freeCursorVirtualColumns()
+    // above (this class's own header comment on why those live here). Const
+    // overload returns by value (not const bool&) - same "read-only view of
+    // a plain bool" shape isDirty() already uses - so buildStatusBarParts()
+    // (which only reads, given a const EditorSession&) can call this too.
+    [[nodiscard]] bool& overwriteMode() noexcept { return m_overwriteMode; }
+    [[nodiscard]] bool  overwriteMode() const noexcept { return m_overwriteMode; }
+
     // Always derived from path()/isUntitled() - see this file's header
     // comment on why this is not cached.
     [[nodiscard]] std::optional<syntax::Language> language() const noexcept;
@@ -182,6 +195,7 @@ private:
     std::optional<std::uint32_t>          m_freeCursorVirtualColumns;
     std::filesystem::path                 m_path;
     bool                                   m_isUntitled = true;
+    bool                                   m_overwriteMode = false;
 };
 
 }  // namespace neomifes::app

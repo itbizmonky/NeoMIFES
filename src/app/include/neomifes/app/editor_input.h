@@ -68,6 +68,27 @@ bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown,
 bool handleChar(wchar_t ch, core::CommandDispatcher& dispatcher, core::SelectionModel& selection,
                core::Viewport& viewport, const document::Document& document);
 
+// WI-07 step5: Overwrite (OVR) mode's WM_CHAR handling - the caller
+// (normal_mode_wiring.cpp's handleCharEvent()) branches to this instead of
+// handleChar() while EditorSession::overwriteMode() is true. Enter ('\r')
+// and Tab ('\t') always fall back to plain insertion (handleChar()'s own
+// behavior) - overwriting a newline or expanding a tab in place isn't a
+// standard OVR-mode behavior in any mainstream editor. For other printable
+// characters: a cursor with an active selection replaces it (identical to
+// handleChar()'s own replace-selection behavior); a cursor with no
+// selection replaces the single character immediately after it IF one
+// exists on the same line (document::Document::lineText() excludes the
+// trailing '\n', so `column < lineText(line).size()` is exactly "there is
+// a same-line character to overwrite") - otherwise (end of line or end of
+// document) it falls back to a plain insert, so OVR mode can never delete a
+// line break or eat into the next line. Reuses core::MultiCursorEditCommand
+// directly (same mechanism handleChar()/handlePaste() already use) so
+// Undo/Redo work with no new ICommand subclass. Out of scope: changing the
+// caret's visual shape while in OVR mode (build_plan.md's WI-07 step5
+// design note).
+bool applyOverwriteChar(wchar_t ch, core::CommandDispatcher& dispatcher, core::SelectionModel& selection,
+                        core::Viewport& viewport, const document::Document& document);
+
 // Pure function: maps a WM_MOUSEWHEEL delta to a new topLine, clamped to
 // [0, totalLines - 1] (or 0 if totalLines == 0) - the same effective bound
 // RenderPipeline already applies at render time for display purposes

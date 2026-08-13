@@ -91,9 +91,10 @@ struct CommandDispatchContext {
 };
 
 // Handles: Save, SaveAs, Open, New, TabNext, TabPrevious, TabClose,
-// TabSwitch1..TabSwitch9, Copy, Cut, Paste, Undo, Redo. No-op for
-// CommandId::None or any id not in that list - see this header's own
-// top comment for which commands are deliberately NOT handled here.
+// TabSwitch1..TabSwitch9, Copy, Cut, Paste, Undo, Redo,
+// ToggleOverwriteMode. No-op for CommandId::None or any id not in that
+// list - see this header's own top comment for which commands are
+// deliberately NOT handled here.
 void dispatchCommand(ui::CommandId id, const CommandDispatchContext& ctx);
 
 }  // namespace neomifes::app

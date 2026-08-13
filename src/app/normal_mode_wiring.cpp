@@ -944,6 +944,27 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
     return true;
 }
 
+// Toggles Insert/Overwrite mode (WI-07 step5) - bare VK_INSERT, no
+// modifiers. Also NOT accelerator-routed, for the same reason
+// Copy/Cut/Paste/Undo/Redo aren't (see handleClipboardOrUndoRedoKey()'s own
+// comment above): a native WC_EDIT control - like the overlay widgets' own
+// text fields - supports a built-in overtype toggle on a bare Insert
+// keypress, which a global accelerator entry would intercept before it ever
+// reached the focused control.
+[[nodiscard]] bool handleOverwriteToggleKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
+                                            Workspace& workspace, RenderPipeline& renderPipeline,
+                                            FindBar& findBar) {
+    if (vkCode != VK_INSERT || shiftDown || ctrlDown) {
+        return false;
+    }
+    const CommandDispatchContext ctx{.hwnd            = hwnd,
+                                     .workspace       = workspace,
+                                     .renderPipeline  = renderPipeline,
+                                     .findBar         = findBar};
+    dispatchCommand(CommandId::ToggleOverwriteMode, ctx);
+    return true;
+}
+
 // Handles WM_KEYDOWN end-to-end: Ctrl+C/X/V/Z/Y first (via dispatchCommand(),
 // WI-07 step2), falling through to the regular movement/edit path otherwise.
 // Pulled all the way out of wireNormalMode's onKeyDown lambda body (not just
@@ -1025,6 +1046,9 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleClipboardOrUndoRedoKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
         return;
     }
+    if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar)) {
+        return;
+    }
     const bool changed =
         neomifes::app::handleKeyDown(vkCode, shiftDown, ctrlDown, session.dispatcher(), session.selection(),
                                      session.viewport(), session.document(), &session.folding());
@@ -1035,10 +1059,10 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
 
 // Handles WM_CHAR: free-cursor materialization (Phase 4b8e, applyFreeCursorChar()
 // above) takes priority over the regular insert-at-every-cursor path
-// (neomifes::app::handleChar()) whenever a virtual-column count is pending.
-// Pulled out of wireNormalMode's onChar lambda for the same cognitive-
-// complexity reason as handleKeyDownEvent() above. WI-04: takes
-// EditorSession& (dispatcher/selection/viewport/document/
+// (neomifes::app::handleChar()/applyOverwriteChar()) whenever a virtual-
+// column count is pending. Pulled out of wireNormalMode's onChar lambda for
+// the same cognitive-complexity reason as handleKeyDownEvent() above. WI-04:
+// takes EditorSession& (dispatcher/selection/viewport/document/
 // freeCursorVirtualColumns - 5 members).
 // WI-06: `imeComposing` guard here is a defensive backstop, not the primary
 // mechanism - by design, committed IME text never reaches WM_CHAR at all
@@ -1047,6 +1071,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
 // early-out should never actually trigger in practice. Kept anyway in case
 // some IME/keyboard-layout combination produces an unexpected WM_CHAR while
 // composing.
+// WI-07 step5: branches on session.overwriteMode() - handleChar() while in
+// Insert mode (unchanged), applyOverwriteChar() while in Overwrite mode.
 void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeline& renderPipeline,
                      bool imeComposing) {
     if (imeComposing) {
@@ -1058,8 +1084,11 @@ void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeli
         virtualColumns.reset();
         return;
     }
-    const bool changed = neomifes::app::handleChar(ch, session.dispatcher(), session.selection(),
-                                                   session.viewport(), session.document());
+    const bool changed = session.overwriteMode()
+                             ? neomifes::app::applyOverwriteChar(ch, session.dispatcher(), session.selection(),
+                                                                  session.viewport(), session.document())
+                             : neomifes::app::handleChar(ch, session.dispatcher(), session.selection(),
+                                                         session.viewport(), session.document());
     if (changed) {
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
@@ -1564,9 +1593,9 @@ void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, StatusBar& statu
 }
 
 // WI-07 step4: derives every ui::StatusBarParts field from EditorSession's
-// already-existing state - no new state introduced here. overwriteMode is
-// hardcoded false (INS) for now; WI-07 step5 threads the real toggle through
-// once it exists (see this function's future signature change there).
+// already-existing state - no new state introduced here. WI-07 step5:
+// overwriteMode now reflects the real EditorSession::overwriteMode() toggle
+// (was hardcoded false/INS in step4).
 StatusBarParts buildStatusBarParts(const EditorSession& session) {
     const Document&                 document = session.document();
     const neomifes::document::TextPos pos    = session.selection().primaryCursor().position;
@@ -1578,7 +1607,7 @@ StatusBarParts buildStatusBarParts(const EditorSession& session) {
             neomifes::core::totalSelectedLength(session.selection())),
         .encoding      = neomifes::app::formatStatusBarEncoding(session.fileState().encoding),
         .lineEnding    = neomifes::app::formatStatusBarLineEnding(session.fileState().lineEnding),
-        .overwriteMode = neomifes::app::formatStatusBarOverwriteMode(false),
+        .overwriteMode = neomifes::app::formatStatusBarOverwriteMode(session.overwriteMode()),
         .language      = neomifes::app::formatStatusBarLanguage(session.language()),
     };
 }
@@ -1998,6 +2027,15 @@ void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
         case CommandId::Undo:
         case CommandId::Redo:
             dispatchUndoRedoCommand(id, ctx, session);
+            return;
+        case CommandId::ToggleOverwriteMode:
+            // No selection/viewport/document change - just flips the flag
+            // handleCharEvent()/buildStatusBarParts() both read. A plain
+            // InvalidateRect() (not syncRenderStateAndInvalidate()) is
+            // enough since nothing RenderPipeline caches needs resyncing,
+            // same reasoning as dispatchSaveCommand()'s post-save repaint.
+            session.overwriteMode() = !session.overwriteMode();
+            ::InvalidateRect(ctx.hwnd, nullptr, FALSE);
             return;
         case CommandId::None:
         default:

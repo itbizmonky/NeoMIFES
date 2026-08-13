@@ -12,6 +12,7 @@
 namespace {
 
 using neomifes::app::applyMouseWheelScroll;
+using neomifes::app::applyOverwriteChar;
 using neomifes::app::deleteAllSelections;
 using neomifes::app::handleAltClick;
 using neomifes::app::handleChar;
@@ -312,6 +313,109 @@ TEST(EditorInputTest, HandleCharIgnoresOtherControlCharacters) {
     const bool changed = handleChar(0x01, env.dispatcher, env.selection, env.viewport, env.doc);
     EXPECT_FALSE(changed);
     EXPECT_EQ(env.doc.toU16String(), u"");
+}
+
+// WI-07 step5: applyOverwriteChar() - overwrites the character right after
+// the cursor when one exists on the same line.
+TEST(EditorInputTest, ApplyOverwriteCharReplacesTheCharacterAfterTheCursor) {
+    Env env;
+    env.doc.insertText(0, u"abc");
+    env.selection.moveAllTo(1);  // between 'a' and 'b'
+
+    const bool changed = applyOverwriteChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"aXc");
+    EXPECT_EQ(env.selection.primaryCursor().position, 2U);
+}
+
+// At end of line (no character left to overwrite on this line), falls back
+// to a plain insert rather than eating into the next line's content.
+TEST(EditorInputTest, ApplyOverwriteCharAtLineEndFallsBackToInsert) {
+    Env env;
+    env.doc.insertText(0, u"ab\ncd");
+    env.selection.moveAllTo(2);  // end of "ab", right before '\n'
+
+    const bool changed = applyOverwriteChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"abX\ncd");
+    EXPECT_EQ(env.selection.primaryCursor().position, 3U);
+}
+
+// At end of document, same fallback (nothing after the cursor at all).
+TEST(EditorInputTest, ApplyOverwriteCharAtDocumentEndFallsBackToInsert) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(2);
+
+    const bool changed = applyOverwriteChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"abX");
+    EXPECT_EQ(env.selection.primaryCursor().position, 3U);
+}
+
+// An active selection is replaced (not overwritten-plus-one), identical to
+// handleChar()'s own replace-selection behavior.
+TEST(EditorInputTest, ApplyOverwriteCharReplacesActiveSelection) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    handleKeyDown(VK_RIGHT, true, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    ASSERT_TRUE(env.selection.primaryCursor().hasSelection());  // selected "he"
+
+    applyOverwriteChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_EQ(env.doc.toU16String(), u"Xllo world");
+    EXPECT_EQ(env.selection.primaryCursor().position, 1U);
+}
+
+// Enter never overwrites/eats a line break - always falls back to
+// handleChar()'s plain-insert behavior via insertTextAtEveryCursor().
+TEST(EditorInputTest, ApplyOverwriteCharTranslatesCarriageReturnToPlainNewlineInsert) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(1);  // between 'a' and 'b'
+
+    const bool changed = applyOverwriteChar(u'\r', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"a\nb");  // inserted, 'b' NOT overwritten
+}
+
+// Tab likewise always inserts rather than overwriting.
+TEST(EditorInputTest, ApplyOverwriteCharInsertsTabRatherThanOverwriting) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(1);
+
+    const bool changed = applyOverwriteChar(u'\t', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"a\tb");
+}
+
+TEST(EditorInputTest, ApplyOverwriteCharIgnoresOtherControlCharacters) {
+    Env env;
+    env.doc.insertText(0, u"ab");
+    env.selection.moveAllTo(1);
+
+    const bool changed = applyOverwriteChar(0x01, env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_FALSE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"ab");
+}
+
+// Multiple cursors each independently overwrite (or fall back to insert)
+// based on their OWN position, same per-cursor independence handleChar()'s
+// multi-cursor test above verifies.
+TEST(EditorInputTest, ApplyOverwriteCharWithMultipleCursorsOverwritesEachIndependently) {
+    Env env;
+    env.doc.insertText(0, u"ab cd");
+    env.selection.moveAllTo(1);  // between 'a' and 'b'
+    env.selection.addCursor(5);  // end of document (falls back to insert)
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+
+    const bool changed = applyOverwriteChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"aX cdX");
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    EXPECT_EQ(env.selection.cursors()[0].position, 2U);
+    EXPECT_EQ(env.selection.cursors()[1].position, 6U);
 }
 
 TEST(EditorInputTest, ApplyMouseWheelScrollUpDecreasesTopLineClampedToZero) {

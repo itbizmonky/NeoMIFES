@@ -249,6 +249,38 @@ bool handleChar(wchar_t ch, CommandDispatcher& dispatcher, SelectionModel& selec
                                    document);
 }
 
+bool applyOverwriteChar(wchar_t ch, CommandDispatcher& dispatcher, SelectionModel& selection,
+                        Viewport& viewport, const Document& document) {
+    if (ch < 0x20 && ch != u'\r' && ch != u'\t') {
+        return false;
+    }
+    if (ch == u'\r' || ch == u'\t') {
+        const auto inserted = static_cast<char16_t>(ch == u'\r' ? u'\n' : ch);
+        return insertTextAtEveryCursor(std::u16string_view(&inserted, 1), dispatcher, selection, viewport,
+                                       document);
+    }
+    const auto insertedChar = static_cast<char16_t>(ch);
+    std::vector<Cursor> before(selection.cursors().begin(), selection.cursors().end());
+    std::vector<PerCursorEdit> edits;
+    edits.reserve(before.size());
+    for (const Cursor& cursor : before) {
+        TextRange range{.start = cursor.position, .end = cursor.position};
+        if (cursor.hasSelection()) {
+            range = selectionRange(cursor);
+        } else {
+            const document::LineNumber line = document.offsetToLine(cursor.position);
+            const auto column = static_cast<std::uint32_t>(cursor.position - document.lineToOffset(line));
+            if (column < document.lineText(line).size()) {
+                range = TextRange{.start = cursor.position, .end = cursor.position + 1};
+            }
+        }
+        edits.push_back(PerCursorEdit{.range = range, .insertedText = std::u16string(1, insertedChar)});
+    }
+    dispatcher.dispatch(std::make_unique<MultiCursorEditCommand>(std::move(edits), std::move(before)));
+    viewport.ensureVisible(selection.primaryCursor().position, document);
+    return true;
+}
+
 document::LineNumber applyMouseWheelScroll(short wheelDelta, document::LineNumber currentTopLine,
                                            document::LineNumber totalLines) {
     constexpr std::int64_t kLinesPerNotch = 3;

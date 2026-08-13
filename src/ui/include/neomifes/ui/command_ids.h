@@ -63,6 +63,15 @@ enum class CommandId : std::uint16_t {
     // WI-07 step3: menu-only (Help menu), never accelerator-routed or
     // palette-registered - shows a minimal version MessageBoxW.
     About,
+    // WI-07 step5: toggles EditorSession::overwriteMode(). Bound to a bare
+    // VK_INSERT keypress in normal_mode_wiring.cpp's key-down chain (NOT the
+    // accelerator table - see handleClipboardOrUndoRedoKey()'s own comment
+    // for why: a native WC_EDIT control, like the overlay widgets' own text
+    // fields, supports a built-in overtype toggle on a bare Insert keypress,
+    // which a global accelerator entry would intercept before it ever
+    // reaches the focused control). Not menu- or palette-registered (no
+    // approved design point calls for that yet).
+    ToggleOverwriteMode,
 };
 
 }  // namespace neomifes::ui
