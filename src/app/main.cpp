@@ -60,6 +60,7 @@
 #include <utility>
 #include <vector>
 
+#include "neomifes/app/command_dispatch.h"
 #include "neomifes/app/editor_session.h"
 #include "neomifes/app/launch_setup.h"
 #include "neomifes/app/normal_mode_wiring.h"
@@ -114,9 +115,17 @@ using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
 using neomifes::ui::TabBar;
 
-int runMessageLoop() noexcept {
+// WI-07 step2: `haccel` may be nullptr (measurement-mode launches never
+// build one - see wWinMain - or buildAcceleratorTable() itself failed,
+// command_dispatch.h's own non-fatal-degradation contract). TranslateAcceleratorW's
+// own documented contract requires a valid HACCEL, so this checks explicitly
+// rather than relying on how it happens to behave with NULL.
+int runMessageLoop(HWND hwnd, HACCEL haccel) noexcept {
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (haccel != nullptr && ::TranslateAcceleratorW(hwnd, haccel, &msg) != 0) {
+            continue;
+        }
         ::TranslateMessage(&msg);
         ::DispatchMessageW(&msg);
     }
@@ -351,7 +360,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         return 1;
     }
 
-    const int rc = runMessageLoop();
+    // WI-07 step2: built unconditionally (harmless/unused for measurement-
+    // mode launches, which never generate real keyboard input) rather than
+    // branching on `args.mode` here too - buildAcceleratorTable() is a
+    // single cheap CreateAcceleratorTableW call with no side effects on
+    // anything else. AcceleratorTableHandle's falsy state (construction
+    // failure) is handled by runMessageLoop() itself (see its own comment).
+    const neomifes::platform::AcceleratorTableHandle accelTable = neomifes::app::buildAcceleratorTable();
+    const int rc = runMessageLoop(window.hwnd(), accelTable.get());
 
     // Persist search history once, at clean exit (not after every search) -
     // a crash loses only the current session's newly-recorded entries, an

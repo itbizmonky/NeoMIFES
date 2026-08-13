@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "neomifes/app/command_dispatch.h"
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/editor_input.h"
 #include "neomifes/app/file_dialogs.h"
@@ -247,9 +248,9 @@ void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord,
 // FindBarConfig::onFindNext/onFindPrevious (fired while the find edit has
 // focus) and the F3/Shift+F3 branch of handleFindBarKey() below (fired
 // while the document editing area has focus instead) - same "one shared
-// helper, two call sites" pattern as neomifes::app::dispatchMouseDown()/
-// handleClipboardKey(). WI-04: takes EditorSession& (findReplaceState/
-// selection/viewport/document).
+// helper, two call sites" pattern as neomifes::app::dispatchMouseDown().
+// WI-04: takes EditorSession& (findReplaceState/selection/viewport/
+// document).
 void navigateToMatch(bool forward, HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
                      FindBar& findBar) {
     auto& state = session.findReplaceState();
@@ -274,12 +275,18 @@ void closeFindBar(HWND hwnd, FindBar& findBar, EditorSession& session, RenderPip
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// Ctrl+F (show) / F3 / Shift+F3 (navigate) while the document editing area
-// has focus (not the find edit - see find_bar.h's class comment for why
-// these same keys are ALSO handled inside FindBar's own subclass proc when
-// the find edit itself has focus). Returns true if the key was one this
-// handles, mirroring handleClipboardKey()'s ClipboardKeyResult.handled shape.
-// WI-04: takes EditorSession& (findReplaceState/selection/viewport/document).
+// Ctrl+F (show) / Ctrl+H (show with replace, WI-07 step2 - previously
+// listed in the command palette with keybindingLabel "Ctrl+H" but never
+// actually wired to any key, see build_plan.md WI-07) / F3 / Shift+F3
+// (navigate) while the document editing area has focus (not the find edit -
+// see find_bar.h's class comment for why these same keys are ALSO handled
+// inside FindBar's own subclass proc when the find edit itself has focus).
+// Returns true if the key was one this handles. Deliberately NOT promoted
+// to the global accelerator table (command_dispatch.h) - see that header's
+// top comment: Ctrl+H's control-character WM_CHAR fallback and F3's
+// search-history-recording asymmetry with FindBarConfig::onFindNext() made
+// this whole group unsafe to move. WI-04: takes EditorSession&
+// (findReplaceState/selection/viewport/document).
 bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
                       EditorSession& session, RenderPipeline& renderPipeline) {
     // !shiftDown is redundant today (handleGrepKey() is checked earlier in
@@ -288,6 +295,10 @@ bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Fin
     // safe against a future reordering of that chain (Phase 5c3).
     if (ctrlDown && !shiftDown && vkCode == 'F') {
         findBar.show();
+        return true;
+    }
+    if (ctrlDown && !shiftDown && vkCode == 'H') {
+        findBar.showWithReplace();
         return true;
     }
     if (vkCode == VK_F3) {
@@ -877,222 +888,67 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
-// Whether a Ctrl+C/X/V keystroke was recognized at all, and (only when it
-// was) whether it changed the document/selection.
-struct ClipboardKeyResult {
-    bool handled = false;
-    bool changed = false;
-};
+// WI-07 step2: handleClipboardKey()/handleSaveKey()/handleOpenKey()/
+// handleNewDocumentKey()/handleTabSwitchKey()/handleTabCloseKey() (Ctrl+C/
+// X/V, Ctrl+S/Shift+S, Ctrl+O, Ctrl+N, Ctrl+Tab/Shift+Tab/PgUp/PgDn/1-9,
+// Ctrl+W) used to live here as individual vkCode-matching functions in this
+// file's dispatch chain. Save/Open/New/tab-switch/tab-close are now reached
+// via the global accelerator table (command_dispatch.h's
+// buildAcceleratorTable(), wired in main.cpp's runMessageLoop()) -> WM_COMMAND
+// -> wireNormalMode()'s cfg.onCommand -> dispatchCommand(), which owns their
+// bodies now (moved verbatim, see dispatchCommand()'s own comment below).
+// Ctrl+C/X/V stayed OFF the accelerator table (native WC_EDIT conflict, see
+// command_dispatch.h's top comment) but their bodies moved into
+// dispatchCommand() too, reached via handleClipboardOrUndoRedoKey() below
+// instead of the accelerator table.
 
-// Handles Ctrl+C/X/V (Phase 4b6c). Pulled out of wireNormalMode's onKeyDown
-// lambda for the same cognitive-complexity reason as
-// neomifes::app::dispatchMouseDown() above. Clipboard I/O is a Win32 API
-// concern (src/platform/clipboard.h), so this lives here rather than inside
-// neomifes::app::handleKeyDown() - editor_input.cpp is deliberately kept
-// free of Win32 calls so it stays headlessly testable (see editor_input.h's
-// file header). Applies to every cursor (Phase 4b7c) via
-// textToCopy()/handlePaste()/deleteAllSelections(). WI-04: takes
-// EditorSession& (dispatcher/selection/viewport/document - 4 members).
-ClipboardKeyResult handleClipboardKey(HWND hwnd, UINT vkCode, bool ctrlDown, EditorSession& session) {
-    if (!ctrlDown || (vkCode != 'C' && vkCode != 'X' && vkCode != 'V')) {
-        return {};
+// Maps a Ctrl+<key> combination to its CommandId - a small switch instead of
+// a chained ternary (clang-tidy readability-avoid-nested-conditional-operator
+// flags nested ?: as hard to read; this is exactly that nesting, expressed
+// as a switch instead). Only ever called for the 5 keys
+// handleClipboardOrUndoRedoKey() below already checked.
+[[nodiscard]] CommandId clipboardOrUndoCommandForKey(UINT vkCode) noexcept {
+    switch (vkCode) {
+        case 'C': return CommandId::Copy;
+        case 'X': return CommandId::Cut;
+        case 'V': return CommandId::Paste;
+        case 'Z': return CommandId::Undo;
+        default:  return CommandId::Redo;  // 'Y'
     }
-    const Document& document = session.document();
-    if (vkCode == 'V') {
-        const auto text = neomifes::platform::getClipboardText(hwnd);
-        if (!text) {
-            return {.handled = true, .changed = false};
-        }
-        neomifes::app::handlePaste(*text, session.dispatcher(), session.selection(), session.viewport(),
-                                   document);
-        return {.handled = true, .changed = true};
-    }
-    // Copy or Cut. If the clipboard write fails, don't delete any selection
-    // for Cut either - that would destroy text the user never actually got
-    // a copy of.
-    const auto text = neomifes::app::textToCopy(session.selection(), document);
-    if (!text || !neomifes::platform::setClipboardText(hwnd, *text)) {
-        return {.handled = true, .changed = false};
-    }
-    if (vkCode == 'X') {
-        const bool changed = neomifes::app::deleteAllSelections(session.dispatcher(), session.selection(),
-                                                                 session.viewport(), document);
-        return {.handled = true, .changed = changed};
-    }
-    return {.handled = true, .changed = false};
 }
 
-// Ctrl+S (save) / Ctrl+Shift+S (save as) (WI-02, build_plan.md §5, 🎉 M1).
-// Single function for both - mirrors handleFindBarKey()'s Ctrl+F/F3
-// combination - since performSave()'s forceSaveAs parameter is exactly
-// `shiftDown`. Always returns true once Ctrl+S is confirmed (return value
-// of performSave() itself is intentionally ignored here - no window-title
-// "saved" indicator exists yet to update either way, out of scope for
-// this WI). WI-04: takes EditorSession& (document/fileState/path - 3
-// members).
-bool handleSaveKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session) {
-    if (!ctrlDown || vkCode != 'S') {
+// Copy/Cut/Paste/Undo/Redo (WI-07 step2): also NOT accelerator-routed (see
+// command_dispatch.h's top comment - native WC_EDIT controls claim these
+// combinations themselves). A dedicated handleXxxKey()-shaped function (same
+// convention as handleFindBarKey() etc.) so handleKeyDownEvent() itself
+// doesn't have to carry this compound condition + CommandId lookup directly
+// (keeps handleKeyDownEvent()'s own cognitive complexity under clang-tidy's
+// threshold).
+[[nodiscard]] bool handleClipboardOrUndoRedoKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
+                                                RenderPipeline& renderPipeline, FindBar& findBar) {
+    if (!ctrlDown || (vkCode != 'C' && vkCode != 'X' && vkCode != 'V' && vkCode != 'Z' && vkCode != 'Y')) {
         return false;
     }
-    if (performSave(hwnd, session, /*forceSaveAs=*/shiftDown)) {
-        // WI-05: the tab strip's ● unsaved-changes marker (TabBar::setTabs(),
-        // driven by EditorSession::isDirty() - see wireNormalMode()'s paint
-        // handler) is only refreshed on the next repaint. Ctrl+S itself
-        // doesn't otherwise touch anything RenderPipeline redraws, so
-        // without this the marker would linger on-screen until some
-        // unrelated repaint happened to come along.
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-    }
+    const CommandDispatchContext ctx{.hwnd            = hwnd,
+                                     .workspace       = workspace,
+                                     .renderPipeline  = renderPipeline,
+                                     .findBar         = findBar};
+    dispatchCommand(clipboardOrUndoCommandForKey(vkCode), ctx);
     return true;
 }
 
-// Ctrl+O (WI-02; WI-05: opens into a NEW tab via Workspace::openFile()
-// instead of replacing the active session's Document in place).
-// Workspace::openFile() de-dups against already-open tabs on its own
-// (re-activates the existing tab rather than opening a duplicate) - see its
-// own header comment. Deliberately does NOT call confirmDiscardIfDirty()
-// first (unlike its pre-WI-05 form): opening a file into a new/existing
-// OTHER tab never touches the currently-active tab's content, so there is
-// nothing to confirm discarding. A failed open is user-INITIATED (not a
-// stale background reference like F12/Grep-result-click), so it is
-// surfaced via message_dialogs.h's showOpenErrorDialog().
-bool handleOpenKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
-                   RenderPipeline& renderPipeline, FindBar& findBar) {
-    if (!ctrlDown || vkCode != 'O') {
-        return false;
-    }
-    const auto chosen = neomifes::app::showOpenFileDialog(hwnd);
-    if (!chosen) {
-        return true;  // Open dialog cancelled - nothing to do
-    }
-    const auto result = workspace.openFile(*chosen);
-    if (const auto* error = std::get_if<LoadError>(&result)) {
-        neomifes::app::showOpenErrorDialog(hwnd, *error);
-        return true;
-    }
-    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
-    return true;
-}
-
-// Ctrl+N (WI-02; WI-05: opens a new blank tab via Workspace::openBlank()
-// instead of resetting the active session's Document in place). Same
-// "no confirmDiscardIfDirty() gate" reasoning as handleOpenKey() above - a
-// new tab never touches any existing tab's content. Workspace::openBlank()
-// never fails (no I/O), so unlike handleOpenKey() there is no error path to
-// handle here.
-bool handleNewDocumentKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
-                          RenderPipeline& renderPipeline, FindBar& findBar) {
-    if (!ctrlDown || vkCode != 'N') {
-        return false;
-    }
-    static_cast<void>(workspace.openBlank());
-    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
-    return true;
-}
-
-// Ctrl+Tab/Ctrl+Shift+Tab (wrap-around next/previous), Ctrl+PgUp/Ctrl+PgDn
-// (same wrap-around next/previous, an alternate binding), Ctrl+1..Ctrl+9
-// (jump to that tab's literal position, no-op if none exists there - see
-// tabIndexForDigit()'s own comment on why this does NOT clamp to the last
-// tab) (WI-05). Ctrl+PgUp/Ctrl+PgDn is a deliberate behavior change:
-// editor_input.cpp's applyMovementKey() does not check ctrlDown for
-// VK_PRIOR/VK_NEXT (unlike VK_LEFT/RIGHT/HOME/END), so both already reach
-// handleKeyDownEvent()'s final fallback unconditionally today - this
-// function is inserted into the dispatch chain BEFORE that fallback so
-// Ctrl+PgUp/Ctrl+PgDn is claimed for tab-switching instead. Always returns
-// true once ctrlDown and one of these keys is recognized (even when the
-// resulting switch is a no-op - a single open tab, or a digit with no tab
-// at that position) so Ctrl+PgUp/Ctrl+PgDn never falls through to page
-// movement and Ctrl+1..9 (entirely unused elsewhere, confirmed by grep)
-// never falls through to anything else either.
-bool handleTabSwitchKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
-                        RenderPipeline& renderPipeline, FindBar& findBar) {
-    if (!ctrlDown) {
-        return false;
-    }
-    std::optional<std::size_t> target;
-    if (vkCode == VK_TAB) {
-        target = shiftDown ? previousTabIndex(workspace.activeIndex(), workspace.sessionCount())
-                            : nextTabIndex(workspace.activeIndex(), workspace.sessionCount());
-    } else if (vkCode == VK_PRIOR) {
-        target = previousTabIndex(workspace.activeIndex(), workspace.sessionCount());
-    } else if (vkCode == VK_NEXT) {
-        target = nextTabIndex(workspace.activeIndex(), workspace.sessionCount());
-    } else if (vkCode >= '1' && vkCode <= '9') {
-        target = tabIndexForDigit(static_cast<int>(vkCode - '0'), workspace.sessionCount());
-    } else {
-        return false;
-    }
-    if (target && *target != workspace.activeIndex()) {
-        workspace.activate(*target);
-        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
-    }
-    return true;
-}
-
-// Ctrl+W (WI-05). confirmDiscardIfDirty() first (same "never silently
-// discard unsaved work" gate Ctrl+O/Ctrl+N used before WI-05 routed them
-// through Workspace::openFile()/openBlank() instead - Ctrl+W still mutates
-// the CURRENTLY active tab, unlike those two, so the gate still applies
-// here). If this is the last remaining tab, Workspace::closeSession()
-// unconditionally refuses (see its own contract) - reset it to blank
-// instead (mirrors Ctrl+N) so Ctrl+W always has a visible effect rather
-// than silently doing nothing.
-bool handleTabCloseKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
-                       RenderPipeline& renderPipeline, FindBar& findBar) {
-    if (!ctrlDown || vkCode != 'W') {
-        return false;
-    }
-    if (!confirmDiscardIfDirty(hwnd, workspace.active())) {
-        return true;  // user cancelled the unsaved-changes prompt
-    }
-    if (workspace.sessionCount() <= 1) {
-        workspace.active().resetToBlank();
-        resetViewAfterDocumentSwap(hwnd, renderPipeline, workspace.active(), findBar);
-        syncRenderStateAndInvalidate(hwnd, renderPipeline, workspace.active());
-        return true;
-    }
-    // confirmDiscardIfDirty() above already obtained the user's explicit
-    // consent to discard via its own Save/Don't Save/Cancel prompt - if
-    // they chose Don't Save, the session is still isDirty() (declining to
-    // save doesn't retroactively mark it clean). Workspace::closeSession()
-    // has its OWN independent dirty check (a safety net for callers that
-    // close a session WITHOUT going through confirmDiscardIfDirty() first,
-    // see its own contract) - mark the about-to-be-destroyed session's
-    // document saved so that gate doesn't redundantly (and silently) block
-    // a close the user already explicitly approved. This performs no
-    // actual disk write - the EditorSession is seconds away from being
-    // erased from Workspace's vector entirely.
-    if (workspace.active().isDirty()) {
-        workspace.active().document().markSaved();
-    }
-    const std::size_t activeIndex = workspace.activeIndex();
-    if (workspace.closeSession(activeIndex)) {
-        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
-    }
-    return true;
-}
-
-// Handles WM_KEYDOWN end-to-end: Ctrl+C/X/V first (Phase 4b6c), falling
-// through to the regular movement/edit/undo path otherwise. Pulled all the
-// way out of wireNormalMode's onKeyDown lambda body (not just the branching
-// logic) - a lambda defined inline inside wireNormalMode has its body
-// counted toward wireNormalMode's own cognitive complexity even when the
-// branching it does is itself delegated to helper functions, so leaving any
-// nontrivial control flow in the lambda itself re-creates the problem
-// neomifes::app::dispatchMouseDown()/handleClipboardKey() were extracted to
-// avoid. WI-04: takes EditorSession& (all session-scoped state) plus the
-// widget/mode references that are NOT part of any one EditorSession (see
-// this file's EditorSession member-placement notes for why FindBar/
-// CommandPalette/GotoLineBar/GrepBar/OutlinePane/freeCursorModeEnabled stay
-// separate). WI-05: takes Workspace& instead - handleTabSwitchKey()/
-// handleTabCloseKey() below need it directly (they call
-// workspace.activate()/closeSession()), so `session` is resolved fresh as
-// this function's own first statement rather than being passed in already
-// resolved. Every handler called BEFORE those two still safely uses this
-// same `session` reference - only handleTabSwitchKey()/handleTabCloseKey()
-// can change workspace.active(), and both cases `return` immediately
-// afterward, so `session` is never read again once stale.
+// Handles WM_KEYDOWN end-to-end: Ctrl+C/X/V/Z/Y first (via dispatchCommand(),
+// WI-07 step2), falling through to the regular movement/edit path otherwise.
+// Pulled all the way out of wireNormalMode's onKeyDown lambda body (not just
+// the branching logic) - a lambda defined inline inside wireNormalMode has
+// its body counted toward wireNormalMode's own cognitive complexity even
+// when the branching it does is itself delegated to helper functions, so
+// leaving any nontrivial control flow in the lambda itself re-creates the
+// problem neomifes::app::dispatchMouseDown() was extracted to avoid. WI-04:
+// takes EditorSession& (all session-scoped state) plus the widget/mode
+// references that are NOT part of any one EditorSession (see this file's
+// EditorSession member-placement notes for why FindBar/CommandPalette/
+// GotoLineBar/GrepBar/OutlinePane/freeCursorModeEnabled stay separate).
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
@@ -1141,29 +997,25 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleTagJumpKey(hwnd, vkCode, session, renderPipeline, findBar)) {
         return;
     }
-    if (handleSaveKey(hwnd, vkCode, shiftDown, ctrlDown, session)) {
-        return;
-    }
-    if (handleOpenKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
-        return;
-    }
-    if (handleNewDocumentKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
-        return;
-    }
+    // WI-07 step2: Save/Open/New/tab-switch/tab-close no longer appear in
+    // this chain - TranslateAcceleratorW (main.cpp's runMessageLoop(),
+    // command_dispatch.h's buildAcceleratorTable()) claims their WM_KEYDOWN
+    // before it would ever reach here, routing to dispatchCommand() via
+    // WM_COMMAND instead (wireNormalMode()'s cfg.onCommand). See
+    // command_dispatch.h's top comment for why Find/Grep/CommandPalette/
+    // Outline/GotoLine/Bookmark/TagJump (checked above) were NOT moved the
+    // same way.
     if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, session, renderPipeline)) {
         return;
     }
-    if (handleTabSwitchKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar)) {
-        return;
-    }
-    if (handleTabCloseKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
-        return;
-    }
-    const auto clipboardResult = handleClipboardKey(hwnd, vkCode, ctrlDown, session);
-    if (clipboardResult.handled) {
-        if (clipboardResult.changed) {
-            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
-        }
+    // Copy/Cut/Paste/Undo/Redo (WI-07 step2): also NOT accelerator-routed
+    // (see command_dispatch.h's top comment - native WC_EDIT controls claim
+    // these combinations themselves). Kept as its own handleXxxKey()-shaped
+    // function (same convention as handleFindBarKey() etc. above) rather
+    // than inline here, so this function's own cognitive complexity stays
+    // under clang-tidy's threshold - the compound condition + CommandId
+    // lookup would otherwise count directly against it.
+    if (handleClipboardOrUndoRedoKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
         return;
     }
     const bool changed =
@@ -1388,20 +1240,23 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     commands.push_back(CommandDescriptor{
         .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z",
         .commandId = CommandId::Undo,
-        .action = [hwnd, &workspace, &renderPipeline]() {
-            EditorSession& session = workspace.active();
-            if (session.dispatcher().undo()) {
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
-            }
+        // WI-07 step2: routes through dispatchCommand() (command_dispatch.h)
+        // instead of duplicating the undo() + syncRenderStateAndInvalidate()
+        // body inline - the same case now also backs Ctrl+Z's own explicit
+        // handleKeyDownEvent() check (Undo isn't accelerator-routed, see
+        // command_dispatch.h's top comment).
+        .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
+            const CommandDispatchContext ctx{
+                .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+            dispatchCommand(CommandId::Undo, ctx);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y",
         .commandId = CommandId::Redo,
-        .action = [hwnd, &workspace, &renderPipeline]() {
-            EditorSession& session = workspace.active();
-            if (session.dispatcher().redo()) {
-                syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
-            }
+        .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
+            const CommandDispatchContext ctx{
+                .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+            dispatchCommand(CommandId::Redo, ctx);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
@@ -1669,7 +1524,7 @@ std::vector<TabBarItem> buildTabBarItems(const Workspace& workspace) {
 // with. WI-05 step 3: config.onTabSelected is real now - TCN_SELCHANGE
 // (fired when the user clicks a different tab) activates that session and
 // restores its view via syncViewForActiveSession(), same as
-// handleTabSwitchKey()'s keyboard path.
+// dispatchCommand()'s TabNext/TabPrevious/TabSwitch* cases (WI-07 step2).
 void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
                              RenderPipeline& renderPipeline, FindBar& findBar, TabBar& tabBar) {
     TabBarConfig config{};
@@ -1695,9 +1550,9 @@ void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspac
 // (Workspace::openFile() updates activeIndex() on every call, VSCode's own
 // "last dropped file wins focus" convention), so no extra bookkeeping is
 // needed beyond a single trailing syncViewForActiveSession() call. No
-// confirmDiscardIfDirty() gate, same reasoning as handleOpenKey() above -
-// opening into new/existing OTHER tabs never touches the currently-active
-// tab's content.
+// confirmDiscardIfDirty() gate, same reasoning as dispatchCommand()'s Open
+// case (WI-07 step2) - opening into new/existing OTHER tabs never touches
+// the currently-active tab's content.
 void handleDropFilesEvent(HWND hwnd, const std::vector<std::wstring>& paths, Workspace& workspace,
                           RenderPipeline& renderPipeline, FindBar& findBar) {
     if (paths.empty()) {
@@ -1838,6 +1693,124 @@ void wireImeHooks(MainWindowConfig& cfg, Workspace& workspace, RenderPipeline& r
     };
 }
 
+// dispatchCommand()'s case bodies, extracted into their own functions (WI-07
+// step2) purely to keep dispatchCommand() itself under clang-tidy's
+// cognitive-complexity threshold - one flat switch with every case's full
+// body inline measured well over it. Grouped by the families
+// CommandDispatchContext's own case-label list already falls into; each
+// function's body is otherwise unchanged from dispatchCommand()'s former
+// inline case. Defined here (inside the anonymous namespace, same as this
+// file's other private helpers) rather than next to dispatchCommand() itself
+// so they're all in scope via ordinary unqualified lookup - see
+// dispatchCommand()'s own comment for why IT must stay outside this
+// namespace.
+
+void dispatchSaveCommand(bool forceSaveAs, HWND hwnd, EditorSession& session) {
+    if (performSave(hwnd, session, forceSaveAs)) {
+        // WI-05: the tab strip's unsaved-changes marker is only refreshed on
+        // the next repaint - see handleSaveKey()'s former comment for why
+        // this is needed.
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+    }
+}
+
+void dispatchOpenCommand(const CommandDispatchContext& ctx) {
+    const auto chosen = neomifes::app::showOpenFileDialog(ctx.hwnd);
+    if (!chosen) {
+        return;  // Open dialog cancelled - nothing to do
+    }
+    const auto result = ctx.workspace.openFile(*chosen);
+    if (const auto* error = std::get_if<LoadError>(&result)) {
+        neomifes::app::showOpenErrorDialog(ctx.hwnd, *error);
+        return;
+    }
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+}
+
+void dispatchNewCommand(const CommandDispatchContext& ctx) {
+    static_cast<void>(ctx.workspace.openBlank());
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+}
+
+// Handles TabNext/TabPrevious/TabSwitch1..9 - `id` must be one of those (the
+// only cases dispatchCommand() routes here).
+void dispatchTabSwitchCommand(CommandId id, const CommandDispatchContext& ctx) {
+    std::optional<std::size_t> target;
+    if (id == CommandId::TabNext) {
+        target = nextTabIndex(ctx.workspace.activeIndex(), ctx.workspace.sessionCount());
+    } else if (id == CommandId::TabPrevious) {
+        target = previousTabIndex(ctx.workspace.activeIndex(), ctx.workspace.sessionCount());
+    } else {
+        const int digit = static_cast<int>(id) - static_cast<int>(CommandId::TabSwitch1) + 1;
+        target = tabIndexForDigit(digit, ctx.workspace.sessionCount());
+    }
+    if (target && *target != ctx.workspace.activeIndex()) {
+        ctx.workspace.activate(*target);
+        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+    }
+}
+
+void dispatchTabCloseCommand(const CommandDispatchContext& ctx, EditorSession& session) {
+    if (!confirmDiscardIfDirty(ctx.hwnd, session)) {
+        return;  // user cancelled the unsaved-changes prompt
+    }
+    if (ctx.workspace.sessionCount() <= 1) {
+        ctx.workspace.active().resetToBlank();
+        resetViewAfterDocumentSwap(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+        syncRenderStateAndInvalidate(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active());
+        return;
+    }
+    // confirmDiscardIfDirty() above already obtained the user's explicit
+    // consent to discard - mark the about-to-be-destroyed session's document
+    // saved so Workspace::closeSession()'s own independent dirty check
+    // doesn't redundantly re-block it (see handleTabCloseKey()'s former
+    // comment for the full rationale).
+    if (ctx.workspace.active().isDirty()) {
+        ctx.workspace.active().document().markSaved();
+    }
+    const std::size_t activeIndex = ctx.workspace.activeIndex();
+    if (ctx.workspace.closeSession(activeIndex)) {
+        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+    }
+}
+
+void dispatchCopyCommand(const CommandDispatchContext& ctx, EditorSession& session) {
+    const auto text = neomifes::app::textToCopy(session.selection(), session.document());
+    if (text) {
+        static_cast<void>(neomifes::platform::setClipboardText(ctx.hwnd, *text));
+    }
+}
+
+void dispatchCutCommand(const CommandDispatchContext& ctx, EditorSession& session) {
+    const auto text = neomifes::app::textToCopy(session.selection(), session.document());
+    if (!text || !neomifes::platform::setClipboardText(ctx.hwnd, *text)) {
+        return;  // never deletes a selection the user didn't get a copy of
+    }
+    if (neomifes::app::deleteAllSelections(session.dispatcher(), session.selection(), session.viewport(),
+                                           session.document())) {
+        syncRenderStateAndInvalidate(ctx.hwnd, ctx.renderPipeline, session);
+    }
+}
+
+void dispatchPasteCommand(const CommandDispatchContext& ctx, EditorSession& session) {
+    const auto text = neomifes::platform::getClipboardText(ctx.hwnd);
+    if (!text) {
+        return;
+    }
+    neomifes::app::handlePaste(*text, session.dispatcher(), session.selection(), session.viewport(),
+                               session.document());
+    syncRenderStateAndInvalidate(ctx.hwnd, ctx.renderPipeline, session);
+}
+
+// Handles Undo/Redo - `id` must be one of those (the only cases
+// dispatchCommand() routes here).
+void dispatchUndoRedoCommand(CommandId id, const CommandDispatchContext& ctx, EditorSession& session) {
+    const bool changed = id == CommandId::Undo ? session.dispatcher().undo() : session.dispatcher().redo();
+    if (changed) {
+        syncRenderStateAndInvalidate(ctx.hwnd, ctx.renderPipeline, session);
+    }
+}
+
 }  // namespace
 
 // No logging engine exists yet (basic_design.md sec.6.5 is a later phase);
@@ -1855,6 +1828,88 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
     (void)what;
     (void)err;
 #endif
+}
+
+// dispatchCommand() (WI-07 step2, command_dispatch.h) - defined here, not
+// command_dispatch.cpp, because every case below reuses this file's own
+// private helpers (dispatchSaveCommand()/dispatchOpenCommand()/... above,
+// and transitively performSave()/confirmDiscardIfDirty()/
+// syncViewForActiveSession()/resetViewAfterDocumentSwap()/
+// syncRenderStateAndInvalidate(), all internal-linkage functions inside the
+// anonymous namespace above) rather than duplicating their logic - see
+// command_dispatch.h's own top comment for the full rationale. Placed after
+// the anonymous namespace closes (same as debugLogRenderError() above) so
+// it has the external linkage its command_dispatch.h declaration requires,
+// while unqualified calls to those internal-linkage helpers still resolve
+// correctly - C++ finds anonymous-namespace members via ordinary unqualified
+// lookup from anywhere later in the same translation unit.
+//
+// This function itself is just a switch mapping each CommandId to one of the
+// dispatchXxxCommand() helpers defined above (also moved verbatim from this
+// file's former handleSaveKey()/handleOpenKey()/handleNewDocumentKey()/
+// handleTabSwitchKey()/handleTabCloseKey()/handleClipboardKey(), all removed
+// - see handleKeyDownEvent()'s own comment for what replaced their call
+// sites - and editor_input.cpp::handleKeyDown()'s former Ctrl+Z/Ctrl+Y
+// branches, also removed) - kept as small calls-only cases so
+// dispatchCommand() itself stays under clang-tidy's cognitive-complexity
+// threshold (a single flat switch with every case's full body inline
+// measured well over it). ctx.workspace.active() is resolved fresh at the
+// top - same "never cache a stale EditorSession&" rule this file's other
+// Workspace&-taking functions already follow (see wireNormalMode()'s header
+// comment).
+void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
+    EditorSession& session = ctx.workspace.active();
+    switch (id) {
+        case CommandId::Save:
+            dispatchSaveCommand(/*forceSaveAs=*/false, ctx.hwnd, session);
+            return;
+        case CommandId::SaveAs:
+            dispatchSaveCommand(/*forceSaveAs=*/true, ctx.hwnd, session);
+            return;
+        case CommandId::Open:
+            dispatchOpenCommand(ctx);
+            return;
+        case CommandId::New:
+            dispatchNewCommand(ctx);
+            return;
+        case CommandId::TabNext:
+        case CommandId::TabPrevious:
+        case CommandId::TabSwitch1:
+        case CommandId::TabSwitch2:
+        case CommandId::TabSwitch3:
+        case CommandId::TabSwitch4:
+        case CommandId::TabSwitch5:
+        case CommandId::TabSwitch6:
+        case CommandId::TabSwitch7:
+        case CommandId::TabSwitch8:
+        case CommandId::TabSwitch9:
+            dispatchTabSwitchCommand(id, ctx);
+            return;
+        case CommandId::TabClose:
+            dispatchTabCloseCommand(ctx, session);
+            return;
+        case CommandId::Copy:
+            dispatchCopyCommand(ctx, session);
+            return;
+        case CommandId::Cut:
+            dispatchCutCommand(ctx, session);
+            return;
+        case CommandId::Paste:
+            dispatchPasteCommand(ctx, session);
+            return;
+        case CommandId::Undo:
+        case CommandId::Redo:
+            dispatchUndoRedoCommand(id, ctx, session);
+            return;
+        case CommandId::None:
+        default:
+            // Find/Grep/CommandPaletteShow/Outline/GotoLine/Bookmark*/
+            // TagJump are deliberately NOT handled here - see this
+            // function's own header comment and command_dispatch.h's top
+            // comment for why. They remain on handleKeyDownEvent()'s
+            // existing handle*Key() dispatch chain, unchanged.
+            return;
+    }
 }
 
 // Real launches only - deferred so it never affects firstPaintNs timing
@@ -1995,10 +2050,23 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         outlinePane.onParentResized(w, h, dpiScale);
         tabBar.onParentResized(w, dpiScale);
     };
-    cfg.onCommand = [&findBar, &commandPalette, &grepBar](HWND, WPARAM wParam, LPARAM lParam) {
+    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &workspace, &renderPipeline](
+                        HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
+        // WI-07 step2: accelerator-originated WM_COMMAND (TranslateAcceleratorW,
+        // command_dispatch.h's buildAcceleratorTable()) carries a CommandId
+        // in LOWORD(wParam) - distinct from every child-control notification
+        // above (find_bar.cpp/command_palette.cpp/grep_bar.cpp all use
+        // control ids 1001-4003, far below CommandId's 40000+ range, see
+        // command_ids.h's own range-separation comment).
+        const auto commandId = static_cast<CommandId>(LOWORD(wParam));
+        if (commandId >= CommandId::FindShow) {
+            const CommandDispatchContext ctx{
+                .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+            dispatchCommand(commandId, ctx);
+        }
     };
     // Phase 7g: OutlinePane's WC_TREEVIEW is this codebase's first control
     // that notifies via WM_NOTIFY rather than WM_COMMAND - see

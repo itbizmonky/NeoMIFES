@@ -33,6 +33,7 @@ add_executable(neomifes_unit_tests
     core_search_history_test.cpp
     app_editor_input_test.cpp
     app_document_open_test.cpp
+    app_command_dispatch_test.cpp
     ui_click_tracking_test.cpp
     ui_find_navigation_test.cpp
     ui_command_palette_filter_test.cpp

@@ -244,20 +244,25 @@ TEST(EditorInputTest, BackspaceWithSelectionDeletesTheSelection) {
     EXPECT_EQ(env.selection.primaryCursor().position, 0U);
 }
 
-TEST(EditorInputTest, CtrlZUndoesAndCtrlYRedoes) {
+// WI-07 step2: Ctrl+Z/Ctrl+Y moved out of handleKeyDown() into
+// normal_mode_wiring.cpp's dispatchCommand() (not headlessly testable here -
+// see that file's own Win32-integration testing convention). Both keys now
+// fall through to applyMovementKey()'s default case (neither is a
+// recognized movement key), so handleKeyDown() itself should report them as
+// unhandled regardless of ctrlDown - this is what actually lets
+// handleKeyDownEvent()'s explicit Ctrl+Z/Y check (checked BEFORE this
+// fallback) claim them without ever reaching here in the real app.
+TEST(EditorInputTest, CtrlZAndCtrlYAreNoLongerHandledHere) {
     Env env;
-    handleChar(u'x', env.dispatcher, env.selection, env.viewport, env.doc);
-    ASSERT_EQ(env.doc.toU16String(), u"x");
+    env.doc.insertText(0, u"abc");
 
-    const bool undone = handleKeyDown('Z', false, /*ctrlDown=*/true, env.dispatcher, env.selection,
-                                      env.viewport, env.doc);
-    EXPECT_TRUE(undone);
-    EXPECT_EQ(env.doc.toU16String(), u"");
+    const bool ctrlZChanged = handleKeyDown('Z', false, /*ctrlDown=*/true, env.dispatcher, env.selection,
+                                            env.viewport, env.doc);
+    EXPECT_FALSE(ctrlZChanged);
 
-    const bool redone = handleKeyDown('Y', false, /*ctrlDown=*/true, env.dispatcher, env.selection,
-                                      env.viewport, env.doc);
-    EXPECT_TRUE(redone);
-    EXPECT_EQ(env.doc.toU16String(), u"x");
+    const bool ctrlYChanged = handleKeyDown('Y', false, /*ctrlDown=*/true, env.dispatcher, env.selection,
+                                            env.viewport, env.doc);
+    EXPECT_FALSE(ctrlYChanged);
 }
 
 TEST(EditorInputTest, PlainZWithoutCtrlIsNotUndo) {

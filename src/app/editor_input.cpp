@@ -211,13 +211,16 @@ bool applyDeleteKey(UINT vkCode, CommandDispatcher& dispatcher, const SelectionM
 bool handleKeyDown(UINT vkCode, bool shiftDown, bool ctrlDown, CommandDispatcher& dispatcher,
                    SelectionModel& selection, Viewport& viewport, const Document& document,
                    const core::FoldingModel* folding) {
+    // WI-07 step2: Ctrl+Z/Ctrl+Y (undo/redo) used to be handled here as a
+    // pair of `else if` branches. They now route through
+    // normal_mode_wiring.cpp's dispatchCommand() instead, called explicitly
+    // from handleKeyDownEvent() - NOT via the global accelerator table, see
+    // command_dispatch.h's top comment for why: the overlay widgets' own
+    // WC_EDIT text fields rely on receiving Ctrl+Z themselves for their own
+    // single-level undo.
     bool changed = false;
     if (vkCode == VK_BACK || vkCode == VK_DELETE) {
         changed = applyDeleteKey(vkCode, dispatcher, selection, document);
-    } else if (ctrlDown && vkCode == 'Z') {
-        changed = dispatcher.undo();
-    } else if (ctrlDown && vkCode == 'Y') {
-        changed = dispatcher.redo();
     } else {
         const auto visible = viewport.visibleLines();
         changed = applyMovementKey(vkCode, shiftDown, ctrlDown, selection, document,

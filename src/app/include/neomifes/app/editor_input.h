@@ -42,9 +42,10 @@ struct OutlineNode;
 namespace neomifes::app {
 
 // Handles WM_KEYDOWN: arrow movement (+Shift extend), Home/End (+Ctrl for
-// document start/end), Backspace/Delete, Ctrl+Z/Ctrl+Y undo/redo. Returns
-// true if the document or selection changed (caller should sync
-// Viewport/RenderPipeline and invalidate).
+// document start/end), Backspace/Delete. Returns true if the document or
+// selection changed (caller should sync Viewport/RenderPipeline and
+// invalidate). Ctrl+Z/Ctrl+Y (undo/redo) moved out (WI-07 step2) - see
+// normal_mode_wiring.cpp's dispatchCommand().
 //
 // `folding` (Phase 7i, nullopt-like default nullptr - same "optional feature,
 // absent pointer = behave exactly as before" convention as

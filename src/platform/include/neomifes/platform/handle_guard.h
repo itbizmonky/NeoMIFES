@@ -67,6 +67,9 @@ struct DeleteObjectDeleter {
 struct UnmapViewDeleter {
     void operator()(LPVOID p) const noexcept { ::UnmapViewOfFile(p); }
 };
+struct DestroyAcceleratorTableDeleter {
+    void operator()(HACCEL h) const noexcept { ::DestroyAcceleratorTable(h); }
+};
 
 // Type aliases --------------------------------------------------------------
 // NOTE: The invalid value for HANDLE-family varies; we pick the common one and
@@ -77,6 +80,8 @@ using WindowHandle    = HandleGuard<HWND, DestroyWindowDeleter, nullptr>;
 using GdiObjectHandle = HandleGuard<HGDIOBJ, DeleteObjectDeleter, nullptr>;
 // MapViewOfFile* returns LPVOID, released via UnmapViewOfFile (not CloseHandle).
 using MappedView = HandleGuard<LPVOID, UnmapViewDeleter, nullptr>;
+// CreateAcceleratorTableW returns nullptr on failure (WI-07 step2).
+using AcceleratorTableHandle = HandleGuard<HACCEL, DestroyAcceleratorTableDeleter, nullptr>;
 
 // FileHandle - RAII wrapper for HANDLE values from CreateFileW, whose invalid
 // sentinel is INVALID_HANDLE_VALUE rather than nullptr like the HandleGuard

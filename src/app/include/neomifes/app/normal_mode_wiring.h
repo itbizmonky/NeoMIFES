@@ -61,6 +61,19 @@ struct GrepState {
 // a single shared definition avoids duplicating this across both files.
 void debugLogRenderError(const char* what, const render::RenderError& err) noexcept;
 
+// WI-07 step2: dispatchCommand() (declared in command_dispatch.h, defined in
+// normal_mode_wiring.cpp) calls this file's own private helpers
+// (syncRenderStateAndInvalidate()/resetViewAfterDocumentSwap()/
+// syncViewForActiveSession()/performSave()/confirmDiscardIfDirty(), all
+// anonymous-namespace-local) directly via ordinary unqualified lookup - it
+// is defined later in the SAME translation unit, so C++ finds them without
+// needing a second, redeclared-here entry point. Deliberately NOT declared
+// in this header: doing so once created a real bug (MSVC error C2668,
+// ambiguous overload) - the anonymous-namespace definition and a
+// would-be external-linkage declaration of the identical signature are two
+// DIFFERENT overloads from the compiler's perspective, and dispatchCommand()
+// could see both.
+
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
