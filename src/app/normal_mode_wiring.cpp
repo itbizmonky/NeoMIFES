@@ -3,10 +3,13 @@
 #include <commctrl.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,6 +42,7 @@
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/file_saver.h"
+#include "neomifes/encoding/encoding.h"
 #include "neomifes/platform/clipboard.h"
 #include "neomifes/search/grep_service.h"
 #include "neomifes/search/replacement.h"
@@ -94,6 +98,7 @@ using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
 using neomifes::ui::OutlinePaneConfig;
 using neomifes::ui::StatusBar;
+using neomifes::ui::StatusBarConfig;
 using neomifes::ui::StatusBarParts;
 using neomifes::ui::TabBar;
 using neomifes::ui::TabBarConfig;
@@ -1578,11 +1583,124 @@ void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspac
     tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
 }
 
-// WI-07 step4: no config/callbacks yet (read-only display, see status_bar.h's
-// own "v1 scope cut" comment) - simpler than createAndPositionTabBar() above,
-// just create+position, no onXxxSelected wiring.
-void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, StatusBar& statusBar) {
-    if (!statusBar.create(hwnd, hInstance)) {
+// WI-07 step6: encoding options presented in the status bar's encoding-part
+// click menu - one entry per encoding::Encoding enumerator (13), matching
+// formatStatusBarEncoding()'s own switch so the label the user picks is
+// exactly what the status bar shows afterward. `writeBom` mirrors the
+// enumerator's own *Bom-ness, kept in lockstep so the selection also
+// matches what actually gets written on the next Ctrl+S - file_saver.cpp's
+// saveFile() derives BOM presence purely from the separate `writeBom` flag
+// (session.fileState().encoding's own *Bom suffix is normalized away for
+// the body either way, see encoding::withBom()'s header comment), so
+// picking "UTF-8 BOM" without also setting writeBom=true would silently
+// write no BOM despite what the status bar displays.
+struct EncodingMenuItem {
+    encoding::Encoding encoding;
+    bool                writeBom;
+};
+constexpr std::array<EncodingMenuItem, 13> kEncodingMenuItems = {{
+    {.encoding = encoding::Encoding::Utf8, .writeBom = false},
+    {.encoding = encoding::Encoding::Utf8Bom, .writeBom = true},
+    {.encoding = encoding::Encoding::Utf16Le, .writeBom = false},
+    {.encoding = encoding::Encoding::Utf16LeBom, .writeBom = true},
+    {.encoding = encoding::Encoding::Utf16Be, .writeBom = false},
+    {.encoding = encoding::Encoding::Utf16BeBom, .writeBom = true},
+    {.encoding = encoding::Encoding::Utf32Le, .writeBom = false},
+    {.encoding = encoding::Encoding::Utf32LeBom, .writeBom = true},
+    {.encoding = encoding::Encoding::Utf32Be, .writeBom = false},
+    {.encoding = encoding::Encoding::Utf32BeBom, .writeBom = true},
+    {.encoding = encoding::Encoding::ShiftJis, .writeBom = false},
+    {.encoding = encoding::Encoding::EucJp, .writeBom = false},
+    {.encoding = encoding::Encoding::Iso2022Jp, .writeBom = false},
+}};
+
+// WI-07 step6: line-ending options - deliberately excludes
+// encoding::LineEnding::Mixed. encoding.h's convertLineEndings() doc
+// comment: Mixed "is not a meaningful save target" and is silently treated
+// as Lf - offering it as a menu choice a user could actively pick would be
+// misleading (it isn't a distinct save format, just a detected property of
+// existing content).
+constexpr std::array<encoding::LineEnding, 3> kLineEndingMenuItems = {
+    encoding::LineEnding::Crlf,
+    encoding::LineEnding::Lf,
+    encoding::LineEnding::Cr,
+};
+
+// Shows a popup menu at `screenPt` with one item per `items[i]`, labeled via
+// `formatFn`, and returns the selection (nullopt if dismissed without
+// choosing - Escape, click-away). Shared by the encoding/line-ending click
+// handlers below, which are otherwise mechanically identical (CLAUDE.md
+// rule 4 - avoid the near-duplicate function bodies a copy-paste would
+// leave). TPM_RETURNCMD makes TrackPopupMenu() return the chosen item's id
+// synchronously instead of posting WM_COMMAND - these ids are only ever
+// used within this single call and never collide with CommandId's own
+// 40000+ range (see command_ids.h's own comment) since no WM_COMMAND is
+// generated at all. The SetForegroundWindow()/PostMessageW(WM_NULL) pair
+// is MSDN's own documented TrackPopupMenu idiom ("How to Use the
+// TrackPopupMenu Function") - without it the menu can fail to dismiss on
+// an outside click if `hwnd` isn't already the foreground window.
+template <typename T>
+[[nodiscard]] std::optional<T> showChoiceMenu(HWND hwnd, POINT screenPt, std::span<const T> items,
+                                              const std::function<std::wstring(T)>& formatFn) {
+    HMENU menu = ::CreatePopupMenu();
+    if (menu == nullptr) {
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        ::AppendMenuW(menu, MF_STRING, i + 1, formatFn(items[i]).c_str());
+    }
+    ::SetForegroundWindow(hwnd);
+    const int selected = ::TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, screenPt.x,
+                                          screenPt.y, 0, hwnd, nullptr);
+    ::PostMessageW(hwnd, WM_NULL, 0, 0);
+    ::DestroyMenu(menu);
+    if (selected <= 0 || static_cast<std::size_t>(selected) > items.size()) {
+        return std::nullopt;
+    }
+    return items[selected - 1];
+}
+
+// WI-07 step6: status bar encoding/line-ending part click handler
+// (StatusBarConfig::onPartClicked, wired below) - presents a popup menu and
+// writes the selection straight into session.fileState(). No document
+// mutation - only the NEXT Ctrl+S's write format changes (performSave()
+// already reuses fileState() this same way for every save, see its own
+// comment). `partIndex` matches StatusBarParts' field order (2=encoding,
+// 3=lineEnding); any other index is a click on a part this step doesn't
+// make interactive (position/selectionCount/overwriteMode/language) and is
+// silently ignored. workspace.active() is re-resolved at click time (not
+// captured), same "never cache a stale EditorSession&" rule this file's
+// other Workspace&-capturing lambdas follow.
+void handleStatusBarPartClicked(std::size_t partIndex, POINT screenPt, HWND hwnd, Workspace& workspace) {
+    EditorSession& session = workspace.active();
+    if (partIndex == 2) {
+        const auto choice = showChoiceMenu<EncodingMenuItem>(
+            hwnd, screenPt, kEncodingMenuItems,
+            [](EncodingMenuItem item) { return neomifes::app::formatStatusBarEncoding(item.encoding); });
+        if (choice) {
+            session.fileState().encoding = choice->encoding;
+            session.fileState().writeBom = choice->writeBom;
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    } else if (partIndex == 3) {
+        const auto choice = showChoiceMenu<encoding::LineEnding>(hwnd, screenPt, kLineEndingMenuItems,
+                                                                  &neomifes::app::formatStatusBarLineEnding);
+        if (choice) {
+            session.fileState().lineEnding = *choice;
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }
+}
+
+// WI-07 step4: create+position. WI-07 step6: now takes Workspace& too, to
+// build a StatusBarConfig::onPartClicked that resolves the active session
+// at click time - see handleStatusBarPartClicked() above.
+void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace, StatusBar& statusBar) {
+    StatusBarConfig config{};
+    config.onPartClicked = [hwnd, &workspace](std::size_t partIndex, POINT screenPt) {
+        handleStatusBarPartClicked(partIndex, screenPt, hwnd, workspace);
+    };
+    if (!statusBar.create(hwnd, hInstance, config)) {
         return;
     }
     RECT clientRect{};
@@ -2169,7 +2287,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // a status bar that fails to create simply isn't available this
         // session (the editor still works, just without a bottom status
         // strip).
-        createAndPositionStatusBar(hwnd, hInstance, statusBar);
+        createAndPositionStatusBar(hwnd, hInstance, workspace, statusBar);
         // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
         // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
         // "Fold/Unfold at Cursor" and the gutter markers work immediately,
@@ -2241,8 +2359,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // NMHDR::hwndFrom (see OutlinePane::handleNotify()/TabBar::handleNotify()'s
     // own comments for why neither TVN_SELCHANGEDW nor TCN_SELCHANGE require
     // a specific non-zero reply, so discarding one return value is safe).
-    cfg.onNotify = [&outlinePane, &tabBar](HWND, WPARAM wParam, LPARAM lParam) {
+    cfg.onNotify = [&outlinePane, &tabBar, &statusBar](HWND, WPARAM wParam, LPARAM lParam) {
         outlinePane.handleNotify(wParam, lParam);
+        statusBar.handleNotify(wParam, lParam);
         return tabBar.handleNotify(wParam, lParam);
     };
     // Phase 7c: SyntaxWorker's background-thread parse completion signal.

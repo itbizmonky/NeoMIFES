@@ -27,7 +27,8 @@ constexpr float kOverwriteWidthDips  = 50.0F;
 
 }  // namespace
 
-bool StatusBar::create(HWND parent, HINSTANCE hInstance) {
+bool StatusBar::create(HWND parent, HINSTANCE hInstance, const StatusBarConfig& config) {
+    m_config = config;
     HWND status = ::CreateWindowExW(0, STATUSCLASSNAME, L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, parent,
                                     reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kStatusBarId)), hInstance,
                                     nullptr);
@@ -79,6 +80,23 @@ void StatusBar::onParentResized(std::uint32_t parentWidth, std::uint32_t parentH
     const std::array<int, 6> partEdges = {p1, p2, p3, p4, p5, -1};
     ::SendMessageW(m_hwndStatus.get(), SB_SETPARTS, static_cast<WPARAM>(partEdges.size()),
                    reinterpret_cast<LPARAM>(partEdges.data()));
+}
+
+void StatusBar::handleNotify(WPARAM /*wParam*/, LPARAM lParam) noexcept {
+    const auto* header = reinterpret_cast<const NMHDR*>(lParam);
+    if (header == nullptr || header->code != NM_CLICK || !m_hwndStatus ||
+        header->hwndFrom != m_hwndStatus.get() || !m_config.onPartClicked) {
+        return;
+    }
+    // NM_CLICK for a status bar carries an NMMOUSE (not a bare NMHDR) -
+    // dwItemSpec is the clicked part's index directly (Win32's own
+    // contract, no pixel hit-testing against SB_GETRECT needed), pt is in
+    // the status bar's OWN client coordinates (converted to screen here so
+    // the caller can pass it straight to TrackPopupMenu()).
+    const auto* mouse = reinterpret_cast<const NMMOUSE*>(lParam);
+    POINT       screenPt = mouse->pt;
+    ::ClientToScreen(m_hwndStatus.get(), &screenPt);
+    m_config.onPartClicked(static_cast<std::size_t>(mouse->dwItemSpec), screenPt);
 }
 
 }  // namespace neomifes::ui

@@ -14,13 +14,14 @@
 // space RenderPipeline itself must NOT draw into (see
 // render_pipeline.h's m_tabBarHeightDips/m_statusBarHeightDips comments).
 //
-// v1 scope cut (WI-07 step4): read-only display of all 6 parts. Clicking
-// the encoding/line-ending parts to change them is WI-07 step6, not this
-// step - see status_bar_format.h's own header comment for why formatting
-// and click-handling are deliberately split.
+// v1 scope cut (WI-07 step4): read-only display of all 6 parts. WI-07
+// step6 added onPartClicked below so the caller (app layer) can present a
+// choice UI for the encoding/line-ending parts - see this header's
+// handleNotify()/StatusBarConfig comments.
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 
 #include "neomifes/platform/handle_guard.h"
@@ -40,6 +41,18 @@ struct StatusBarParts {
     std::wstring language;       // e.g. L"C++", empty if undetected
 };
 
+// WI-07 step6: `partIndex` matches StatusBarParts' field order (0=position,
+// 1=selectionCount, 2=encoding, 3=lineEnding, 4=overwriteMode,
+// 5=language) - the same index setParts()/SB_SETTEXTW already use, so the
+// caller doesn't need a second numbering scheme. `screenPt` is already
+// converted to screen coordinates (handleNotify() owns the status bar's
+// HWND and does the ClientToScreen() conversion) - ready to pass straight
+// into TrackPopupMenu(), which the app layer needs anyway for WI-07 step9's
+// right-click context menu.
+struct StatusBarConfig {
+    std::function<void(std::size_t partIndex, POINT screenPt)> onPartClicked;
+};
+
 class StatusBar {
 public:
     StatusBar()  = default;
@@ -50,7 +63,7 @@ public:
     StatusBar(StatusBar&&)                 = delete;
     StatusBar& operator=(StatusBar&&)      = delete;
 
-    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance);
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const StatusBarConfig& config);
 
     // Rewrites all 6 parts (SB_SETTEXTW). Called from the paint handler
     // every frame something was invalidated, same "no dirty-check guard at
@@ -64,6 +77,16 @@ public:
     // against the new width.
     void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight, float dpiScale) noexcept;
 
+    // WI-07 step6: routes NM_CLICK (WM_NOTIFY, msctls_statusbar32 has
+    // supported this since Common Controls 4.71 - verified against the
+    // real control, not assumed, per this WI's own plan) into
+    // m_config.onPartClicked. No-op (including for any other WM_NOTIFY
+    // code, or a notification from a different control) if this isn't a
+    // click on THIS status bar. Same "caller forwards cfg.onNotify's raw
+    // WPARAM/LPARAM, this decides whether it's for us" shape as
+    // TabBar::handleNotify()/OutlinePane::handleNotify().
+    void handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
+
     // Fixed DIP height this control always occupies - see
     // render_pipeline.h's setStatusBarHeightDips() for how this space is
     // reserved, same pattern as ui::TabBar::heightDips().
@@ -73,6 +96,7 @@ private:
     static constexpr float kHeightDips = 24.0F;  // untuned initial value, matches TabBar's own precedent
 
     neomifes::platform::WindowHandle m_hwndStatus;
+    StatusBarConfig                  m_config;
 };
 
 }  // namespace neomifes::ui
