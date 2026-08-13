@@ -64,6 +64,7 @@
 #include "neomifes/app/editor_session.h"
 #include "neomifes/app/launch_setup.h"
 #include "neomifes/app/normal_mode_wiring.h"
+#include "neomifes/app/theme_settings.h"
 #include "neomifes/app/workspace.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
@@ -97,6 +98,7 @@ using neomifes::app::initCommonControls;
 using neomifes::app::LaunchArgs;
 using neomifes::app::LaunchMode;
 using neomifes::app::parseArgs;
+using neomifes::app::parseThemeKind;
 using neomifes::app::prepareDocument;
 using neomifes::app::StartupProfile;
 using neomifes::app::wireNormalMode;
@@ -371,6 +373,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     renderPipeline.setTabWidth(settings.tabWidth);
     renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
     renderPipeline.setMinimapVisible(settings.showMinimap);
+    renderPipeline.setTheme(parseThemeKind(settings.themeName));
 
     // Each mode's hook wiring lives in its own function (see definitions
     // above, or normal_mode_wiring.cpp for the Normal case) - ordering

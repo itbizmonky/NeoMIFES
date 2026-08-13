@@ -36,11 +36,11 @@ public:
 
     // Writes to `path` as JSON. Best-effort: any failure (parent directory
     // missing, disk full, permission denied) is silently ignored, same
-    // rationale as SearchHistory::saveTo(). Not called anywhere in the
-    // shipped app today (WI-08 has no in-app settings editor - the user
-    // edits settings.json directly and the app only reads it) - exists so
-    // the load/save/reload round trip is testable and so a future settings
-    // UI (not scoped here) has something to call.
+    // rationale as SearchHistory::saveTo(). Called from
+    // normal_mode_wiring.cpp's view.theme.* command palette entries (WI-09)
+    // - the first in-app mutation+persist path for `settings` (settings.
+    // reload only ever reads). Still exists independently of that caller so
+    // the load/save/reload round trip stays testable.
     void saveTo(const std::filesystem::path& path) const;
 
     std::u16string fontFamily            = u"Consolas";
@@ -51,7 +51,7 @@ public:
     bool           showLineNumbers       = true;
     bool           showMinimap           = true;
     std::uint32_t  autoSaveIntervalSeconds = 0;    // consumed by WI-11 (autosave), unused today
-    std::u16string themeName             = u"dark"; // consumed by WI-09 (theme), unused today
+    std::u16string themeName             = u"dark"; // consumed by WI-09 (theme)
 
     friend bool operator==(const Settings&, const Settings&) = default;
 };

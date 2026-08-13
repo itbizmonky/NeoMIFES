@@ -121,6 +121,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .foldRegions     = m_foldRegions,
         .leftColumn      = m_leftColumn,
         .imeComposition  = m_imeComposition,
+        .themeKind       = m_themeKind,
     };
 }
 
@@ -161,9 +162,15 @@ RenderExpected<void> RenderPipeline::render() noexcept {
     return result;
 }
 
-RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
-    m_device.reset();
-    m_textBrush.Reset();       // bound to the device context that just went away
+// WI-09: the 21 device-bound brush ComPtrs this pipeline caches, reset to
+// force ensureXxxBrush()'s lazy-create-once guards to run again next frame.
+// Shared by two different triggers: recreateDevice() below (the device
+// context they were bound to no longer exists) and setTheme() (the device
+// is still fine, but every brush was built from the OLD theme's colors and
+// must be rebuilt from the new one) - same brush list, same reset
+// mechanics, so recreateDevice() calls this instead of repeating it inline.
+void RenderPipeline::resetThemeBrushes() noexcept {
+    m_textBrush.Reset();
     m_selectionBrush.Reset();
     m_matchBrush.Reset();
     m_currentMatchBrush.Reset();
@@ -185,6 +192,13 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_minimapUnpopulatedBrush.Reset();
     m_imeCompositionBackgroundBrush.Reset();
     m_imeTargetClauseBrush.Reset();
+}
+
+RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
+    m_device.reset();
+    // WI-09: factored out to resetThemeBrushes() - shared with setTheme()'s
+    // brush-invalidation path (same 21 brushes, same reset mechanics).
+    resetThemeBrushes();
     // A freshly (re)created swap chain's back buffer is uninitialized - the
     // next render() must not treat "nothing logically changed" as license to
     // skip drawing into it.
@@ -382,8 +396,12 @@ RenderExpected<void> RenderPipeline::ensureTextBrush(ID2D1DeviceContext6& dc) no
     if (m_textBrush) {
         return {};
     }
-    constexpr D2D1_COLOR_F kTextColor = {220.0F / 255.0F, 220.0F / 255.0F, 220.0F / 255.0F, 1.0F};
-    const HRESULT hr = dc.CreateSolidColorBrush(kTextColor, m_textBrush.GetAddressOf());
+    // WI-09: color comes from theme.h/theme.cpp's Theme table (was a local
+    // hardcoded constexpr before WI-09's Theme system - see kDarkTheme's own
+    // comment there, "Windows' conventional selection blue"-style rationale
+    // included). Also the caret's color (drawCaretOnLine() reuses
+    // m_textBrush directly) - no separate caret brush exists.
+    const HRESULT hr = dc.CreateSolidColorBrush(themeForKind(m_themeKind).text, m_textBrush.GetAddressOf());
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
     }
@@ -394,11 +412,10 @@ RenderExpected<void> RenderPipeline::ensureSelectionBrush(ID2D1DeviceContext6& d
     if (m_selectionBrush) {
         return {};
     }
-    // Windows' conventional selection blue (RGB 0,120,215), translucent so
-    // glyphs drawn on top (drawVisibleLines() draws the highlight before
-    // DrawTextLayout) stay legible.
-    constexpr D2D1_COLOR_F kSelectionColor = {0.0F / 255.0F, 120.0F / 255.0F, 215.0F / 255.0F, 0.4F};
-    const HRESULT hr = dc.CreateSolidColorBrush(kSelectionColor, m_selectionBrush.GetAddressOf());
+    // WI-09: see theme.h/theme.cpp for this color's value/rationale (was a
+    // local hardcoded constexpr before WI-09's Theme system).
+    const HRESULT hr =
+        dc.CreateSolidColorBrush(themeForKind(m_themeKind).selection, m_selectionBrush.GetAddressOf());
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
     }
@@ -406,24 +423,18 @@ RenderExpected<void> RenderPipeline::ensureSelectionBrush(ID2D1DeviceContext6& d
 }
 
 RenderExpected<void> RenderPipeline::ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // WI-09: see theme.h/theme.cpp for match/currentMatch's colors and
+    // rationale (were 2 local hardcoded constexpr before WI-09's Theme
+    // system).
+    const Theme& theme = themeForKind(m_themeKind);
     if (!m_matchBrush) {
-        // Translucent yellow (RGB 255,220,0) - the conventional "found text"
-        // highlight color (Notepad++/VSCode Find), distinct enough from the
-        // selection blue above to layer visibly underneath an active
-        // selection. R channel written as 1.0F directly (not 255.0F/255.0F)
-        // since that self-division trips clang-tidy's misc-redundant-expression.
-        constexpr D2D1_COLOR_F kMatchColor = {1.0F, 220.0F / 255.0F, 0.0F / 255.0F, 0.35F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kMatchColor, m_matchBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.match, m_matchBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_currentMatchBrush) {
-        // More saturated orange (RGB 255,140,0) for the "active" (F3-
-        // navigated-to) match, so it stands out among many highlighted
-        // matches. R channel written as 1.0F, see kMatchColor's comment above.
-        constexpr D2D1_COLOR_F kCurrentMatchColor = {1.0F, 140.0F / 255.0F, 0.0F / 255.0F, 0.55F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kCurrentMatchColor, m_currentMatchBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.currentMatch, m_currentMatchBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -433,10 +444,8 @@ RenderExpected<void> RenderPipeline::ensureMatchBrushes(ID2D1DeviceContext6& dc)
 
 RenderExpected<void> RenderPipeline::ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept {
     if (!m_bookmarkBrush) {
-        // Solid red (RGB 220,20,20) - the conventional bookmark/marker dot
-        // color (VSCode's own bookmark extensions, MIFES's marker column).
-        constexpr D2D1_COLOR_F kBookmarkColor = {220.0F / 255.0F, 20.0F / 255.0F, 20.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kBookmarkColor, m_bookmarkBrush.GetAddressOf());
+        // WI-09: see theme.h/theme.cpp for this color's value/rationale.
+        const HRESULT hr = dc.CreateSolidColorBrush(themeForKind(m_themeKind).bookmark, m_bookmarkBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -446,10 +455,9 @@ RenderExpected<void> RenderPipeline::ensureBookmarkBrush(ID2D1DeviceContext6& dc
 
 RenderExpected<void> RenderPipeline::ensureFoldMarkerBrush(ID2D1DeviceContext6& dc) noexcept {
     if (!m_foldMarkerBrush) {
-        // Neutral gray (RGB 150,150,150) - same "hardcoded, no Theme system
-        // yet" rationale as ensureIndentGuideBrushes()/ensureBreadcrumbBrush().
-        constexpr D2D1_COLOR_F kFoldMarkerColor = {150.0F / 255.0F, 150.0F / 255.0F, 150.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kFoldMarkerColor, m_foldMarkerBrush.GetAddressOf());
+        // WI-09: see theme.h/theme.cpp for this color's value/rationale.
+        const HRESULT hr =
+            dc.CreateSolidColorBrush(themeForKind(m_themeKind).foldMarker, m_foldMarkerBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -459,11 +467,9 @@ RenderExpected<void> RenderPipeline::ensureFoldMarkerBrush(ID2D1DeviceContext6& 
 
 RenderExpected<void> RenderPipeline::ensureLineNumberBrush(ID2D1DeviceContext6& dc) noexcept {
     if (!m_lineNumberBrush) {
-        // Dimmer than m_textBrush (muted gray, RGB 120,120,120) so digits
-        // read as gutter chrome rather than document content - the
-        // conventional line-number treatment (VSCode/Sublime/most editors).
-        constexpr D2D1_COLOR_F kLineNumberColor = {120.0F / 255.0F, 120.0F / 255.0F, 120.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kLineNumberColor, m_lineNumberBrush.GetAddressOf());
+        // WI-09: see theme.h/theme.cpp for this color's value/rationale.
+        const HRESULT hr =
+            dc.CreateSolidColorBrush(themeForKind(m_themeKind).lineNumber, m_lineNumberBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -472,50 +478,42 @@ RenderExpected<void> RenderPipeline::ensureLineNumberBrush(ID2D1DeviceContext6& 
 }
 
 RenderExpected<void> RenderPipeline::ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept {
-    // Phase 7b: VSCode Dark+-inspired palette, chosen for contrast against
-    // this pipeline's existing kBackgroundColor (RGB 30,30,30, see
-    // renderOnce()) and kTextColor (RGB 220,220,220, see ensureTextBrush()).
-    // Hardcoded (no Theme system exists in this codebase yet - see the
-    // Phase 7b plan's Context section) - a future user-configurable theme
-    // would replace these constants, not this brush-creation shape.
+    // WI-09: colors come from theme.h/theme.cpp's Theme table (were a local
+    // hardcoded VSCode Dark+-inspired palette before WI-09's Theme system -
+    // see kDarkTheme's own comment there).
+    const Theme& theme = themeForKind(m_themeKind);
     if (!m_keywordBrush) {
-        constexpr D2D1_COLOR_F kKeywordColor = {86.0F / 255.0F, 156.0F / 255.0F, 214.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kKeywordColor, m_keywordBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.keyword, m_keywordBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_typeBrush) {
-        constexpr D2D1_COLOR_F kTypeColor = {78.0F / 255.0F, 201.0F / 255.0F, 176.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kTypeColor, m_typeBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.type, m_typeBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_stringBrush) {
-        constexpr D2D1_COLOR_F kStringColor = {206.0F / 255.0F, 145.0F / 255.0F, 120.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kStringColor, m_stringBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.string, m_stringBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_numberBrush) {
-        constexpr D2D1_COLOR_F kNumberColor = {181.0F / 255.0F, 206.0F / 255.0F, 168.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kNumberColor, m_numberBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.number, m_numberBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_commentBrush) {
-        constexpr D2D1_COLOR_F kCommentColor = {106.0F / 255.0F, 153.0F / 255.0F, 85.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kCommentColor, m_commentBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.comment, m_commentBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_preprocessorBrush) {
-        constexpr D2D1_COLOR_F kPreprocessorColor = {197.0F / 255.0F, 134.0F / 255.0F, 192.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kPreprocessorColor, m_preprocessorBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.preprocessor, m_preprocessorBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -542,20 +540,16 @@ ID2D1SolidColorBrush* RenderPipeline::tokenBrush(syntax::TokenKind kind) noexcep
 }
 
 RenderExpected<void> RenderPipeline::ensureIndentGuideBrushes(ID2D1DeviceContext6& dc) noexcept {
-    // Phase 7e: VSCode Dark+-inspired editorIndentGuide.background/
-    // activeBackground approximations, same "hardcoded, no Theme system yet"
-    // rationale as ensureTokenBrushes() above.
+    // WI-09: see theme.h/theme.cpp for these colors' values/rationale.
+    const Theme& theme = themeForKind(m_themeKind);
     if (!m_indentGuideBrush) {
-        constexpr D2D1_COLOR_F kIndentGuideColor = {62.0F / 255.0F, 62.0F / 255.0F, 62.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kIndentGuideColor, m_indentGuideBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.indentGuide, m_indentGuideBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_activeIndentGuideBrush) {
-        constexpr D2D1_COLOR_F kActiveIndentGuideColor = {110.0F / 255.0F, 110.0F / 255.0F, 110.0F / 255.0F, 1.0F};
-        const HRESULT hr =
-            dc.CreateSolidColorBrush(kActiveIndentGuideColor, m_activeIndentGuideBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.activeIndentGuide, m_activeIndentGuideBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -564,17 +558,12 @@ RenderExpected<void> RenderPipeline::ensureIndentGuideBrushes(ID2D1DeviceContext
 }
 
 RenderExpected<void> RenderPipeline::ensureBreadcrumbBrush(ID2D1DeviceContext6& dc) noexcept {
-    // Phase 7h: VSCode Dark+-inspired editor breadcrumb background
-    // approximation, same "hardcoded, no Theme system yet" rationale as
-    // ensureTokenBrushes()/ensureIndentGuideBrushes() above - slightly
-    // lighter than the editor background (RGB 30,30,30) so the strip reads
-    // as distinct chrome.
     if (m_breadcrumbBackgroundBrush) {
         return {};
     }
-    constexpr D2D1_COLOR_F kBreadcrumbBackgroundColor = {37.0F / 255.0F, 37.0F / 255.0F, 38.0F / 255.0F, 1.0F};
-    const HRESULT hr =
-        dc.CreateSolidColorBrush(kBreadcrumbBackgroundColor, m_breadcrumbBackgroundBrush.GetAddressOf());
+    // WI-09: see theme.h/theme.cpp for this color's value/rationale.
+    const HRESULT hr = dc.CreateSolidColorBrush(themeForKind(m_themeKind).breadcrumbBackground,
+                                                 m_breadcrumbBackgroundBrush.GetAddressOf());
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
     }
@@ -582,39 +571,28 @@ RenderExpected<void> RenderPipeline::ensureBreadcrumbBrush(ID2D1DeviceContext6& 
 }
 
 RenderExpected<void> RenderPipeline::ensureMinimapBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // WI-09: see theme.h/theme.cpp for these colors' values/rationale.
+    const Theme& theme = themeForKind(m_themeKind);
     if (!m_minimapBackgroundBrush) {
-        // Same chrome color as ensureBreadcrumbBrush() - a distinct strip
-        // color reused rather than a fourth hardcoded constant.
-        constexpr D2D1_COLOR_F kMinimapBackgroundColor = {37.0F / 255.0F, 37.0F / 255.0F, 38.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapBackgroundColor, m_minimapBackgroundBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.minimapBackground, m_minimapBackgroundBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_minimapViewportBrush) {
-        // Translucent white - readable against both the dark background and
-        // any token color bar underneath.
-        constexpr D2D1_COLOR_F kMinimapViewportColor = {1.0F, 1.0F, 1.0F, 0.15F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapViewportColor, m_minimapViewportBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.minimapViewport, m_minimapViewportBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_minimapTextBrush) {
-        // Neutral mid-gray fallback for lines with content but no colored
-        // token - same rationale as ensureFoldMarkerBrush()'s gray.
-        constexpr D2D1_COLOR_F kMinimapTextColor = {110.0F / 255.0F, 110.0F / 255.0F, 110.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapTextColor, m_minimapTextBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.minimapText, m_minimapTextBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_minimapUnpopulatedBrush) {
-        // Phase 7w: dimmer than m_minimapTextBrush's RGB 110,110,110 - close
-        // to the editor background (RGB 30,30,30) so an unpopulated line
-        // reads as "faint placeholder", not "confirmed plain text".
-        constexpr D2D1_COLOR_F kMinimapUnpopulatedColor = {55.0F / 255.0F, 55.0F / 255.0F, 55.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kMinimapUnpopulatedColor, m_minimapUnpopulatedBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.minimapUnpopulated, m_minimapUnpopulatedBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -623,26 +601,17 @@ RenderExpected<void> RenderPipeline::ensureMinimapBrushes(ID2D1DeviceContext6& d
 }
 
 RenderExpected<void> RenderPipeline::ensureImeCompositionBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // WI-09: see theme.h/theme.cpp for these colors' values/rationale.
+    const Theme& theme = themeForKind(m_themeKind);
     if (!m_imeCompositionBackgroundBrush) {
-        // WI-06: opaque, distinguishable from both the editor background
-        // (RGB 30,30,30) and the Breadcrumb/minimap chrome color (RGB
-        // 37,37,38) - a touch lighter still, closer to VSCode's own IME
-        // composition indicator.
-        constexpr D2D1_COLOR_F kImeCompositionBackgroundColor = {45.0F / 255.0F, 45.0F / 255.0F, 48.0F / 255.0F, 1.0F};
-        const HRESULT hr = dc.CreateSolidColorBrush(kImeCompositionBackgroundColor,
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.imeCompositionBackground,
                                                      m_imeCompositionBackgroundBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
     }
     if (!m_imeTargetClauseBrush) {
-        // WI-06: translucent blue, distinct from both the selection blue
-        // (RGB 0,120,215, alpha 0.4) and match yellow (RGB 255,220,0, alpha
-        // 0.35) above so all three remain visually distinguishable if they
-        // ever coincide.
-        constexpr D2D1_COLOR_F kImeTargetClauseColor = {100.0F / 255.0F, 150.0F / 255.0F, 220.0F / 255.0F, 0.45F};
-        const HRESULT hr =
-            dc.CreateSolidColorBrush(kImeTargetClauseColor, m_imeTargetClauseBrush.GetAddressOf());
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.imeTargetClause, m_imeTargetClauseBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -1824,10 +1793,10 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
         return imeCompositionBrushResult;
     }
 
-    // Matches the previous GDI placeholder fill (RGB 30,30,30) so the
-    // GDI->D2D handoff (ADR-009) stays visually seamless as a background.
-    constexpr D2D1_COLOR_F kBackgroundColor = {30.0F / 255.0F, 30.0F / 255.0F, 30.0F / 255.0F, 1.0F};
-    dc->Clear(kBackgroundColor);
+    // WI-09: see theme.h/theme.cpp for this color's value/rationale (was a
+    // local hardcoded constexpr matching the previous GDI placeholder fill
+    // before WI-09's Theme system).
+    dc->Clear(themeForKind(m_themeKind).background);
     drawVisibleLines(*dc);
     drawBreadcrumb(*dc);
     drawStickyScroll(*dc);

@@ -22,6 +22,7 @@ add_executable(neomifes_unit_tests
     render_gutter_math_test.cpp
     render_reparse_edit_conversion_test.cpp
     render_text_layout_cache_test.cpp
+    render_theme_test.cpp
     core_selection_model_test.cpp
     core_bookmark_manager_test.cpp
     core_folding_model_test.cpp
@@ -65,6 +66,7 @@ add_executable(neomifes_unit_tests
     app_plugin_core_api_bridge_test.cpp
     app_workspace_test.cpp
     app_tab_index_math_test.cpp
+    app_theme_settings_test.cpp
     ui_tab_bar_test.cpp
     ui_main_window_test.cpp
 )

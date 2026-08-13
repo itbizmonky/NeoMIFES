@@ -19,6 +19,7 @@
 #include "neomifes/document/document.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
+#include "neomifes/render/theme.h"
 
 namespace {
 
@@ -27,6 +28,7 @@ using neomifes::document::TextRange;
 using neomifes::render::CursorVisual;
 using neomifes::render::ImeComposition;
 using neomifes::render::RenderPipeline;
+using neomifes::render::ThemeKind;
 using neomifes::syntax::Language;
 
 // RAII helper so every TEST body doesn't repeat the hidden-window dance.
@@ -1642,6 +1644,46 @@ TEST(RenderTextSmokeTest, LeftColumnOnlyChangeForcesRedraw) {
         << "leftColumn-only change was frame-skipped instead of triggering a redraw";
 }
 
+// WI-09: FrameState::themeKind must be included in the coarse frame-skip
+// comparison (Phase 3c/ADR-011) - the exact same hazard m_leftColumn/
+// m_imeComposition were added to fix earlier in this project's history (see
+// FrameState::imeComposition's declaration comment): calling setTheme()
+// alone (Document/topLine/cursor/etc. all unchanged) must not be swallowed
+// by the frame-skip, or the newly-reset (nulled) brushes would sit
+// uninitialized until some unrelated state change eventually triggers a
+// real repaint. Same "stats must move" technique as
+// LeftColumnOnlyChangeForcesRedraw above.
+TEST(RenderTextSmokeTest, ThemeOnlyChangeForcesRedrawInsteadOfFrameSkip) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // Theme only - Document/topLine/cursor/etc. all stay identical.
+    pipeline.setTheme(ThemeKind::Light);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (theme changed) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "theme-only change was frame-skipped instead of triggering a redraw";
+}
+
 TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
@@ -1717,6 +1759,35 @@ TEST(RenderTextSmokeTest, SetTabWidthThenRenderStillSucceeds) {
     const auto second = pipeline.render();
     EXPECT_TRUE(second.has_value())
         << "render() after setTabWidth() failed: " << neomifes::render::describe(second.error());
+}
+
+// WI-09: setTheme() forces every ensureXxxBrush() to rebuild via
+// resetThemeBrushes() - this only checks that the rebuild completes without
+// error (pixel-level verification is out of scope for this file, same as
+// every other test here).
+TEST(RenderTextSmokeTest, SetThemeThenRenderStillSucceeds) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"int main() {\n\treturn 0;\n}\n");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+
+    pipeline.setTheme(ThemeKind::Light);
+    const auto second = pipeline.render();
+    EXPECT_TRUE(second.has_value())
+        << "render() after setTheme() failed: " << neomifes::render::describe(second.error());
 }
 
 // WI-08: setLineNumbersVisible(false) shrinks gutterWidthDips() back to the

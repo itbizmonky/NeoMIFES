@@ -5,6 +5,7 @@ add_library(neomifes_render STATIC
     src/render_pipeline.cpp
     src/syntax_worker.cpp
     src/text_layout_cache.cpp
+    src/theme.cpp
 )
 add_library(neomifes::render ALIAS neomifes_render)
 

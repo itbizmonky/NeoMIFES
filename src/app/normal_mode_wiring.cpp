@@ -29,6 +29,7 @@
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tab_index_math.h"
 #include "neomifes/app/tag_jump.h"
+#include "neomifes/app/theme_settings.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -78,6 +79,7 @@ using neomifes::render::FoldVisual;
 using neomifes::render::ImeComposition;
 using neomifes::render::MatchVisual;
 using neomifes::render::RenderPipeline;
+using neomifes::render::ThemeKind;
 using neomifes::search::expandReplacementTemplate;
 using neomifes::search::GrepMatch;
 using neomifes::search::GrepService;
@@ -1331,14 +1333,15 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
         .commandId = CommandId::None,
         // WI-08: re-reads settings.json (missing/corrupt -> safe defaults,
         // same Settings::loadFrom() contract core_settings_test.cpp
-        // verifies) and re-applies the 4 live-wired setters. This is the
-        // only in-app mutation path for `settings` in WI-08 - there is no
-        // settings dialog yet (see build_plan.md's WI-08 section for why:
-        // out of scope for this WI), so users hand-edit settings.json
-        // externally and run this command (Ctrl+Shift+P) to pick it up
-        // without restarting. No-op if settingsPath is nullopt
-        // (resolveAppDataDir() failed at startup - same graceful
-        // degradation as searchHistoryPath's own reload/save paths).
+        // verifies) and re-applies the 5 live-wired setters (WI-09 added
+        // setTheme()). This is the only in-app mutation path for `settings`
+        // in WI-08 - there is no settings dialog yet (see build_plan.md's
+        // WI-08 section for why: out of scope for this WI), so users
+        // hand-edit settings.json externally and run this command
+        // (Ctrl+Shift+P) to pick it up without restarting. No-op if
+        // settingsPath is nullopt (resolveAppDataDir() failed at startup -
+        // same graceful degradation as searchHistoryPath's own
+        // reload/save paths).
         .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
             if (!settingsPath) {
                 return;
@@ -1348,6 +1351,57 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
             renderPipeline.setTabWidth(settings.tabWidth);
             renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
             renderPipeline.setMinimapVisible(settings.showMinimap);
+            renderPipeline.setTheme(neomifes::app::parseThemeKind(settings.themeName));
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    // WI-09: 3 flat palette-only commands rather than a single
+    // showChoiceMenu<T>()-based picker (the pattern the status bar's
+    // encoding/line-ending pickers use, handleStatusBarPartClicked() above)
+    // - that picker needs a screen POINT to anchor TrackPopupMenu() at,
+    // which only exists for a click-driven invocation; a command palette
+    // entry has no click position, so reusing it here would need new
+    // GetCursorPos()-style fallback machinery for no real benefit over 3
+    // small, independently-labeled commands (build_plan.md §2.3's "when in
+    // doubt, build small" default). Each command mutates settings.themeName
+    // via themeKindToSettingsString() (never the raw string literal
+    // directly) so the persisted string and the actually-applied theme can
+    // never drift apart, then persists immediately (unlike settings.reload
+    // above, which only ever reads) so the choice survives a restart
+    // without a separate "save settings" step.
+    commands.push_back(CommandDescriptor{
+        .id = u"view.theme.dark", .title = u"Theme: Dark", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            constexpr auto kKind = ThemeKind::Dark;
+            settings.themeName = std::u16string(neomifes::app::themeKindToSettingsString(kKind));
+            renderPipeline.setTheme(kKind);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"view.theme.light", .title = u"Theme: Light", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            constexpr auto kKind = ThemeKind::Light;
+            settings.themeName = std::u16string(neomifes::app::themeKindToSettingsString(kKind));
+            renderPipeline.setTheme(kKind);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"view.theme.highContrast", .title = u"Theme: High Contrast", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            constexpr auto kKind = ThemeKind::HighContrast;
+            settings.themeName = std::u16string(neomifes::app::themeKindToSettingsString(kKind));
+            renderPipeline.setTheme(kKind);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     commands.push_back(CommandDescriptor{

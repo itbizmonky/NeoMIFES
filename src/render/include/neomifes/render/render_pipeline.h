@@ -37,6 +37,7 @@
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/syntax_worker.h"
 #include "neomifes/render/text_layout_cache.h"
+#include "neomifes/render/theme.h"
 // Phase 7b: m_tokens below needs syntax::Token's complete type (it's a
 // std::vector member, not a pointer), even though no syntax:: type appears
 // in this class's public method signatures. See src/render/CMakeLists.txt's
@@ -278,6 +279,25 @@ public:
     // reclaim the strip's width when hidden instead of leaving it reserved
     // and blank.
     void setMinimapVisible(bool visible) noexcept { m_showMinimap = visible; }
+
+    // WI-09: switches the color palette every ensureXxxBrush() creates from
+    // (theme.h's themeForKind()). No-op if `kind` already matches - same
+    // guard shape as setFontSettings()/setTabWidth() above. Otherwise resets
+    // every brush via resetThemeBrushes() (shared with recreateDevice()'s
+    // device-loss path below) so the next render() recreates them from the
+    // new theme's colors - and because m_themeKind is part of FrameState
+    // (captureFrameState() below), that next render() is guaranteed to
+    // actually run rather than being coarse-frame-skipped (Phase 3c/
+    // ADR-011) even if nothing else changed. Deliberately does NOT call
+    // recreateDevice() - no device loss occurred, so tearing down/rebuilding
+    // the whole D3D11/D2D device graph would be needless work.
+    void setTheme(ThemeKind kind) noexcept {
+        if (kind == m_themeKind) {
+            return;
+        }
+        m_themeKind = kind;
+        resetThemeBrushes();
+    }
 
     // WI-03: the length (UTF-16 code units) of the longest line among those
     // ACTUALLY drawn last frame (drawVisibleLines() updates this as a side
@@ -531,10 +551,24 @@ private:
         // disabling redraw) is added proactively rather than discovered
         // later.
         std::optional<ImeComposition> imeComposition;
+        // WI-09: same rationale as imeComposition above - a theme-only
+        // change (setTheme() with Document/topLine/cursor/etc all
+        // unchanged) must not be coarse-frame-skipped either. Without this,
+        // resetThemeBrushes() would null every brush but the actual
+        // rebuild-with-new-colors redraw would be skipped, leaving stale
+        // pixels on screen until some unrelated state change eventually
+        // forces a real repaint.
+        ThemeKind themeKind = ThemeKind::Dark;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
     [[nodiscard]] FrameState captureFrameState() const noexcept;
+
+    // WI-09: resets the 21 device-bound brush ComPtrs, shared by
+    // recreateDevice() (device context is gone) and setTheme() (brushes
+    // were built from the old theme's colors) - see resetThemeBrushes()'s
+    // own .cpp comment.
+    void resetThemeBrushes() noexcept;
 
     [[nodiscard]] RenderExpected<void> recreateDevice() noexcept;
     [[nodiscard]] RenderExpected<void> refreshDocumentCacheIfStale() noexcept;
@@ -1128,6 +1162,14 @@ private:
     // pre-WI-08 frame, which always drew both).
     bool m_showLineNumbers = true;
     bool m_showMinimap     = true;
+
+    // WI-09: the currently-applied theme. themeForKind(m_themeKind) is what
+    // every ensureXxxBrush() and renderOnce()'s background dc->Clear() now
+    // read from. Default matches core::Settings::themeName's own default
+    // (u"dark") so any code path that never calls setTheme() (every
+    // existing test, --measure-* launch modes) keeps its exact prior
+    // appearance.
+    ThemeKind m_themeKind = ThemeKind::Dark;
 
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not
     // device-bound (unlike m_textBrush) - NOT cleared in recreateDevice().
