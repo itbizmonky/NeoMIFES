@@ -34,6 +34,7 @@ add_executable(neomifes_unit_tests
     app_editor_input_test.cpp
     app_document_open_test.cpp
     app_command_dispatch_test.cpp
+    app_menu_bar_test.cpp
     ui_click_tracking_test.cpp
     ui_find_navigation_test.cpp
     ui_command_palette_filter_test.cpp

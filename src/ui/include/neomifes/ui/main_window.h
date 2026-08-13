@@ -38,6 +38,14 @@ struct MainWindowConfig {
     int  initialWidth       = 1200;
     int  initialHeight      = 800;
     bool showOnCreate       = true;
+    // Optional: passed straight through as CreateWindowExW's hMenu (WI-07
+    // step3). nullptr (the default) means "no menu", Win32's own default for
+    // an overlapped window. Once handed here, MainWindow does NOT take
+    // ownership beyond the standard Win32 rule that DestroyWindow implicitly
+    // destroys a window's still-attached menu - callers must not also call
+    // DestroyMenu (see neomifes::app::buildMenuBar()'s own comment, the
+    // typical producer of this field).
+    HMENU menuBar           = nullptr;
     // Optional: invoked on the UI thread AFTER CreateWindowExW returns but
     // BEFORE ShowWindow/UpdateWindow. Callers use this to sample the
     // "window created" timestamp without racing against the first WM_PAINT

@@ -19,6 +19,7 @@
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
 #include "neomifes/app/syntax_language.h"
@@ -44,6 +45,8 @@
 #include "neomifes/ui/find_navigation.h"
 #include "neomifes/ui/goto_line_parser.h"
 #include "neomifes/util/tag_jump_parser.h"
+#include "neomifes/util/version.h"
+#include "neomifes/util/wchar_cast.h"
 
 namespace neomifes::app {
 
@@ -1811,6 +1814,63 @@ void dispatchUndoRedoCommand(CommandId id, const CommandDispatchContext& ctx, Ed
     }
 }
 
+// WI-07 step3: menu-triggered "show/toggle a widget" commands.
+// dispatchCommand() (command_dispatch.h) deliberately does NOT handle these
+// (see its own header comment - the reason was accelerator-table focus
+// interception, which a menu CLICK never causes) - wireNormalMode()'s
+// cfg.onCommand checks this FIRST, before falling through to
+// dispatchCommand() for the commands that one does handle. Returns whether
+// `id` was recognized (every menu click resolves to exactly one CommandId,
+// so "recognized but nothing to do" doesn't arise the way it can for
+// keyboard chains).
+bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
+                               FindBar& findBar, CommandPalette& commandPalette, GrepBar& grepBar,
+                               GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane) {
+    switch (id) {
+        case CommandId::FindShow:
+            findBar.show();
+            return true;
+        case CommandId::FindReplace:
+            findBar.showWithReplace();
+            return true;
+        case CommandId::FindNext:
+            navigateToMatch(true, hwnd, workspace.active(), renderPipeline, findBar);
+            return true;
+        case CommandId::FindPrevious:
+            navigateToMatch(false, hwnd, workspace.active(), renderPipeline, findBar);
+            return true;
+        case CommandId::GrepShow:
+            grepBar.show();
+            return true;
+        case CommandId::CommandPaletteShow:
+            commandPalette.show();
+            return true;
+        case CommandId::GotoLineShow:
+            gotoLineBar.show();
+            return true;
+        case CommandId::OutlineToggle: {
+            EditorSession& session = workspace.active();
+            if (outlinePane.isVisible()) {
+                outlinePane.hide();
+            } else {
+                refreshOutlinePane(session, outlinePane);
+                syncFoldingState(hwnd, renderPipeline, session.folding());
+            }
+            return true;
+        }
+        case CommandId::About: {
+            std::wstring message = L"NeoMIFES ";
+            for (const char c : neomifes::util::versionString()) {
+                message.push_back(static_cast<wchar_t>(c));
+            }
+            ::MessageBoxW(hwnd, message.c_str(), L"バージョン情報", MB_OK | MB_ICONINFORMATION);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 // No logging engine exists yet (basic_design.md sec.6.5 is a later phase);
@@ -1947,6 +2007,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
     // it to onDeferredInit/onResize the way genuinely per-frame state is.
     renderPipeline.setTabBarHeightDips(TabBar::heightDips());
+    // WI-07 step3: also a plain statement here, same reasoning -
+    // buildMenuBar()'s result must be assigned to cfg.menuBar BEFORE
+    // window.create() below (CreateWindowExW's hMenu is fixed at window
+    // creation), so it can't be deferred to onDeferredInit/onResize either.
+    // nullptr on failure is handled by MainWindow::create() as "no menu"
+    // (see menu_bar.h's own comment) - not checked here.
+    cfg.menuBar = neomifes::app::buildMenuBar();
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &freeCursorModeEnabled](HWND hwnd) {
@@ -2050,23 +2117,33 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         outlinePane.onParentResized(w, h, dpiScale);
         tabBar.onParentResized(w, dpiScale);
     };
-    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &workspace, &renderPipeline](
-                        HWND hwnd, WPARAM wParam, LPARAM lParam) {
+    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &workspace,
+                     &renderPipeline](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
-        // WI-07 step2: accelerator-originated WM_COMMAND (TranslateAcceleratorW,
-        // command_dispatch.h's buildAcceleratorTable()) carries a CommandId
-        // in LOWORD(wParam) - distinct from every child-control notification
-        // above (find_bar.cpp/command_palette.cpp/grep_bar.cpp all use
-        // control ids 1001-4003, far below CommandId's 40000+ range, see
-        // command_ids.h's own range-separation comment).
+        // WI-07 step2/3: accelerator- or MENU-originated WM_COMMAND
+        // (TranslateAcceleratorW/command_dispatch.h's buildAcceleratorTable(),
+        // or a menu click on an item neomifes::app::buildMenuBar() built)
+        // carries a CommandId in LOWORD(wParam) - distinct from every
+        // child-control notification above (find_bar.cpp/command_palette.cpp/
+        // grep_bar.cpp all use control ids 1001-4003, far below CommandId's
+        // 40000+ range, see command_ids.h's own range-separation comment).
         const auto commandId = static_cast<CommandId>(LOWORD(wParam));
-        if (commandId >= CommandId::FindShow) {
-            const CommandDispatchContext ctx{
-                .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
-            dispatchCommand(commandId, ctx);
+        if (commandId < CommandId::FindShow) {
+            return;
         }
+        // dispatchWidgetShowCommand() first (Find/Grep/CommandPalette/
+        // Outline/GotoLine/About - the commands dispatchCommand() itself
+        // deliberately does NOT handle, see that function's own comment);
+        // falls through to dispatchCommand() for everything else.
+        if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, commandPalette,
+                                      grepBar, gotoLineBar, outlinePane)) {
+            return;
+        }
+        const CommandDispatchContext ctx{
+            .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+        dispatchCommand(commandId, ctx);
     };
     // Phase 7g: OutlinePane's WC_TREEVIEW is this codebase's first control
     // that notifies via WM_NOTIFY rather than WM_COMMAND - see

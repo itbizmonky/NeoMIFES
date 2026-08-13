@@ -60,6 +60,9 @@ enum class CommandId : std::uint16_t {
     Paste,
     Undo,
     Redo,
+    // WI-07 step3: menu-only (Help menu), never accelerator-routed or
+    // palette-registered - shows a minimal version MessageBoxW.
+    About,
 };
 
 }  // namespace neomifes::ui

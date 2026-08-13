@@ -108,7 +108,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
         windowStyle,
         CW_USEDEFAULT, CW_USEDEFAULT,
         config.initialWidth, config.initialHeight,
-        nullptr, nullptr, hInstance, this);
+        nullptr, config.menuBar, hInstance, this);
 
     if (m_hwnd == nullptr) {
         return false;

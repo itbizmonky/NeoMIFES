@@ -55,6 +55,7 @@ add_executable(NeoMIFES WIN32
     launch_setup.cpp
     normal_mode_wiring.cpp
     command_dispatch.cpp
+    menu_bar.cpp
     startup_profile.cpp
     frame_profile.cpp
     file_dialogs.cpp
