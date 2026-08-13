@@ -205,6 +205,18 @@ public:
     // detected" risk here to guard against.
     void setTabBarHeightDips(float heightDips) noexcept { m_tabBarHeightDips = heightDips; }
 
+    // WI-07 step4: the status bar's fixed DIP height (ui::StatusBar::
+    // heightDips()) - a native sibling HWND drawn BELOW this class's own D2D
+    // surface, the bottom-edge counterpart to m_tabBarHeightDips above (same
+    // "set exactly once before the window is created" lifecycle, same
+    // reasoning for staying out of FrameState's comparison). Subtracted from
+    // the available height in visibleLineRange()/widenedVisibleLineRange()
+    // via reservedBottomHeightDips() below - unlike m_tabBarHeightDips this
+    // is not folded into reservedTopHeightDips() (that name specifically
+    // means "space reserved at the TOP"), so a second bottom-side helper
+    // exists instead of overloading the same one for both edges.
+    void setStatusBarHeightDips(float heightDips) noexcept { m_statusBarHeightDips = heightDips; }
+
     // WI-03: the length (UTF-16 code units) of the longest line among those
     // ACTUALLY drawn last frame (drawVisibleLines() updates this as a side
     // effect of its existing per-line loop, at no extra cost - lineSpan.size()
@@ -582,6 +594,13 @@ private:
     // 3+ call sites" pattern as isLineHidden()/visibleLineAtRow() (Phase
     // 7i/7j).
     [[nodiscard]] float reservedTopHeightDips() const noexcept;
+    // WI-07 step4: total DIPs reserved at the BOTTOM of the client area -
+    // currently just m_statusBarHeightDips (see its own setter comment).
+    // Trivial today, but kept as its own named function (rather than
+    // reading m_statusBarHeightDips directly at each call site) so a future
+    // second bottom-docked strip can extend it in one place, mirroring
+    // reservedTopHeightDips()'s own shape.
+    [[nodiscard]] float reservedBottomHeightDips() const noexcept { return m_statusBarHeightDips; }
     // WI-03: X-DIP offset every horizontally-scrolled X-coordinate consumer
     // in this file subtracts from its otherwise-fixed kGutterWidthDips-
     // relative position - `m_leftColumn * m_charWidthDips`, the same
@@ -889,6 +908,8 @@ private:
     std::uint32_t                                     m_maxVisibleLineLength  = 0;
     // WI-05: see setTabBarHeightDips()'s own comment.
     float                                              m_tabBarHeightDips     = 0.0F;
+    // WI-07 step4: see setStatusBarHeightDips()'s own comment.
+    float                                              m_statusBarHeightDips  = 0.0F;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)

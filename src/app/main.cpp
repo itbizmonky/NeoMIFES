@@ -78,6 +78,7 @@
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
+#include "neomifes/ui/status_bar.h"
 #include "neomifes/ui/tab_bar.h"
 
 #include "frame_profile.h"
@@ -113,6 +114,7 @@ using neomifes::ui::GrepBar;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
+using neomifes::ui::StatusBar;
 using neomifes::ui::TabBar;
 
 // WI-07 step2: `haccel` may be nullptr (measurement-mode launches never
@@ -296,6 +298,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // (unlike outlinePane above), docked full-width along the top edge. See
     // tab_bar.h's class comment.
     TabBar tabBar;
+    // Status bar (WI-07 step4) - a single STATUSCLASSNAME control, always
+    // visible, docked full-width along the BOTTOM edge (tabBar's
+    // counterpart at the other edge). See status_bar.h's class comment.
+    StatusBar statusBar;
     // Search-pattern history (Phase 5c5) - shared by Find bar's find edit
     // and the Grep dialog's query edit (deliberately NOT the command
     // palette - core::search_history.h's file comment explains why). Only
@@ -347,7 +353,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // stored/later-invoked callback needs it, so a future tab switch is
         // reflected everywhere without this call site changing again.
         wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
-                       gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar,
+                       gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,

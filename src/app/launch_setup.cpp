@@ -147,8 +147,12 @@ void initCommonControls() noexcept {
     // session" early-return path, leaving RenderPipeline's reserved tab-bar
     // height rendered as a blank gap - a real dogfooding-caught bug, not a
     // hypothetical.
-    const INITCOMMONCONTROLSEX icc{
-        .dwSize = sizeof(icc), .dwICC = ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES};
+    // ICC_BAR_CLASSES added for ui::StatusBar's STATUSCLASSNAME (WI-07
+    // step4) - same TabBar precedent above, applied preemptively rather
+    // than waiting to rediscover the identical failure mode.
+    const INITCOMMONCONTROLSEX icc{.dwSize = sizeof(icc),
+                                   .dwICC  = ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES |
+                                             ICC_BAR_CLASSES};
     ::InitCommonControlsEx(&icc);
 }
 

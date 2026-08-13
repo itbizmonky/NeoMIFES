@@ -625,8 +625,11 @@ std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexc
     // reduced by that many (DPI-scaled) pixels - mirrors kGutterWidthDips'
     // effect on drawn width, just on the y-axis. computeVisibleLineCount()
     // itself stays a general-purpose pure function unaware of either strip.
-    const auto reservedTopPx = static_cast<std::uint32_t>(reservedTopHeightDips() * m_dpiScale);
-    const std::uint32_t effectiveHeightPx = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
+    // WI-07 step4: reservedBottomHeightDips() (the status bar) reduces it
+    // further, same reasoning applied to the bottom edge.
+    const auto reservedPx = static_cast<std::uint32_t>(
+        (reservedTopHeightDips() + reservedBottomHeightDips()) * m_dpiScale);
+    const std::uint32_t effectiveHeightPx = m_height > reservedPx ? m_height - reservedPx : 0;
     const std::uint32_t visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
     if (visibleCount == 0) {
         return {startLine, startLine};
@@ -649,8 +652,9 @@ std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexc
 
 std::pair<LineNumber, LineNumber> RenderPipeline::widenedVisibleLineRange() const noexcept {
     const auto [startLine, endLineExclusive] = visibleLineRange();
-    const auto           reservedTopPx       = static_cast<std::uint32_t>(reservedTopHeightDips() * m_dpiScale);
-    const std::uint32_t  effectiveHeightPx   = m_height > reservedTopPx ? m_height - reservedTopPx : 0;
+    const auto reservedPx = static_cast<std::uint32_t>(
+        (reservedTopHeightDips() + reservedBottomHeightDips()) * m_dpiScale);
+    const std::uint32_t  effectiveHeightPx   = m_height > reservedPx ? m_height - reservedPx : 0;
     const std::uint32_t  visibleCount = computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
     const std::uint64_t  totalLines   = m_document != nullptr ? m_document->lineCount() : 0;
     return widenLineRangeWithMargin(startLine, endLineExclusive, visibleCount, totalLines);

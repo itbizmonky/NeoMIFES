@@ -34,6 +34,7 @@
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
+#include "neomifes/ui/status_bar.h"
 #include "neomifes/ui/tab_bar.h"
 
 namespace neomifes::app {
@@ -118,11 +119,16 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // handleKeyDownEvent()/handleCharEvent() so ordinary key/char dispatch never
 // runs while an IME is actively composing (see those functions' .cpp
 // comments).
+// WI-07 step4: takes ui::StatusBar& - created/positioned alongside tabBar in
+// cfg.onDeferredInit (docked along the BOTTOM edge instead of the top - see
+// ui::StatusBar's own header comment), repopulated every frame from the
+// paint handler (same "no dirty-check guard at this DoD's scale" convention
+// tabBar.setTabs() already follows).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
-                    ui::TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap,
-                    bool& imeComposing);
+                    ui::TabBar& tabBar, ui::StatusBar& statusBar, bool& freeCursorModeEnabled,
+                    bool& isDraggingMinimap, bool& imeComposing);
 
 }  // namespace neomifes::app

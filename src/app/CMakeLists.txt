@@ -7,6 +7,7 @@ add_library(neomifes_app_input STATIC
     document_open.cpp
     editor_session.cpp
     plugin_core_api_bridge.cpp
+    status_bar_format.cpp
     workspace.cpp
 )
 add_library(neomifes::app_input ALIAS neomifes_app_input)

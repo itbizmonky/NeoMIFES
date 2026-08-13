@@ -22,6 +22,7 @@
 #include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
+#include "neomifes/app/status_bar_format.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tab_index_math.h"
 #include "neomifes/app/tag_jump.h"
@@ -31,6 +32,7 @@
 #include "neomifes/core/folding_model.h"
 #include "neomifes/core/indentation_conversion.h"
 #include "neomifes/core/replace_all_command.h"
+#include "neomifes/core/selection_metrics.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/buffer_snapshot.h"
@@ -91,6 +93,8 @@ using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
 using neomifes::ui::OutlinePaneConfig;
+using neomifes::ui::StatusBar;
+using neomifes::ui::StatusBarParts;
 using neomifes::ui::TabBar;
 using neomifes::ui::TabBarConfig;
 using neomifes::ui::TabBarItem;
@@ -1545,6 +1549,40 @@ void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspac
     tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
 }
 
+// WI-07 step4: no config/callbacks yet (read-only display, see status_bar.h's
+// own "v1 scope cut" comment) - simpler than createAndPositionTabBar() above,
+// just create+position, no onXxxSelected wiring.
+void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, StatusBar& statusBar) {
+    if (!statusBar.create(hwnd, hInstance)) {
+        return;
+    }
+    RECT clientRect{};
+    ::GetClientRect(hwnd, &clientRect);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    statusBar.onParentResized(static_cast<std::uint32_t>(clientRect.right),
+                              static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
+}
+
+// WI-07 step4: derives every ui::StatusBarParts field from EditorSession's
+// already-existing state - no new state introduced here. overwriteMode is
+// hardcoded false (INS) for now; WI-07 step5 threads the real toggle through
+// once it exists (see this function's future signature change there).
+StatusBarParts buildStatusBarParts(const EditorSession& session) {
+    const Document&                 document = session.document();
+    const neomifes::document::TextPos pos    = session.selection().primaryCursor().position;
+    const auto                       line    = document.offsetToLine(pos);
+    const auto                       column  = static_cast<std::uint32_t>(pos - document.lineToOffset(line));
+    return StatusBarParts{
+        .position       = neomifes::app::formatStatusBarPosition(line, column),
+        .selectionCount = neomifes::app::formatStatusBarSelectionCount(
+            neomifes::core::totalSelectedLength(session.selection())),
+        .encoding      = neomifes::app::formatStatusBarEncoding(session.fileState().encoding),
+        .lineEnding    = neomifes::app::formatStatusBarLineEnding(session.fileState().lineEnding),
+        .overwriteMode = neomifes::app::formatStatusBarOverwriteMode(false),
+        .language      = neomifes::app::formatStatusBarLanguage(session.language()),
+    };
+}
+
 // WI-02: cfg.onDropFiles body, pulled out of wireNormalMode() for the same
 // cognitive-complexity reason as handleMouseDownEvent()/handleKeyDownEvent()
 // above. WI-05: opens EVERY dropped path into its own tab via
@@ -2000,13 +2038,15 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
-                    TabBar& tabBar, bool& freeCursorModeEnabled, bool& isDraggingMinimap,
-                    bool& imeComposing) {
+                    TabBar& tabBar, StatusBar& statusBar, bool& freeCursorModeEnabled,
+                    bool& isDraggingMinimap, bool& imeComposing) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
     // it to onDeferredInit/onResize the way genuinely per-frame state is.
     renderPipeline.setTabBarHeightDips(TabBar::heightDips());
+    // WI-07 step4: same reasoning, bottom-edge counterpart.
+    renderPipeline.setStatusBarHeightDips(StatusBar::heightDips());
     // WI-07 step3: also a plain statement here, same reasoning -
     // buildMenuBar()'s result must be assigned to cfg.menuBar BEFORE
     // window.create() below (CreateWindowExW's hMenu is fixed at window
@@ -2016,7 +2056,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.menuBar = neomifes::app::buildMenuBar();
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
-                          &freeCursorModeEnabled](HWND hwnd) {
+                          &statusBar, &freeCursorModeEnabled](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -2030,7 +2070,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // time (see this function's own header comment).
         EditorSession& session = workspace.active();
         renderPipeline.setDocument(&session.document());
-        window.setPaintHandler([&window, &renderPipeline, &workspace, &tabBar](HWND paintHwnd) {
+        window.setPaintHandler([&window, &renderPipeline, &workspace, &tabBar, &statusBar](HWND paintHwnd) {
             const auto rendered = renderPipeline.render();
             if (!rendered) {
                 debugLogRenderError("RenderPipeline::render", rendered.error());
@@ -2053,6 +2093,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             // anything tab-relevant change" tracking mechanism. WM_PAINT is
             // already OS-coalesced, so no additional throttling is needed.
             tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
+            // WI-07 step4: same "rebuild every frame, no dirty-check guard"
+            // convention as tabBar.setTabs() above.
+            statusBar.setParts(buildStatusBarParts(session));
         });
         const FindBarConfig findBarConfig =
             buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory);
@@ -2084,6 +2127,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // a tab strip that fails to create simply isn't available this
         // session (the editor still works, just without visible tabs).
         createAndPositionTabBar(hwnd, hInstance, workspace, renderPipeline, findBar, tabBar);
+        // WI-07 step4: same non-fatal treatment as findBar.create() above -
+        // a status bar that fails to create simply isn't available this
+        // session (the editor still works, just without a bottom status
+        // strip).
+        createAndPositionStatusBar(hwnd, hInstance, statusBar);
         // Phase 7i: seeds FoldingModel's region list once at startup (mirrors
         // renderPipeline.setLanguage()'s own startup timing in wWinMain) so
         // "Fold/Unfold at Cursor" and the gutter markers work immediately,
@@ -2103,7 +2151,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
-                    &tabBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+                    &tabBar, &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
@@ -2116,6 +2164,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         grepBar.onParentResized(w, dpiScale);
         outlinePane.onParentResized(w, h, dpiScale);
         tabBar.onParentResized(w, dpiScale);
+        statusBar.onParentResized(w, h, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &workspace,
                      &renderPipeline](HWND hwnd, WPARAM wParam, LPARAM lParam) {

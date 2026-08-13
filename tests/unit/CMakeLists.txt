@@ -31,10 +31,12 @@ add_executable(neomifes_unit_tests
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp
     core_search_history_test.cpp
+    core_selection_metrics_test.cpp
     app_editor_input_test.cpp
     app_document_open_test.cpp
     app_command_dispatch_test.cpp
     app_menu_bar_test.cpp
+    app_status_bar_format_test.cpp
     ui_click_tracking_test.cpp
     ui_find_navigation_test.cpp
     ui_command_palette_filter_test.cpp
