@@ -90,7 +90,7 @@ ctest --preset debug --output-on-failure
 
 1. **「保存できるか」を最優先する。** ユーザーの編集内容が失われる可能性のある変更は、他の何よりも先に直す
 2. **エンジン層は触らない。** Document / Rendering / Search / Syntax は完成している。壊さない
-3. **設定システムが無いことを理由に妥協しそうになったら、WI-09 (設定システム) を先に済ませられないか検討する。** 過去に 13 回この妥協が繰り返され、定数の二重定義という負債になった
+3. **設定システムが無いことを理由に妥協しそうになったら、`core::Settings` が使えないか検討する。** WI-08 (2026-08-13完了) で実装済み。過去に 13 回この妥協が繰り返され、定数の二重定義という負債になった
 4. **迷ったら小さく作る。** 「まずヘッドレスで正しく動かし、次に UI へ配線する」は本プロジェクトで 10 回以上成功している型
 5. **それでも決められないことだけ、ユーザーに聞く。** 選択肢と推奨案を添えて
 
@@ -120,7 +120,7 @@ ctest --preset debug --output-on-failure
 ## Phase 8.6 — 製品化基盤 (P1)
 
 - [x] **WI-08** 設定システム (`core::Settings`) + ハードコード定数の移行 → コミット: `6a76722` (ステップ1) / `0fbd148` (ステップ2) / `0b55e86` (ステップ3)
-- [ ] **WI-09** テーマ (ダーク / ライト / ハイコントラスト) → `________`
+- [x] **WI-09** テーマ (ダーク / ライト / ハイコントラスト) → コミット: `be65533` (実装) / `________` (ドキュメント同期)
 - [ ] **WI-10** キーバインド設定 + プリセット (秀丸 / サクラ / VSCode) → `________`
 - [ ] **WI-11** 自動保存 / バックアップ / クラッシュ復旧 / 最近開いたファイル → `________`
 - [ ] **WI-12** 基本編集の穴埋め (Ctrl+A / 自動インデント / 行複製・移動・削除) → `________`
@@ -773,17 +773,31 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 
 **着手時に `grep -n "constexpr D2D1_COLOR_F" src/render/src/render_pipeline.cpp` で全数を確認すること** (`D2D1::ColorF` で grep しても 0 件なので注意)。
 
-移行対象 (既知): テキスト / 選択範囲 / マッチ / 現在マッチ / ブックマーク / フォールドマーカー / Keyword / Type / String / Number / Comment / Preprocessor / ミニマップ 4 種 / Breadcrumb 背景 / Indent guide / 背景 / キャレット
+移行対象 (既知): テキスト / 選択範囲 / マッチ / 現在マッチ / ブックマーク / フォールドマーカー / Keyword / Type / String / Number / Comment / Preprocessor / ミニマップ 4 種 / Breadcrumb 背景 / Indent guide / 背景
+
+> **実装後の訂正:** 「キャレット」は独立したブラシとして存在しない。`drawCaretOnLine()`は`m_textBrush`をそのまま再利用しているため、テキスト色の移行で自動的にカバーされる。専用の`Theme::caret`フィールドは追加不要だった。
 
 - テーマ切替時は全ブラシを作り直す (既存の `recreateDevice()` のリセット経路がそのまま使える)
 - ハイコントラストは Windows のシステム設定 (`SystemParametersInfo(SPI_GETHIGHCONTRAST)`) を尊重して自動選択してもよい
 
 ### DoD
 
-- [ ] ダーク / ライト / ハイコントラストを切り替えられ、設定に永続化される
-- [ ] `render_pipeline.cpp` に `D2D1::ColorF` のハードコードが残っていない
-- [ ] テーマ切替でデバイスロストが起きても正しく再構築される
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] ダーク / ライト / ハイコントラストを切り替えられ、設定に永続化される (`view.theme.dark`/`view.theme.light`/`view.theme.highContrast`の3コマンド、コマンドパレット限定。`settings.themeName`へ`themeKindToSettingsString()`経由で書き込み、`saveTo()`で即時永続化)
+- [x] `render_pipeline.cpp` に `D2D1::ColorF` のハードコードが残っていない (23フィールド×3テーマ、11個の`ensureXxxBrush()`+`renderOnce()`の背景`Clear()`を含め全て`theme.h`/`theme.cpp`へ集約。`grep -n "constexpr D2D1_COLOR_F" src/render/src/render_pipeline.cpp`は0件)
+- [x] テーマ切替でデバイスロストが起きても正しく再構築される (`recreateDevice()`は新設`resetThemeBrushes()`経由で従来通り21ブラシをリセット、テーマの状態自体には無関係に動作)
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0 (1111/1111テスト×3構成。clang-tidyは`theme.cpp`の`misc-redundant-expression`(`255.0F / 255.0F`の自己除算がフルの色チャンネル値として誤検出される、既存コードベースに前例あり)を1件検出→`1.0F`直書きへ修正し解消)
+
+**保留項目なし。完全に完了。**
+
+### 実装後の確定事項
+
+- **`FrameState`修正が正しさに必須と判明:** 着手前調査で`render()`(`render_pipeline.cpp`)を直接読解し確認 — 粗粒度フレームスキップ(Phase 3c/ADR-011)は`captureFrameState()`のスナップショットが直前と一致すれば`renderOnce()`を完全にスキップする。`setTheme()`単体呼び出し(topLine/cursor/文書バージョン等が無変化)の場合、`FrameState`にテーマを含めなければ、ブラシは`resetThemeBrushes()`でリセットされるのに実際の再描画(新色での再構築)がフレームスキップに飲み込まれ、画面が古い色のまま固まる — これは見た目の問題ではなく正しさの問題である。`ThemeKind themeKind`を`FrameState`の最後のフィールド(`imeComposition`直後)として追加し解消した。この修正の効果は`ThemeOnlyChangeForcesRedrawInsteadOfFrameSkip`テストで直接検証している(`m_leftColumn`/`m_imeComposition`と同型の回帰テスト)。
+- **`resetThemeBrushes()`への切り出し:** `recreateDevice()`(デバイスロスト回復)が持っていた21ブラシの`.Reset()`ブロックを新規private`resetThemeBrushes()`へ抽出し、`setTheme()`と共有した。`recreateDevice()`自体の挙動は無変更(リファクタのみ)。
+- **3フラットコマンド vs `showChoiceMenu<T>()`ピッカー:** 既存の`showChoiceMenu<T>()`(ステータスバーの文字コード/改行コード選択で使用)はクリック起点の`TrackPopupMenu`であり、パレットコマンド(クリック位置を持たない)から使うには新規`GetCursorPos()`フォールバック機構が要る。build_plan.md §2.3の「迷ったら小さく作る」原則に従い3つの独立コマンドを採用した。
+- **メニューバー統合はスコープ外:** `kViewMenuItems`は1項目のみでサブメニュー機構が無く、追加するには新規`CommandId`+`dispatchCommand()`配線という大きな変更が要る。WI-08の`settings.reload`(パレット限定・メニュー無し)と同じ扱いとした。
+- **OSハイコントラスト自動検出(`SPI_GETHIGHCONTRAST`)はスコープ外:** build_plan.md原文が「してもよい」と明記する任意項目であり、要件定義書§14にも記載が無い。ユーザーの明示選択でのみ`HighContrast`に到達する(OS設定からの推測はしない)。
+- **`core::Settings`自体は機能的に無変更:** `themeName`フィールド(WI-08で追加済み)は検証されない自由記述文字列のまま。安全網は消費境界(`theme_settings.h`の`parseThemeKind()`)にのみ置いた(CLAUDE.mdの「境界でのみ検証する」原則)。
+- **ドッグフーディング結果:** `%APPDATA%\NeoMIFES\settings.json`の`themeName`を`light`/`high-contrast`/存在しない値("this-is-not-a-real-theme")に手動書き換え→起動、の3サイクルを実施し、いずれも実機スクリーンショットで正しい配色(白背景+VSCode Light+風トークン色/純黒背景+シアン・オレンジ等の高彩度トークン色/デフォルトのDarkへの安全なフォールバック)を確認した。さらにコマンドパレット(Ctrl+Shift+P)経由で`Theme: Light`を実行し、**再起動なしで画面が即座にLight配色へ再描画されること**、および`settings.json`が`"themeName":"light"`へ即座に書き換わることを確認した(この環境で過去複数セッションCtrl+Shift+P等の修飾キー合成入力が不調だったが、本セッションでは正常動作した)。続けてNeoMIFESを終了→再起動し、永続化された`light`テーマが再起動後も自動的に復元されることを確認した。デバイスロスト相当のシナリオ(最小化/復元)は`resetThemeBrushes()`が`recreateDevice()`と無関係に動作する設計のため理論上の懸念はないが、実機での明示的なデバイスロスト誘発は本セッションでは行わなかった(自動テストの`RendersWithoutDocumentAttached`等の既存デバイス回復テストがこの経路自体の健全性を別途担保している)。
 
 ---
 

@@ -1781,6 +1781,16 @@ class Workspace {
 
 `render_pipeline.cpp` にハードコードされている `D2D1_COLOR_F` 定数群 (背景 / テキスト / キャレット / 選択 / Keyword / Type / String / Number / Comment / Preprocessor / ミニマップ 3 種 / Breadcrumb / Indent guide / フォールドマーカー) を `render::Theme` 構造体経由へ移す。ダーク / ライト / ハイコントラストの 3 種を同梱 (要件定義書 §14 必須)。
 
+**✅ 実装完了 (WI-09、2026-08-14)。実装後の確定事項:**
+
+- 新規`render::ThemeKind`(enum、Dark/Light/HighContrast)+`render::Theme`(23フィールドの`D2D1_COLOR_F`構造体)+`themeForKind()`を新規`src/render/include/neomifes/render/theme.h`/`src/render/src/theme.cpp`へ実装。`render::RenderPipeline`(L4)は`core::Settings`(L5)に一切依存しない(CLAUDE.md §3の層分離)。文字列↔enum変換は新規`src/app/include/neomifes/app/theme_settings.h`(ヘッダオンリー)がアプリ層で担う — `syntax_language.h`の`detectLanguage()`と同じ役割。
+- **キャレット専用のブラシ/色フィールドは無い** — `drawCaretOnLine()`は`m_textBrush`を再利用するため`Theme::text`が自動的にカバーする。roadmapスケッチが列挙する「キャレット」は実装時に不要と判明した。
+- **`FrameState`修正が正しさに必須:** 粗粒度フレームスキップ(Phase 3c/ADR-011)は`setTheme()`単体呼び出し(他状態が無変化)の場合、`ThemeKind`を`FrameState`に含めないと実際の再描画がスキップされ画面が古い色のまま固まる。`m_leftColumn`/`m_imeComposition`と同じバグクラスとして`FrameState::themeKind`を追加し解消した。
+- `recreateDevice()`の21ブラシ`.Reset()`ブロックを新規`resetThemeBrushes()`へ抽出し、`setTheme()`と共有(デバイス自体の再構築は`setTheme()`では行わない)。
+- テーマ切替はコマンドパレット限定の3コマンド(`view.theme.dark`/`view.theme.light`/`view.theme.highContrast`)、メニューバー統合はスコープ外(`kViewMenuItems`のサブメニュー機構が無い)。
+- OSハイコントラスト自動検出(`SPI_GETHIGHCONTRAST`)はスコープ外(build_plan.md原文で任意、要件定義書§14に記載無し)。
+- 実機ドッグフーディングで3テーマの正しい配色・コマンドパレット経由のライブ切替(再起動不要)・再起動後の永続化を確認済み。詳細は`build_plan.md` WI-09節参照。
+
 ### 8.6.4 サブフェーズ 8.6d — 自動保存・バックアップ・クラッシュ復旧・最近開いたファイル
 
 要件定義書 §6・§15 の必須項目。v2.0 は誤って Phase 12 (品質保証フェーズ) に配置していた。

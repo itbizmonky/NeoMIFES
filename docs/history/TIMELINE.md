@@ -2837,4 +2837,22 @@ WI-07完了・ドキュメント同期・コミット(`fa050ee`)後、ユーザ�
 
 コミット済み3件(`6a76722`/`0fbd148`/`0b55e86`)、pushはユーザーの明示指示待ち。次はWI-09(テーマ、ダーク/ライト/ハイコントラスト)。
 
+## Session 87 (2026-08-13〜14): WI-09(テーマ)実装完了、実機ライブ切替をコマンドパレット経由で実証
+
+WI-08完了後、ユーザーから「pushせよ」と指示され`6a76722`〜`68a53ee`の17コミット(WI-07全体+WI-08全体)をpush、CI 4ジョブ全green確認(実行ID`31701105765`)。続けて「次のPhaseへ進め」と指示され、Plan Mode(Explore agent3体並列+自己検証+Plan agent1体)でWI-09(テーマ)の設計を確定した。
+
+**最重要の発見(自己検証):** `render_pipeline.cpp`の`render()`(粗粒度フレームスキップ、Phase 3c/ADR-011)を直接読解し、`captureFrameState()`のスナップショットが直前と一致すれば`renderOnce()`を完全にスキップすると確認した。`setTheme()`単体呼び出し(topLine/cursor/文書バージョン等が無変化)の場合、`ThemeKind`を`FrameState`に含めなければ、ブラシは`resetThemeBrushes()`でリセットされるのに実際の再描画(新色での再構築)がフレームスキップに飲み込まれ、画面が古い色のまま固まる — `m_leftColumn`(WI-03)・`m_imeComposition`(WI-06)と全く同じバグクラスであり、実装前に発見し設計へ反映した(自動テスト`ThemeOnlyChangeForcesRedrawInsteadOfFrameSkip`で直接検証)。
+
+Plan agentによる設計検証で、Phase 1調査の4つの誤り/欠落を修正した: (1) `attach()`が`recreateDevice()`とは別の部分的4ブラシ`.Reset()`ブロックを持つと判明(既に全て`null`なComPtrのリセットで実害なし、任意クリーンアップとして記録のみ)。(2) build_plan.mdの移行対象リストに「キャレット」があるが、独立したブラシは存在せず`drawCaretOnLine()`が`m_textBrush`を再利用するだけと判明 — `Theme::text`の移行で自動的にカバーされ専用フィールド不要。(3)(4) `settings.h`の`themeName`/`saveTo()`の陳腐化コメント2箇所。
+
+実装: 新規`theme.h`(`ThemeKind`enum+`Theme`23フィールド構造体+`themeForKind()`宣言)/`theme.cpp`(Dark色は`render_pipeline.cpp`から一字一句転記、Light/HighContrastは新規VSCode Light+/Windows標準ハイコントラスト風パレット) → `render_pipeline.h`/`.cpp`(`setTheme()`セッター、`FrameState::themeKind`を`imeComposition`直後に追加、`resetThemeBrushes()`を新設し`recreateDevice()`の既存21ブラシ`.Reset()`ブロックをリファクタ、11個の`ensureXxxBrush()`+`renderOnce()`の背景`Clear()`を`themeForKind(m_themeKind).<field>`参照へ全置換) → 新規`theme_settings.h`(ヘッダオンリー、`tab_index_math.h`と同型、`parseThemeKind()`/`themeKindToSettingsString()`) → `normal_mode_wiring.cpp`(`view.theme.dark/light/highContrast`の3コマンド新設+既存`settings.reload`へ5行目のセッター追加) → `main.cpp`(起動時`setTheme(parseThemeKind(settings.themeName))`配線) → `render_text_smoke_test.cpp`に統合テスト2件追加。
+
+**最終ゲート:** Debug/Release/ubsanフル3構成(サブエージェント委任)、各1111件全green。**clang-tidyが`theme.cpp`の`255.0F / 255.0F`(フル値=255のRGBチャンネルの自己除算)を`misc-redundant-expression`として11箇所検出**(`render_pipeline.cpp`の`ensureMatchBrushes()`に「R channel written as 1.0F directly ... since that self-division trips clang-tidy's misc-redundant-expression」という既存コメントで同型の前例あり、新規コードベースパターンではなかった) → 全11箇所を`1.0F`直書きへ修正し、Debug再ビルド+clang-tidy再実行(clean化確認)+Release再ビルド+ubsan再実行、いずれもgreenを確認。
+
+**実機ドッグフーディング(4サイクル):** `%APPDATA%\NeoMIFES\settings.json`の`themeName`を`light`→起動→スクリーンショット(白背景+VSCode Light+風トークン色を確認)、`high-contrast`→起動→スクリーンショット(純黒背景+シアン/オレンジ/マゼンタ等の高彩度トークン色を確認)、存在しない値(`this-is-not-a-real-theme`)→起動→スクリーンショット(Darkへの安全なフォールバックを確認、パーサ検証テスト`ParseThemeKindFallsBackToDarkForGarbageString`の実機側の証明)の3サイクルを実施。続けてコマンドパレット(`Ctrl+Shift+P`)を`SendKeys`で開き`Theme: Light`をタイプ→Enterで実行したところ、**この環境で過去複数セッション不調だった修飾キー合成入力(Ctrl/Shift)が本セッションでは正常動作し**、`settings.json`が即座に`"themeName":"light"`へ書き換わり(アプリ自身によるファイル書き込みをシステムリマインダーで確認)、画面も再起動なしに即座にLight配色へ再描画されることをスクリーンショットで確認した。さらにNeoMIFESを終了→再起動し、永続化された`light`テーマが自動的に復元されることを最終確認した。WI-08は同じCtrl+Shift+P制約により`settings.reload`のライブ実行を自動化未検証のまま「実質検証済み」と間接的に結論づけていたが、本WIでは実際にライブコマンド実行を直接証明できた。
+
+**ドキュメント同期:** `build_plan.md`(WI-09 DoD全項目`[x]`化+「保留項目なし。完全に完了」+実装後の確定事項節新設+「キャレット」列挙の訂正注記、進捗チェックリストの`[x]`化)、`master_roadmap.md`(§8.6.3に実装後の確定事項追記)、`RESUME_HERE.md`(冒頭ポインタ+§1状態表8.6c行+新規§3.76完了記録、次はWI-10)。
+
+コミット済み1件(`be65533`)、pushはユーザーの明示指示待ち。次はWI-10(キーバインド設定+プリセット、秀丸/サクラ/VSCode)。
+
 <!-- 次セッションはここに追記 -->
