@@ -19,6 +19,7 @@ add_executable(neomifes_unit_tests
     render_error_test.cpp
     render_viewport_math_test.cpp
     render_indent_guide_math_test.cpp
+    render_gutter_math_test.cpp
     render_reparse_edit_conversion_test.cpp
     render_text_layout_cache_test.cpp
     core_selection_model_test.cpp

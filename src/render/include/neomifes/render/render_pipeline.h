@@ -378,7 +378,7 @@ public:
     // Hit-tests a client-area point against the gutter's fold-marker column
     // (Phase 7j). Returns the header line of a currently-drawn foldable
     // region if `xPx` falls anywhere within the gutter strip
-    // ([0, kGutterWidthDips)) and `yPx` resolves (via the same visible-line
+    // ([0, gutterWidthDips())) and `yPx` resolves (via the same visible-line
     // walk hitTest() uses) to a line that is a fold header - nullopt
     // otherwise (click outside the gutter, or on a gutter row that isn't
     // foldable). Deliberately hit-tests the WHOLE gutter width for a
@@ -483,6 +483,8 @@ private:
     [[nodiscard]] RenderExpected<void> ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7i: the fold-marker triangle's brush (drawGutterOnLine()).
     [[nodiscard]] RenderExpected<void> ensureFoldMarkerBrush(ID2D1DeviceContext6& dc) noexcept;
+    // WI-07 step7: the line-number digits' brush (drawGutterOnLine()).
+    [[nodiscard]] RenderExpected<void> ensureLineNumberBrush(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7b: one solid brush per colored TokenKind (Text/Variable/
     // Punctuation deliberately excluded - see tokenBrush()'s comment).
     [[nodiscard]] RenderExpected<void> ensureTokenBrushes(ID2D1DeviceContext6& dc) noexcept;
@@ -612,6 +614,22 @@ private:
     // 3+ call sites exist" precedent reservedTopHeightDips() itself set
     // (Phase 7o).
     [[nodiscard]] float leftColumnOffsetDips() const noexcept;
+    // WI-07 step7: dynamic-width line-number gutter (computeGutterWidthDips(),
+    // gutter_math.h) - replaces the old fixed kGutterWidthDips constant
+    // (still present as this function's own minWidthDips floor) as the
+    // single source of truth every x-coordinate consumer in this file must
+    // agree on (same "every consumer must agree" contract kGutterWidthDips
+    // itself used to document - see this constant's own header comment).
+    // Computed fresh from m_document->lineCount() (O(1), a maintained
+    // counter - see document.h) every call rather than cached: this class
+    // has no per-frame-invalidated cache for it, and the underlying counter
+    // read is cheap enough not to need one (CLAUDE.md rule 10 - no
+    // benchmark motivates adding a cache here). Falls back to
+    // kGutterWidthDips outright when m_document is null or m_charWidthDips
+    // hasn't been measured yet (pre-first-resize) - preserves every existing
+    // test's/measurement-mode's coordinate system exactly until real layout
+    // info exists.
+    [[nodiscard]] float gutterWidthDips() const noexcept;
     // X-DIP offset where the minimap strip begins (kMinimapWidthDips before
     // the client-area's right edge). Extracted (Phase 7v) once drawMinimap()
     // and hitTestMinimap() both needed it - same "2nd call site" rule as
@@ -789,12 +807,12 @@ private:
     // drawMatchesOnLine() once per overlapping match range (Phase 5b3a).
     void drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                          std::uint32_t startColumn, std::uint32_t endColumn, bool isCurrent) noexcept;
-    // Fills a small bookmark dot in the gutter strip ([0, kGutterWidthDips))
-    // at vertical offset `y` if `line` is bookmarked (Phase 4b8c). Called
-    // from drawVisibleLines() once per visible line - deliberately minimal
-    // (no line numbers, no folding arrows - see bookmark_manager.h's file
-    // header for why the full "Line Gutter" feature stays a separate,
-    // already-deferred future phase).
+    // Draws the gutter strip's per-line contents at vertical offset `y`:
+    // the 1-based line number (WI-07 step7, right-aligned, drawn first so
+    // the two markers below layer on top of it), a bookmark dot if `line`
+    // is bookmarked (Phase 4b8c), and a fold-header chevron if `line` is a
+    // fold header (Phase 7i). Called from drawVisibleLines() once per
+    // visible line.
     void drawGutterOnLine(ID2D1DeviceContext6& dc, float y, document::LineNumber line) noexcept;
     // Applies a per-token-kind DrawingEffect brush to `layout` for whichever
     // m_tokens overlap [lineStart, lineEnd) (Phase 7b). Called from
@@ -984,6 +1002,9 @@ private:
     // Phase 7i: fold-marker triangle brush, same device-bound reset
     // lifecycle as the brushes above. See ensureFoldMarkerBrush()/drawGutterOnLine().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_foldMarkerBrush;
+    // WI-07 step7: line-number digits' brush, same device-bound reset
+    // lifecycle as the brushes above. See ensureLineNumberBrush()/drawGutterOnLine().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_lineNumberBrush;
     // Phase 7b: one brush per colored TokenKind, same device-bound reset
     // lifecycle as the brushes above. See ensureTokenBrushes()/tokenBrush().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_keywordBrush;

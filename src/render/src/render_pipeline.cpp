@@ -9,6 +9,7 @@
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/render/d2d_factories.h"
+#include "neomifes/render/gutter_math.h"
 #include "neomifes/render/indent_guide_math.h"
 #include "neomifes/render/resize_math.h"
 #include "neomifes/render/viewport_math.h"
@@ -29,12 +30,13 @@ using document::TextRange;
 constexpr float kMaxLayoutWidthDips  = 65536.0F;
 constexpr float kMaxLayoutHeightDips = 65536.0F;
 
-// Phase 4b8c: minimal bookmark-only gutter width. Every x-coordinate
-// consumer in this file (DrawTextLayout's origin, hitTest()'s xDip, and the
-// three draw*OnLine() rect-builders below) must agree on this offset - see
-// drawCaretOnLine()/drawSelectionOnLine()/drawMatchOnLine()'s comments for
-// why HitTestTextPosition()'s layout-local coordinates do not automatically
-// inherit DrawTextLayout()'s origin shift.
+// Phase 4b8c: original fixed bookmark-only gutter width. WI-07 step7
+// superseded this as the LIVE x-coordinate offset - every consumer that
+// used to reference this constant directly now calls
+// RenderPipeline::gutterWidthDips() instead (see its own declaration
+// comment), which returns this value only as its minWidthDips floor
+// (small documents / char width not yet measured). Kept as a named
+// constant (not inlined) because gutterWidthDips() itself still needs it.
 constexpr float kGutterWidthDips  = 24.0F;
 constexpr float kBookmarkDotSizeDips = 8.0F;
 
@@ -176,6 +178,7 @@ RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
     m_activeIndentGuideBrush.Reset();
     m_breadcrumbBackgroundBrush.Reset();
     m_foldMarkerBrush.Reset();
+    m_lineNumberBrush.Reset();
     m_minimapBackgroundBrush.Reset();
     m_minimapViewportBrush.Reset();
     m_minimapTextBrush.Reset();
@@ -422,6 +425,20 @@ RenderExpected<void> RenderPipeline::ensureFoldMarkerBrush(ID2D1DeviceContext6& 
         // yet" rationale as ensureIndentGuideBrushes()/ensureBreadcrumbBrush().
         constexpr D2D1_COLOR_F kFoldMarkerColor = {150.0F / 255.0F, 150.0F / 255.0F, 150.0F / 255.0F, 1.0F};
         const HRESULT hr = dc.CreateSolidColorBrush(kFoldMarkerColor, m_foldMarkerBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
+RenderExpected<void> RenderPipeline::ensureLineNumberBrush(ID2D1DeviceContext6& dc) noexcept {
+    if (!m_lineNumberBrush) {
+        // Dimmer than m_textBrush (muted gray, RGB 120,120,120) so digits
+        // read as gutter chrome rather than document content - the
+        // conventional line-number treatment (VSCode/Sublime/most editors).
+        constexpr D2D1_COLOR_F kLineNumberColor = {120.0F / 255.0F, 120.0F / 255.0F, 120.0F / 255.0F, 1.0F};
+        const HRESULT hr = dc.CreateSolidColorBrush(kLineNumberColor, m_lineNumberBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -793,7 +810,7 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     // why only the gutter needs an explicit clip).
     const float widthDips  = static_cast<float>(m_width) / m_dpiScale;
     const float heightDips = static_cast<float>(m_height) / m_dpiScale;
-    dc.PushAxisAlignedClip(D2D1::RectF(kGutterWidthDips, 0.0F, widthDips, heightDips),
+    dc.PushAxisAlignedClip(D2D1::RectF(gutterWidthDips(), 0.0F, widthDips, heightDips),
                             D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     // Drawn before DrawTextLayout so glyphs render on top of the highlight
     // (Phase 4b2, N-cursor generalization Phase 4b7a). Matches drawn first
@@ -813,7 +830,7 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
     // WI-03: shifted left by leftColumnOffsetDips() so scrolling right moves
     // the glyphs, not kGutterWidthDips itself (which never changes).
-    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips - leftColumnOffsetDips(), y), *layoutResult,
+    dc.DrawTextLayout(D2D1::Point2F(gutterWidthDips() - leftColumnOffsetDips(), y), *layoutResult,
                       m_textBrush.Get());
     drawCaretsOnLine(dc, **layoutResult, y, line, caretDraws);
     // WI-06: overlay, drawn on top of the caret(s) above - no-op unless the
@@ -829,7 +846,7 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     if (foldedHeader != m_foldRegions.end()) {
         DWRITE_TEXT_METRICS metrics{};
         if (SUCCEEDED((*layoutResult)->GetMetrics(&metrics))) {
-            drawFoldedHeaderMarker(dc, kGutterWidthDips - leftColumnOffsetDips() + metrics.width, y);
+            drawFoldedHeaderMarker(dc, gutterWidthDips() - leftColumnOffsetDips() + metrics.width, y);
         }
     }
     dc.PopAxisAlignedClip();
@@ -885,7 +902,7 @@ void RenderPipeline::drawImeCompositionOnLine(ID2D1DeviceContext6& dc, IDWriteTe
     }
     // See drawCaretOnLine()'s comment - layout-local coordinates need the
     // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly.
-    const float leftDip = kGutterWidthDips - leftColumnOffsetDips() + anchorX;
+    const float leftDip = gutterWidthDips() - leftColumnOffsetDips() + anchorX;
 
     const std::wstring_view wText = util::toWstringView(composition.text);
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
@@ -1022,7 +1039,7 @@ void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     // parameter (Phase 4b8c, confirmed by reading the actual D2D/DWrite
     // call sequence - see drawVisibleLines()). WI-03: leftColumnOffsetDips()
     // subtracted the same way DrawTextLayout()'s own origin now is.
-    const float leftDip = kGutterWidthDips - leftColumnOffsetDips();
+    const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
     const D2D1_RECT_F caretRect = D2D1::RectF(leftDip + caretX, y,
                                               leftDip + caretX + kCaretWidthDips,
                                               y + m_lineHeightDips);
@@ -1051,7 +1068,7 @@ void RenderPipeline::drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLay
     // See drawCaretOnLine()'s comment - layout-local coordinates need the
     // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
     // (Phase 4b8c).
-    const float leftDip = kGutterWidthDips - leftColumnOffsetDips();
+    const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
     const D2D1_RECT_F selectionRect = D2D1::RectF(leftDip + startX, y, leftDip + endX,
                                                   y + m_lineHeightDips);
     dc.FillRectangle(selectionRect, m_selectionBrush.Get());
@@ -1081,15 +1098,37 @@ void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     // See drawCaretOnLine()'s comment - layout-local coordinates need the
     // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
     // (Phase 4b8c).
-    const float leftDip = kGutterWidthDips - leftColumnOffsetDips();
+    const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
     const D2D1_RECT_F matchRect =
         D2D1::RectF(leftDip + startX, y, leftDip + endX, y + m_lineHeightDips);
     dc.FillRectangle(matchRect, brush);
 }
 
 void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumber line) noexcept {
+    // WI-07 step7: 1-based line number, right-aligned to the same right
+    // margin the fold-marker chevron below uses (gutterWidthDips() - 4.0F) -
+    // drawn FIRST so the bookmark dot/fold marker layer visibly on top of it
+    // (mirrors drawTextLine()'s "background element before glyphs" order for
+    // selection/match highlights vs. token-colored text). One-off
+    // IDWriteTextLayout per frame, not TextLayoutCache - that cache is keyed
+    // by document line number and reused across frames for that line's
+    // CONTENT layout (drawTextLine()'s getOrCreate() call); reusing it here
+    // for the line-number label would collide with that same key.
+    if (m_dwriteFactory && m_textFormat && m_lineNumberBrush) {
+        const std::wstring number       = std::to_wstring(line + 1);
+        const float         maxWidthDips = std::max(0.0F, gutterWidthDips() - 4.0F);
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> numberLayout;
+        const HRESULT hr = m_dwriteFactory->CreateTextLayout(
+            number.c_str(), static_cast<UINT32>(number.size()), m_textFormat.Get(), maxWidthDips,
+            m_lineHeightDips, numberLayout.GetAddressOf());
+        if (SUCCEEDED(hr) && numberLayout) {
+            numberLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            dc.DrawTextLayout(D2D1::Point2F(0.0F, y), numberLayout.Get(), m_lineNumberBrush.Get());
+        }
+    }
+
     if (m_bookmarkBrush && std::ranges::find(m_bookmarkedLines, line) != m_bookmarkedLines.end()) {
-        const float centerX = kGutterWidthDips / 2.0F;
+        const float centerX = gutterWidthDips() / 2.0F;
         const float centerY = y + (m_lineHeightDips / 2.0F);
         const float radius  = kBookmarkDotSizeDips / 2.0F;
         const D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(centerX, centerY), radius, radius);
@@ -1111,7 +1150,7 @@ void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumb
         return;
     }
     constexpr float kMarkerHalfSize = 3.5F;
-    const float     markerRight     = kGutterWidthDips - 4.0F;
+    const float     markerRight     = gutterWidthDips() - 4.0F;
     const float     markerLeft      = markerRight - (kMarkerHalfSize * 2.0F);
     const float     centerY         = y + (m_lineHeightDips / 2.0F);
     if (headerRegion->folded) {
@@ -1174,7 +1213,7 @@ void RenderPipeline::drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y,
     for (std::uint32_t level = 1; level <= guideCount; ++level) {
         // WI-03: leftColumnOffsetDips() subtracted, same as every other
         // text-derived X coordinate in this file.
-        const float x = kGutterWidthDips - leftColumnOffsetDips() +
+        const float x = gutterWidthDips() - leftColumnOffsetDips() +
                         (static_cast<float>(level * kTabWidth) * m_charWidthDips);
         const D2D1_RECT_F guideRect =
             D2D1::RectF(x, y, x + kIndentGuideWidthDips, y + m_lineHeightDips);
@@ -1223,11 +1262,11 @@ void RenderPipeline::drawBreadcrumb(ID2D1DeviceContext6& dc) noexcept {
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     const HRESULT hr = m_dwriteFactory->CreateTextLayout(
         wJoined.data(), static_cast<UINT32>(wJoined.size()), m_textFormat.Get(),
-        std::max(0.0F, widthDips - kGutterWidthDips), kBreadcrumbHeightDips, layout.GetAddressOf());
+        std::max(0.0F, widthDips - gutterWidthDips()), kBreadcrumbHeightDips, layout.GetAddressOf());
     if (FAILED(hr) || !layout) {
         return;
     }
-    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, m_tabBarHeightDips), layout.Get(), m_textBrush.Get());
+    dc.DrawTextLayout(D2D1::Point2F(gutterWidthDips(), m_tabBarHeightDips), layout.Get(), m_textBrush.Get());
 }
 
 std::optional<FoldVisual> RenderPipeline::stickyScrollRegionAt(LineNumber topLine) const noexcept {
@@ -1262,12 +1301,17 @@ float RenderPipeline::leftColumnOffsetDips() const noexcept {
     return static_cast<float>(m_leftColumn) * m_charWidthDips;
 }
 
+float RenderPipeline::gutterWidthDips() const noexcept {
+    const std::uint64_t totalLines = m_document != nullptr ? m_document->lineCount() : 0;
+    return computeGutterWidthDips(totalLines, m_charWidthDips, kGutterWidthDips);
+}
+
 std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
     if (m_dpiScale <= 0.0F) {
         return 0;
     }
     const float availableWidthDips =
-        (static_cast<float>(m_width) / m_dpiScale) - kGutterWidthDips - kMinimapWidthDips;
+        (static_cast<float>(m_width) / m_dpiScale) - gutterWidthDips() - kMinimapWidthDips;
     return computeVisibleColumnCount(availableWidthDips, m_charWidthDips);
 }
 
@@ -1319,11 +1363,11 @@ void RenderPipeline::drawStickyScroll(ID2D1DeviceContext6& dc) noexcept {
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     const HRESULT hr = m_dwriteFactory->CreateTextLayout(
         wText.data(), static_cast<UINT32>(wText.size()), m_textFormat.Get(),
-        std::max(0.0F, widthDips - kGutterWidthDips), kStickyScrollHeightDips, layout.GetAddressOf());
+        std::max(0.0F, widthDips - gutterWidthDips()), kStickyScrollHeightDips, layout.GetAddressOf());
     if (FAILED(hr) || !layout) {
         return;
     }
-    dc.DrawTextLayout(D2D1::Point2F(kGutterWidthDips, m_tabBarHeightDips + kBreadcrumbHeightDips),
+    dc.DrawTextLayout(D2D1::Point2F(gutterWidthDips(), m_tabBarHeightDips + kBreadcrumbHeightDips),
                       layout.Get(), m_textBrush.Get());
 }
 
@@ -1487,7 +1531,7 @@ void RenderPipeline::drawMinimap(ID2D1DeviceContext6& dc) noexcept {
     const float left = minimapLeftDips();
     // Window too narrow (strip would collide with the gutter) - drawing
     // neither is safer than drawing both overlapping.
-    if (left <= kGutterWidthDips) {
+    if (left <= gutterWidthDips()) {
         return;
     }
     const float widthDips  = static_cast<float>(m_width) / m_dpiScale;
@@ -1517,7 +1561,7 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
     // added back AFTER the gutter clamp - the inverse of drawTextLine()'s
     // `kGutterWidthDips - leftColumnOffsetDips()` glyph-origin shift.
     const float xDip =
-        std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - kGutterWidthDips) + leftColumnOffsetDips();
+        std::max(0.0F, (static_cast<float>(xPx) / m_dpiScale) - gutterWidthDips()) + leftColumnOffsetDips();
     // Phase 7h/7o: clicks within the Breadcrumb/Sticky scroll strip(s) clamp
     // to the first visible line's row offset - same "clamp to a sane
     // default" convention as the gutter's xDip clamp above.
@@ -1589,7 +1633,7 @@ std::optional<document::LineNumber> RenderPipeline::hitTestFoldMarker(std::int32
         return std::nullopt;
     }
     const float xDip = static_cast<float>(xPx) / m_dpiScale;
-    if (xDip < 0.0F || xDip >= kGutterWidthDips) {
+    if (xDip < 0.0F || xDip >= gutterWidthDips()) {
         return std::nullopt;  // click landed outside the gutter strip entirely
     }
     const std::uint64_t totalLines = m_document->lineCount();
@@ -1630,7 +1674,7 @@ std::optional<document::LineNumber> RenderPipeline::minimapLineAtY(std::int32_t 
 std::optional<document::LineNumber> RenderPipeline::hitTestMinimap(std::int32_t xPx,
                                                                     std::int32_t yPx) const noexcept {
     const float left = minimapLeftDips();
-    if (left <= kGutterWidthDips) {
+    if (left <= gutterWidthDips()) {
         return std::nullopt;  // matches drawMinimap()'s own "too narrow" bail-out
     }
     const float xDip = static_cast<float>(xPx) / m_dpiScale;
@@ -1717,6 +1761,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!foldMarkerBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return foldMarkerBrushResult;
+    }
+    auto lineNumberBrushResult = ensureLineNumberBrush(*dc);
+    if (!lineNumberBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return lineNumberBrushResult;
     }
     auto minimapBrushResult = ensureMinimapBrushes(*dc);
     if (!minimapBrushResult) {
