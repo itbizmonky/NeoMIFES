@@ -65,6 +65,7 @@ add_executable(neomifes_unit_tests
     app_workspace_test.cpp
     app_tab_index_math_test.cpp
     ui_tab_bar_test.cpp
+    ui_main_window_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

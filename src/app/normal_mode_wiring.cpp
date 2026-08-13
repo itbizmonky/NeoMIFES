@@ -1554,6 +1554,18 @@ std::vector<TabBarItem> buildTabBarItems(const Workspace& workspace) {
     return items;
 }
 
+// WI-07 step8: the OS title bar text for the currently ACTIVE session only
+// (unlike buildTabBarItems(), which covers every open tab) - reuses
+// ui::formatWindowTitle()'s pure formatting, same "filename() only, nullopt
+// for untitled" convention buildTabBarItems() already established above.
+std::wstring buildWindowTitle(const EditorSession& session) {
+    std::optional<std::wstring> filename;
+    if (!session.isUntitled()) {
+        filename = session.path().filename().wstring();
+    }
+    return neomifes::ui::formatWindowTitle(filename, session.isDirty());
+}
+
 // WI-05 step 2: creates+positions+populates the tab strip, same "create
 // then prime the first position/size explicitly" shape
 // createAndPositionOutlinePane() above already established (onDeferredInit
@@ -2252,6 +2264,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             // WI-07 step4: same "rebuild every frame, no dirty-check guard"
             // convention as tabBar.setTabs() above.
             statusBar.setParts(buildStatusBarParts(session));
+            // WI-07 step8: same "rebuild every frame, no dirty-check guard"
+            // convention - MainWindow::setTitle()'s own doc comment explains
+            // why no diffing against the previous title is needed here.
+            window.setTitle(buildWindowTitle(session));
         });
         const FindBarConfig findBarConfig =
             buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory);

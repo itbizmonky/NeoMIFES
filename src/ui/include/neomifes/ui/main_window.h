@@ -21,6 +21,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,24 @@ namespace neomifes::ui {
 // identical C-array justification on kSingleInstanceMutexName in main.cpp.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, hicpp-avoid-c-arrays, modernize-avoid-c-arrays)
 inline constexpr wchar_t kWindowClassName[] = L"NeoMIFES.MainWindow";
+
+// Pure, dependency-free title formatting (WI-07 step8) - header-only so it
+// stays unit-testable without a live HWND, same rationale as
+// ui::formatTabBaseLabel() (tab_bar.h). `filename` is the active session's
+// file name only (nullopt for an untitled/unsaved document, same convention
+// formatTabBaseLabel() uses - callers derive it via
+// std::filesystem::path::filename() before calling this). `isDirty` appends
+// a trailing "*" before the " - NeoMIFES" suffix, mirroring TabBarItem's own
+// dirty-marker convention (a trailing glyph, not a prefix).
+[[nodiscard]] inline std::wstring formatWindowTitle(const std::optional<std::wstring>& filename,
+                                                     bool isDirty) {
+    std::wstring title = filename.value_or(L"Untitled");
+    if (isDirty) {
+        title += L'*';
+    }
+    title += L" - NeoMIFES";
+    return title;
+}
 
 struct MainWindowConfig {
     int  initialWidth       = 1200;
@@ -245,6 +264,15 @@ public:
     // No-op if no composition is in progress (ImmSetCandidateWindow is
     // harmless to call outside one, but callers should prefer not to).
     void setImeCandidatePosition(POINT clientPx) noexcept;
+
+    // Imperative call (WI-07 step8), same "app layer calls imperatively into
+    // a ui:: class" pattern as setImeCandidatePosition()/ui::TabBar::setTabs()
+    // above. Sets the OS title bar text via ::SetWindowTextW - no diffing
+    // against the previous title (same "rebuild every frame, no dirty-check
+    // guard" convention normal_mode_wiring.cpp's paint handler already uses
+    // for tabBar.setTabs()/statusBar.setParts(), see build_plan.md's WI-07
+    // notes). No-op if the window hasn't been created yet.
+    void setTitle(std::wstring_view title) noexcept;
 
 private:
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept;

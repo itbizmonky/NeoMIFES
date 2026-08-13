@@ -527,4 +527,11 @@ void MainWindow::setImeCandidatePosition(POINT clientPx) noexcept {
     ::ImmSetCandidateWindow(ime.get(), &form);
 }
 
+void MainWindow::setTitle(std::wstring_view title) noexcept {
+    if (m_hwnd == nullptr) {
+        return;
+    }
+    ::SetWindowTextW(m_hwnd, std::wstring(title).c_str());
+}
+
 }  // namespace neomifes::ui
