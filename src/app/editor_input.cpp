@@ -458,9 +458,9 @@ std::optional<std::uint32_t> computeHScrollTargetColumn(WORD scrollCode, WORD sc
 }
 
 bool applyIndentationConversion(core::IndentationConversionTarget target, Document& document,
-                                CommandDispatcher& dispatcher, const SelectionModel& selectionModel) {
-    constexpr int kTabWidth = 4;
-    auto edits = core::computeIndentationConversionEdits(target, kTabWidth, document);
+                                CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
+                                std::uint32_t tabWidth) {
+    auto edits = core::computeIndentationConversionEdits(target, static_cast<int>(tabWidth), document);
     if (edits.empty()) {
         return false;
     }

@@ -37,6 +37,7 @@
 #include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_metrics.h"
 #include "neomifes/core/selection_model.h"
+#include "neomifes/core/settings.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
@@ -1250,9 +1251,13 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
 // 1: takes Workspace& instead - every CommandDescriptor::action below is
 // STORED inside CommandPalette and invoked whenever the user later picks
 // that command, so each one resolves workspace.active() fresh at
-// invocation time (see wireNormalMode()'s header comment for why).
+// invocation time (see wireNormalMode()'s header comment for why). WI-08:
+// takes core::Settings& and settingsPath - see the two convert-indentation
+// commands (now reading settings.tabWidth instead of a hardcoded 4) and the
+// new "settings.reload" command below.
 std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar, Workspace& workspace,
-                                                     RenderPipeline& renderPipeline,
+                                                     RenderPipeline& renderPipeline, core::Settings& settings,
+                                                     const std::optional<std::filesystem::path>& settingsPath,
                                                      bool& freeCursorModeEnabled) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{.id              = u"find.show",
@@ -1302,24 +1307,48 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertTabsToSpaces", .title = u"Convert Tabs to Spaces", .keybindingLabel = u"",
         .commandId = CommandId::None,
-        .action = [hwnd, &workspace]() {
+        .action = [hwnd, &workspace, &settings]() {
             EditorSession& session = workspace.active();
             if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::TabsToSpaces,
                                                           session.document(), session.dispatcher(),
-                                                          session.selection())) {
+                                                          session.selection(), settings.tabWidth)) {
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.convertSpacesToTabs", .title = u"Convert Spaces to Tabs", .keybindingLabel = u"",
         .commandId = CommandId::None,
-        .action = [hwnd, &workspace]() {
+        .action = [hwnd, &workspace, &settings]() {
             EditorSession& session = workspace.active();
             if (neomifes::app::applyIndentationConversion(IndentationConversionTarget::SpacesToTabs,
                                                           session.document(), session.dispatcher(),
-                                                          session.selection())) {
+                                                          session.selection(), settings.tabWidth)) {
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        // WI-08: re-reads settings.json (missing/corrupt -> safe defaults,
+        // same Settings::loadFrom() contract core_settings_test.cpp
+        // verifies) and re-applies the 4 live-wired setters. This is the
+        // only in-app mutation path for `settings` in WI-08 - there is no
+        // settings dialog yet (see build_plan.md's WI-08 section for why:
+        // out of scope for this WI), so users hand-edit settings.json
+        // externally and run this command (Ctrl+Shift+P) to pick it up
+        // without restarting. No-op if settingsPath is nullopt
+        // (resolveAppDataDir() failed at startup - same graceful
+        // degradation as searchHistoryPath's own reload/save paths).
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            if (!settingsPath) {
+                return;
+            }
+            settings = core::Settings::loadFrom(*settingsPath);
+            renderPipeline.setFontSettings(settings.fontFamily, settings.fontSizeDips);
+            renderPipeline.setTabWidth(settings.tabWidth);
+            renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
+            renderPipeline.setMinimapVisible(settings.showMinimap);
+            ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"view.toggleFoldAtCursor", .title = u"Fold/Unfold at Cursor", .keybindingLabel = u"",
@@ -2244,7 +2273,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
-                    TabBar& tabBar, StatusBar& statusBar, bool& freeCursorModeEnabled,
+                    TabBar& tabBar, StatusBar& statusBar, core::Settings& settings,
+                    const std::optional<std::filesystem::path>& settingsPath, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
@@ -2262,7 +2292,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.menuBar = neomifes::app::buildMenuBar();
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
-                          &statusBar, &freeCursorModeEnabled](HWND hwnd) {
+                          &statusBar, &settings, &settingsPath, &freeCursorModeEnabled](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -2315,8 +2345,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // that fails to create simply isn't available this session.
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
-        auto commands =
-            buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, freeCursorModeEnabled);
+        auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
+                                             freeCursorModeEnabled);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 

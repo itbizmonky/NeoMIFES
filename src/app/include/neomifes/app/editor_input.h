@@ -181,18 +181,22 @@ bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int 
     WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept;
 
 // Convert Tabs to Spaces / Convert Spaces to Tabs command-palette actions
-// (Phase 4b8d). Applies to the whole document; tabWidth is fixed at 4 - there
-// is no settings system to source a configurable value from. Reuses
-// core::ReplaceAllCommand (Phase 5b2) rather than a bespoke command class -
-// see indentation_conversion.h's header comment. Returns false (no-op, no
+// (Phase 4b8d). Applies to the whole document. Reuses core::ReplaceAllCommand
+// (Phase 5b2) rather than a bespoke command class - see
+// indentation_conversion.h's header comment. Returns false (no-op, no
 // dispatch) if no lines need conversion. WI-04: moved here from main.cpp,
 // with its HWND parameter and ::InvalidateRect() call removed and a bool
 // return added in their place - matching handlePaste()/handleChar()'s
 // existing "return whether the document changed, caller repaints" convention
 // used throughout this module. The one call site (main.cpp) now performs the
-// repaint itself when this returns true.
+// repaint itself when this returns true. WI-08: tabWidth is now a caller-
+// supplied parameter (core::Settings::tabWidth) instead of a local
+// constexpr 4 - this is one of the two kTabWidth duplicates the WI-08 DoD
+// requires eliminating (the other was render_pipeline.cpp's, resolved in
+// WI-08 step 2 via RenderPipeline::m_tabWidth).
 bool applyIndentationConversion(core::IndentationConversionTarget target, document::Document& document,
-                                core::CommandDispatcher& dispatcher, const core::SelectionModel& selectionModel);
+                                core::CommandDispatcher& dispatcher, const core::SelectionModel& selectionModel,
+                                std::uint32_t tabWidth);
 
 // Parses the currently open document into an OutlineNode tree (empty if no
 // language detected - an untitled session, or an unrecognized extension).

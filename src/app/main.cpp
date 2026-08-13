@@ -66,6 +66,7 @@
 #include "neomifes/app/normal_mode_wiring.h"
 #include "neomifes/app/workspace.h"
 #include "neomifes/core/search_history.h"
+#include "neomifes/core/settings.h"
 #include "neomifes/document/document.h"
 #include "neomifes/platform/app_data_dir.h"
 #include "neomifes/platform/handle_guard.h"
@@ -101,6 +102,7 @@ using neomifes::app::StartupProfile;
 using neomifes::app::wireNormalMode;
 using neomifes::app::Workspace;
 using neomifes::core::SearchHistory;
+using neomifes::core::Settings;
 using neomifes::document::Document;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
@@ -321,6 +323,27 @@ int WINAPI wWinMain(HINSTANCE hInstance,
             searchHistory = SearchHistory::loadFrom(*searchHistoryPath);
         }
     }
+    // Persisted user settings (WI-08) - font/tab width/line numbers/minimap
+    // are applied to renderPipeline once below (before window.create(), same
+    // reasoning as renderPipeline.setLanguage() further down: setters only
+    // touch plain member state, no attach() required yet) and re-applied
+    // live via the "Reload Settings" command palette entry
+    // (normal_mode_wiring.cpp's buildCommandRegistry()). Same Normal-mode-
+    // only resolution as searchHistoryPath above - no point paying
+    // filesystem I/O on --measure-* harness invocations. Settings::saveTo()
+    // is deliberately never called from main.cpp - there is no in-app
+    // mutation path for `settings` in WI-08 (see build_plan.md's WI-08
+    // section); saveTo() exists purely for the loadFrom()/saveTo() round-
+    // trip unit test and for a future settings-editor UI.
+    Settings                              settings;
+    std::optional<std::filesystem::path> settingsPath;
+    if (args.mode == LaunchMode::Normal) {
+        settingsPath = resolveAppDataDir();
+        if (settingsPath) {
+            *settingsPath /= L"settings.json";
+            settings = Settings::loadFrom(*settingsPath);
+        }
+    }
     // Free cursor mode (Phase 4b8e, simplified - see approved plan). Toggled
     // via the command palette ("Toggle Free Cursor Mode") - session-lifetime
     // UI state, not document state (see normal_mode_wiring.cpp's
@@ -337,6 +360,17 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     MainWindow window;
     MainWindowConfig cfg{};
     RenderPipeline renderPipeline;
+    // WI-08: applied once here, before attach()/window.create() - setters
+    // only touch plain member state (same reasoning as setLanguage() below),
+    // so this is safe pre-attach. Harmless no-op for MeasureStartup/
+    // MeasureMemory/MeasureFrame launches too: `settings` stays
+    // default-constructed there (settingsPath is only resolved in Normal
+    // mode above), and Settings' defaults match RenderPipeline's own
+    // pre-WI-08 hardcoded values exactly (see settings.h).
+    renderPipeline.setFontSettings(settings.fontFamily, settings.fontSizeDips);
+    renderPipeline.setTabWidth(settings.tabWidth);
+    renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
+    renderPipeline.setMinimapVisible(settings.showMinimap);
 
     // Each mode's hook wiring lives in its own function (see definitions
     // above, or normal_mode_wiring.cpp for the Normal case) - ordering
@@ -354,7 +388,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // reflected everywhere without this call site changing again.
         wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
-                       freeCursorModeEnabled, isDraggingMinimap, imeComposing);
+                       settings, settingsPath, freeCursorModeEnabled, isDraggingMinimap, imeComposing);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

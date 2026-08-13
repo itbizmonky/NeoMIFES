@@ -20,11 +20,14 @@
 
 #include <windows.h>
 
+#include <filesystem>
+#include <optional>
 #include <vector>
 
 #include "neomifes/app/editor_session.h"
 #include "neomifes/app/workspace.h"
 #include "neomifes/core/search_history.h"
+#include "neomifes/core/settings.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/search/grep_service.h"
@@ -124,11 +127,20 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // ui::StatusBar's own header comment), repopulated every frame from the
 // paint handler (same "no dirty-check guard at this DoD's scale" convention
 // tabBar.setTabs() already follows).
+// WI-08: takes core::Settings& and settingsPath - settings itself is
+// Workspace-wide (not per-EditorSession) process configuration, same
+// placement reasoning as searchHistory above. settingsPath is threaded
+// through (rather than resolved again here) so the new "settings.reload"
+// command (see buildCommandRegistry()'s .cpp body) can re-read the same
+// file main.cpp already loaded from at startup; nullopt if
+// resolveAppDataDir() failed there, in which case the reload command is a
+// silent no-op (same graceful-degradation treatment as searchHistoryPath).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
-                    ui::TabBar& tabBar, ui::StatusBar& statusBar, bool& freeCursorModeEnabled,
+                    ui::TabBar& tabBar, ui::StatusBar& statusBar, core::Settings& settings,
+                    const std::optional<std::filesystem::path>& settingsPath, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing);
 
 }  // namespace neomifes::app
