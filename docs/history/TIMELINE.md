@@ -2797,4 +2797,24 @@ WI-06ステップ1〜3(`ImeContext` RAII・`MainWindowConfig`の4フック・`Re
 
 コミット計4件(`1dc62d0`/`94e2259`/`cced77f`/`f233f02`)、push済み・CI green確認済み。次はWI-06ステップ4完了待ち→ドキュメント同期→WI-07。
 
+## Session 85 (2026-08-13): WI-07(ウィンドウクローム)ステップ0〜10 実装完了、🎉 M2達成
+
+WI-06完了後、ユーザーから「次のPhaseに進め」と指示された。着手前、ステータスバー実装が`native_overlay_widgets_invisible.md`(P0未解決)の7つ目の被害ウィジェットになるリスクをAskUserQuestionでユーザーへ提起し、根本原因調査をステップ0として先行させる方針が承認された。加えてINS/OVRの実装深度をAskUserQuestionで確認し、表示だけでなく実際の編集動作(Insertキーでモード切替、上書きモード時はカーソル直後の1文字を置換)を実装する本格実装が選ばれた。
+
+**ステップ0(`c0f296b`):** `MainWindow::create()`の`windowStyle`に`WS_CLIPCHILDREN`が欠落していたことを発見(カスタム描画する親ウィンドウ+子コントロールという組み合わせで極めて頻出するWin32の既知の落とし穴、これまでのどのセッションでも一度も試されていなかった)。1行追加で解消し、実機スクリーンショットでTabBar帯の可視化を確認。`native_overlay_widgets_invisible.md`を解決済みへ移動。
+
+**ステップ1(`55f80cc`):** `ui::CommandId`(40000番台)+`CommandDescriptor`拡張。**ステップ2(`1b989af`):** `HACCEL`+`dispatchCommand()`という単一チョークポイントを新設。`editor_input.cpp`の`if (ctrlDown && vkCode == ...)`連鎖を除去しdispatchCommandへ一本化(既存テスト2ケースを書き換え)。`command_dispatch.h`は意図的に narrow scope とし、Find/Grep/CommandPalette/Outline/GotoLineの各トグルキーは`normal_mode_wiring.cpp`の既存`handle*Key()`連鎖に残置 — グローバルアクセラレータへ昇格させるとオーバーレイウィジェットのフォーカス中`WC_EDIT`より先にキーを奪う競合が判明したため。
+
+**ステップ3(`fe69c44`):** メニューバー(`buildMenuBar()`)6メニュー(ファイル/編集/検索/表示/ツール/ヘルプ)。**ステップ4(`b9f8c82`):** `ui::StatusBar`(`STATUSCLASSNAME`)骨格、6パート。**ステップ5(`6fc8cbd`):** INS/OVR実編集動作 — `VK_INSERT`でトグル、既存`MultiCursorEditCommand`を再利用しUndo/Redoが追加コード無しで自動対応。**ステップ6(`a075e6d`):** ステータスバーの文字コード/改行コード欄クリックでの変更 — `NM_CLICK`がCommon Controls 4.71以降で発火することを実機確認してから実装(推測に頼らず検証)。
+
+**ステップ7(`cefd5a6`):** 動的幅行番号ガター。新規`gutter_math.h`(`digitCount()`/`computeGutterWidthDips()`)、`RenderPipeline::gutterWidthDips()`が桁数に応じて動的に幅を計算し、未計測時は既存の`kGutterWidthDips=24.0F`へフォールバックする設計(既存テスト座標系を壊さない)。**ステップ8(`292280b`):** ウィンドウタイトル — `formatWindowTitle(filename, isDirty)`純粋関数+`MainWindow::setTitle()`命令的メソッド。**ステップ9(`91104bd`):** 右クリックコンテキストメニュー — `WM_CONTEXTMENU`処理+`menu_bar.h`の既存`kEditMenuItems`(5項目)をそのまま流用、新規コンテンツ定義不要。
+
+**ステップ10(`68a53ee`):** リソースファイル。着手前に「要probe」と明記していた2件の技術的分岐点がいずれも実装より軽い形で解決した。(a) Ninja+MSVCでの`.rc`コンパイルに`enable_language(RC)`は不要(`.rc`をソースリストへ加えるだけでCMakeが自動検出)。(b) `.rc`埋め込みマニフェストと`main.cpp`既存のリンカプラグマ製マニフェストの共存方法は、`resources/neomifes.rc`が`RT_MANIFEST`を一切定義しない設計にすることで衝突自体を回避 — 結果として`.manifest`ファイルは新設しなかった。アイコンはPowerShell+`System.Drawing`で手製の複数解像度(16/32/48/256px)ICOファイル(暫定デザイン、単色背景+"N")を生成、`Icon.ExtractAssociatedIcon()`で実際のビルド済み`.exe`から抽出して確認した。
+
+**各ステップ後にDebug構成のみをバックグラウンドサブエージェントへ委任して検証(2026-08-12改訂の運用ルール通り)、ドッグフーディングはステップごとに手法を変えた** — `PrintWindow`によるスクリーンショット全画面キャプチャ(ステップ7)、`GetWindowTextW`直接読み取り(ステップ8、視覚確認より精度が高い)、`mouse_event`によるマウス右クリック合成+領域キャプチャ(ステップ9、Ctrl/Shift等修飾キー合成が不調な既知の制約とは独立にマウスクリック自体は合成できた)。ステップ10の最終ゲート(Debug/Release/ubsanフル3構成+clang-tidyスイープ、WI全体で変更した全ファイル対象)は新規警告0で通過した — WI-06のような追加バグ発見は無かった。
+
+**ドキュメント同期:** `build_plan.md`(WI-07 DoD全項目`[x]`化+「既に決まっている設計」表のリソース行訂正+実装後の確定事項節新設、進捗チェックリストの`[x]`化)、`master_roadmap.md`(§8.5.8に実装後の確定事項追記)、`docs/issues/native_overlay_widgets_invisible.md`(既にステップ0で解決済みへ移動済みだったことを確認)、`docs/issues/no_application_shell.md`(P0、WI-01〜WI-07完了により完了条件を全て満たしたため解決済みへ移動)、`docs/issues/README.md`(P0セクションを「該当なし」へ、2件を解決済みセクションへ追加)、`RESUME_HERE.md`(冒頭ポインタ+§1状態表8.5f行+新規§3.74完了記録)。
+
+コミット済み11件(`c0f296b`/`55f80cc`/`1b989af`/`fe69c44`/`b9f8c82`/`6fc8cbd`/`a075e6d`/`cefd5a6`/`292280b`/`91104bd`/`68a53ee`)、pushはユーザーの明示指示待ち。🎉 **M2達成: アプリケーションとして成立。** 次はWI-08(設定システム、`core::Settings`)。
+
 <!-- 次セッションはここに追記 -->

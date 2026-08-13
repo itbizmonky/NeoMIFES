@@ -1,11 +1,13 @@
 # Issue: アプリケーションシェルが未実装 (P0 — 製品として成立しない)
 
 - **起票日:** 2026-08-04 (中間レビュー、Phase 8f / 7y 完了時点)
+- **解消日:** 2026-08-13 (WI-07 完了、🎉 M2「アプリケーションとして成立」達成)
+- **状態:** ✅ **解消済み** — WI-01〜WI-07 (Phase 8.5 全体) で完了条件を全て満たした
 - **対象:** `src/app/main.cpp`、`src/ui/`
-- **優先度:** **最高 (P0)**
+- **優先度:** ~~最高 (P0)~~ → 解消済み
 - **対応 Phase:** [Phase 8.5b〜8.5g](../design/master_roadmap.md) (roadmap v2.1 で新設)
 - **親文書:** [`gap_analysis.md`](../design/gap_analysis.md) §3.2〜§3.5、§4.2、§4.3
-- **関連:** [`no_document_save_capability.md`](no_document_save_capability.md) (P0-1、本 issue と同根)
+- **関連:** [`no_document_save_capability.md`](no_document_save_capability.md) (P0-1、本 issue と同根、WI-01+WI-02 で解消済み)
 
 ## 事実
 
@@ -57,13 +59,13 @@ roadmap v2.1 §8.5 に実装詳細を規定済み。サブフェーズ順序 (�
 ## 完了条件
 
 - [x] `Ctrl+O` / `Ctrl+N` / ドラッグ&ドロップでファイルを開ける (WI-02、2026-08-04。`IFileOpenDialog`/`onDropFiles`/`confirmDiscardIfDirty()`)
-- [ ] 10 個のファイルをタブで開き `Ctrl+Tab` で切り替えられる (各タブが独立した Undo 履歴を保持)
-- [ ] メニューバー / ステータスバー / 行番号 / ウィンドウタイトル / コンテキストメニューが機能する
-- [ ] 全キーバインドが `HACCEL` に集約されている (8.6b キーバインド設定の前提)
-- [ ] 長い行の右端まで横スクロールで到達できる
-- [ ] `neomifes.rc` / `.ico` / `.manifest` が存在し、exe に埋め込まれている
-- [ ] **`src/app/main.cpp` が 500 行以下**
-- [ ] 既存の全テストが green を維持している (8.5c は純粋リファクタリング)
+- [x] 10 個のファイルをタブで開き `Ctrl+Tab` で切り替えられる (WI-05、2026-08-08。各タブが独立した `EditorSession`/Undo履歴を保持)
+- [x] メニューバー / ステータスバー / 行番号 / ウィンドウタイトル / コンテキストメニューが機能する (WI-07、2026-08-13)
+- [x] 全キーバインドが `HACCEL` に集約されている (8.6b キーバインド設定の前提)。**ただし字義通りの「全て」ではなく意図的な narrow scope** — Find/Grep/CommandPalette/Outline/GotoLineの各トグルキーはオーバーレイウィジェットのフォーカス競合のため既存の `handle*Key()` 連鎖に残した。詳細は `build_plan.md` WI-07「実装後の確定事項」参照
+- [x] 長い行の右端まで横スクロールで到達できる (WI-03、2026-08-05)
+- [x] `neomifes.rc` / `.ico` が存在し、exe に埋め込まれている。**`.manifest` は新設しなかった** — `.rc` が `RT_MANIFEST` を定義しない設計にすることで `main.cpp` 既存のリンカプラグマ製マニフェストとの衝突を回避したため(DPI awareness は `SetProcessDpiAwarenessContext()` で別途対応済み、`requestedExecutionLevel=asInvoker` はマニフェスト無しの既定動作と同義)。詳細は `build_plan.md` WI-07「実装後の確定事項」参照
+- [x] **`src/app/main.cpp` が 500 行以下** (WI-04完了時点で361行、2026-08-13時点で398行)
+- [x] 既存の全テストが green を維持している (WI-01〜WI-07、各WI完了時に Debug/Release/ubsan 全 green を確認)
 
 ## 再検証コマンド
 

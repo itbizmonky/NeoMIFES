@@ -1743,6 +1743,8 @@ class Workspace {
 - **コンテキストメニュー** (`WM_CONTEXTMENU` + `TrackPopupMenu`)
 - **リソース**: `neomifes.rc` / `neomifes.ico` / `neomifes.manifest` (DPI awareness / Common Controls v6 / `requestedExecutionLevel`)
 
+**実装後の確定事項 (2026-08-13、WI-07 完了、コミット `c0f296b`〜`68a53ee` の計11件):** 上記の設計方針通りに実装し、🎉 M2 (アプリケーションとして成立) を達成した。着手前に発見したP0 issue([`native_overlay_widgets_invisible.md`](../issues/native_overlay_widgets_invisible.md))の根本原因調査をステップ0として先行実施し、`MainWindow::create()`の`windowStyle`に`WS_CLIPCHILDREN`が欠落していたことが原因と判明・1行修正で解消した(issueは解決済みへ移動済み)。`ui::CommandId` + `dispatchCommand()`という単一チョークポイントを新設しHACCEL/メニューバー両方から共有する設計にしたが、**Find/Grep/CommandPalette/Outline/GotoLineの各トグルキーは意図的にHACCEL化しなかった**(グローバルアクセラレータへ昇格させるとオーバーレイウィジェットのフォーカス中`WC_EDIT`より先にキーを奪う競合が判明したため、`command_dispatch.h`冒頭コメントに理由を明記)。**リソースは`.rc`/`.ico`のみで`.manifest`は新設しなかった** — `.rc`が`RT_MANIFEST`リソースを一切定義しない設計にすることで、`main.cpp`既存のリンカプラグマ製マニフェスト(Common Controls v6依存)との衝突を回避したため(上表の「リソース」記述は歴史的スケッチとして残すが、実装はこの通り簡略化された)。行番号ガターは固定幅ではなく桁数に応じた動的幅で実装(当初想定を上回る形)。INS/OVRは表示だけでなく実編集動作まで実装、既存`MultiCursorEditCommand`の再利用によりUndo/Redoが追加コード無しで自動対応した。詳細は`build_plan.md` WI-07の「実装後の確定事項」参照。
+
 ### 8.5.9 サブフェーズ 8.5g — 横スクロール
 
 **現状:** `WM_HSCROLL` / `leftColumn` 相当が皆無。`drawTextLine()` は 65536 DIP の巨大レイアウトボックスに `NO_WRAP` で描画し、実クリップをレンダーターゲット境界任せにしている。**画面幅を超える行の右端には到達できない。**

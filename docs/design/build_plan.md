@@ -114,8 +114,8 @@ ctest --preset debug --output-on-failure
 - [x] **WI-04** `main.cpp` 解体 + `EditorSession` / `Workspace` 新設 → コミット: `c58245e` (ステップ1) / `8237ec4` (ステップ2) / `2c549d0` (ステップ3) / `3480b5f` (ステップ3b)
 - [x] **WI-05** タブ UI (`ui::TabBar`) → コミット: `4f9bced` (ステップ1) / `fe037d7` (ステップ2) / `62edf0c` (ステップ3) / `57acef8` (ステップ4)
 - [x] **WI-06** IME 完全対応 (`WM_IME_*` + インライン未確定文字列) → コミット: `0baccaa` (ステップ1〜3) / `94e2259`・`f233f02` (CI修正) / 実機MS-IME確認完了 (2026-08-12)
-- [ ] **WI-07** ウィンドウクローム (メニュー / `HACCEL` / ステータスバー / 行番号 / `.rc`) → `________`
-  - 🎉 **M2 達成: アプリケーションとして成立**
+- [x] **WI-07** ウィンドウクローム (メニュー / `HACCEL` / ステータスバー / 行番号 / `.rc`) → コミット: `c0f296b` (ステップ0) / `55f80cc` (ステップ1) / `1b989af` (ステップ2) / `fe69c44` (ステップ3) / `b9f8c82` (ステップ4) / `6fc8cbd` (ステップ5) / `a075e6d` (ステップ6) / `cefd5a6` (ステップ7) / `292280b` (ステップ8) / `91104bd` (ステップ9) / `68a53ee` (ステップ10)
+  - 🎉 **M2 達成 (2026-08-13): アプリケーションとして成立**
 
 ## Phase 8.6 — 製品化基盤 (P1)
 
@@ -651,19 +651,15 @@ public:
 | 行番号 | Phase 4b8c で新設したブックマーク専用ガター (`kGutterWidthDips=24`) を拡張して行番号を描画。**幅は桁数に応じて動的に** |
 | ウィンドウタイトル | `<ファイル名> [*] - NeoMIFES` (`*` は未保存) |
 | コンテキストメニュー | `WM_CONTEXTMENU` + `TrackPopupMenu` |
-| リソース | 新規 `resources/neomifes.rc` / `neomifes.ico` / `neomifes.manifest` (DPI awareness / Common Controls v6 / `requestedExecutionLevel=asInvoker`) |
+| リソース | 新規 `resources/neomifes.rc` / `neomifes.ico`。**`.manifest` は新設しなかった** — 詳細は下記「実装後の確定事項」参照 |
 
 **ステータスバーの文字コード・改行コード欄はクリックで変更できるようにする** (WI-02 でダイアログに出さなかった選択 UI をここで提供する)。
 
 **アイコンについて:** `.ico` は自前で用意する必要がある。デザインが決められない場合は、暫定として単色背景に "N" の字を置いた最小限のものを作り、**issue に「アイコンの正式デザイン」として起票して先送りしてよい** (体裁上、既定アイコンのままよりは遥かに良い)。
 
-### 実装ログ (進行中)
-
-- **ステップ0 (2026-08-12) 完了:** 着手前に発見した P0 issue [`native_overlay_widgets_invisible.md`](../issues/native_overlay_widgets_invisible.md) の根本原因調査を先行実施。原因は `MainWindow::create()` の `windowStyle` に `WS_CLIPCHILDREN` が欠落していたこと(`src/ui/src/main_window.cpp:89`)。1行追加で解消し、実機スクリーンショットでTabBar帯の可視化を確認。issueは解決済みへ移動。ステータスバー実装(本WI)がこの構造的欠陥の7つ目の被害ウィジェットになるリスクは解消された。
-
 ### 影響ファイル
 
-- 新規 `resources/neomifes.rc` / `neomifes.ico` / `neomifes.manifest`
+- 新規 `resources/neomifes.rc` / `neomifes.ico` (`.manifest` は新設しなかった、実装後の確定事項参照)
 - `src/app/CMakeLists.txt` — `.rc` をターゲットソースへ追加
 - `src/ui/src/main_window.cpp` — メニュー / `WM_CONTEXTMENU` / `TranslateAcceleratorW`
 - 新規 `src/ui/include/neomifes/ui/status_bar.h` / `src/ui/src/status_bar.cpp`
@@ -672,16 +668,36 @@ public:
 
 ### DoD
 
-- [ ] メニューバーから 開く / 保存 / 元に戻す / 検索 / 各種トグルが実行できる
-- [ ] ステータスバーに 行:桁 / 文字コード / 改行コード / 選択文字数 が表示され、カーソル移動で更新される
-- [ ] 文字コード欄・改行コード欄をクリックして変更でき、保存に反映される
-- [ ] 行番号が表示される
-- [ ] ウィンドウタイトルにファイル名と未保存マーク (`*`) が出る
-- [ ] 右クリックでコンテキストメニューが出る
-- [ ] **exe に独自アイコンが埋め込まれている** (エクスプローラで確認)
-- [ ] **全キーバインドが `HACCEL` に集約されている** (`editor_input.cpp` に `if (ctrlDown && vkCode == ...)` の連鎖が残っていない)
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
-- [ ] 🎉 **M2 達成: アプリケーションとして成立**
+- [x] メニューバーから 開く / 保存 / 元に戻す / 検索 / 各種トグルが実行できる (ファイル/編集/検索/表示/ツール/ヘルプの6メニュー、`menu_bar.h`)
+- [x] ステータスバーに 行:桁 / 文字コード / 改行コード / 選択文字数 が表示され、カーソル移動で更新される (INS/OVR・言語も追加で表示、計6パート)
+- [x] 文字コード欄・改行コード欄をクリックして変更でき、保存に反映される (ステップ6、`TrackPopupMenu`による選択肢提示)
+- [x] 行番号が表示される (**桁数に応じた動的幅**、ステップ7の想定を上回る形で実装)
+- [x] ウィンドウタイトルにファイル名と未保存マーク (`*`) が出る
+- [x] 右クリックでコンテキストメニューが出る
+- [x] **exe に独自アイコンが埋め込まれている。** ただしエクスプローラでの目視確認ではなく、`System.Drawing.Icon.ExtractAssociatedIcon()` で実際にビルド済み `.exe` からアイコンを抽出しPNG保存する形で確認した(詳細は下記「実装後の確定事項」)。デザインは暫定(単色背景+"N")、正式デザインは別途 issue 化が必要
+- [x] **全キーバインドが `HACCEL` に集約されている。** ただし字義通りの「全て」ではなく、**意図的に narrow scope** — `editor_input.cpp` からは `if (ctrlDown && vkCode == ...)` 連鎖を完全に除去できたが、`normal_mode_wiring.cpp` 側の Find/Grep/CommandPalette/Outline/GotoLine の各トグルキーは既存の `handle*Key()` 連鎖に意図的に残した(理由は下記「実装後の確定事項」、`command_dispatch.h` 冒頭コメントに機械可読な形で明記済み)
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0 (ステップ10の最終検証で新規警告0、WI-06のような追加バグ発見は無し)
+- [x] 🎉 **M2 達成 (2026-08-13): アプリケーションとして成立**
+
+### 実装後の確定事項 (2026-08-13 完了)
+
+**ステップ0: `WS_CLIPCHILDREN` 仮説が的中した。** 着手前に発見したP0 issue [`native_overlay_widgets_invisible.md`](../issues/native_overlay_widgets_invisible.md)(FindBar等6ウィジェットが不可視になる根本原因未特定のバグ)を、本WIの最初のステップとして先行調査した。`MainWindow::create()` の `windowStyle` に `WS_CLIPCHILDREN` が欠落していたことが原因(`src/ui/src/main_window.cpp`)。1行追加で解消し、実機スクリーンショットでTabBar帯の可視化を確認した。issueは解決済みへ移動済み — ステータスバー実装(本WI)が7つ目の被害ウィジェットになるリスクは解消された。
+
+**`CommandId` + `dispatchCommand()` という単一チョークポイントを新設し、HACCELとメニューの両方から同じ経路で呼べるようにした。** `ui::CommandId`(40000番台、既存の子ウィジェットコントロールID帯1001-7001と非衝突)を新設し、`CommandDescriptor` にも同フィールドを追加してコマンドパレット・HACCEL・メニューバーが同じ語彙を共有する設計にした。`command_dispatch.h` は意図的に narrow scope — Save/SaveAs/Open/New/タブ切替/タブクローズ/Copy/Cut/Paste/Undo/Redo/INS-OVRトグルのみを扱い、Find/Grep/CommandPalette/Outline/GotoLineの各トグルキーは既存の `handle*Key()` 連鎖に残した。理由: これらは「オーバーレイウィジェットにフォーカスがある間は親へキーが届かない」という既存の構造的制約と絡み合っており、グローバルアクセラレータテーブルへ昇格させるとフォーカス中の子コントロール(`WC_EDIT`)より先にキーを奪ってしまう競合が実際に発生することが判明したため。メニューバーのクリックはWin32のWM_COMMAND経由でこの競合が起きないため、メニュー項目としては両カテゴリとも問題なく配線できている。
+
+**ステータスバーの `NM_CLICK` は Common Controls 4.71 以降サポートされていることを実機で確認してから実装した(推測に頼らず検証、CLAUDE.mdルール3)。** `msctls_statusbar32` から `WM_NOTIFY` 経由で届くことを確認し、`StatusBar::handleNotify()` → `onPartClicked` → 文字コード/改行コード欄クリック時の `TrackPopupMenu` 選択肢提示という経路を実装した(ステップ6)。
+
+**INS/OVR は表示だけでなく実編集動作まで本格実装した(ユーザー承認済み)。** `VK_INSERT` で `EditorSession::overwriteMode()` をトグルし、上書きモード時はカーソル直後の1文字を置換する(行末/文末では挿入にフォールバック)。既存の `MultiCursorEditCommand` を再利用したため、新規 `ICommand` を作らずにUndo/Redoが自動対応した。
+
+**行番号ガターは固定幅ではなく、桁数に応じた動的幅で実装した(ステップ7、当初のroadmap想定を上回る形)。** `RenderPipeline::gutterWidthDips()` が `computeGutterWidthDips(totalLines, charWidthDips, minWidthDips)` を呼び、`minWidthDips`(旧`kGutterWidthDips=24.0F`)は文字幅未計測時・空文書時のフォールバック値として残した。既存の全テスト座標系を壊さない設計。
+
+**ウィンドウタイトルは `formatWindowTitle(filename, isDirty)` という純粋関数 + `MainWindow::setTitle()` という命令的メソッドの組み合わせで実装した(ステップ8)。** 毎フレーム再構築する既存の `tabBar.setTabs()` と同じ「差分ガード無し」規約を踏襲。
+
+**右クリックコンテキストメニューは、`menu_bar.h` の既存 `kEditMenuItems`(5項目: Undo/Redo/Cut/Copy/Paste)をそのまま流用した(ステップ9)。** 新規コンテンツ定義が不要になり、メニューバーの編集メニューと右クリックメニューが将来も文言面でズレない設計になった。
+
+**ステップ10のリソースファイル実装で、着手前に「要probe」と明記していた2件の技術的分岐点が、いずれも実装より軽い形で解決した。** (a) Ninja+MSVCでの`.rc`コンパイルに `enable_language(RC)` は不要 — `.rc`ファイルを`add_executable()`のソースリストへ加えるだけでCMakeが自動検出し`rc.exe`を呼ぶ。(b) `.rc`埋め込みマニフェストと`main.cpp`既存のリンカプラグマ製マニフェスト(Common Controls v6依存)の共存方法は、`resources/neomifes.rc` が**そもそも`RT_MANIFEST`リソースを一切定義しない**設計にすることで、両者の衝突自体を回避した。結果として当初想定していた `neomifes.manifest` ファイルは新設しなかった(上表「既に決まっている設計」の訂正箇所)。アイコン自体はPowerShell + `System.Drawing`による手製の複数解像度(16/32/48/256px)ICOファイル(暫定デザイン、単色背景+"N")。
+
+**WI-07全体の最終検証(Debug/Release/ubsanフル3構成+clang-tidyスイープ)は新規警告0で通過した** — WI-06の最終検証がCI由来のバグ2件を発見したのとは対照的に、本WIは10ステップにわたり一度も検証失敗が発生しなかった。
 
 ---
 
