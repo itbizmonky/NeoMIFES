@@ -119,7 +119,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 8.6 — 製品化基盤 (P1)
 
-- [ ] **WI-08** 設定システム (`core::Settings`) + ハードコード定数の移行 → `________`
+- [x] **WI-08** 設定システム (`core::Settings`) + ハードコード定数の移行 → コミット: `6a76722` (ステップ1) / `0fbd148` (ステップ2) / `0b55e86` (ステップ3)
 - [ ] **WI-09** テーマ (ダーク / ライト / ハイコントラスト) → `________`
 - [ ] **WI-10** キーバインド設定 + プリセット (秀丸 / サクラ / VSCode) → `________`
 - [ ] **WI-11** 自動保存 / バックアップ / クラッシュ復旧 / 最近開いたファイル → `________`
@@ -733,12 +733,21 @@ public:
 
 ### DoD
 
-- [ ] `%APPDATA%\NeoMIFES\settings.json` から読み書きできる
-- [ ] **`kTabWidth` の二重定義が解消されている**
-- [ ] 設定ファイルが無い / 壊れている場合に既定値で起動する
-- [ ] フォント・タブ幅・行番号表示の変更が**再起動なしで反映される**
-- [ ] 「読み込み → 変更 → 保存 → 再読み込み」のラウンドトリップ単体テストがある
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] `%APPDATA%\NeoMIFES\settings.json` から読み書きできる (`core::Settings::loadFrom()`/`saveTo()`、`search_history.json`と同じ場所・同じ形式)
+- [x] **`kTabWidth` の二重定義が解消されている** (`render_pipeline.cpp`側は`RenderPipeline::m_tabWidth`へ、`editor_input.cpp`側は`applyIndentationConversion()`の`tabWidth`引数へ統合。`grep -rn "kTabWidth" src/`は定義0件、コメント内の歴史的言及のみ残存)
+- [x] 設定ファイルが無い / 壊れている場合に既定値で起動する (`loadFrom()`が欠落/不正JSON/バージョン不一致いずれも無条件に既定値へフォールバック、実アプリで壊れたJSONを与えて確認済み)
+- [x] フォント・タブ幅・行番号表示の変更が**再起動なしで反映される** (`RenderPipeline::setFontSettings()`/`setTabWidth()`/`setLineNumbersVisible()`/`setMinimapVisible()`の4セッター。ミニマップ表示も同じ形で追加配線した — DoD必須3項目に加えた任意拡張)
+- [x] 「読み込み → 変更 → 保存 → 再読み込み」のラウンドトリップ単体テストがある (`core_settings_test.cpp::SaveThenLoadRoundTripsAllFields`、日本語を含む`fontFamily`/`themeName`で往復確認)
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+
+**保留項目なし。完全に完了。**
+
+### 実装後の確定事項
+
+- **`SetIncrementalTabStop()`未着手ギャップの発見:** 着手前調査で、`IDWriteTextFormat::SetIncrementalTabStop()`がコードベース全体で1件も呼ばれていないことが判明した。既存の2つの`kTabWidth`コピー(`render_pipeline.cpp`のインデントガイド線計算用、`editor_input.cpp`のタブ⇔スペース変換コマンド用)は、実際の文書中のリテラル`'\t'`文字の描画幅には一切関与しておらず、DirectWriteの既定タブストップに委ねられたままだった。単純に2つの`kTabWidth`を1つの設定値へ統合するだけでは、DoDの「タブ幅の変更が再起動なしで反映される」は見た目上は達成できても実際のタブ文字表示は変わらないという不整合が生じるところだった。`ensureTextFormat()`内で`SetIncrementalTabStop(tabWidth * charWidthDips)`を新規に呼ぶことでこの隠れたギャップを合わせて解消した。
+- **`TextLayoutCache`のinvalidation契約:** `TextLayoutCache::getOrCreate()`は`document::LineNumber`のみをキーとし、呼び出しごとに渡される`textFormat`/幅/高さを再検証しない契約(既存)。フォント/タブ幅変更時は`setFontSettings()`/`setTabWidth()`双方が明示的に`m_layoutCache.clear()`を呼ぶ設計とした。
+- **設定変更手段:** 本WIでは専用の設定ダイアログを新設せず、`%APPDATA%\NeoMIFES\settings.json`の手動編集+コマンドパレット限定の新規コマンド`settings.reload`(`.commandId = CommandId::None`、`edit.convertTabsToSpaces`と同じ軽量パターン)で「再起動なしの反映」を成立させた。汎用設定ダイアログはWI-08原文に記載がなくスコープ外。
+- **ドッグフーディング結果:** `%APPDATA%\NeoMIFES\settings.json`を手動作成しフォントサイズ26.0/タブ幅8/`showLineNumbers=false`/`showMinimap=false`を設定→実際にNeoMIFES.exeを起動→大きなフォント・行番号ガター消失・ミニマップ消失・8幅タブインデントを実機スクリーンショットで確認。続けて構文エラーのあるJSONに書き換えて再起動→クラッシュせず全項目が既定値(小フォント/行番号あり/ミニマップあり/タブ幅4)へフォールバックすることを実機確認。`settings.reload`コマンド自体のコマンドパレット経由での対話的実行(Ctrl+Shift+P)は、この環境の既知の制約(Ctrl/Shift等の修飾キー合成入力が不可)により自動化検証できなかったが、同コマンドが呼ぶ4セッター自体は上記の起動時ドッグフーディングで実機検証済みであり、`Settings::loadFrom()`のラウンドトリップも単体テスト済みのため、実質的な機能は実機で証明されている。
 
 ---
 

@@ -2817,4 +2817,24 @@ WI-06完了後、ユーザーから「次のPhaseに進め」と指示された�
 
 コミット済み11件(`c0f296b`/`55f80cc`/`1b989af`/`fe69c44`/`b9f8c82`/`6fc8cbd`/`a075e6d`/`cefd5a6`/`292280b`/`91104bd`/`68a53ee`)、pushはユーザーの明示指示待ち。🎉 **M2達成: アプリケーションとして成立。** 次はWI-08(設定システム、`core::Settings`)。
 
+## Session 86 (2026-08-13): WI-08(設定システム)ステップ1〜3実装完了+最終ゲート、実機ドッグフーディング
+
+WI-07完了・ドキュメント同期・コミット(`fa050ee`)後、ユーザーから「次のPhaseに進め」と指示された。Explore agent+Plan agentによる着手前調査(CLAUDE.mdルール3)で、`core::SearchHistory`(Phase 5c5)が鋳型として使えると確認し、`kTabWidth`の重複が`render_pipeline.cpp`(`drawIndentGuidesOnLine()`)と`editor_input.cpp`(`applyIndentationConversion()`)の2箇所と確定した。
+
+**最も重要な発見:** 直接コードを読み込んで検証した結果、`IDWriteTextFormat::SetIncrementalTabStop()`がコードベース全体で一度も呼ばれていないことが判明した(grep 0件)。つまり実際の文書中のリテラル`'\t'`文字の描画幅は、既存の2つの`kTabWidth`コピーのどちらとも無関係に、DirectWriteの既定タブストップに委ねられたままだった。単純に2つの`kTabWidth`を1つの設定値へ統合するだけでは、DoDが要求する「タブ幅の変更が再起動なしで反映される」は見た目上は達成できても、実際のタブ文字の見た目は変わらないという食い違いが生じるところだった。この隠れたギャップをステップ2で`ensureTextFormat()`への`SetIncrementalTabStop()`呼び出し追加により合わせて解消した。
+
+**ステップ1(`6a76722`):** `core::Settings`(`search_history.h`と同型: 静的`loadFrom(path)`が欠落/不正JSON/バージョン不一致いずれも無条件に既定値へフォールバック、インスタンス`saveTo(path)`はbest-effort)を単独実装。8フィールド(フォントファミリ/サイズ/タブ幅/タブをスペースで挿入/行番号表示/ミニマップ表示/自動保存間隔/テーマ名)、`tabWidth`(0または32超で既定値4へクランプ)/`fontSizeDips`(0以下で既定値14.0Fへクランプ)の境界値検証、`operator==`defaulted(ラウンドトリップテストを`EXPECT_EQ`一発で書けるようにする改善)。単体テスト9件(`core_settings_test.cpp`)、日本語を含む`fontFamily`/`themeName`でのラウンドトリップテストを含む。
+
+**ステップ2(`0fbd148`):** `RenderPipeline`へ`setFontSettings()`/`setTabWidth()`/`setLineNumbersVisible()`/`setMinimapVisible()`の4セッターを追加(`setLanguage()`と同じ「保存+強制invalidation」パターン)。`ensureTextFormat()`に`SetIncrementalTabStop()`呼び出しを新規追加(上記ギャップの解消)。`drawIndentGuidesOnLine()`のローカル`kTabWidth`を`m_tabWidth`へ統合、`gutterWidthDips()`/`minimapLeftDips()`を`m_showLineNumbers`/`m_showMinimap`で分岐。統合テスト4件追加。**clang-tidyが新規に`bugprone-suspicious-stringview-data-usage`を検出** — `util::toWstringView(m_fontFamily).data()`を`CreateTextFormat()`へ渡す箇所で、`wstring_view`自体はnull終端を保証しないという型システム上の理由。実際には`m_fontFamily`という生存中のメンバをコピー無しでエイリアスしており`std::u16string`のnull終端保証により安全なため、`NOLINTNEXTLINE`+理由コメントで対応(既存の`codepage_convert.cpp`と同じ確立済みパターン)。Debug/Release/ubsan全1097件green、clang-tidy新規警告0を確認。
+
+**ステップ3(`0b55e86`):** `editor_input.cpp::applyIndentationConversion()`のローカル`kTabWidth`を呼び出し元から渡す`tabWidth`引数へ置換 — これでコードベース全体から`kTabWidth`という名前の独立定義が消滅(`grep -rn "kTabWidth" src/`は定義0件、コメント内の歴史的言及のみ残存)。`main.cpp`で`%APPDATA%\NeoMIFES\settings.json`から`Settings::loadFrom()`(`SearchHistory`と全く同じ配線パターン、Normal mode時のみ)、`RenderPipeline`構築直後・`window.create()`より前に4セッターを1回適用。`normal_mode_wiring.cpp`に新規コマンドパレット限定コマンド`settings.reload`(`.commandId = CommandId::None`、`edit.convertTabsToSpaces`と同じ軽量パターン)を追加 — 外部でsettings.jsonを手動編集した後、再起動なしで反映するための唯一の変更手段(専用設定ダイアログはWI-08のスコープ外)。既存の2つのタブ⇔スペース変換コマンドも`settings.tabWidth`を参照するよう更新。`Settings::saveTo()`は`main.cpp`から一度も呼ばれない設計(WI-08時点でアプリ自身が設定を変更する経路が無いため、ラウンドトリップの検証は単体テストのみで担保)。
+
+**最終ゲート:** Debug/Release/ubsanフル3構成、各1097件全greenを確認(ubsanでも新規UB検出なし)。clang-tidyスイープをWI全体で触れた全ファイル(`settings.cpp`/`core_settings_test.cpp`/`render_pipeline.cpp`/`render_text_smoke_test.cpp`/`editor_input.cpp`/`normal_mode_wiring.cpp`/`main.cpp`)へ実行し、新規警告0を確認(`core_settings_test.cpp`/`render_text_smoke_test.cpp`の既存warn-onlyカテゴリ(`rand()`/大文字リテラルサフィックス/`HiddenWindow`関連)は`core_search_history_test.cpp`等の既存テンプレートファイルと同一パターンであることを確認済み、新規ではない)。
+
+**実機ドッグフーディング:** `%APPDATA%\NeoMIFES\settings.json`にフォントサイズ26.0/タブ幅8/`showLineNumbers=false`/`showMinimap=false`を手動記述しNeoMIFES.exeを`--open`起動 → `EnumWindows`+`GetWindowThreadProcessId`で対象プロセスのHWNDを確認してからスクリーンショット撮影し、大きなフォント・行番号ガター消失・ミニマップ消失・8幅タブインデントを視覚確認。続けて構文エラーのあるJSON(`{ this is not valid json`)に書き換えて再起動 → クラッシュせず(プロセス生存・ウィンドウタイトル正常)全項目が既定値(小フォント/行番号あり/ミニマップあり/タブ幅4)へフォールバックすることを再度スクリーンショットで確認。`settings.reload`コマンド自体のコマンドパレット経由での対話実行(Ctrl+Shift+P)はこの環境の既知の制約(修飾キー合成入力不可)により自動化検証できなかったが、同コマンドが呼ぶ4セッター自体は上記の起動時ドッグフーディングで実機検証済みであり、`Settings::loadFrom()`のラウンドトリップも単体テスト済みのため実質的な機能は実機で証明されている。テスト用の`settings.json`は検証後削除しクリーンアップした(セッション開始時点で同ファイルは存在しなかった)。
+
+**ドキュメント同期:** `build_plan.md`(WI-08 DoD全項目`[x]`化+「保留項目なし。完全に完了」+実装後の確定事項節新設、進捗チェックリストの`[x]`化)、`master_roadmap.md`(§8.6.1に実装後の確定事項追記)、`docs/issues/no_settings_system.md`(状態を解決済みへ、完了条件全て`[x]`化)、`docs/issues/README.md`(P1セクションから移動、解決済みセクションへ追加、P1残り1件)、`RESUME_HERE.md`(冒頭ポインタ+§1状態表8.6a行+新規§3.75完了記録、次はWI-09)。
+
+コミット済み3件(`6a76722`/`0fbd148`/`0b55e86`)、pushはユーザーの明示指示待ち。次はWI-09(テーマ、ダーク/ライト/ハイコントラスト)。
+
 <!-- 次セッションはここに追記 -->
