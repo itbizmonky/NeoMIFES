@@ -1,0 +1,19 @@
+// NeoMIFES executable resources (WI-07 step10).
+//
+// Icon only - deliberately does NOT embed an application manifest here.
+// main.cpp already requests the Common Controls v6 side-by-side assembly
+// via a `#pragma comment(linker, "/manifestdependency:...")` (see that
+// file's own comment), which the linker's default `/MANIFEST` behavior
+// merges into the auto-generated manifest resource (RT_MANIFEST, resource
+// ID 1) at link time. Defining a second RT_MANIFEST resource here (ID 1)
+// would collide with that linker-generated one - so the "MANIFESTINPUT vs.
+// MANIFEST:NO" choice this step's plan flagged as needing a pre-
+// implementation probe turned out to be moot: this .rc simply never
+// touches RT_MANIFEST at all, leaving the existing, already-proven
+// pragma-based manifest untouched.
+//
+// The icon itself is a placeholder (solid background + "N" glyph,
+// generated via a throwaway PowerShell + System.Drawing script - see
+// resources/neomifes.ico's own git history) - formal design tracked
+// separately, see docs/issues/.
+101 ICON "neomifes.ico"

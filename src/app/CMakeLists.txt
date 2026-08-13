@@ -61,6 +61,10 @@ add_executable(NeoMIFES WIN32
     frame_profile.cpp
     file_dialogs.cpp
     message_dialogs.cpp
+    # WI-07 step10: icon resource only - see resources/neomifes.rc's own
+    # header comment for why this does NOT touch the executable's manifest
+    # (main.cpp's existing linker-pragma-based one is left untouched).
+    "${CMAKE_SOURCE_DIR}/resources/neomifes.rc"
 )
 
 target_link_libraries(NeoMIFES
