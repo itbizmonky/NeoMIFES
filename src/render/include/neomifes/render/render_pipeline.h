@@ -217,6 +217,68 @@ public:
     // exists instead of overloading the same one for both edges.
     void setStatusBarHeightDips(float heightDips) noexcept { m_statusBarHeightDips = heightDips; }
 
+    // WI-08: changes the font family/size used by ensureTextFormat(). No-op
+    // if both are already the current values (avoids needless invalidation,
+    // e.g. an app-startup call that happens to match the built-in default).
+    // Otherwise resets every piece of state ensureTextFormat() lazily
+    // computes from the OLD font (m_textFormat itself, plus
+    // m_charWidthDips/m_lineHeightDips - both measured alongside it and
+    // otherwise cached forever by ensureTextFormat()'s own early-return
+    // guard) so the next render() re-measures from the new font. Also clears
+    // m_layoutCache: TextLayoutCache::getOrCreate() keys ONLY by line
+    // number and does not re-validate a cache hit against the textFormat
+    // parameter it's given (see text_layout_cache.h's own contract comment)
+    // - without this clear(), stale IDWriteTextLayout objects built from the
+    // old font would keep being returned. Same "store + force downstream
+    // invalidation" shape as setLanguage() above.
+    void setFontSettings(std::u16string fontFamily, float fontSizeDips) noexcept {
+        if (fontFamily == m_fontFamily && fontSizeDips == m_fontSizeDips) {
+            return;
+        }
+        m_fontFamily     = std::move(fontFamily);
+        m_fontSizeDips   = fontSizeDips;
+        m_textFormat.Reset();
+        m_charWidthDips  = 0.0F;
+        m_lineHeightDips = 0.0F;
+        m_layoutCache.clear();
+    }
+
+    // WI-08: changes the tab width used for both indent-guide column math
+    // (drawIndentGuidesOnLine()) and literal '\t' glyph rendering
+    // (IDWriteTextFormat::SetIncrementalTabStop(), set inside
+    // ensureTextFormat() - see that method's own comment for why this call
+    // didn't exist anywhere in this codebase before WI-08). `0` is rejected
+    // (SetIncrementalTabStop() requires a positive value; indent_guide_math.h
+    // already treats a 0 tab width as degenerate) - same no-op guard shape
+    // as setFontSettings() above. If a text format already exists, the new
+    // tab stop is applied immediately (SetIncrementalTabStop() is a mutator
+    // on the live IDWriteTextFormat, no recreation needed) rather than
+    // waiting for some future setFontSettings()-triggered rebuild; the
+    // layout cache is still cleared since cached layouts may contain '\t'
+    // glyphs laid out at the old stop.
+    void setTabWidth(std::uint32_t tabWidth) noexcept {
+        if (tabWidth == 0 || tabWidth == m_tabWidth) {
+            return;
+        }
+        m_tabWidth = tabWidth;
+        if (m_textFormat && m_charWidthDips > 0.0F) {
+            m_textFormat->SetIncrementalTabStop(static_cast<float>(m_tabWidth) * m_charWidthDips);
+        }
+        m_layoutCache.clear();
+    }
+
+    // WI-08: show/hide the line-number labels drawGutterOnLine() draws.
+    // gutterWidthDips() below also consults this - hiding the numbers
+    // shrinks the gutter back to its pre-WI-07 bookmark/fold-marker-only
+    // width rather than leaving the now-empty digit-count space reserved.
+    void setLineNumbersVisible(bool visible) noexcept { m_showLineNumbers = visible; }
+
+    // WI-08: show/hide the minimap strip (drawMinimap()). minimapWidthDips()
+    // below also consults this so visibleColumnCount()/minimapLeftDips()
+    // reclaim the strip's width when hidden instead of leaving it reserved
+    // and blank.
+    void setMinimapVisible(bool visible) noexcept { m_showMinimap = visible; }
+
     // WI-03: the length (UTF-16 code units) of the longest line among those
     // ACTUALLY drawn last frame (drawVisibleLines() updates this as a side
     // effect of its existing per-line loop, at no extra cost - lineSpan.size()
@@ -607,7 +669,7 @@ private:
     // in this file subtracts from its otherwise-fixed kGutterWidthDips-
     // relative position - `m_leftColumn * m_charWidthDips`, the same
     // monospace-column approximation drawIndentGuidesOnLine() already uses
-    // (`level*kTabWidth*m_charWidthDips`). Extracted once 3+ call sites
+    // (`level*m_tabWidth*m_charWidthDips`, WI-08). Extracted once 3+ call sites
     // needed it (drawCaretOnLine/drawSelectionOnLine/drawMatchOnLine/
     // drawIndentGuidesOnLine/hitTest()/drawTextLine()'s clip+glyph origin/
     // drawFoldedHeaderMarker's call site - 7 in total), same "extract once
@@ -630,6 +692,16 @@ private:
     // test's/measurement-mode's coordinate system exactly until real layout
     // info exists.
     [[nodiscard]] float gutterWidthDips() const noexcept;
+    // WI-08: kMinimapWidthDips if the minimap is currently visible
+    // (m_showMinimap), 0.0F otherwise - so hiding the minimap
+    // (setMinimapVisible(false)) reclaims its reserved width instead of
+    // leaving a blank strip. Extracted once minimapLeftDips() and
+    // visibleColumnCount() both needed the same visibility-gated value, same
+    // "2+ call sites" rule as gutterWidthDips()'s own siblings.
+    // Defined out-of-line (render_pipeline.cpp, alongside gutterWidthDips())
+    // since kMinimapWidthDips is a .cpp-anonymous-namespace constant, not
+    // visible to an inline header definition.
+    [[nodiscard]] float minimapWidthDips() const noexcept;
     // X-DIP offset where the minimap strip begins (kMinimapWidthDips before
     // the client-area's right edge). Extracted (Phase 7v) once drawMinimap()
     // and hitTestMinimap() both needed it - same "2nd call site" rule as
@@ -1040,6 +1112,22 @@ private:
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()
     // uses it to approximate free-cursor virtual-column positions.
     float                                          m_charWidthDips  = 0.0F;  // 0 == not yet measured
+
+    // WI-08: font family/size ensureTextFormat() builds m_textFormat from.
+    // Defaults match the pre-WI-08 hardcoded values, so any code path that
+    // never calls setFontSettings() (every existing test, --measure-* launch
+    // modes) keeps its exact prior appearance.
+    std::u16string m_fontFamily   = u"Consolas";
+    float          m_fontSizeDips = 14.0F;
+    // WI-08: tab width for both drawIndentGuidesOnLine()'s column math and
+    // ensureTextFormat()'s SetIncrementalTabStop() call. Default matches the
+    // pre-WI-08 hardcoded kTabWidth constants this replaces.
+    std::uint32_t m_tabWidth = 4;
+    // WI-08: gutterWidthDips()/drawGutterOnLine() and minimapWidthDips()/
+    // drawMinimap() visibility gates. Both default true (identical to every
+    // pre-WI-08 frame, which always drew both).
+    bool m_showLineNumbers = true;
+    bool m_showMinimap     = true;
 
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not
     // device-bound (unlike m_textBrush) - NOT cleared in recreateDevice().

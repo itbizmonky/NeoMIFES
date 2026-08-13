@@ -1660,4 +1660,138 @@ TEST(RenderTextSmokeTest, RendersWithoutDocumentAttached) {
         << neomifes::render::describe(result.error());
 }
 
+// WI-08: setFontSettings() forces m_textFormat/m_charWidthDips/
+// m_lineHeightDips/m_layoutCache to be rebuilt from the new font on the
+// next render() - this only checks that the rebuild completes without
+// error (pixel-level verification is out of scope for this file, same as
+// every other test here).
+TEST(RenderTextSmokeTest, SetFontSettingsThenRenderStillSucceeds) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"int main() {\n\treturn 0;\n}\n");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+
+    pipeline.setFontSettings(u"Courier New", 18.0F);
+    const auto second = pipeline.render();
+    EXPECT_TRUE(second.has_value())
+        << "render() after setFontSettings() failed: " << neomifes::render::describe(second.error());
+}
+
+// WI-08: setTabWidth() rebuilds the indent-guide column math and (once a
+// text format already exists) mutates the live IDWriteTextFormat's
+// incremental tab stop directly - same "rebuild completes without error"
+// scope as the font test above.
+TEST(RenderTextSmokeTest, SetTabWidthThenRenderStillSucceeds) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"if (x) {\n\treturn;\n}\n");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+
+    pipeline.setTabWidth(8);
+    const auto second = pipeline.render();
+    EXPECT_TRUE(second.has_value())
+        << "render() after setTabWidth() failed: " << neomifes::render::describe(second.error());
+}
+
+// WI-08: setLineNumbersVisible(false) shrinks gutterWidthDips() back to the
+// pre-WI-07 flat bookmark/fold-marker-only width. gutterWidthDips() itself
+// is private, so this asserts through visibleColumnCount() (public), which
+// subtracts it from the available width - the same indirect-assertion
+// shape as SetMinimapVisibleFalseWidensVisibleColumnCount below.
+TEST(RenderTextSmokeTest, SetLineNumbersVisibleFalseWidensVisibleColumnCount) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    // Enough lines (4 digits) that computeGutterWidthDips() grows past its
+    // minWidthDips floor - built as one bulk insert, not one insertText()
+    // call per line (existing tests' loops top out around 5000 individual
+    // calls; this needs more lines than that just for the digit count).
+    std::u16string manyLines;
+    manyLines.reserve(2000 * 2);
+    for (int i = 0; i < 2000; ++i) {
+        manyLines += u"x\n";
+    }
+    doc.insertText(0, manyLines);
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const std::uint32_t columnsWithNumbers = pipeline.visibleColumnCount();
+
+    pipeline.setLineNumbersVisible(false);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "render() after setLineNumbersVisible(false) failed: "
+        << neomifes::render::describe(second.error());
+    EXPECT_GT(pipeline.visibleColumnCount(), columnsWithNumbers)
+        << "hiding line numbers did not shrink the gutter";
+}
+
+// WI-08: setMinimapVisible(false) reclaims the minimap's reserved width -
+// directly assertable via visibleColumnCount() (public) without needing
+// pixel inspection.
+TEST(RenderTextSmokeTest, SetMinimapVisibleFalseWidensVisibleColumnCount) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"hello world\n");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const std::uint32_t columnsWithMinimap = pipeline.visibleColumnCount();
+
+    pipeline.setMinimapVisible(false);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "render() after setMinimapVisible(false) failed: "
+        << neomifes::render::describe(second.error());
+    EXPECT_GT(pipeline.visibleColumnCount(), columnsWithMinimap)
+        << "hiding the minimap did not widen the visible column count";
+}
+
 }  // namespace

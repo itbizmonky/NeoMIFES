@@ -298,10 +298,21 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
     }
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> format;
-    constexpr float kFontSizeDips = 14.0F;
-    HRESULT hr = (*factory)->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+    // WI-08: family/size now come from setFontSettings() (defaults match the
+    // pre-WI-08 hardcoded L"Consolas"/14.0F exactly). CreateTextFormat()
+    // requires a null-terminated wchar_t* - util::toWstringView()'s result
+    // is safe to pass directly here since m_fontFamily is a live member
+    // (not a temporary), and std::u16string is null-terminated same as
+    // std::string.
+    const std::wstring_view fontFamilyView = util::toWstringView(m_fontFamily);
+    // fontFamilyView aliases m_fontFamily's own buffer (no copy), and
+    // std::u16string guarantees a null terminator at data()[size()] same as
+    // std::string, so this is safe despite wstring_view itself not carrying
+    // that guarantee.
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+    HRESULT hr = (*factory)->CreateTextFormat(fontFamilyView.data(), nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                                               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                              kFontSizeDips, L"en-us", format.GetAddressOf());
+                                              m_fontSizeDips, L"en-us", format.GetAddressOf());
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
     }
@@ -337,8 +348,14 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
     // Reuses the same "Ag" probe layout (Phase 4b8e) - the X coordinate
     // right after the first character equals that character's advance
     // width, since HitTestTextPosition() is layout-local (origin 0,0). Only
-    // meaningful because ensureTextFormat() requires Consolas (fixed-pitch);
-    // see drawCaretOnLine()'s comment for where this is consumed.
+    // meaningful because this class's entire column math assumes a
+    // fixed-pitch font (single measured advance width applied uniformly to
+    // every glyph - see drawCaretOnLine()'s comment for where this is
+    // consumed). WI-08 makes the font family user-configurable but does NOT
+    // lift this assumption: a non-monospace fontFamily will visually
+    // misalign columns (caret/selection/indent guides/minimap all still use
+    // this one measured width) - a known, pre-existing architectural
+    // limitation, not something WI-08 introduces or fixes.
     DWRITE_HIT_TEST_METRICS charMetrics{};
     float                    charX = 0.0F;
     float                    charY = 0.0F;
@@ -346,6 +363,14 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
     }
+
+    // WI-08: makes literal '\t' characters in the document actually render
+    // at m_tabWidth columns. Before this, no code in this codebase ever
+    // called SetIncrementalTabStop(), so tab glyphs rendered at DirectWrite's
+    // own built-in default, completely independent of the (now-unified)
+    // kTabWidth value drawIndentGuidesOnLine() uses for its guide-line
+    // column math - a latent inconsistency this call closes.
+    format->SetIncrementalTabStop(static_cast<float>(m_tabWidth) * charX);
 
     m_textFormat     = std::move(format);
     m_lineHeightDips = metrics.height;
@@ -1114,7 +1139,7 @@ void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumb
     // by document line number and reused across frames for that line's
     // CONTENT layout (drawTextLine()'s getOrCreate() call); reusing it here
     // for the line-number label would collide with that same key.
-    if (m_dwriteFactory && m_textFormat && m_lineNumberBrush) {
+    if (m_showLineNumbers && m_dwriteFactory && m_textFormat && m_lineNumberBrush) {
         const std::wstring number       = std::to_wstring(line + 1);
         const float         maxWidthDips = std::max(0.0F, gutterWidthDips() - 4.0F);
         Microsoft::WRL::ComPtr<IDWriteTextLayout> numberLayout;
@@ -1205,16 +1230,19 @@ void RenderPipeline::drawIndentGuidesOnLine(ID2D1DeviceContext6& dc, float y,
     if (!m_indentGuideBrush || !m_activeIndentGuideBrush) {
         return;
     }
-    constexpr std::uint32_t kTabWidth            = 4;  // matches main.cpp's kTabWidth (Phase 4b8d)
-    constexpr float          kIndentGuideWidthDips = 1.0F;
-    const std::uint32_t indentColumns = computeIndentColumns(lineSpan, kTabWidth);
-    const std::uint32_t guideCount    = computeIndentGuideCount(indentColumns, kTabWidth);
+    // WI-08: m_tabWidth (settings-driven, default 4) replaces this
+    // function's former local constexpr kTabWidth - see this class's
+    // header comment on setTabWidth() for the other former copy
+    // (editor_input.cpp's tab<->space conversion) this unifies with.
+    constexpr float kIndentGuideWidthDips = 1.0F;
+    const std::uint32_t indentColumns = computeIndentColumns(lineSpan, m_tabWidth);
+    const std::uint32_t guideCount    = computeIndentGuideCount(indentColumns, m_tabWidth);
     ID2D1SolidColorBrush* brush = isActiveLine ? m_activeIndentGuideBrush.Get() : m_indentGuideBrush.Get();
     for (std::uint32_t level = 1; level <= guideCount; ++level) {
         // WI-03: leftColumnOffsetDips() subtracted, same as every other
         // text-derived X coordinate in this file.
         const float x = gutterWidthDips() - leftColumnOffsetDips() +
-                        (static_cast<float>(level * kTabWidth) * m_charWidthDips);
+                        (static_cast<float>(level * m_tabWidth) * m_charWidthDips);
         const D2D1_RECT_F guideRect =
             D2D1::RectF(x, y, x + kIndentGuideWidthDips, y + m_lineHeightDips);
         dc.FillRectangle(guideRect, brush);
@@ -1302,8 +1330,18 @@ float RenderPipeline::leftColumnOffsetDips() const noexcept {
 }
 
 float RenderPipeline::gutterWidthDips() const noexcept {
+    // WI-08: hidden line numbers fall back to the pre-WI-07 flat width
+    // (bookmark/fold-marker column only) instead of growing for digit
+    // count that's no longer drawn.
+    if (!m_showLineNumbers) {
+        return kGutterWidthDips;
+    }
     const std::uint64_t totalLines = m_document != nullptr ? m_document->lineCount() : 0;
     return computeGutterWidthDips(totalLines, m_charWidthDips, kGutterWidthDips);
+}
+
+float RenderPipeline::minimapWidthDips() const noexcept {
+    return m_showMinimap ? kMinimapWidthDips : 0.0F;
 }
 
 std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
@@ -1311,7 +1349,7 @@ std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
         return 0;
     }
     const float availableWidthDips =
-        (static_cast<float>(m_width) / m_dpiScale) - gutterWidthDips() - kMinimapWidthDips;
+        (static_cast<float>(m_width) / m_dpiScale) - gutterWidthDips() - minimapWidthDips();
     return computeVisibleColumnCount(availableWidthDips, m_charWidthDips);
 }
 
@@ -1375,7 +1413,10 @@ float RenderPipeline::minimapLeftDips() const noexcept {
     if (m_dpiScale <= 0.0F) {
         return 0.0F;
     }
-    return (static_cast<float>(m_width) / m_dpiScale) - kMinimapWidthDips;
+    // WI-08: minimapWidthDips() collapses to 0.0F when the minimap is
+    // hidden, so this becomes the client-area's own right edge (nothing
+    // reserved) rather than leaving a blank strip.
+    return (static_cast<float>(m_width) / m_dpiScale) - minimapWidthDips();
 }
 
 RenderPipeline::MinimapLineColorState RenderPipeline::classifyTokenKindForMinimap(syntax::TokenKind kind) noexcept {
@@ -1520,8 +1561,13 @@ void RenderPipeline::drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float
 }
 
 void RenderPipeline::drawMinimap(ID2D1DeviceContext6& dc) noexcept {
-    if (!m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F || m_dpiScale <= 0.0F ||
-        !m_minimapBackgroundBrush || !m_minimapViewportBrush) {
+    // WI-08: !m_showMinimap must be checked explicitly (not merely implied
+    // by minimapWidthDips()==0.0F) - without this, minimapLeftDips() would
+    // equal the client area's own right edge when hidden, which is NOT
+    // <= gutterWidthDips() on any normal-sized window, so the "too narrow"
+    // guard below wouldn't catch it and a full-width strip would be drawn.
+    if (!m_showMinimap || !m_cachedSnapshot || m_document == nullptr || m_lineHeightDips <= 0.0F ||
+        m_dpiScale <= 0.0F || !m_minimapBackgroundBrush || !m_minimapViewportBrush) {
         return;
     }
     const std::uint64_t totalLines = m_document->lineCount();
