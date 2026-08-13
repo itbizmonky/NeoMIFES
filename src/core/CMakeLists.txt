@@ -8,6 +8,7 @@ add_library(neomifes_core STATIC
     src/replace_all_command.cpp
     src/search_history.cpp
     src/selection_model.cpp
+    src/settings.cpp
     src/undo_stack.cpp
     src/viewport.cpp
 )

@@ -32,6 +32,7 @@ add_executable(neomifes_unit_tests
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp
     core_search_history_test.cpp
+    core_settings_test.cpp
     core_selection_metrics_test.cpp
     app_editor_input_test.cpp
     app_document_open_test.cpp
