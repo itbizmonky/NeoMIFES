@@ -6,6 +6,13 @@ add_library(neomifes_app_input STATIC
     editor_input.cpp
     document_open.cpp
     editor_session.cpp
+    # key_chord.cpp (WI-10): KeyChord parse/format - Win32 VK_* constants but
+    # no HWND, same reasoning as editor_input.cpp's own home here.
+    key_chord.cpp
+    # keybinding_dispatch.cpp (WI-10): resolveKeyBindingConflicts()/
+    # chordMatches()/buildAcceleratorRows() - pure logic built on top of
+    # key_chord.cpp + core::KeyBindings + ui::CommandId, no HWND either.
+    keybinding_dispatch.cpp
     plugin_core_api_bridge.cpp
     status_bar_format.cpp
     workspace.cpp

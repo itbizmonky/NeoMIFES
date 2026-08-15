@@ -66,6 +66,13 @@ bool CommandPalette::create(HWND parent, HINSTANCE hInstance, const CommandPalet
     return true;
 }
 
+void CommandPalette::setCommands(std::vector<CommandDescriptor> commands) noexcept {
+    m_commands = std::move(commands);
+    if (isVisible()) {
+        refreshFilter();
+    }
+}
+
 void CommandPalette::show() noexcept {
     if (!m_hwndEdit || !m_hwndList) {
         return;

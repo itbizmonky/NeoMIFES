@@ -61,6 +61,15 @@ public:
     [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const CommandPaletteConfig& config,
                               std::vector<CommandDescriptor> commands);
 
+    // WI-10: replaces the registry after create() (e.g. keybindingLabel
+    // strings need to reflect a just-reloaded/preset-switched
+    // core::KeyBindings) - create() itself only ever sets this once. If the
+    // palette is currently visible, also re-filters immediately so an
+    // already-open palette's rows update in place; if hidden, the next
+    // show() call resets against the new registry on its own (see show()'s
+    // own comment), so no extra work is needed here.
+    void setCommands(std::vector<CommandDescriptor> commands) noexcept;
+
     // Clears the query, shows every command unfiltered, selects the first,
     // focuses the query edit. Re-invoking while already open (Ctrl+Shift+P
     // pressed twice) resets to this same known state - same "always land

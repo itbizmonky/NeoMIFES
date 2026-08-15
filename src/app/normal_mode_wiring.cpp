@@ -22,6 +22,8 @@
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/key_chord.h"
+#include "neomifes/app/keybinding_dispatch.h"
 #include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
@@ -35,6 +37,7 @@
 #include "neomifes/core/edit_commands.h"
 #include "neomifes/core/folding_model.h"
 #include "neomifes/core/indentation_conversion.h"
+#include "neomifes/core/key_bindings.h"
 #include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_metrics.h"
 #include "neomifes/core/selection_model.h"
@@ -302,22 +305,27 @@ void closeFindBar(HWND hwnd, FindBar& findBar, EditorSession& session, RenderPip
 // search-history-recording asymmetry with FindBarConfig::onFindNext() made
 // this whole group unsafe to move. WI-04: takes EditorSession&
 // (findReplaceState/selection/viewport/document).
+// WI-10: takes const core::KeyBindings& - every hardcoded vkCode/modifier
+// literal below became a chordMatches() lookup against the live bindings.
+// altDown is always passed as false here (and in every other handle*Key()
+// below) - the WM_KEYDOWN-driven manual chain has never tracked Alt state
+// (see handleKeyDownEvent()'s own parameter list), and none of the 4
+// embedded presets (key_bindings_presets.cpp) bind any manual-chain command
+// to an Alt-modified chord.
 bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
-                      EditorSession& session, RenderPipeline& renderPipeline) {
-    // !shiftDown is redundant today (handleGrepKey() is checked earlier in
-    // handleKeyDownEvent()'s dispatch chain and already claims Ctrl+Shift+F
-    // via an early return), but makes this condition self-documenting and
-    // safe against a future reordering of that chain (Phase 5c3).
-    if (ctrlDown && !shiftDown && vkCode == 'F') {
+                      EditorSession& session, RenderPipeline& renderPipeline,
+                      const core::KeyBindings& keyBindings) {
+    if (chordMatches(keyBindings, CommandId::FindShow, ctrlDown, shiftDown, false, vkCode)) {
         findBar.show();
         return true;
     }
-    if (ctrlDown && !shiftDown && vkCode == 'H') {
+    if (chordMatches(keyBindings, CommandId::FindReplace, ctrlDown, shiftDown, false, vkCode)) {
         findBar.showWithReplace();
         return true;
     }
-    if (vkCode == VK_F3) {
-        navigateToMatch(!shiftDown, hwnd, session, renderPipeline, findBar);
+    const bool isNext = chordMatches(keyBindings, CommandId::FindNext, ctrlDown, shiftDown, false, vkCode);
+    if (isNext || chordMatches(keyBindings, CommandId::FindPrevious, ctrlDown, shiftDown, false, vkCode)) {
+        navigateToMatch(isNext, hwnd, session, renderPipeline, findBar);
         return true;
     }
     return false;
@@ -327,8 +335,9 @@ bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Fin
 // mirrors handleFindBarKey()'s single-purpose shape. Not fired while the
 // palette's own query edit has focus (same reasoning as handleFindBarKey's
 // comment: Win32 routes keyboard input straight to the focused child HWND).
-bool handleCommandPaletteKey(UINT vkCode, bool shiftDown, bool ctrlDown, CommandPalette& commandPalette) {
-    if (ctrlDown && shiftDown && vkCode == 'P') {
+bool handleCommandPaletteKey(UINT vkCode, bool shiftDown, bool ctrlDown, CommandPalette& commandPalette,
+                             const core::KeyBindings& keyBindings) {
+    if (chordMatches(keyBindings, CommandId::CommandPaletteShow, ctrlDown, shiftDown, false, vkCode)) {
         commandPalette.show();
         return true;
     }
@@ -341,8 +350,9 @@ bool handleCommandPaletteKey(UINT vkCode, bool shiftDown, bool ctrlDown, Command
 // handleFindBarKey()'s own `ctrlDown && vkCode == 'F'` check does not look
 // at shiftDown, so without this ordering Ctrl+Shift+F would already be
 // swallowed by the plain Find bar before ever reaching this function.
-bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar) {
-    if (ctrlDown && shiftDown && vkCode == 'F') {
+bool handleGrepKey(UINT vkCode, bool shiftDown, bool ctrlDown, GrepBar& grepBar,
+                   const core::KeyBindings& keyBindings) {
+    if (chordMatches(keyBindings, CommandId::GrepShow, ctrlDown, shiftDown, false, vkCode)) {
         grepBar.show();
         return true;
     }
@@ -372,8 +382,9 @@ void refreshOutlinePane(EditorSession& session, neomifes::ui::OutlinePane& outli
 // outline_pane.h's class comment. WI-04: takes EditorSession& (document/
 // path/folding - 3 members).
 bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                      neomifes::ui::OutlinePane& outlinePane, RenderPipeline& renderPipeline) {
-    if (!ctrlDown || !shiftDown || vkCode != 'O') {
+                      neomifes::ui::OutlinePane& outlinePane, RenderPipeline& renderPipeline,
+                      const core::KeyBindings& keyBindings) {
+    if (!chordMatches(keyBindings, CommandId::OutlineToggle, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
     if (outlinePane.isVisible()) {
@@ -403,8 +414,13 @@ void jumpToOutlinePosition(std::uint64_t targetPos, HWND hwnd, EditorSession& se
 
 // Ctrl+G while the document editing area has focus (Phase 4b8b) - same
 // single-purpose shape as handleFindBarKey()/handleCommandPaletteKey().
-bool handleGotoLineKey(UINT vkCode, bool ctrlDown, GotoLineBar& gotoLineBar) {
-    if (ctrlDown && vkCode == 'G') {
+// WI-10: gained a shiftDown parameter (previously absent - Ctrl+G has no
+// Shift variant in the pre-WI-10 hardcoded check) since chordMatches()
+// needs the full modifier state to compare against an arbitrary configured
+// chord.
+bool handleGotoLineKey(UINT vkCode, bool shiftDown, bool ctrlDown, GotoLineBar& gotoLineBar,
+                       const core::KeyBindings& keyBindings) {
+    if (chordMatches(keyBindings, CommandId::GotoLineShow, ctrlDown, shiftDown, false, vkCode)) {
         gotoLineBar.show();
         return true;
     }
@@ -419,22 +435,31 @@ bool handleGotoLineKey(UINT vkCode, bool ctrlDown, GotoLineBar& gotoLineBar) {
 // sitting on a bookmarked line correctly cycles to the next one rather than
 // staying put. WI-04: takes EditorSession& (bookmarks/selection/viewport/
 // document/folding - 5 members).
+// WI-10: the pre-WI-10 version distinguished its 3 sub-commands (toggle/
+// next/previous) purely by vkCode==VK_F2 plus the ctrlDown/shiftDown flags -
+// all 3 CommandIds (BookmarkToggle/BookmarkNext/BookmarkPrevious) happen to
+// share vkCode==VK_F2 in the neomifes preset, differing only by modifier,
+// which is exactly what per-CommandId chordMatches() calls express directly
+// (and, unlike the old hardcoded check, correctly follow a user's
+// keybindings.json even if it moves one of these 3 off VK_F2 entirely).
 bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                       RenderPipeline& renderPipeline) {
-    if (vkCode != VK_F2) {
-        return false;
-    }
+                       RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings) {
     const Document& document    = session.document();
     const auto      currentLine = document.offsetToLine(session.selection().primaryCursor().position);
-    if (ctrlDown) {
+    if (chordMatches(keyBindings, CommandId::BookmarkToggle, ctrlDown, shiftDown, false, vkCode)) {
         session.bookmarks().toggle(currentLine);
         renderPipeline.setBookmarkedLines(std::vector<neomifes::document::LineNumber>(
             session.bookmarks().lines().begin(), session.bookmarks().lines().end()));
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
-    const auto target =
-        shiftDown ? session.bookmarks().previous(currentLine) : session.bookmarks().next(currentLine);
+    const bool isNext = chordMatches(keyBindings, CommandId::BookmarkNext, ctrlDown, shiftDown, false, vkCode);
+    const bool isPrevious =
+        chordMatches(keyBindings, CommandId::BookmarkPrevious, ctrlDown, shiftDown, false, vkCode);
+    if (!isNext && !isPrevious) {
+        return false;
+    }
+    const auto target = isPrevious ? session.bookmarks().previous(currentLine) : session.bookmarks().next(currentLine);
     if (target) {
         const auto pos = document.lineToOffset(*target);
         session.selection().moveAllTo(pos);
@@ -599,15 +624,17 @@ bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session) {
 // reference ("path(line)"/"path(line,column)", util::parseTagJumpReference()),
 // opens that file via openFileAndSyncView() (WI-02/WI-04, wrapping
 // EditorSession::openFile()) and jumps to the referenced position. Always
-// returns true once vkCode==VK_F12 is confirmed - F12 is unclaimed
-// everywhere else in this dispatch chain, so there is nothing to fall
-// through to whether or not a reference was found/opened (same
+// returns true once the configured chord is confirmed matched - F12 is
+// unclaimed everywhere else in this dispatch chain, so there is nothing to
+// fall through to whether or not a reference was found/opened (same
 // silent-no-op contract EditorSession::openFile() itself guarantees on a
 // stale/missing path). WI-04: takes EditorSession& (essentially every
-// member).
-bool handleTagJumpKey(HWND hwnd, UINT vkCode, EditorSession& session, RenderPipeline& renderPipeline,
-                      FindBar& findBar) {
-    if (vkCode != VK_F12) {
+// member). WI-10: gained shiftDown/ctrlDown parameters (previously neither
+// was read - the pre-WI-10 check was a bare vkCode==VK_F12 comparison)
+// since chordMatches() needs the full modifier state.
+bool handleTagJumpKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
+                      RenderPipeline& renderPipeline, FindBar& findBar, const core::KeyBindings& keyBindings) {
+    if (!chordMatches(keyBindings, CommandId::TagJump, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
     const Document& document  = session.document();
@@ -917,43 +944,39 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
 // dispatchCommand() too, reached via handleClipboardOrUndoRedoKey() below
 // instead of the accelerator table.
 
-// Maps a Ctrl+<key> combination to its CommandId - a small switch instead of
-// a chained ternary (clang-tidy readability-avoid-nested-conditional-operator
-// flags nested ?: as hard to read; this is exactly that nesting, expressed
-// as a switch instead). Only ever called for the 5 keys
-// handleClipboardOrUndoRedoKey() below already checked.
-[[nodiscard]] CommandId clipboardOrUndoCommandForKey(UINT vkCode) noexcept {
-    switch (vkCode) {
-        case 'C': return CommandId::Copy;
-        case 'X': return CommandId::Cut;
-        case 'V': return CommandId::Paste;
-        case 'Z': return CommandId::Undo;
-        default:  return CommandId::Redo;  // 'Y'
-    }
-}
-
 // Copy/Cut/Paste/Undo/Redo (WI-07 step2): also NOT accelerator-routed (see
 // command_dispatch.h's top comment - native WC_EDIT controls claim these
 // combinations themselves). A dedicated handleXxxKey()-shaped function (same
 // convention as handleFindBarKey() etc.) so handleKeyDownEvent() itself
 // doesn't have to carry this compound condition + CommandId lookup directly
 // (keeps handleKeyDownEvent()'s own cognitive complexity under clang-tidy's
-// threshold).
-[[nodiscard]] bool handleClipboardOrUndoRedoKey(HWND hwnd, UINT vkCode, bool ctrlDown, Workspace& workspace,
-                                                RenderPipeline& renderPipeline, FindBar& findBar) {
-    if (!ctrlDown || (vkCode != 'C' && vkCode != 'X' && vkCode != 'V' && vkCode != 'Z' && vkCode != 'Y')) {
-        return false;
+// threshold). WI-10: replaces the old clipboardOrUndoCommandForKey() switch
+// (which assumed Ctrl+<letter> literals) with a loop over chordMatches()
+// against the 5 candidate CommandIds - each is checked against whatever
+// chord(s) keyBindings actually has configured for it, not a hardcoded
+// letter. Gained a shiftDown parameter for the same reason (chordMatches()
+// needs the full modifier state).
+[[nodiscard]] bool handleClipboardOrUndoRedoKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
+                                                Workspace& workspace, RenderPipeline& renderPipeline,
+                                                FindBar& findBar, const core::KeyBindings& keyBindings) {
+    constexpr std::array<CommandId, 5> kCandidates{CommandId::Copy, CommandId::Cut, CommandId::Paste,
+                                                    CommandId::Undo, CommandId::Redo};
+    for (const CommandId candidate : kCandidates) {
+        if (!chordMatches(keyBindings, candidate, ctrlDown, shiftDown, false, vkCode)) {
+            continue;
+        }
+        const CommandDispatchContext ctx{.hwnd            = hwnd,
+                                         .workspace       = workspace,
+                                         .renderPipeline  = renderPipeline,
+                                         .findBar         = findBar};
+        dispatchCommand(candidate, ctx);
+        return true;
     }
-    const CommandDispatchContext ctx{.hwnd            = hwnd,
-                                     .workspace       = workspace,
-                                     .renderPipeline  = renderPipeline,
-                                     .findBar         = findBar};
-    dispatchCommand(clipboardOrUndoCommandForKey(vkCode), ctx);
-    return true;
+    return false;
 }
 
 // Toggles Insert/Overwrite mode (WI-07 step5) - bare VK_INSERT, no
-// modifiers. Also NOT accelerator-routed, for the same reason
+// modifiers by default. Also NOT accelerator-routed, for the same reason
 // Copy/Cut/Paste/Undo/Redo aren't (see handleClipboardOrUndoRedoKey()'s own
 // comment above): a native WC_EDIT control - like the overlay widgets' own
 // text fields - supports a built-in overtype toggle on a bare Insert
@@ -961,8 +984,8 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
 // reached the focused control.
 [[nodiscard]] bool handleOverwriteToggleKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                                             Workspace& workspace, RenderPipeline& renderPipeline,
-                                            FindBar& findBar) {
-    if (vkCode != VK_INSERT || shiftDown || ctrlDown) {
+                                            FindBar& findBar, const core::KeyBindings& keyBindings) {
+    if (!chordMatches(keyBindings, CommandId::ToggleOverwriteMode, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
     const CommandDispatchContext ctx{.hwnd            = hwnd,
@@ -988,7 +1011,7 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
-                        bool freeCursorModeEnabled, bool imeComposing) {
+                        bool freeCursorModeEnabled, bool imeComposing, const core::KeyBindings& keyBindings) {
     // WI-06: checked before EVERYTHING else in this dispatch chain (even
     // handleFreeCursorRightArrow()) - while an IME is actively composing,
     // Windows still delivers WM_KEYDOWN for some keys (arrows, Enter, Escape
@@ -1015,22 +1038,22 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
         session.freeCursorVirtualColumns().reset();
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     }
-    if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette)) {
+    if (handleCommandPaletteKey(vkCode, shiftDown, ctrlDown, commandPalette, keyBindings)) {
         return;
     }
-    if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar)) {
+    if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar, keyBindings)) {
         return;
     }
-    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, renderPipeline)) {
+    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, renderPipeline, keyBindings)) {
         return;
     }
-    if (handleGotoLineKey(vkCode, ctrlDown, gotoLineBar)) {
+    if (handleGotoLineKey(vkCode, shiftDown, ctrlDown, gotoLineBar, keyBindings)) {
         return;
     }
-    if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline)) {
+    if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, keyBindings)) {
         return;
     }
-    if (handleTagJumpKey(hwnd, vkCode, session, renderPipeline, findBar)) {
+    if (handleTagJumpKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, findBar, keyBindings)) {
         return;
     }
     // WI-07 step2: Save/Open/New/tab-switch/tab-close no longer appear in
@@ -1041,7 +1064,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     // command_dispatch.h's top comment for why Find/Grep/CommandPalette/
     // Outline/GotoLine/Bookmark/TagJump (checked above) were NOT moved the
     // same way.
-    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, session, renderPipeline)) {
+    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, session, renderPipeline, keyBindings)) {
         return;
     }
     // Copy/Cut/Paste/Undo/Redo (WI-07 step2): also NOT accelerator-routed
@@ -1051,10 +1074,12 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     // than inline here, so this function's own cognitive complexity stays
     // under clang-tidy's threshold - the compound condition + CommandId
     // lookup would otherwise count directly against it.
-    if (handleClipboardOrUndoRedoKey(hwnd, vkCode, ctrlDown, workspace, renderPipeline, findBar)) {
+    if (handleClipboardOrUndoRedoKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
+                                     keyBindings)) {
         return;
     }
-    if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar)) {
+    if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
+                                 keyBindings)) {
         return;
     }
     const bool changed =
@@ -1237,6 +1262,28 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
 
 // Builds the command palette's static registry (Phase 5b3c, extended in
 // Phase 4b8d/4b8e) - 9 entries, each re-exposing an already-implemented
+// WI-10: derives a CommandDescriptor::keybindingLabel from the live
+// keyBindings instead of a hardcoded literal (see buildCommandRegistry()'s
+// own comment for why). Only the FIRST configured chord is shown - the
+// label is display-only, never itself a dispatch path, so a command with 2+
+// chords (e.g. tab.next) simply shows one representative binding. Empty
+// string if unbound (no chords configured) or the stored chord string fails
+// to parse (a hand-edited keybindings.json with a typo) - same "never
+// crash, just don't display something" convention as this file's other
+// best-effort UI-string helpers.
+[[nodiscard]] std::u16string keybindingLabelFor(const core::KeyBindings& keyBindings,
+                                                std::u16string_view chordId) {
+    const auto chords = keyBindings.chordsFor(chordId);
+    if (chords.empty()) {
+        return u"";
+    }
+    const auto chord = neomifes::app::parseKeyChord(chords.front());
+    if (!chord) {
+        return u"";
+    }
+    return neomifes::app::keyChordToString(*chord);
+}
+
 // keybinding or document-wide action through the palette (Find/Find+Replace/
 // Find Next/Find Previous/Undo/Redo/Convert Tabs to Spaces/Convert Spaces to
 // Tabs/Toggle Free Cursor Mode). None of the last 3 has a dedicated
@@ -1256,37 +1303,48 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
 // invocation time (see wireNormalMode()'s header comment for why). WI-08:
 // takes core::Settings& and settingsPath - see the two convert-indentation
 // commands (now reading settings.tabWidth instead of a hardcoded 4) and the
-// new "settings.reload" command below.
-std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar, Workspace& workspace,
-                                                     RenderPipeline& renderPipeline, core::Settings& settings,
-                                                     const std::optional<std::filesystem::path>& settingsPath,
-                                                     bool& freeCursorModeEnabled) {
+// new "settings.reload" command below. WI-10: also takes core::KeyBindings&/
+// keyBindingsPath/platform::AcceleratorTableHandle&/ui::CommandPalette& -
+// the 6 pre-existing labeled commands below now derive .keybindingLabel
+// from the live keyBindings (keybindingLabelFor()) instead of a hardcoded
+// literal (fixes the drift risk command_descriptor.h's own comment flagged:
+// a hand-typed label had no connection to the actual binding), and 5 new
+// "keybindings.*" commands let a reload/preset-switch rebuild BOTH
+// accelTable and this very registry (for fresh labels) live, via
+// commandPalette.setCommands() - see those commands' own comments below.
+std::vector<CommandDescriptor> buildCommandRegistry(
+    HWND hwnd, FindBar& findBar, Workspace& workspace, RenderPipeline& renderPipeline, core::Settings& settings,
+    const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
+    const std::optional<std::filesystem::path>& keyBindingsPath, platform::AcceleratorTableHandle& accelTable,
+    bool& freeCursorModeEnabled, CommandPalette& commandPalette) {
     std::vector<CommandDescriptor> commands;
-    commands.push_back(CommandDescriptor{.id              = u"find.show",
-                                         .title           = u"Find",
-                                         .keybindingLabel = u"Ctrl+F",
-                                         .commandId       = CommandId::FindShow,
-                                         .action          = [&findBar]() { findBar.show(); }});
-    commands.push_back(
-        CommandDescriptor{.id              = u"find.replace",
-                          .title           = u"Find and Replace",
-                          .keybindingLabel = u"Ctrl+H",
-                          .commandId       = CommandId::FindReplace,
-                          .action          = [&findBar]() { findBar.showWithReplace(); }});
     commands.push_back(CommandDescriptor{
-        .id = u"find.next", .title = u"Find Next", .keybindingLabel = u"F3",
+        .id = u"find.show", .title = u"Find",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"find.show"),
+        .commandId       = CommandId::FindShow,
+        .action          = [&findBar]() { findBar.show(); }});
+    commands.push_back(CommandDescriptor{
+        .id = u"find.replace", .title = u"Find and Replace",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"find.replace"),
+        .commandId       = CommandId::FindReplace,
+        .action          = [&findBar]() { findBar.showWithReplace(); }});
+    commands.push_back(CommandDescriptor{
+        .id = u"find.next", .title = u"Find Next",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"find.next"),
         .commandId = CommandId::FindNext,
         .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
             navigateToMatch(true, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
-        .id = u"find.previous", .title = u"Find Previous", .keybindingLabel = u"Shift+F3",
+        .id = u"find.previous", .title = u"Find Previous",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"find.previous"),
         .commandId = CommandId::FindPrevious,
         .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
             navigateToMatch(false, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
-        .id = u"edit.undo", .title = u"Undo", .keybindingLabel = u"Ctrl+Z",
+        .id = u"edit.undo", .title = u"Undo",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"edit.undo"),
         .commandId = CommandId::Undo,
         // WI-07 step2: routes through dispatchCommand() (command_dispatch.h)
         // instead of duplicating the undo() + syncRenderStateAndInvalidate()
@@ -1299,7 +1357,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
             dispatchCommand(CommandId::Undo, ctx);
         }});
     commands.push_back(CommandDescriptor{
-        .id = u"edit.redo", .title = u"Redo", .keybindingLabel = u"Ctrl+Y",
+        .id = u"edit.redo", .title = u"Redo",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"edit.redo"),
         .commandId = CommandId::Redo,
         .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
             const CommandDispatchContext ctx{
@@ -1437,6 +1496,69 @@ std::vector<CommandDescriptor> buildCommandRegistry(HWND hwnd, FindBar& findBar,
                 syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
             }
         }});
+    // WI-10: mirrors settings.reload's "re-read the file, re-apply live"
+    // shape - but ALSO rebuilds accelTable (HACCEL) and this very command
+    // registry (via commandPalette.setCommands()), since a keybindings
+    // change affects both the manual-chain dispatch (automatic, see
+    // wireNormalMode()'s header comment - no rebuild needed there) and the
+    // HACCEL table + every keybindingLabel shown here (both DO need an
+    // explicit rebuild). No-op if keyBindingsPath is nullopt (same
+    // graceful-degradation treatment as settings.reload/searchHistoryPath).
+    commands.push_back(CommandDescriptor{
+        .id = u"keybindings.reload", .title = u"Reload Keybindings", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
+                   keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette]() {
+            if (!keyBindingsPath) {
+                return;
+            }
+            keyBindings = core::KeyBindings::loadFrom(*keyBindingsPath);
+            accelTable  = neomifes::app::buildAcceleratorTable(keyBindings);
+            commandPalette.setCommands(buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings,
+                                                             settingsPath, keyBindings, keyBindingsPath,
+                                                             accelTable, freeCursorModeEnabled, commandPalette));
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    // WI-10: 4 flat palette-only commands, same "no click position to
+    // anchor a picker at" reasoning view.theme.* (above) already
+    // established for this exact situation. Each replaces the ENTIRE live
+    // keyBindings with KeyBindings::forPreset(name) (a full swap, not a
+    // merge - any hand customization for a command the target preset
+    // doesn't cover is discarded, matching WI-09's theme-switch precedent),
+    // persists immediately (so the choice survives a restart without a
+    // separate save step), then rebuilds accelTable + this registry, same
+    // as keybindings.reload above.
+    struct PresetChoice {
+        std::u16string_view name;         // KeyBindings::forPreset()'s key, and the ".id" suffix
+        std::u16string_view displayName;  // palette-facing title only
+    };
+    constexpr std::array<PresetChoice, 4> kPresetChoices{{
+        {.name = u"neomifes", .displayName = u"NeoMIFES"},
+        {.name = u"hidemaru", .displayName = u"秀丸 (Hidemaru)"},
+        {.name = u"sakura", .displayName = u"サクラ (Sakura)"},
+        {.name = u"vscode", .displayName = u"VSCode"},
+    }};
+    for (const PresetChoice& choice : kPresetChoices) {
+        commands.push_back(CommandDescriptor{
+            .id              = std::u16string(u"keybindings.preset.") + std::u16string(choice.name),
+            .title           = std::u16string(u"Keybindings Preset: ") + std::u16string(choice.displayName),
+            .keybindingLabel = u"",
+            .commandId       = CommandId::None,
+            .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
+                       keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette,
+                       presetName = std::u16string(choice.name)]() {
+                keyBindings = core::KeyBindings::forPreset(presetName);
+                if (keyBindingsPath) {
+                    keyBindings.saveTo(*keyBindingsPath);
+                }
+                accelTable = neomifes::app::buildAcceleratorTable(keyBindings);
+                commandPalette.setCommands(buildCommandRegistry(hwnd, findBar, workspace, renderPipeline,
+                                                                 settings, settingsPath, keyBindings,
+                                                                 keyBindingsPath, accelTable,
+                                                                 freeCursorModeEnabled, commandPalette));
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }});
+    }
     return commands;
 }
 
@@ -2328,7 +2450,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
                     TabBar& tabBar, StatusBar& statusBar, core::Settings& settings,
-                    const std::optional<std::filesystem::path>& settingsPath, bool& freeCursorModeEnabled,
+                    const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
+                    const std::optional<std::filesystem::path>& keyBindingsPath,
+                    platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
@@ -2346,7 +2470,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.menuBar = neomifes::app::buildMenuBar();
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
-                          &statusBar, &settings, &settingsPath, &freeCursorModeEnabled](HWND hwnd) {
+                          &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
+                          &freeCursorModeEnabled](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -2400,7 +2525,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
-                                             freeCursorModeEnabled);
+                                             keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
+                                             commandPalette);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -2551,11 +2677,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &freeCursorModeEnabled, &imeComposing](HWND hwnd, UINT vkCode,
-                                                                          bool shiftDown, bool ctrlDown) {
+                     &outlinePane, &freeCursorModeEnabled, &imeComposing, &keyBindings](
+                        HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                           commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled,
-                          imeComposing);
+                          imeComposing, keyBindings);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
         return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, workspace.active(), renderPipeline);

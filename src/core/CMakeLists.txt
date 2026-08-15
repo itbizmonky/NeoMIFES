@@ -5,6 +5,9 @@ add_library(neomifes_core STATIC
     src/edit_commands.cpp
     src/folding_model.cpp
     src/indentation_conversion.cpp
+    src/json_string_convert.cpp
+    src/key_bindings.cpp
+    src/key_bindings_presets.cpp
     src/replace_all_command.cpp
     src/search_history.cpp
     src/selection_model.cpp
@@ -28,10 +31,11 @@ target_link_libraries(neomifes_core
     PRIVATE
         neomifes::compile_options
         neomifes::util
-        # search_history.cpp (Phase 5c5): UTF-16<->UTF-8 boundary conversion
-        # (neomifes::encoding) and JSON I/O (nlohmann_json) - both are
-        # implementation details, not exposed in search_history.h's public
-        # interface, so PRIVATE is sufficient (ADR-013).
+        # json_string_convert.cpp (WI-10, shared by settings.cpp/
+        # search_history.cpp/key_bindings.cpp): UTF-16<->UTF-8 boundary
+        # conversion (neomifes::encoding) and JSON I/O (nlohmann_json) -
+        # both are implementation details, not exposed in any of those
+        # files' public headers, so PRIVATE is sufficient (ADR-013).
         neomifes::encoding
         nlohmann_json::nlohmann_json
 )

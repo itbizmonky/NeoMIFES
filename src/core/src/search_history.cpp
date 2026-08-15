@@ -3,40 +3,18 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
-#include <span>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
-#include "neomifes/encoding/encoding.h"
+#include "json_string_convert.h"
 
 namespace neomifes::core {
 
 namespace {
 
-// nlohmann::json works in UTF-8 (std::string); this codebase's internal
-// string type is UTF-16 (std::u16string, CLAUDE.md §4). Both directions
-// reuse neomifes::encoding (Phase 6a-6d) rather than adding a 4th
-// independent UTF-8 implementation to this codebase (see
-// docs/decisions/ADR-013-json-library.md).
-
-[[nodiscard]] std::string toUtf8(std::u16string_view text) {
-    const auto result = encoding::encode(text, encoding::Encoding::Utf8);
-    // Utf8 encode is a total function for any well-formed UTF-16 string
-    // (Phase 6a) - every std::u16string this codebase constructs already
-    // is, so EncodeError is unreachable here.
-    const auto& bytes = std::get<std::vector<std::byte>>(result);
-    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-}
-
-[[nodiscard]] std::optional<std::u16string> fromUtf8(std::string_view text) {
-    const auto bytes = std::as_bytes(std::span(text.data(), text.size()));
-    auto result = encoding::decode(bytes, encoding::Encoding::Utf8);
-    if (std::holds_alternative<encoding::DecodeError>(result)) {
-        return std::nullopt;
-    }
-    return std::move(std::get<std::u16string>(result));
-}
+using detail::fromUtf8;
+using detail::toUtf8;
 
 constexpr int kFormatVersion = 1;
 

@@ -34,10 +34,13 @@ add_executable(neomifes_unit_tests
     core_viewport_test.cpp
     core_search_history_test.cpp
     core_settings_test.cpp
+    core_key_bindings_test.cpp
     core_selection_metrics_test.cpp
     app_editor_input_test.cpp
     app_document_open_test.cpp
     app_command_dispatch_test.cpp
+    app_key_chord_test.cpp
+    app_keybinding_dispatch_test.cpp
     app_menu_bar_test.cpp
     app_status_bar_format_test.cpp
     ui_click_tracking_test.cpp
@@ -46,6 +49,7 @@ add_executable(neomifes_unit_tests
     ui_goto_line_parser_test.cpp
     ui_toast_state_test.cpp
     ui_plugin_command_registry_test.cpp
+    ui_command_id_name_test.cpp
     util_fuzzy_matcher_test.cpp
     search_search_service_test.cpp
     search_replacement_test.cpp

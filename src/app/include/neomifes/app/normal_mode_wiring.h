@@ -26,8 +26,10 @@
 
 #include "neomifes/app/editor_session.h"
 #include "neomifes/app/workspace.h"
+#include "neomifes/core/key_bindings.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
+#include "neomifes/platform/handle_guard.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/search/grep_service.h"
@@ -135,12 +137,26 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // file main.cpp already loaded from at startup; nullopt if
 // resolveAppDataDir() failed there, in which case the reload command is a
 // silent no-op (same graceful-degradation treatment as searchHistoryPath).
+//
+// WI-10: takes core::KeyBindings&/keyBindingsPath (same settings/
+// settingsPath placement reasoning) plus platform::AcceleratorTableHandle&
+// accelTable - the live HACCEL main.cpp's runMessageLoop() reads every
+// message-loop iteration. The new "keybindings.reload"/"keybindings.preset.*"
+// palette commands (buildCommandRegistry()'s .cpp body) reassign accelTable
+// in place (HandleGuard::operator=(HandleGuard&&) destroys the old HACCEL
+// first) and mutate keyBindings itself - the latter is ALSO consulted
+// per-keystroke by the manual-chain handle*Key() functions (see
+// keybinding_dispatch.h's chordMatches()), so a reload/preset-switch takes
+// effect immediately for those without any table-rebuild step, unlike the
+// HACCEL side.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
                     ui::TabBar& tabBar, ui::StatusBar& statusBar, core::Settings& settings,
-                    const std::optional<std::filesystem::path>& settingsPath, bool& freeCursorModeEnabled,
+                    const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
+                    const std::optional<std::filesystem::path>& keyBindingsPath,
+                    platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing);
 
 }  // namespace neomifes::app

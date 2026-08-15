@@ -2,38 +2,17 @@
 
 #include <fstream>
 #include <iterator>
-#include <span>
 
 #include <nlohmann/json.hpp>
 
-#include "neomifes/encoding/encoding.h"
+#include "json_string_convert.h"
 
 namespace neomifes::core {
 
 namespace {
 
-// Same UTF-8<->UTF-16 boundary-crossing helpers as search_history.cpp -
-// nlohmann::json works in UTF-8 (std::string), this codebase's internal
-// string type is UTF-16 (std::u16string, CLAUDE.md §4). Duplicated rather
-// than shared: SearchHistory already accepted this duplication once: if a
-// third JSON-backed persisted type needs the same helpers, that's the
-// signal to extract them into neomifes::util instead of guessing at a
-// shared home now.
-
-[[nodiscard]] std::string toUtf8(std::u16string_view text) {
-    const auto  result = encoding::encode(text, encoding::Encoding::Utf8);
-    const auto& bytes   = std::get<std::vector<std::byte>>(result);
-    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-}
-
-[[nodiscard]] std::optional<std::u16string> fromUtf8(std::string_view text) {
-    const auto bytes  = std::as_bytes(std::span(text.data(), text.size()));
-    auto       result = encoding::decode(bytes, encoding::Encoding::Utf8);
-    if (std::holds_alternative<encoding::DecodeError>(result)) {
-        return std::nullopt;
-    }
-    return std::move(std::get<std::u16string>(result));
-}
+using detail::fromUtf8;
+using detail::toUtf8;
 
 constexpr int kFormatVersion = 1;
 

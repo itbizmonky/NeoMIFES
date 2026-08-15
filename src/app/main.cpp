@@ -66,6 +66,7 @@
 #include "neomifes/app/normal_mode_wiring.h"
 #include "neomifes/app/theme_settings.h"
 #include "neomifes/app/workspace.h"
+#include "neomifes/core/key_bindings.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
 #include "neomifes/document/document.h"
@@ -103,6 +104,7 @@ using neomifes::app::prepareDocument;
 using neomifes::app::StartupProfile;
 using neomifes::app::wireNormalMode;
 using neomifes::app::Workspace;
+using neomifes::core::KeyBindings;
 using neomifes::core::SearchHistory;
 using neomifes::core::Settings;
 using neomifes::document::Document;
@@ -121,15 +123,23 @@ using neomifes::ui::OutlinePane;
 using neomifes::ui::StatusBar;
 using neomifes::ui::TabBar;
 
-// WI-07 step2: `haccel` may be nullptr (measurement-mode launches never
-// build one - see wWinMain - or buildAcceleratorTable() itself failed,
-// command_dispatch.h's own non-fatal-degradation contract). TranslateAcceleratorW's
-// own documented contract requires a valid HACCEL, so this checks explicitly
-// rather than relying on how it happens to behave with NULL.
-int runMessageLoop(HWND hwnd, HACCEL haccel) noexcept {
+// WI-07 step2: the underlying HACCEL may be nullptr (measurement-mode
+// launches never build a meaningful one - see wWinMain - or
+// buildAcceleratorTable() itself failed, command_dispatch.h's own
+// non-fatal-degradation contract). TranslateAcceleratorW's own documented
+// contract requires a valid HACCEL, so this checks explicitly rather than
+// relying on how it happens to behave with NULL.
+//
+// WI-10: takes the AcceleratorTableHandle itself BY REFERENCE (not a plain
+// HACCEL captured once at call time) - `.get()` is read fresh every
+// GetMessageW loop iteration, so a "keybindings.reload"/"keybindings.preset.*"
+// palette command reassigning wWinMain's `accelTable` local mid-run takes
+// effect on the very next keystroke, no restart needed.
+int runMessageLoop(HWND hwnd, const neomifes::platform::AcceleratorTableHandle& accelTable) noexcept {
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (haccel != nullptr && ::TranslateAcceleratorW(hwnd, haccel, &msg) != 0) {
+        if (auto* const haccel = accelTable.get();
+            haccel != nullptr && ::TranslateAcceleratorW(hwnd, haccel, &msg) != 0) {
             continue;
         }
         ::TranslateMessage(&msg);
@@ -346,6 +356,22 @@ int WINAPI wWinMain(HINSTANCE hInstance,
             settings = Settings::loadFrom(*settingsPath);
         }
     }
+    // WI-10: user-configurable keybindings, same Normal-mode-only
+    // resolution as settings/searchHistory above. keyBindings itself is
+    // consumed twice below: once to build the initial accelerator table
+    // (before window.create()) and once threaded into wireNormalMode() so
+    // the manual per-keystroke handle*Key() chain (normal_mode_wiring.cpp)
+    // and the "keybindings.reload"/"keybindings.preset.*" palette commands
+    // can consult/replace it live.
+    KeyBindings                           keyBindings = KeyBindings::forPreset(u"neomifes");
+    std::optional<std::filesystem::path> keyBindingsPath;
+    if (args.mode == LaunchMode::Normal) {
+        keyBindingsPath = resolveAppDataDir();
+        if (keyBindingsPath) {
+            *keyBindingsPath /= L"keybindings.json";
+            keyBindings = KeyBindings::loadFrom(*keyBindingsPath);
+        }
+    }
     // Free cursor mode (Phase 4b8e, simplified - see approved plan). Toggled
     // via the command palette ("Toggle Free Cursor Mode") - session-lifetime
     // UI state, not document state (see normal_mode_wiring.cpp's
@@ -375,6 +401,21 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     renderPipeline.setMinimapVisible(settings.showMinimap);
     renderPipeline.setTheme(parseThemeKind(settings.themeName));
 
+    // WI-10: moved here (was after window.create() below) and made
+    // non-const - CreateAcceleratorTableW needs no HWND, so building it
+    // before the window exists is harmless, and wireNormalMode()'s
+    // "keybindings.reload"/"keybindings.preset.*" palette commands need a
+    // mutable reference to reassign at runtime. HandleGuard::operator=
+    // (HandleGuard&&) destroys the old HACCEL before taking the new one, so
+    // later reassignment is a safe, leak-free live swap (see
+    // command_dispatch.h's buildAcceleratorTable() comment). Built
+    // unconditionally (harmless/unused for measurement-mode launches, which
+    // never generate real keyboard input) rather than branching on
+    // `args.mode` here too. AcceleratorTableHandle's falsy state
+    // (construction failure) is handled by runMessageLoop() itself (see its
+    // own comment).
+    neomifes::platform::AcceleratorTableHandle accelTable = neomifes::app::buildAcceleratorTable(keyBindings);
+
     // Each mode's hook wiring lives in its own function (see definitions
     // above, or normal_mode_wiring.cpp for the Normal case) - ordering
     // matters for MeasureStartup/MeasureMemory (window created -> first
@@ -391,7 +432,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // reflected everywhere without this call site changing again.
         wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
-                       settings, settingsPath, freeCursorModeEnabled, isDraggingMinimap, imeComposing);
+                       settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
+                       freeCursorModeEnabled, isDraggingMinimap, imeComposing);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
@@ -403,14 +445,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         return 1;
     }
 
-    // WI-07 step2: built unconditionally (harmless/unused for measurement-
-    // mode launches, which never generate real keyboard input) rather than
-    // branching on `args.mode` here too - buildAcceleratorTable() is a
-    // single cheap CreateAcceleratorTableW call with no side effects on
-    // anything else. AcceleratorTableHandle's falsy state (construction
-    // failure) is handled by runMessageLoop() itself (see its own comment).
-    const neomifes::platform::AcceleratorTableHandle accelTable = neomifes::app::buildAcceleratorTable();
-    const int rc = runMessageLoop(window.hwnd(), accelTable.get());
+    const int rc = runMessageLoop(window.hwnd(), accelTable);
 
     // Persist search history once, at clean exit (not after every search) -
     // a crash loses only the current session's newly-recorded entries, an
