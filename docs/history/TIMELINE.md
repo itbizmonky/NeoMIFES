@@ -2855,4 +2855,26 @@ Plan agentによる設計検証で、Phase 1調査の4つの誤り/欠落を修�
 
 コミット済み1件(`be65533`)、pushはユーザーの明示指示待ち。次はWI-10(キーバインド設定+プリセット、秀丸/サクラ/VSCode)。
 
+## Session 88 (2026-08-14〜15): WI-10(キーバインド設定+プリセット)実装完了
+
+WI-09完了後、ユーザーから「次のPhaseへ進め」と指示された。着手前調査(Explore agent3体並列+WebSearch/WebFetchによる外部一次資料調査+Plan agent1体+自己検証、CLAUDE.mdルール3)で本WI最大の設計上の分岐点を解消した。
+
+**スコープ決定(AskUserQuestionでユーザー確認済み):「広範囲」を採用。** `ui::CommandId`(`command_ids.h`)は`None`を除き35個、うち`About`(ヘルプメニュー専用、キーボード経路なし)を除く**34個全て**をリマップ対象にした。内訳: (a) 既存Win32 `HACCEL`の16個(Save/SaveAs/Open/New/TabClose/TabNext/TabPrevious/TabSwitch1-9)、(b) WC_EDIT系オーバーレイウィジェットとのフォーカス競合のため`HACCEL`から意図的に除外されている6個(Copy/Cut/Paste/Undo/Redo/ToggleOverwriteMode)、(c) `normal_mode_wiring.cpp`の`handle*Key()`関数群にハードコードされた残り12個(FindShow/FindReplace/FindNext/FindPrevious/GrepShow/CommandPaletteShow/OutlineToggle/GotoLineShow/BookmarkToggle/BookmarkNext/BookmarkPrevious/TagJump)。秀丸/サクラ/VSCodeプリセットを差別化する要のキーがまさに(c)側にあり、対象外にすると4プリセットの実質的な違いがSave/Open/Tab程度に矮小化されるため。
+
+**外部一次資料の調査結果(WebSearch/WebFetchで直接確認済み、記憶からの転記ではない):** サクラエディタは公式ヘルプ(sakura-editor.github.io)の完全な表からほぼ全34コマンドの既定値を確認できた。秀丸エディタは公式ヘルプがキー割り当てダイアログの操作手順のみで既定値一覧を公開しておらず、コミュニティ情報(nymemo.com等)で複数箇所裏取りしたが、SaveAs・Grep・FindNext/FindPrevious・ブックマーク系・タブ切替・CommandPalette相当・ToggleOverwriteModeは確認不能または矛盾する情報のみだったため、build_plan.mdの「確認できない項目は同梱せず未対応として空にする。誤ったプリセットは無いより悪い」指示に従い意図的に空のまま残した。VSCodeは`code.visualstudio.com`の公式デフォルトキーバインド資料で確認した。
+
+**アーキテクチャ制約(CLAUDE.md §3):** `neomifes::core`は`neomifes::ui`に依存できないため、`core::KeyBindings`は`ui::CommandId`を持てず、コマンド/チョードとも純粋な`std::u16string`として保持する。WI-09の`theme_settings.h`と同じ「下位層は文字列、上位層でenumへブリッジ」パターンを踏襲し、`ui::command_id_name.h`(`commandIdToString()`/`commandIdFromString()`)と`app::key_chord.h`(`parseKeyChord()`/`keyChordToString()`)で文字列⇔enum変換を行う。
+
+**実装(8ステップ):** ステップ1(`core::KeyBindings`+4プリセットテーブル+`toUtf8`/`fromUtf8`の`json_string_convert.h`への3重複排除)→ステップ2(`ui::commandIdToString()`/`commandIdFromString()`)→ステップ3(`app::KeyChord`/`parseKeyChord()`/`keyChordToString()`、`neomifes_app_input`へ登録)→ステップ4(`keybinding_dispatch.h`: `chordMatches()`/`resolveKeyBindingConflicts()`/`kAcceleratorEligibleCommands`/`buildAcceleratorRows()`)→ステップ5(`command_dispatch.h`の`buildAcceleratorTable(const KeyBindings&)`化+`main.cpp`の`accelTable`実行時再構築配線)→ステップ6(`normal_mode_wiring.cpp`の9つの`handle*Key()`関数を`chordMatches()`ベースへ書き換え、`handleKeyDownEvent()`/`wireNormalMode()`のシグネチャ拡張)→ステップ7(`CommandPalette::setCommands()`新設+`keybindingLabel`の動的生成化+`keybindings.reload`/`keybindings.preset.*`の5新規パレットコマンド)→ステップ8(最終検証・ドッグフーディング・ドキュメント同期)。
+
+**競合解決方針(決定的):** `resolveKeyBindingConflicts()`は`ui::kAllRemappableCommandIds`(`command_ids.h`の宣言順、固定)を走査し、同一chordへの複数バインドは後に宣言されたCommandIdが勝つ。実装過程で2件のテストロジックバグ(`ChordStringCaseDoesNotProduceSeparateEntries`/`OmitsRowWhenAnHacceleratorEligibleCommandLosesToAManualChainCommand`)を発見・修正した——原因は自分自身が`command_ids.h`の実際の宣言順を逆に記憶していたことで、実装ではなくテストの期待値が誤っていたと判明した(実際の値: Find*/Grep/Palette/Outline/GotoLine/Bookmark*/TagJumpが最初(indices 0-11)、Save等HACCEL対象が中間(12-27)、Copy/Cut/Paste/Undo/Redo/ToggleOverwriteModeが最後(28-33)、後勝ちルールにより最後に宣言されたグループが常に勝つ)。通知手段はDebugビルド限定の`OutputDebugStringW`ログのみ(トースト/ダイアログ基盤が本コードベースに無いため)。
+
+**最終ゲート:** Debug/Release/ubsanフル3構成、各1158/1158テストgreen(WI-10ステップ6完了直後の初回検証で確認)。clang-tidyスイープで8ファイルにわたる実質的な指摘(designated-initializers・C配列・cognitive-complexity超過・bounds-unsafe indexing等、計10種類前後)を発見し全て修正——特に`ui::command_id_name.h`の`commandIdFromString()`(34行のif連鎖、cognitive complexity 34 vs 閾値25)は、既存の`commandIdToString()`を`kAllRemappableCommandIds`経由で逆引きする`std::ranges::find_if()`1行へ書き換えることで、文字列リテラルの二重管理も同時に解消した。`main.cpp`の`HACCEL`ローカル変数の宣言(`misc-misplaced-const`→`const auto`→`readability-qualified-auto`→最終的に`auto* const haccel`)は3回の反復修正を要した(ポインタtypedefへの`const`付与に関する2つの独立したclang-tidyチェックが異なる書き方を要求するため)。事前に`git diff`で調査した結果、`CommandDispatchContext`の参照メンバ(`cppcoreguidelines-avoid-const-or-ref-data-members`)はWI-07由来の未変更コードと確認し対応対象外とした。同様に`core_key_bindings_test.cpp`の`std::rand()`パターンと`app_key_chord_test.cpp`の`ASSERT_TRUE`後の`bugprone-unchecked-optional-access`は、既存テストスイート全体で確立済みの前例パターンと確認し、対応対象外とした。
+
+**実機ドッグフーディング:** この環境では修飾キー付きキーボード入力の合成が過去複数セッションにわたり不安定と判明しているため、コマンドパレットを実際に開いて4プリセットの表示を目視確認する対話的UI検証は実施しなかった。代わりに`%APPDATA%\NeoMIFES\keybindings.json`を直接操作するファイルレベル検証を4パターン実施し全て合格した: (1) ファイル不在時に自動生成せず埋め込みneomifesプリセットへフォールバック、(2) 34個中1個(`file.save`のみ)を定義した手書きJSONを正しくロードしクラッシュしない、(3) 壊れたJSON(`{this is not valid json`)からneomifesプリセットへ安全にフォールバックしクラッシュしない、(4) `find.show`と`file.save`を同一chord(`Ctrl+Q`)へ意図的に競合させてもアクセラレータテーブル構築が例外を投げずクラッシュしない。ロジック自体の正しさは既存の単体/統合テスト(1158/1158 green)で別途証明済みであり、本検証が追加したのは実際にコンパイルされたバイナリでのUI配線がクラッシュしないという経験的証拠のみ。
+
+**ドキュメント同期:** `build_plan.md`(WI-10 DoD全項目`[x]`化+「保留項目なし。完全に完了」+実装後の確定事項節新設、進捗チェックリストの`[x]`化)、`master_roadmap.md`(§8.6.2に実装後の確定事項追記、§13.1へbuild_plan.mdとの食い違い(「MIFES互換」プリセット非対応)の訂正注記追加、§2フェーズ早見表の8.5d/8.5f/8.6a/8.6c/8.6dの陳腐化した状態も併せて是正)、新規`docs/issues/menu_bar_keybinding_label_stale.md`(P2、メニューバー表示の実行時未更新)起票+`docs/issues/README.md`更新、`RESUME_HERE.md`(冒頭ポインタ更新、次はWI-11)。
+
+コミット済み(実装`dc5a724`+ドキュメント同期1件)、pushはユーザーの明示指示待ち。次はWI-11(自動保存/バックアップ/クラッシュ復旧/最近開いたファイル)。
+
 <!-- 次セッションはここに追記 -->

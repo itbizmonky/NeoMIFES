@@ -274,14 +274,14 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.5a** | **文書保存基盤** (`document::saveFile()`、mmap 解放 + `ReplaceFileW` アトミック置換、`isDirty()`、エンコード/改行/BOM 指定書き出し) | ⏭️ **最優先 (P0)** | §8.5 |
 | **8.5b** | **ファイルライフサイクル UI** (Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+N、`IFileDialog`、`WM_DROPFILES`、未保存警告) | ✅ **完了・🎉 M1達成 (2026-08-05)** | §8.5 |
 | **8.5c** | **`main.cpp` 解体 + 複数文書モデル** (`app::EditorSession` / `app::Workspace` 新設。main.cpp を 2,439 行 → 361 行へ縮小) | ✅ **完了 (WI-04, 2026-08-07)** | §8.5 |
-| **8.5d** | **タブ UI** (`ui::TabBar`、Ctrl+Tab / Ctrl+W / Ctrl+PgUp・PgDn) | ⏭️ **P0 (次候補)** | §8.5 |
+| **8.5d** | **タブ UI** (`ui::TabBar`、Ctrl+Tab / Ctrl+W / Ctrl+PgUp・PgDn) | ✅ **完了 (WI-05, 2026-08-11)** | §8.5 |
 | **8.5e** | **IME 完全対応** (`WM_IME_*`、未確定文字列のインライン描画、`CANDIDATEFORM` キャレット追従) | ✅ **完了 (WI-06, 2026-08-12)** | §8.5, §16.1 |
-| **8.5f** | **ウィンドウクローム** (メニューバー / `HACCEL` / ステータスバー / タイトル / コンテキストメニュー / `.rc`・`.ico`・`.manifest`) | ⏭️ **P0** | §8.5 |
+| **8.5f** | **ウィンドウクローム** (メニューバー / `HACCEL` / ステータスバー / タイトル / コンテキストメニュー / `.rc`・`.ico`・`.manifest`) | ✅ **完了・🎉 M2達成 (WI-07, 2026-08-13)** | §8.5 |
 | **8.5g** | **横スクロール** (`leftColumn`、`WM_HSCROLL`。長い行の右端への到達) | ✅ **完了 (WI-03, 2026-08-05)** | §8.5 |
-| **8.6a** | **設定システム** (`core::Settings`、JSON。ハードコード定数 13 箇所を移行、`kTabWidth` 二重定義を解消) | ⏭️ P1 | §8.6 |
-| **8.6b** | **キーバインド設定** (`HACCEL` の設定ファイル化、秀丸/サクラ/VSCode プリセット) | ⏭️ P1 | §8.6, §13.1 |
-| **8.6c** | **テーマ** (ダーク / ライト / ハイコントラスト。ハードコード `D2D1_COLOR_F` を `Theme` 経由へ) | ⏭️ P1 | §8.6, §13.6 |
-| **8.6d** | **自動保存・バックアップ・クラッシュ復旧・最近開いたファイル** | ⏭️ P1 | §8.6 |
+| **8.6a** | **設定システム** (`core::Settings`、JSON。ハードコード定数 13 箇所を移行、`kTabWidth` 二重定義を解消) | ✅ **完了 (WI-08, 2026-08-13)** | §8.6 |
+| **8.6b** | **キーバインド設定** (`HACCEL` の設定ファイル化、秀丸/サクラ/VSCode プリセット) | ✅ **完了 (WI-10, 2026-08-15)** | §8.6, §13.1 |
+| **8.6c** | **テーマ** (ダーク / ライト / ハイコントラスト。ハードコード `D2D1_COLOR_F` を `Theme` 経由へ) | ✅ **完了 (WI-09, 2026-08-14)** | §8.6, §13.6 |
+| **8.6d** | **自動保存・バックアップ・クラッシュ復旧・最近開いたファイル** | ⏭️ **P1 (次候補)** | §8.6 |
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ⏭️ P1 | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ⏭️ 新設 | §12.4 |
 | 10 | ログ解析 / CSV / JSON-XML tree (**最大の差別化点。v2.1 で AI より前倒し**) | 未着手 | §10 |
@@ -1777,6 +1777,14 @@ class Workspace {
 
 8.5f で `HACCEL` へ集約したキーバインドを設定ファイル化し、roadmap §13.1 のプリセット (NeoMIFES 標準 / 秀丸 / サクラ / VSCode) を実現する。
 
+**✅ 実装完了 (WI-10、2026-08-15)。実装後の確定事項:**
+
+- **プリセットは `neomifes`/`hidemaru`/`sakura`/`vscode` の4種のみ。** §13.1 が列挙する「MIFES 互換」プリセットは対象外とした — build_plan.md の WI-10 節自体が最初から「NeoMIFES 標準 / 秀丸 / サクラ / VSCode の 4 種を同梱」とし、build_plan.md が Plan-of-Record として §13.1 に優先する (CLAUDE.md 絶対ルール3、矛盾時はユーザーに確認する原則に基づき、build_plan.md 側の記述を実装対象として確定させた)。Vim/Emacs モードは §13.1 記載通り Phase 8 プラグイン提供のまま、WI-10 のスコープ外。
+- **スコープは「広範囲」— `ui::CommandId` 34個全てが対象。** 既存 `HACCEL` 16個に加え、`normal_mode_wiring.cpp` にハードコードされていた残り18個(Find*/Grep/CommandPalette/Outline/GotoLine/Bookmark*/TagJump/Copy/Cut/Paste/Undo/Redo/ToggleOverwriteMode)も含めた。詳細・根拠は `build_plan.md` WI-10 節参照。
+- **競合解決は `command_ids.h` の enum 宣言順で後勝ち、決定的。** 通知はDebugビルド限定の `OutputDebugStringW` ログのみ(トースト/ダイアログ基盤が本コードベースに無いため)。
+- **`core::KeyBindings` は `ui::CommandId`/Win32 `VK_*` に非依存。** WI-09 の `theme_settings.h` と同じ「下位層は文字列、上位層で enum へブリッジ」パターンを踏襲(`ui::command_id_name.h`/`app::key_chord.h`)。
+- **メニューバー表示の実行時更新はスコープ外。** `docs/issues/menu_bar_keybinding_label_stale.md` に起票済み。実際のキー入力自体はメニュー表示に関わらず正しく機能する。
+
 ### 8.6.3 サブフェーズ 8.6c — テーマ
 
 `render_pipeline.cpp` にハードコードされている `D2D1_COLOR_F` 定数群 (背景 / テキスト / キャレット / 選択 / Keyword / Type / String / Number / Comment / Preprocessor / ミニマップ 3 種 / Breadcrumb / Indent guide / フォールドマーカー) を `render::Theme` 構造体経由へ移す。ダーク / ライト / ハイコントラストの 3 種を同梱 (要件定義書 §14 必須)。
@@ -2383,10 +2391,13 @@ neomifes.showToast("Inserted!")
 ## 13. UI/UX トップレベル方針 (v2.0 大幅拡張)
 
 ### 13.1 キーバインドプリセット
+
+> ⚠️ **WI-10 (2026-08-15) 実装後の訂正:** 本節が列挙する5種のうち、実際に実装したのは **NeoMIFES 標準 (`neomifes`) / 秀丸互換 (`hidemaru`) / サクラ互換 (`sakura`) / VSCode (`vscode`、独立プリセットとして。「NeoMIFES標準のVSCodeベース」ではない) の4種のみ**。「MIFES 互換」は build_plan.md の WI-10 節が最初からスコープに含めておらず、`build_plan.md` を Plan-of-Record として本節より優先させた(CLAUDE.md 絶対ルール3)。Vim/Emacs モードは以下の記述通り Phase 8 プラグイン提供のまま未着手。詳細は §8.6.2 の「実装後の確定事項」参照。
+
 - **NeoMIFES 標準** (VSCode ベース)
 - **秀丸互換** (F5=マクロ実行、Alt+F=ファイルメニュー、Ctrl+G=grep 等)
 - **サクラ互換** (Ctrl+Enter=改行挿入、Alt+↑↓=行移動 等)
-- **MIFES 互換** (F9=保存、F10=閉じる 等、要件定義書と MIFES の実キー体系交差を Phase 4b8 で確定)
+- **MIFES 互換** (F9=保存、F10=閉じる 等、要件定義書と MIFES の実キー体系交差を Phase 4b8 で確定) — **WI-10 では対象外 (上記訂正参照)**
 - **Vim モード** (Phase 8 のプラグインで提供)
 - **Emacs モード** (Phase 8 のプラグインで提供)
 - 設定ダイアログでプリセット選択、個別カスタマイズ可

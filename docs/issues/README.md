@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-13 (WI-08完了、設定システム未実装issue 解決済みへ移動、P1残り1件)
+**最終更新:** 2026-08-15 (WI-10完了、メニューバーキーバインド表示陳腐化issueを新規起票)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -26,6 +26,7 @@
 | Issue | 概要 | 状態 |
 |---|---|---|
 | [オーバーレイにフォーカスがある間 Ctrl+S/O/N が届かない](overlay_focus_blocks_file_lifecycle_keys.md) | FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane のサブクラスプロシージャが未知のキーを親HWNDへ転送しない | 待機 (5ウィジェット全てへの転送ロジックが必要になった時点で再評価) |
+| [メニューバーのキーバインド表示が実行時リマップに追従しない](menu_bar_keybinding_label_stale.md) | `\tCtrl+X` 等の表示は起動時固定、`keybindings.reload`/`.preset.*` 後も再起動まで古いまま (実際のキー入力自体は正しく機能する) | 待機 (メニュー再構築機構が必要になった時点で再評価) |
 | [`ts_parser_parse()` の文書サイズ比例コスト](tree_sitter_incremental_parse_cost.md) | 50万行で 155.95ms、DoD ≤50ms 未達。4 フェーズ挑戦し tree-sitter の構造的限界と結論 | 🧊 **凍結** (Phase 12 直前に「達成」か「DoD 改訂」かを判断) |
 | [`UndoStack` のメモリ無制限成長](undo_stack_unbounded_memory.md) | 圧縮/ディスクスワップ未実装。時間 DoD は達成済み、メモリは未計測 | 待機 (実メモリ計測が可能になってから) |
 | [`TextLayoutCache` のサイズ無制限成長](text_layout_cache_unbounded_growth.md) | LRU 追い出し未実装 | 待機 |

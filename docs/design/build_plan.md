@@ -121,7 +121,7 @@ ctest --preset debug --output-on-failure
 
 - [x] **WI-08** 設定システム (`core::Settings`) + ハードコード定数の移行 → コミット: `6a76722` (ステップ1) / `0fbd148` (ステップ2) / `0b55e86` (ステップ3)
 - [x] **WI-09** テーマ (ダーク / ライト / ハイコントラスト) → コミット: `be65533` (実装) / `da1da01` (ドキュメント同期)
-- [ ] **WI-10** キーバインド設定 + プリセット (秀丸 / サクラ / VSCode) → `________`
+- [x] **WI-10** キーバインド設定 + プリセット (秀丸 / サクラ / VSCode) → コミット: `dc5a724`
 - [ ] **WI-11** 自動保存 / バックアップ / クラッシュ復旧 / 最近開いたファイル → `________`
 - [ ] **WI-12** 基本編集の穴埋め (Ctrl+A / 自動インデント / 行複製・移動・削除) → `________`
   - 🎉 **M3 達成: 設定・テーマが揃う**
@@ -819,10 +819,23 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 
 ### DoD
 
-- [ ] キーバインドを設定ファイルで変更でき、再起動後も保持される
-- [ ] 4 プリセットを切り替えられる
-- [ ] 競合するキーバインドを設定したとき、警告するか後勝ちにするかが定義されている
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] キーバインドを設定ファイルで変更でき、再起動後も保持される (`%APPDATA%\NeoMIFES\keybindings.json`、`core::KeyBindings::loadFrom()`/`saveTo()`)
+- [x] 4 プリセットを切り替えられる (`keybindings.preset.{neomifes,hidemaru,sakura,vscode}` パレットコマンド、`KeyBindings::forPreset()`)
+- [x] 競合するキーバインドを設定したとき、警告するか後勝ちにするかが定義されている (`command_ids.h` の enum 宣言順で後勝ち、決定的。Debug ビルド限定で `OutputDebugStringW` へログ — 詳細は下記「実装後の確定事項」)
+- [x] Debug / Release / ubsan 全 green (各 1158/1158 テスト)、clang-tidy 新規警告 0
+
+**保留項目なし。完全に完了。**
+
+### 実装後の確定事項
+
+- **スコープは「広範囲」を採用:** `ui::CommandId` 35個のうち `About`(キーボード経路なし)を除く **34個全て** をリマップ対象にした。既存 `HACCEL` の16個(Save/Open/New/Tab*)に加え、`normal_mode_wiring.cpp` の `handle*Key()` 関数群にハードコードされていた残り18個(Find*/Grep/CommandPalette/Outline/GotoLine/Bookmark*/TagJump/Copy/Cut/Paste/Undo/Redo/ToggleOverwriteMode)も対象にした。秀丸/サクラ/VSCode の差を出すキー(検索・grep・ブックマーク等)がまさにこの18個側にあり、対象外にすると4プリセットの実質的な違いが矮小化されるため。AskUserQuestionでユーザーに確認済み。
+- **競合解決方針(決定的・enum宣言順):** `resolveKeyBindingConflicts()` は `ui::kAllRemappableCommandIds`(`command_ids.h` の宣言順、固定)を走査し、同一chordへの複数バインドは**後に宣言されたCommandIdが勝つ**。JSON書き込み順や `core::KeyBindings` 内部の `std::map` 順など再現性のない基準は使わない。結果として HACCEL対象16個(Save等)がFind/Grep/Palette等12個より優先され、Copy/Cut/Paste/Undo/Redo/ToggleOverwriteModeの6個が最終的に全てに優先する、という3層の優先順位になる(これは狙って設計したものであり、既存の `app_keybinding_dispatch_test.cpp` のテストが実測値でこれを固定している)。通知手段はDebugビルド限定の `OutputDebugStringW` ログのみ — トースト/ダイアログ等のライブUI基盤が本コードベースに無いため(ADR-019時点で `ui::ToastState` はヘッドレスのまま)、可視的な警告UIは本WIのスコープ外。
+- **秀丸プリセットは意図的に不完全:** `key_bindings_presets.cpp` の秀丸テーブルは、外部一次資料で確認できた項目(Ctrl+N/O/S、Ctrl+Z/Y/X/C/V、Ctrl+F/Shift+Ctrl+F、Ctrl+R、Ctrl+G、F11、F10/Ctrl+F10)のみを収録し、確認できなかった項目(SaveAs・Grep・FindNext/FindPrevious・ブックマーク系・タブ切替・CommandPalette相当・ToggleOverwriteMode)は空(未対応)のまま残した。build_plan.md 自身の「誤ったプリセットは無いより悪い」指示に従った判断であり、バグではない。サクラ/VSCodeプリセットは公式ヘルプ/公式ドキュメントで裏取りできたためほぼ全項目を収録している。
+- **2つの独立したディスパッチ機構は WI-07 のまま維持:** HACCEL対象16個は `TranslateAcceleratorW` 経由(`buildAcceleratorRows()` が `keybindings.json` のロード/リロード/プリセット切替のたびに1回だけ再構築、毎キー入力では再構築しない)、残り18個は `normal_mode_wiring.cpp` の既存 `handle*Key()` チェーン経由(各関数が `chordMatches()` を毎キー入力で呼ぶ、再構築ステップ不要で即座に反映される)。この非対称性はWI-07が確立した「オーバーレイウィジェット(FindBar等の `WC_EDIT`)とのフォーカス競合を避けるため一部コマンドはグローバルアクセラレータに乗せられない」という制約をそのまま継承しており、WI-10では変更していない。
+- **`core::KeyBindings` は `ui::CommandId` にも Win32 `VK_*` にも依存しない:** レイヤードアーキテクチャ(CLAUDE.md §3)を守るため、`core::` 層はコマンドもチョードも純粋な文字列(`std::u16string`)として保持する。文字列⇔`CommandId` の変換は `ui::command_id_name.h`(`commandIdToString()`/`commandIdFromString()`)、文字列⇔`KeyChord` の変換は `app::key_chord.h`(`parseKeyChord()`/`keyChordToString()`)がそれぞれ担う — WI-09の `theme_settings.h` が確立した「下位層は文字列、上位層で enum へブリッジする」パターンをそのまま踏襲した。
+- **メニューバー表示の実行時更新はスコープ外:** `menu_bar.h` の `MenuItemSpec::label` はウィンドウ作成時に固定文字列として焼き込まれ、`SetMenu`/`ModifyMenuW` はコードベース全体に1つも存在しない。リマップ後も実際のキー入力自体は正しく機能する(HACCELまたは手動チェーン経由)ため、影響はメニュー上の `\tCtrl+X` 表示が再起動まで古いままという見た目のみ。既知の制限として `docs/issues/menu_bar_keybinding_label_stale.md` に起票した。
+- **コマンドパレットの `keybindingLabel` は動的生成に変更:** 既存6個の登録済みコマンド(find.show/find.replace/find.next/find.previous/edit.undo/edit.redo)のラベルはハードコード文字列から `keybindingLabelFor(keyBindings, chordId)`(現在の最初のバインドを `parseKeyChord()`→`keyChordToString()` で整形)へ切り替えた。`keybindings.reload`/`keybindings.preset.*` コマンドはロード/切替のたびに `commandPalette.setCommands(buildCommandRegistry(...))` を呼び、パレット全体のラベルを再構築する。
+- **ドッグフーディング:** 実機での対話的UI検証(コマンドパレットを実際に開いて4プリセットのラベル表示を目視確認、`Ctrl+Alt+S` 押下でSaveが実際に発火することの確認等)は、この環境で修飾キー付きキーボード入力の合成が過去複数セッションにわたり不安定/不能と判明しているため実施できなかった。代わりにファイルレベルの検証(`%APPDATA%\NeoMIFES\keybindings.json` の直接読み書き+プロセス生存確認)で以下4点を確認した: (1) ファイル不在時は自動生成せず埋め込みneomifesプリセットへフォールバック、(2) 34個中1個だけを定義した手書きJSONを正しくロードしクラッシュしない、(3) 壊れたJSONでneomifesプリセットへ安全にフォールバックしクラッシュしない、(4) `find.show`と`file.save`を同一chord(`Ctrl+Q`)へ意図的に競合させてもアクセラレータテーブル構築が例外を投げずクラッシュしない。ロジック自体の正しさ(chord一致判定・競合解決の決定性・アクセラレータ行の省略)は既存の単体/統合テスト(1158/1158 green)で別途証明済みであり、本ドッグフーディングが追加したのは「実際にコンパイルされたバイナリでのUI配線がクラッシュしない」という経験的証拠のみである。
 
 ---
 
