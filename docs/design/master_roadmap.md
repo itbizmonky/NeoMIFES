@@ -1813,6 +1813,8 @@ class Workspace {
 
 `Ctrl+A` (全選択)、自動インデント (前行のインデントを継承)、行複製 (`Ctrl+D`) / 行移動 (`Alt+↑/↓`) / 行削除 (`Ctrl+Shift+K`)。
 
+> ✅ **実装後の確定事項 (WI-12 完了、2026-08-15、🎉 M3):** 上記5機能を全て実装した。行複製/行移動/行削除は既存の2つのカーソル復元ポリシー(`MultiCursorEditCommand`/`ReplaceAllCommand`)のどちらにも合わなかったため、新規第3のポリシー `core::LineOperationCommand`(呼び出し側が `CursorEditMapping{editIndex, offsetIntoInsertedText}` を明示指定)を新設し、適用/Undo自体は既存の `cumulative_shift_edit.h` を共有した。複数行削除で「行末尾の `\n` を削るか」の判定を行ごとではなくラン(連続する行のまとまり)単位に統一する修正が必要だった(バックグラウンド検証エージェントが単体テストで発見)。自動インデントは `core::Settings` を一切参照せず「前行の実テキストをそのまま文字列コピーする」方式を採用し、タブ/スペース設定に自動的に追従する。5コマンドは意図的に `core::KeyBindings`(WI-10プリセットシステム)の対象外(既存の継続編集キーと同じハードコード扱い)とした — 秀丸/サクラ/VSCodeの複製・行移動・行削除キーは製品ごとの差が大きく、未確認の外部調査という新規スコープを避けるため。詳細は `build_plan.md` WI-12節参照。
+
 ---
 
 ## 9. Phase 9 — AI プラグイン (Claude 統合 + Copilot 型補完 + RAG + マルチモデル + ローカル LLM)

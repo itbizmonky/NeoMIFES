@@ -162,7 +162,7 @@
 | **8.6c** | **テーマ** (ダーク/ライト/ハイコントラスト) | ✅ **完了 (WI-09、2026-08-14、§3.76参照)** |
 | **8.6b** | **キーバインド設定 + プリセット** (秀丸/サクラ/VSCode) | ✅ **完了 (WI-10、2026-08-15、§3.77参照)** |
 | **8.6d** | **自動保存/バックアップ/クラッシュ復旧/最近開いたファイル** | ✅ **完了 (WI-11、2026-08-15、§3.78参照)** |
-| 8.6e | 基本編集の穴埋め (🎉 M3) | ⏭️ P1 (**次にやること**、WI-12) |
+| **8.6e** | **基本編集の穴埋め (🎉 M3)** | ✅ **完了 (WI-12、2026-08-15、§3.79参照)** |
 | **12'** | **MVP 出荷判定** | ⏭️ 新設 |
 | 10 → 11 → 9 → 12 | ログ解析 → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
@@ -2336,6 +2336,20 @@ WI-10完了・コミット(`dc5a724`/`c6f72f4`)後、ユーザーから「次の
 
 **コミット済み(`bf03ff0`)、pushはユーザーの明示指示待ち。** 次はWI-12(基本編集の穴埋め: Ctrl+A/自動インデント/行複製・移動・削除、🎉 M3) — `build_plan.md` §5参照。
 
+### 3.79 WI-12 (基本編集の穴埋め、🎉 M3) 完了記録 (2026-08-15)
+
+WI-11完了・コミット(`bf03ff0`)後、ユーザーから「次のPhaseに進め」と指示された。Ctrl+A(全選択)・自動インデント(改行時に前行のインデントを継承)・Ctrl+D(行複製)・Alt+↑/↓(行移動)・Ctrl+Shift+K(行削除)の5機能を実装した。
+
+**設計上の中心的な発見:** 既存の2つのカーソル復元ポリシー(`MultiCursorEditCommand`: edits.size()==cursorsBefore.size()の厳密な1:1対応、`ReplaceAllCommand`: N編集M カーソルでカーソル自体は動かさない)のどちらも行指向操作(行複製/行移動/行削除)には合わなかった — 複数カーソルが同一行を共有すると編集本数がカーソル本数より少なくなるが、それでも各カーソルを意味のある位置へ再配置する必要があるため。新規第3のポリシー`core::LineOperationCommand`(呼び出し側が`CursorEditMapping{editIndex, offsetIntoInsertedText}`を明示指定)を新設し、適用/Undo自体は既存の`cumulative_shift_edit.h`を他の2クラスと共有した。
+
+実装: `core::LineOperationCommand`+`core::line_operations`(`computeDuplicateLineEdits()`/`computeDeleteLineEdits()`/`computeMoveLineEdits()`)→ `SelectionModel::selectAll()` → `editor_input.cpp::handleChar()`の自動インデント(`insertPerCursorTexts()`を再利用、前行の実テキストをそのまま文字列コピーするため`core::Settings`のタブ/スペース設定を一切参照する必要がない) → `normal_mode_wiring.cpp`への配線(5コマンドとも`CommandId::None`、パレット限定・非リマップ可能の既存パターンを踏襲)。
+
+バックグラウンド検証エージェントが単体テストで実害あるバグを1件発見: 複数行削除で「行末尾の`\n`を削るか」を行ごとに判定すると、文書末尾に到達する複数行ランで末尾に`\n`が余分に残る不具合(`"abc\ndef\nghi"`の末尾2行削除が`"abc\n"`になっていた)。連続する行を`groupIntoContiguousRuns()`でランへグループ化し判定をラン単位に統一して解消。clang-tidyの`readability-function-cognitive-complexity`(閾値25)超過を`computeMoveLineEdits()`から3つの名前付きヘルパー(`appendBlockedRunEdits()`/`buildMoveUpEdit()`/`buildMoveDownEdit()`)を抽出して解消。
+
+最終ゲート(Debug/Release/ubsanフル3構成、1227/1227テストgreen)、clang-tidy新規警告0。**実機ドッグフーディングはCtrl+D(行複製)のみ完全に成功した**(`keybd_event()`合成+`SetForegroundWindow()`/`GetForegroundWindow()`でフォーカス一致確認、期待通り行が複製されカーソル位置も正しく表示された)。**Alt+↓以降のドッグフーディングは、この環境特有の問題(Altキー固有の問題ではなく、ツール呼び出しの合間にウィンドウフォーカスが自然に失われるというより根本的な制約)により完遂できなかった** — Alt+↓送信後にNeoMIFESとは無関係な別ウィンドウへフォアグラウンドフォーカスが移り、`SetForegroundWindow()`で明示的に復元した直後の次呼び出しでも再度別プロセスへフォーカスが移っていた。Ctrl+D成功によりキー入力→ディスパッチ→コマンド実行→再描画という配線全体が正しく機能することは実証済みのため、残り4機能は単体テスト(`core_line_operations_test.cpp`22件・`core_selection_model_test.cpp`/`app_editor_input_test.cpp`拡張)+最終実装のコードレビューで代替検証した。
+
+**コミット済み(`51d419d`)、pushはユーザーの明示指示待ち。** 次はWI-13(MVP出荷判定、🎉 M4) — `build_plan.md` §5参照。WI-01〜WI-12の全実装が完了し、build_plan.md §6のMVP出荷判定チェックリストの実機確認フェーズへ進む。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2385,17 +2399,19 @@ WI-10完了・コミット(`dc5a724`/`c6f72f4`)後、ユーザーから「次の
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.78 (WI-11自動保存/バックアップ/クラッシュ復旧/
-最近開いたファイル完了記録) を読んで現状を把握せよ。
+RESUME_HERE.md §3.79 (WI-12基本編集の穴埋め、🎉 M3完了記録) を
+読んで現状を把握せよ。
 
-WI-01〜WI-11は全て完了・コミット済み(直近: WI-11 `bf03ff0`)。
-🎉 M1(2026-08-05)・🎉 M2(2026-08-13)達成済み。設定/テーマ/キーバインド/
-自動保存が揃った。
+WI-01〜WI-12は全て完了・コミット済み(直近: WI-12)。
+🎉 M1(2026-08-05)・🎉 M2(2026-08-13)・🎉 M3(2026-08-15)達成済み。
+Phase 8.5(アプリケーションシェル)+Phase 8.6(製品化基盤)が完全に
+揃った。
 
-次はWI-12 (基本編集の穴埋め: Ctrl+A/自動インデント/行複製・移動・削除、
-🎉 M3、build_plan.md §5参照) に着手すること。着手前に
-build_plan.md §0のコールドスタート手順・master_roadmap.md §8.6.5の
-節を確認すること。
+次はWI-13 (MVP出荷判定、🎉 M4、build_plan.md §5・§6参照) に
+着手すること。build_plan.md §6のMVP出荷判定チェックリストを
+1項目ずつ実機で確認し、未達項目があれば新規WIとして§3へ追加してから
+戻ること。Authenticode署名+Portable Zip配布物・ユーザーマニュアル・
+8時間ソークテストも必要。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。
