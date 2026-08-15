@@ -56,20 +56,29 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
+#include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "neomifes/app/autosave.h"
 #include "neomifes/app/command_dispatch.h"
 #include "neomifes/app/editor_session.h"
 #include "neomifes/app/launch_setup.h"
+#include "neomifes/app/menu_bar.h"
+#include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/normal_mode_wiring.h"
 #include "neomifes/app/theme_settings.h"
 #include "neomifes/app/workspace.h"
+#include "neomifes/core/autosave_index.h"
 #include "neomifes/core/key_bindings.h"
+#include "neomifes/core/recent_files.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
 #include "neomifes/document/document.h"
+#include "neomifes/document/file_loader.h"
 #include "neomifes/platform/app_data_dir.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
@@ -89,22 +98,28 @@
 
 namespace {
 
+using neomifes::app::AutosaveContext;
 using neomifes::app::claimSingleInstance;
 using neomifes::app::debugLogRenderError;
 using neomifes::app::DocumentFileState;
+using neomifes::app::EditorSession;
 using neomifes::app::enableHighDpi;
 using neomifes::app::FrameProfile;
 using neomifes::app::GrepState;
 using neomifes::app::initCommonControls;
 using neomifes::app::LaunchArgs;
 using neomifes::app::LaunchMode;
+using neomifes::app::MenuBarHandles;
 using neomifes::app::parseArgs;
 using neomifes::app::parseThemeKind;
 using neomifes::app::prepareDocument;
+using neomifes::app::RecoverableAutoSave;
 using neomifes::app::StartupProfile;
 using neomifes::app::wireNormalMode;
 using neomifes::app::Workspace;
+using neomifes::core::AutosaveIndex;
 using neomifes::core::KeyBindings;
+using neomifes::core::RecentFiles;
 using neomifes::core::SearchHistory;
 using neomifes::core::Settings;
 using neomifes::document::Document;
@@ -214,6 +229,117 @@ void wireMeasureFrameMode(MainWindowConfig& cfg, MainWindow& window, RenderPipel
     };
 }
 
+// WI-11: extracted from wWinMain purely to keep clang-tidy's cognitive-
+// complexity check happy (src/ threshold of 25 - wWinMain grew past it once
+// this WI's recent-files/autosave-index/crash-recovery resolution logic was
+// added inline) - same rationale as settings.cpp's applyFields() split and
+// this file's own pre-existing "three cfg-wiring branches" comment above.
+// Behavior is unchanged from the inline version this replaced. Mirrors
+// wWinMain's own Normal-mode-only gating (no point paying filesystem I/O on
+// --measure-* harness invocations).
+RecentFiles loadRecentFilesForLaunch(const LaunchArgs&                     args,
+                                     std::optional<std::filesystem::path>& outRecentFilesPath) {
+    RecentFiles recentFiles;
+    if (args.mode == LaunchMode::Normal) {
+        outRecentFilesPath = resolveAppDataDir();
+        if (outRecentFilesPath) {
+            *outRecentFilesPath /= L"recent.json";
+            recentFiles = RecentFiles::loadFrom(*outRecentFilesPath);
+        }
+    }
+    return recentFiles;
+}
+
+// WI-11: bundles every value resolveAutosaveStartupState() below produces -
+// wWinMain needs all 4 as independently named results afterward (autosaveIndex
+// is mutated by processRecoverableAutoSaves() below and later bound into
+// AutosaveContext by reference, command_dispatch.h), so this exists purely to
+// let that resolution logic live in its own function (same cognitive-
+// complexity rationale as loadRecentFilesForLaunch() above).
+struct AutosaveStartupState {
+    std::optional<std::filesystem::path> autosaveDir;
+    AutosaveIndex                        autosaveIndex;
+    std::optional<std::filesystem::path> autosaveIndexPath;
+    std::vector<RecoverableAutoSave>     recoverableAutoSaves;
+};
+
+// Unlike resolveAppDataDir() itself, the "autosave" subdirectory is NOT
+// created automatically, so it's created explicitly here (best-effort: every
+// AutosaveStartupState field stays at its default-constructed/empty value on
+// failure, same graceful-degradation contract every other %APPDATA%-backed
+// piece of state in this file already has - see AutosaveContext's own header
+// comment on how every autosave-related call site tolerates that).
+AutosaveStartupState resolveAutosaveStartupState(const LaunchArgs& args) {
+    AutosaveStartupState state;
+    if (args.mode != LaunchMode::Normal) {
+        return state;
+    }
+    const auto appDataDir = resolveAppDataDir();
+    if (!appDataDir) {
+        return state;
+    }
+    const std::filesystem::path candidateDir = *appDataDir / L"autosave";
+    std::error_code              ec;
+    std::filesystem::create_directories(candidateDir, ec);
+    if (ec) {
+        return state;
+    }
+    state.autosaveDir       = candidateDir;
+    state.autosaveIndexPath = candidateDir / L"index.json";
+    state.autosaveIndex     = AutosaveIndex::loadFrom(*state.autosaveIndexPath);
+    state.recoverableAutoSaves =
+        neomifes::app::scanForRecoverableAutoSaves(*state.autosaveDir, state.autosaveIndex);
+    return state;
+}
+
+// WI-11: the startup crash-recovery prompt loop - call once, right after
+// `workspace` exists (Workspace::adoptSession() needs it), for every
+// candidate resolveAutosaveStartupState() found above. Extracted from
+// wWinMain purely to keep clang-tidy's cognitive-complexity check happy
+// (same rationale as loadRecentFilesForLaunch()/AutosaveStartupState above) -
+// behavior is unchanged from the inline version this replaced. `owner=nullptr`
+// for showCrashRecoveryDialog() is deliberate (see that function's own doc
+// comment) - `window` hasn't been created yet at this point in wWinMain.
+// Regardless of the user's choice, the autosave copy for THIS candidate is
+// always cleaned up (tmp file + index entry) - declining must not leave it
+// around to be wrongly re-offered on the next launch, and accepting means the
+// content has already been adopted into a real session (the .tmp copy is now
+// redundant).
+void processRecoverableAutoSaves(Workspace& workspace, const std::vector<RecoverableAutoSave>& recoverableAutoSaves,
+                                 AutosaveIndex&                              autosaveIndex,
+                                 const std::optional<std::filesystem::path>& autosaveIndexPath) {
+    for (const RecoverableAutoSave& candidate : recoverableAutoSaves) {
+        const bool accepted =
+            neomifes::app::showCrashRecoveryDialog(nullptr, candidate.originalPath.filename().wstring());
+        if (accepted) {
+            auto loaded = neomifes::document::loadFile(candidate.autosaveTmpPath);
+            if (auto* result = std::get_if<neomifes::document::LoadResult>(&loaded)) {
+                const DocumentFileState recoveredFileState{.encoding   = result->detectedEncoding,
+                                                            .lineEnding = result->lineEnding,
+                                                            .writeBom   = result->hadBom};
+                auto recoveredSession = std::make_unique<EditorSession>(
+                    std::move(*result->document), recoveredFileState, candidate.originalPath);
+                // The recovered content differs from originalPath on disk
+                // (that's the whole point of offering recovery) - a freshly
+                // constructed Document starts clean (isDirty()==false), so
+                // this must be marked dirty explicitly or the tab would
+                // silently look saved despite representing unsaved,
+                // recovered content.
+                recoveredSession->document().markDirty();
+                static_cast<void>(workspace.adoptSession(std::move(recoveredSession)));
+            }
+            // A failed load (LoadError) leaves nothing adopted - the
+            // autosave copy is still cleaned up below, same as a decline.
+        }
+        if (autosaveIndexPath) {
+            std::error_code ec;
+            std::filesystem::remove(candidate.autosaveTmpPath, ec);
+            autosaveIndex.remove(candidate.hash);
+            autosaveIndex.saveTo(*autosaveIndexPath);
+        }
+    }
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance,
@@ -257,6 +383,24 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         prepareDocument(args, syntheticLineCountUsed, fileState, currentDocumentPath);
     FrameProfile  frameProfile{};
 
+    // WI-11: "最近使ったファイル" MRU list - same Normal-mode-only resolution
+    // as searchHistory/settings/keyBindings above (no point paying
+    // filesystem I/O on --measure-* harness invocations), same batched-
+    // save-at-exit contract as searchHistory (see core::RecentFiles' own
+    // header comment on why this is safe, unlike core::AutosaveIndex below).
+    // (loadRecentFilesForLaunch() defined above, near this file's other
+    // cognitive-complexity-motivated wWinMain extractions.)
+    std::optional<std::filesystem::path> recentFilesPath;
+    RecentFiles                          recentFiles = loadRecentFilesForLaunch(args, recentFilesPath);
+
+    // WI-11: autosave index + directory - same Normal-mode-only resolution
+    // as recentFiles above. Candidates gathered here (before `workspace`
+    // exists, since scanning only needs autosaveDir/autosaveIndex) but only
+    // actually prompted-for/adopted further below (processRecoverableAutoSaves()),
+    // once `workspace` exists for adoptSession() to append to.
+    // (resolveAutosaveStartupState() defined above.)
+    AutosaveStartupState autosaveStartup = resolveAutosaveStartupState(args);
+
     // WI-04: "the currently open document"'s complete state (Document/
     // SelectionModel/CommandDispatcher/Viewport/FoldingModel/
     // BookmarkManager/find-replace state/file path - previously ~15
@@ -271,6 +415,15 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // workspace.active() directly - see workspace.h's header comment on why
     // Workspace::openFile()/closeSession() stay unused until WI-05.
     Workspace workspace(std::move(document), fileState, currentDocumentPath);
+
+    // WI-11: crash-recovery prompt loop - runs once, right after `workspace`
+    // exists (adoptSession() needs it), for every candidate
+    // resolveAutosaveStartupState() found above. (processRecoverableAutoSaves()
+    // defined above, near this file's other cognitive-complexity-motivated
+    // wWinMain extractions - see its own comment for the full behavior
+    // description this replaced inline.)
+    processRecoverableAutoSaves(workspace, autosaveStartup.recoverableAutoSaves, autosaveStartup.autosaveIndex,
+                                autosaveStartup.autosaveIndexPath);
 
     // Phase 7v: true while a minimap click-and-drag is in progress. Reset to
     // false at the top of every handleMouseDownEvent() call (the only
@@ -416,6 +569,22 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // own comment).
     neomifes::platform::AcceleratorTableHandle accelTable = neomifes::app::buildAcceleratorTable(keyBindings);
 
+    // WI-11: default-constructed {nullptr, nullptr} for measurement-mode
+    // launches (never assigned - MenuBarHandles::menuBar stays nullptr,
+    // same "harmless unused" treatment as menuBar's own MainWindowConfig
+    // default). Only the Normal-mode branch below assigns a real value, via
+    // buildMenuBar(recentFiles).
+    MenuBarHandles menuHandles{};
+    // WI-11: bundles the 3 refs every autosave call site needs together -
+    // see command_dispatch.h's AutosaveContext for why. Constructed here
+    // (not deferred into the Normal-mode branch below) since it holds a
+    // REFERENCE into autosaveStartup (resolveAutosaveStartupState() above),
+    // already fully resolved above; nothing about it depends on which mode
+    // is being wired.
+    AutosaveContext autosave{.autosaveDir = autosaveStartup.autosaveDir,
+                             .index        = autosaveStartup.autosaveIndex,
+                             .indexPath    = autosaveStartup.autosaveIndexPath};
+
     // Each mode's hook wiring lives in its own function (see definitions
     // above, or normal_mode_wiring.cpp for the Normal case) - ordering
     // matters for MeasureStartup/MeasureMemory (window created -> first
@@ -426,6 +595,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireMeasureFrameMode(cfg, window, renderPipeline, workspace.active().document(), frameProfile,
                              syntheticLineCountUsed);
     } else {
+        // WI-11: built here (not inside wireNormalMode()) since MainWindowConfig::
+        // menuBar must be set BEFORE window.create() below - buildMenuBar()
+        // needs no HWND (same "no window required yet" reasoning
+        // accelTable's construction above already relies on).
+        menuHandles     = neomifes::app::buildMenuBar(recentFiles);
+        cfg.menuBar     = menuHandles.menuBar;
         // WI-05 step 1: passes workspace itself (not workspace.active()) -
         // wireNormalMode() now resolves the active session fresh wherever a
         // stored/later-invoked callback needs it, so a future tab switch is
@@ -433,7 +608,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
-                       freeCursorModeEnabled, isDraggingMinimap, imeComposing);
+                       freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
+                       autosave);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
@@ -453,6 +629,13 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // search (Phase 5c5).
     if (searchHistoryPath) {
         searchHistory.saveTo(*searchHistoryPath);
+    }
+    // WI-11: same batched-at-exit contract as searchHistory above (see
+    // core::RecentFiles' own header comment on why this - unlike
+    // core::AutosaveIndex - doesn't need to be written on every record()
+    // call).
+    if (recentFilesPath) {
+        recentFiles.saveTo(*recentFilesPath);
     }
 
     if (args.mode == LaunchMode::MeasureStartup || args.mode == LaunchMode::MeasureMemory) {

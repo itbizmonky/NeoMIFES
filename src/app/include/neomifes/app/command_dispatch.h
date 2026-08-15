@@ -30,18 +30,39 @@
 // keybinding_dispatch.h) remains this same fixed set; only WHICH CHORD
 // triggers each one becomes user-configurable.
 
+#include <filesystem>
 #include <iterator>
+#include <optional>
 #include <windows.h>
 
 #include "neomifes/app/keybinding_dispatch.h"
+#include "neomifes/app/menu_bar.h"
 #include "neomifes/app/workspace.h"
+#include "neomifes/core/autosave_index.h"
 #include "neomifes/core/key_bindings.h"
+#include "neomifes/core/recent_files.h"
+#include "neomifes/core/settings.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/command_ids.h"
 #include "neomifes/ui/find_bar.h"
 
 namespace neomifes::app {
+
+// WI-11: the 3 refs every autosave-related call site needs together
+// (app::performAutoSave()/app::clearAutoSave()'s own parameter list) -
+// bundled into one struct (rather than 3 more individual
+// CommandDispatchContext fields) since they're always used as a unit.
+// autosaveDir/indexPath are optional (nullopt if resolveAppDataDir()
+// failed at startup - same graceful-degradation convention settingsPath/
+// keyBindingsPath already use), in which case every autosave/clear call
+// through this context is a silent no-op (main.cpp only ever reaches this
+// state if the whole %APPDATA%\NeoMIFES directory itself is unwritable).
+struct AutosaveContext {
+    std::optional<std::filesystem::path> autosaveDir;
+    core::AutosaveIndex&                  index;
+    std::optional<std::filesystem::path>  indexPath;
+};
 
 // Built at startup and again whenever keybindings.json is reloaded or a
 // preset is switched (main.cpp's `accelTable` local is reassigned with the
@@ -66,6 +87,17 @@ struct CommandDispatchContext {
     Workspace&              workspace;
     render::RenderPipeline& renderPipeline;
     ui::FindBar&            findBar;
+    // WI-11: recorded into after Save/SaveAs/Open succeed
+    // (dispatchSaveCommand()/dispatchOpenCommand()), read from by the
+    // "最近使ったファイル" menu.
+    core::RecentFiles& recentFiles;
+    // WI-11: passed by value (an HMENU pair, cheap to copy) - see
+    // wireNormalMode()'s own header comment on why this isn't a reference.
+    MenuBarHandles menuHandles;
+    AutosaveContext& autosave;
+    // WI-11: dispatchSaveCommand() reads settings.createBackupOnSave to pass
+    // through to performSave()/document::saveFile()'s keepBackup parameter.
+    const core::Settings& settings;
 };
 
 // Handles: Save, SaveAs, Open, New, TabNext, TabPrevious, TabClose,

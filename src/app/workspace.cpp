@@ -56,6 +56,12 @@ std::size_t Workspace::openBlank() {
     return m_activeIndex;
 }
 
+std::size_t Workspace::adoptSession(std::unique_ptr<EditorSession> session) noexcept {
+    m_sessions.push_back(std::move(session));
+    m_activeIndex = m_sessions.size() - 1;
+    return m_activeIndex;
+}
+
 bool Workspace::closeSession(std::size_t index) noexcept {
     if (index >= m_sessions.size() || m_sessions.size() <= 1) {
         return false;

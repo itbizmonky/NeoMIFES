@@ -148,11 +148,26 @@ constexpr std::uint64_t kMaxChunkCodeUnits = 1ULL << 20;
 // regardless of the exact Win32 error family, and was directly verified
 // empirically (locked-backup-path probe: ReplaceFileW failed but `path`'s
 // original content was provably untouched).
+//
+// `keepBackup` (WI-11): on success, instead of best-effort DELETING
+// `backupPath` (the pre-save content ReplaceFileW itself moved there),
+// best-effort RENAME it to `keptBackupPath` - turning ReplaceFileW's
+// internal implementation detail into the durable, user-facing `.bak` file
+// build_plan.md's WI-11 spec calls for. fs::rename on Windows resolves to
+// MoveFileExW with MOVEFILE_REPLACE_EXISTING, so this safely overwrites
+// any `.bak` left by a previous save (single-generation backup, not
+// accumulated history - see saveFile()'s own header comment).
 [[nodiscard]] std::optional<SaveError> replaceIntoPlace(const fs::path& path, const fs::path& tempPath,
-                                                         const fs::path& backupPath) noexcept {
+                                                         const fs::path& backupPath,
+                                                         const fs::path& keptBackupPath,
+                                                         bool             keepBackup) noexcept {
     if (::ReplaceFileW(path.c_str(), tempPath.c_str(), backupPath.c_str(), 0, nullptr, nullptr)) {
         std::error_code ec;
-        fs::remove(backupPath, ec);  // best-effort; a leftover .neomifes-bak is not data loss
+        if (keepBackup) {
+            fs::rename(backupPath, keptBackupPath, ec);  // best-effort; see this function's own comment
+        } else {
+            fs::remove(backupPath, ec);  // best-effort; a leftover .neomifes-bak is not data loss
+        }
         return std::nullopt;
     }
 
@@ -186,13 +201,16 @@ constexpr std::uint64_t kMaxChunkCodeUnits = 1ULL << 20;
 }  // namespace
 
 std::optional<SaveError> saveFile(Document& doc, const fs::path& path, encoding::Encoding enc,
-                                  encoding::LineEnding lineEnding, bool writeBom) {
+                                  encoding::LineEnding lineEnding, bool writeBom, bool keepBackup,
+                                  bool markAsSaved) {
     const auto snap = doc.snapshot();
 
     fs::path tempPath = path;
     tempPath += L".neomifes-tmp";
     fs::path backupPath = path;
     backupPath += L".neomifes-bak";
+    fs::path keptBackupPath = path;
+    keptBackupPath += L".bak";
 
     platform::FileHandle tempFile{::CreateFileW(tempPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                                 CREATE_ALWAYS,  // overwrite any stale temp from a crashed save
@@ -216,10 +234,12 @@ std::optional<SaveError> saveFile(Document& doc, const fs::path& path, encoding:
     }
     tempFile.reset();  // close before ReplaceFileW/MoveFileExW touch tempPath
 
-    if (const auto err = replaceIntoPlace(path, tempPath, backupPath)) {
+    if (const auto err = replaceIntoPlace(path, tempPath, backupPath, keptBackupPath, keepBackup)) {
         return err;
     }
-    doc.markSaved();
+    if (markAsSaved) {
+        doc.markSaved();
+    }
     return std::nullopt;
 }
 

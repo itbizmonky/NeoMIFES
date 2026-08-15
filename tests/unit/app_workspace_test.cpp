@@ -6,16 +6,21 @@
 #include <optional>
 #include <string>
 
+#include "neomifes/app/editor_session.h"
 #include "neomifes/app/workspace.h"
 #include "neomifes/core/edit_commands.h"
+#include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
 
 namespace fs = std::filesystem;
 
 namespace {
 
+using neomifes::app::DocumentFileState;
+using neomifes::app::EditorSession;
 using neomifes::app::Workspace;
 using neomifes::core::InsertTextCommand;
+using neomifes::document::Document;
 using neomifes::document::LoadError;
 
 // Same idiom as app_document_open_test.cpp's tempFileWith().
@@ -126,6 +131,47 @@ TEST(WorkspaceTest, OpenBlankLeavesOtherSessionsUntouched) {
     const std::size_t blankIndex = workspace.openBlank();
 
     EXPECT_EQ(blankIndex, 2U);
+    EXPECT_EQ(workspace.sessionCount(), 3U);
+    workspace.activate(1);
+    EXPECT_TRUE(workspace.active().isDirty());
+    EXPECT_EQ(workspace.active().document().toU16String(), u"hello world");
+    fs::remove(file);
+}
+
+TEST(WorkspaceTest, AdoptSessionAppendsAndActivatesIt) {
+    Workspace workspace;
+
+    Document doc;
+    doc.insertText(0, u"recovered content");
+    doc.markDirty();
+    auto recovered = std::make_unique<EditorSession>(std::move(doc), DocumentFileState{},
+                                                      std::optional<fs::path>("C:/recovered.txt"));
+
+    const std::size_t index = workspace.adoptSession(std::move(recovered));
+
+    EXPECT_EQ(index, 1U);
+    EXPECT_EQ(workspace.sessionCount(), 2U);
+    EXPECT_EQ(workspace.activeIndex(), 1U);
+    EXPECT_EQ(workspace.active().document().toU16String(), u"recovered content");
+    EXPECT_TRUE(workspace.active().isDirty());
+    EXPECT_EQ(workspace.active().path(), fs::path("C:/recovered.txt"));
+}
+
+TEST(WorkspaceTest, AdoptSessionLeavesOtherSessionsUntouched) {
+    Workspace      workspace;
+    const fs::path file = tempFileWith("hello");
+    assertOpened(workspace, file);
+    workspace.active().document().insertText(workspace.active().document().length(), u" world");
+    ASSERT_TRUE(workspace.active().isDirty());
+
+    Document recoveredDoc;
+    recoveredDoc.insertText(0, u"recovered");
+    recoveredDoc.markDirty();
+    auto recovered = std::make_unique<EditorSession>(std::move(recoveredDoc), DocumentFileState{},
+                                                      std::optional<fs::path>("C:/other.txt"));
+    const std::size_t recoveredIndex = workspace.adoptSession(std::move(recovered));
+
+    EXPECT_EQ(recoveredIndex, 2U);
     EXPECT_EQ(workspace.sessionCount(), 3U);
     workspace.activate(1);
     EXPECT_TRUE(workspace.active().isDirty());

@@ -60,6 +60,15 @@ public:
     // fails (no I/O) - the Ctrl+N/new-tab counterpart to openFile().
     [[nodiscard]] std::size_t openBlank();
 
+    // WI-11: appends an ALREADY-CONSTRUCTED session and activates it - the
+    // crash-recovery counterpart to openFile()/openBlank() above, for a
+    // session whose Document didn't come from a normal disk-backed
+    // openFile() call (main.cpp builds it directly from an autosave
+    // snapshot via document::loadFile() + Document::markDirty(), see
+    // app::scanForRecoverableAutoSaves()). Never fails - same "append,
+    // activate, done" shape as openBlank().
+    std::size_t adoptSession(std::unique_ptr<EditorSession> session) noexcept;
+
     // Refuses (returns false, no-op) if `index` is out of range, is the
     // last remaining session, or is dirty (caller's job to confirm
     // discarding first, same convention as main.cpp's

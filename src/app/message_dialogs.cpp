@@ -14,6 +14,8 @@ namespace {
 // TDCBF_CANCEL_BUTTON produces) and from each other.
 constexpr int kSaveButtonId     = 100;
 constexpr int kDontSaveButtonId = 101;
+constexpr int kRestoreButtonId  = 102;
+constexpr int kDiscardButtonId  = 103;
 
 // Shared boilerplate every dialog in this file needs (cbSize/hwndParent/
 // pszWindowTitle) - "NeoMIFES" is a literal here rather than
@@ -134,6 +136,37 @@ void showOpenErrorDialog(HWND owner, document::LoadError error) {
     config.pszContent         = detail;
     config.dwCommonButtons    = TDCBF_OK_BUTTON;
     ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+bool showCrashRecoveryDialog(HWND owner, std::wstring_view fileName) {
+    const std::wstring content =
+        std::wstring(fileName) + L" に保存されていない変更が見つかりました。復元しますか?";
+
+    const std::array<TASKDIALOG_BUTTON, 2> buttons{{
+        {.nButtonID = kRestoreButtonId, .pszButtonText = L"復元する(&R)"},
+        {.nButtonID = kDiscardButtonId, .pszButtonText = L"復元しない(&D)"},
+    }};
+
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // See showUnsavedChangesDialog()'s comment on pszMainIcon's union access.
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_WARNING_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"未保存の変更を復元しますか?";
+    config.pszContent         = content.c_str();
+    config.pButtons           = buttons.data();
+    config.cButtons           = static_cast<UINT>(buttons.size());
+    config.nDefaultButton     = kRestoreButtonId;
+
+    int           pressedButtonId = 0;
+    const HRESULT hr = ::TaskDialogIndirect(&config, &pressedButtonId, nullptr, nullptr);
+    if (FAILED(hr)) {
+        // Fail safe - see this function's own header comment for why the
+        // safe default here is the OPPOSITE direction from
+        // showUnsavedChangesDialog()'s.
+        return false;
+    }
+    return pressedButtonId == kRestoreButtonId;
 }
 
 }  // namespace neomifes::app

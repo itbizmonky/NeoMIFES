@@ -39,4 +39,17 @@ void showSaveErrorDialog(HWND owner, document::SaveError error);
 // OK-only error dialog for a failed Ctrl+O/drag-drop-open document::LoadError.
 void showOpenErrorDialog(HWND owner, document::LoadError error);
 
+// WI-11: Restore/Discard prompt shown once per recoverable autosave found at
+// startup (app::scanForRecoverableAutoSaves()). Returns true if the user
+// chose to restore. `owner` may be nullptr - this runs at startup, BEFORE
+// the main window exists (TaskDialogIndirect tolerates an unowned/
+// unparented dialog, same as any other modal MessageBox-family call would).
+// TaskDialogIndirect failing outright returns false (don't restore) - the
+// opposite fail-safe direction from showUnsavedChangesDialog()'s
+// fail-to-Cancel: THERE, silently discarding unsaved work is the risk to
+// guard against; HERE, silently resurrecting old content the user may not
+// want is the more surprising outcome, so a dialog malfunction defaults to
+// leaving the recovered content alone.
+[[nodiscard]] bool showCrashRecoveryDialog(HWND owner, std::wstring_view fileName);
+
 }  // namespace neomifes::app

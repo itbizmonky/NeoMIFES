@@ -21,7 +21,15 @@
 // tab_bar.cpp 6001, status_bar.cpp 7001 - see each file's own `namespace {
 // constexpr int kXxxId = ...; }`) so accelerator command ids and native
 // child-window control ids can never collide inside the same WM_COMMAND
-// dispatch.
+// dispatch. WI-11's "recent files" menu items (menu_bar.h's
+// kRecentFileIdBase) take the next available block, 8001-8020 (20 slots,
+// core::RecentFiles' own MRU cap) - kept a full order of magnitude below
+// this enum's own 40000+ range so CommandId's future growth can never
+// collide with it, the same reasoning that separates 40000+ from the
+// 1001-7001 child-control blocks above. Deliberately NOT CommandId
+// enumerators themselves: their identity (which file index N points at)
+// changes at runtime as files are opened/saved, unlike every fixed,
+// compile-time-constant CommandId below.
 namespace neomifes::ui {
 
 enum class CommandId : std::uint16_t {

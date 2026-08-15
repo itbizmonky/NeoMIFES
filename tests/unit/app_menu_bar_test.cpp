@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <cwchar>
+#include <filesystem>
 #include <set>
+#include <string>
 
 // WI-07 step3: verifies menu_bar.h's item-spec arrays directly (no
 // CreateMenu/AppendMenuW round-trip needed - see that header's own comment
@@ -16,6 +18,8 @@
 
 namespace neomifes::app {
 namespace {
+
+namespace fs = std::filesystem;
 
 using neomifes::ui::CommandId;
 
@@ -94,6 +98,47 @@ TEST(MenuBarTest, ToolsMenuShowsCommandPalette) {
 TEST(MenuBarTest, HelpMenuShowsAbout) {
     ASSERT_EQ(kHelpMenuItems.size(), 1U);
     EXPECT_EQ(kHelpMenuItems[0].commandId, CommandId::About);
+}
+
+// WI-11: buildRecentFileMenuItems() - the pure/testable half of the
+// recent-files submenu (menu_bar.cpp's populateRecentFilesSubmenu() is the
+// untestable AppendMenuW-calling half, same split this file's own header
+// comment documents for buildMenuBar() itself).
+
+TEST(MenuBarTest, BuildRecentFileMenuItemsForAnEmptyListReturnsADisabledPlaceholder) {
+    const core::RecentFiles empty;
+    const auto              items = buildRecentFileMenuItems(empty);
+    ASSERT_EQ(items.size(), 1U);
+    EXPECT_EQ(items[0].id, 0);
+    EXPECT_FALSE(items[0].label.empty());
+}
+
+TEST(MenuBarTest, BuildRecentFileMenuItemsAssignsIdsFromTheBaseInMruOrder) {
+    // Backslash-style literals on both the input and expected-output side
+    // (not forward slashes) so this assertion doesn't depend on whether
+    // fs::path::wstring() normalizes separators - both sides already
+    // match verbatim regardless of that implementation detail.
+    core::RecentFiles recent;
+    recent.record(fs::path(L"C:\\first.txt"));
+    recent.record(fs::path(L"C:\\second.txt"));
+    recent.record(fs::path(L"C:\\third.txt"));
+
+    const auto items = buildRecentFileMenuItems(recent);
+    ASSERT_EQ(items.size(), 3U);
+    EXPECT_EQ(items[0].id, kRecentFileIdBase);
+    EXPECT_EQ(items[1].id, kRecentFileIdBase + 1);
+    EXPECT_EQ(items[2].id, kRecentFileIdBase + 2);
+    EXPECT_EQ(items[0].label, L"C:\\third.txt");   // most recent first
+    EXPECT_EQ(items[2].label, L"C:\\first.txt");
+}
+
+TEST(MenuBarTest, BuildRecentFileMenuItemsCapsAtTheMaxEvenIfRecentFilesHeldMore) {
+    core::RecentFiles recent;
+    for (int i = 0; i < 30; ++i) {
+        recent.record(std::filesystem::path("C:/file" + std::to_string(i) + ".txt"));
+    }
+    const auto items = buildRecentFileMenuItems(recent);
+    EXPECT_LE(items.size(), static_cast<std::size_t>(kMaxRecentFileMenuItems));
 }
 
 }  // namespace

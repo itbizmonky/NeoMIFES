@@ -265,4 +265,22 @@ TEST(DocumentDirtyTest, EraseRangeAndReplaceRangeAlsoMarkDirty) {
     EXPECT_TRUE(doc.isDirty());
 }
 
+// WI-11: markDirty() (crash-recovery support).
+TEST(DocumentDirtyTest, MarkDirtyOnAFreshlyLoadedDocumentMakesItDirty) {
+    Document doc;
+    doc.insertText(0, u"recovered content");
+    doc.markSaved();  // simulate "just loaded from disk, currently clean"
+    ASSERT_FALSE(doc.isDirty());
+    doc.markDirty();
+    EXPECT_TRUE(doc.isDirty());
+}
+
+TEST(DocumentDirtyTest, MarkSavedAfterMarkDirtyClearsItAgain) {
+    Document doc;
+    doc.markDirty();
+    ASSERT_TRUE(doc.isDirty());
+    doc.markSaved();
+    EXPECT_FALSE(doc.isDirty());
+}
+
 }  // namespace

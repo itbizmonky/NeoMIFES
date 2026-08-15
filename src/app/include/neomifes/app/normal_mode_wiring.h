@@ -24,9 +24,14 @@
 #include <optional>
 #include <vector>
 
+#include "neomifes/app/autosave.h"
+#include "neomifes/app/command_dispatch.h"
 #include "neomifes/app/editor_session.h"
+#include "neomifes/app/menu_bar.h"
 #include "neomifes/app/workspace.h"
+#include "neomifes/core/autosave_index.h"
 #include "neomifes/core/key_bindings.h"
+#include "neomifes/core/recent_files.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
 #include "neomifes/platform/handle_guard.h"
@@ -149,6 +154,24 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // keybinding_dispatch.h's chordMatches()), so a reload/preset-switch takes
 // effect immediately for those without any table-rebuild step, unlike the
 // HACCEL side.
+//
+// WI-11: takes core::RecentFiles& (recorded into after every successful
+// open/save - dispatchOpenCommand()/handleDropFilesEvent()/
+// openFileAndSyncView()/performSave()'s own .cpp bodies - and read from by
+// the "最近使ったファイル" menu; same Workspace-wide-not-per-EditorSession
+// placement as searchHistory/settings above, saved once at clean exit by
+// main.cpp, NOT threaded a *Path here - see core::RecentFiles' own header
+// comment on why the batched-at-exit save doesn't need this function to
+// know the path). Takes `menuHandles` BY VALUE (an HMENU pair, cheap to
+// copy) so refreshRecentFilesMenu() can be called from wherever a
+// recentFiles.record() just happened. Takes `autosave` (AutosaveContext,
+// see command_dispatch.h) - UNLIKE recentFiles/settings/keyBindings this
+// bundles several related refs into one struct rather than adding 3 more
+// individual parameters here, since its own callers (performSave()'s
+// clearAutoSave() call, confirmDiscardIfDirty()'s DontSave branch, the new
+// autoSaveAllDirtySessions() helper this function wires to WM_TIMER/
+// WM_KILLFOCUS) all need the same {autosaveDir, index, indexPath} triple
+// together, every time.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -157,6 +180,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
                     const std::optional<std::filesystem::path>& keyBindingsPath,
                     platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
-                    bool& isDraggingMinimap, bool& imeComposing);
+                    bool& isDraggingMinimap, bool& imeComposing, core::RecentFiles& recentFiles,
+                    MenuBarHandles menuHandles, AutosaveContext& autosave);
 
 }  // namespace neomifes::app

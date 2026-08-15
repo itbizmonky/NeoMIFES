@@ -535,6 +535,52 @@ void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorS
     ::SetFocus(hwnd);
 }
 
+// WI-11: AutosaveContext's autosaveDir/indexPath are optional (nullopt if
+// resolveAppDataDir() failed at startup - see AutosaveContext's own header
+// comment, command_dispatch.h). These two wrappers centralize the
+// "unwrap-or-silently-no-op" guard in one place so every call site below
+// (performSave() success, confirmDiscardIfDirty()'s DontSave branch, the
+// periodic/focus-loss autosave sweep) doesn't repeat it.
+void clearAutoSaveIfConfigured(const EditorSession& session, const AutosaveContext& autosave) {
+    if (!autosave.autosaveDir || !autosave.indexPath) {
+        return;
+    }
+    clearAutoSave(session, *autosave.autosaveDir, autosave.index, *autosave.indexPath);
+}
+
+void performAutoSaveIfConfigured(EditorSession& session, const AutosaveContext& autosave) {
+    if (!autosave.autosaveDir || !autosave.indexPath) {
+        return;
+    }
+    performAutoSave(session, *autosave.autosaveDir, autosave.index, *autosave.indexPath);
+}
+
+// WI-11: fired from cfg.onTimer (kAutoSaveTimerId) and cfg.onFocusLost -
+// sweeps EVERY open tab (not just the active one), since autosave exists
+// to protect whichever tabs happen to have unsaved changes, not just the
+// one currently visible. performAutoSaveIfConfigured()/performAutoSave()
+// itself already skip untitled/non-dirty sessions, so this loop costs
+// nothing extra for the common case of mostly-clean tabs.
+void autoSaveAllDirtySessions(Workspace& workspace, const AutosaveContext& autosave) {
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        performAutoSaveIfConfigured(workspace.sessionAt(i), autosave);
+    }
+}
+
+// WI-11: extracted out of wireNormalMode()'s onDeferredInit body purely to
+// keep clang-tidy's cognitive-complexity check happy (src/ threshold of 25 -
+// wireNormalMode() crossed it once this WI's conditional timer-start was
+// added inline there) - same rationale as main.cpp's own WI-11 wWinMain
+// extractions. 0 is the documented "autosave disabled" sentinel
+// (core::Settings::autoSaveIntervalSeconds's own comment) - simply don't
+// start the timer at all rather than starting one with a meaningless 0ms
+// interval.
+void startAutoSaveTimerIfConfigured(MainWindow& window, const core::Settings& settings) {
+    if (settings.autoSaveIntervalSeconds > 0) {
+        static_cast<void>(window.startAutoSaveTimer(settings.autoSaveIntervalSeconds * 1000U));
+    }
+}
+
 // WI-02: opens `path` into the session's Document via
 // EditorSession::openFile() (optionally jumping to targetLine/targetColumn -
 // both already 0-based, same convention that method documents), and on
@@ -546,17 +592,24 @@ void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorS
 // message_dialogs.h's showOpenErrorDialog()). WI-04: renamed from
 // openAndResetTo() and collapsed from 17 parameters to 7 - most of its old
 // body now lives inside EditorSession::openFile()/resetViewAfterDocumentSwap().
+// WI-11: records the opened path into `recentFiles` on success (covers
+// F12/Grep-click too, not just Ctrl+O - opening a file via any path is
+// "recently used" regardless of how it was triggered) and refreshes the
+// menu to match.
 std::optional<LoadError> openFileAndSyncView(const std::filesystem::path& path,
                                              std::optional<neomifes::document::LineNumber> targetLine,
                                              std::optional<std::uint64_t> targetColumn, HWND hwnd,
                                              EditorSession& session, RenderPipeline& renderPipeline,
-                                             FindBar& findBar) {
+                                             FindBar& findBar, core::RecentFiles& recentFiles,
+                                             const MenuBarHandles& menuHandles) {
     auto error = session.openFile(path, targetLine, targetColumn);
     if (error) {
         return error;
     }
     resetViewAfterDocumentSwap(hwnd, renderPipeline, session, findBar);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    recentFiles.record(path);
+    refreshRecentFilesMenu(menuHandles, hwnd, recentFiles);
     return std::nullopt;
 }
 
@@ -571,7 +624,16 @@ std::optional<LoadError> openFileAndSyncView(const std::filesystem::path& path,
 // takes EditorSession& (document/fileState/path - 3 members) and calls
 // EditorSession::setSavedPath() instead of assigning a local optional<path>
 // directly.
-bool performSave(HWND hwnd, EditorSession& session, bool forceSaveAs) {
+// WI-11: passes settings.createBackupOnSave through as saveFile()'s new
+// keepBackup parameter; on success, records the saved path into
+// `recentFiles` + refreshes the menu (covers both a plain Ctrl+S on an
+// already-named file - re-recording just bumps it to MRU front, "recently
+// USED not just recently opened" - and Ctrl+Shift+S/Save-As assigning a
+// brand new path), and clears any stale autosave for this session (the
+// autosave copy is now superseded by this real save).
+bool performSave(HWND hwnd, EditorSession& session, bool forceSaveAs, const core::Settings& settings,
+                 core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                 const AutosaveContext& autosave) {
     std::filesystem::path targetPath;
     if (forceSaveAs || session.isUntitled()) {
         const auto chosen = neomifes::app::showSaveFileDialog(hwnd, session.pathIfNamed());
@@ -584,12 +646,16 @@ bool performSave(HWND hwnd, EditorSession& session, bool forceSaveAs) {
     }
     const auto& fileState = session.fileState();
     const auto  error     = neomifes::document::saveFile(session.document(), targetPath, fileState.encoding,
-                                                       fileState.lineEnding, fileState.writeBom);
+                                                       fileState.lineEnding, fileState.writeBom,
+                                                       settings.createBackupOnSave);
     if (error) {
         neomifes::app::showSaveErrorDialog(hwnd, *error);
         return false;
     }
     session.setSavedPath(targetPath);
+    recentFiles.record(targetPath);
+    refreshRecentFilesMenu(menuHandles, hwnd, recentFiles);
+    clearAutoSaveIfConfigured(session, autosave);
     return true;
 }
 
@@ -601,7 +667,13 @@ bool performSave(HWND hwnd, EditorSession& session, bool forceSaveAs) {
 // save also blocks the destructive operation - unsaved work is never
 // discarded behind a save that didn't actually happen. WI-04: takes
 // EditorSession& (document/fileState/path - 3 members).
-bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session) {
+// WI-11: the DontSave branch clears any autosave for this session - the
+// user just explicitly said "discard these changes", so the autosave copy
+// holding them must not survive to be wrongly offered as "crash recovery"
+// on a later launch (that would resurrect content the user just declined).
+bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session, const core::Settings& settings,
+                           core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                           const AutosaveContext& autosave) {
     if (!session.isDirty()) {
         return true;
     }
@@ -609,8 +681,10 @@ bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session) {
         session.isUntitled() ? L"Untitled" : session.path().filename().wstring();
     switch (neomifes::app::showUnsavedChangesDialog(hwnd, documentName)) {
         case neomifes::app::UnsavedChangesChoice::Save:
-            return performSave(hwnd, session, /*forceSaveAs=*/session.isUntitled());
+            return performSave(hwnd, session, /*forceSaveAs=*/session.isUntitled(), settings, recentFiles,
+                               menuHandles, autosave);
         case neomifes::app::UnsavedChangesChoice::DontSave:
+            clearAutoSaveIfConfigured(session, autosave);
             return true;
         case neomifes::app::UnsavedChangesChoice::Cancel:
         default:
@@ -633,7 +707,8 @@ bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session) {
 // was read - the pre-WI-10 check was a bare vkCode==VK_F12 comparison)
 // since chordMatches() needs the full modifier state.
 bool handleTagJumpKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                      RenderPipeline& renderPipeline, FindBar& findBar, const core::KeyBindings& keyBindings) {
+                      RenderPipeline& renderPipeline, FindBar& findBar, const core::KeyBindings& keyBindings,
+                      core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles) {
     if (!chordMatches(keyBindings, CommandId::TagJump, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
@@ -657,7 +732,7 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Edi
     // stale/missing path - openFileAndSyncView() leaves everything untouched
     // on failure, same silent no-op as before this WI.
     (void)openFileAndSyncView(resolvedPath, reference->line - 1, targetColumn, hwnd, session,
-                              renderPipeline, findBar);
+                              renderPipeline, findBar, recentFiles, menuHandles);
     return true;
 }
 
@@ -958,17 +1033,23 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
 // needs the full modifier state).
 [[nodiscard]] bool handleClipboardOrUndoRedoKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                                                 Workspace& workspace, RenderPipeline& renderPipeline,
-                                                FindBar& findBar, const core::KeyBindings& keyBindings) {
+                                                FindBar& findBar, const core::KeyBindings& keyBindings,
+                                                core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                                                const core::Settings& settings, AutosaveContext& autosave) {
     constexpr std::array<CommandId, 5> kCandidates{CommandId::Copy, CommandId::Cut, CommandId::Paste,
                                                     CommandId::Undo, CommandId::Redo};
     for (const CommandId candidate : kCandidates) {
         if (!chordMatches(keyBindings, candidate, ctrlDown, shiftDown, false, vkCode)) {
             continue;
         }
-        const CommandDispatchContext ctx{.hwnd            = hwnd,
-                                         .workspace       = workspace,
-                                         .renderPipeline  = renderPipeline,
-                                         .findBar         = findBar};
+        const CommandDispatchContext ctx{.hwnd           = hwnd,
+                                         .workspace      = workspace,
+                                         .renderPipeline = renderPipeline,
+                                         .findBar        = findBar,
+                                         .recentFiles    = recentFiles,
+                                         .menuHandles    = menuHandles,
+                                         .autosave       = autosave,
+                                         .settings       = settings};
         dispatchCommand(candidate, ctx);
         return true;
     }
@@ -984,14 +1065,20 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
 // reached the focused control.
 [[nodiscard]] bool handleOverwriteToggleKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown,
                                             Workspace& workspace, RenderPipeline& renderPipeline,
-                                            FindBar& findBar, const core::KeyBindings& keyBindings) {
+                                            FindBar& findBar, const core::KeyBindings& keyBindings,
+                                            core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                                            const core::Settings& settings, AutosaveContext& autosave) {
     if (!chordMatches(keyBindings, CommandId::ToggleOverwriteMode, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
-    const CommandDispatchContext ctx{.hwnd            = hwnd,
-                                     .workspace       = workspace,
-                                     .renderPipeline  = renderPipeline,
-                                     .findBar         = findBar};
+    const CommandDispatchContext ctx{.hwnd           = hwnd,
+                                     .workspace      = workspace,
+                                     .renderPipeline = renderPipeline,
+                                     .findBar        = findBar,
+                                     .recentFiles    = recentFiles,
+                                     .menuHandles    = menuHandles,
+                                     .autosave       = autosave,
+                                     .settings       = settings};
     dispatchCommand(CommandId::ToggleOverwriteMode, ctx);
     return true;
 }
@@ -1011,7 +1098,9 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
-                        bool freeCursorModeEnabled, bool imeComposing, const core::KeyBindings& keyBindings) {
+                        bool freeCursorModeEnabled, bool imeComposing, const core::KeyBindings& keyBindings,
+                        core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                        const core::Settings& settings, AutosaveContext& autosave) {
     // WI-06: checked before EVERYTHING else in this dispatch chain (even
     // handleFreeCursorRightArrow()) - while an IME is actively composing,
     // Windows still delivers WM_KEYDOWN for some keys (arrows, Enter, Escape
@@ -1053,7 +1142,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleBookmarkKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, keyBindings)) {
         return;
     }
-    if (handleTagJumpKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, findBar, keyBindings)) {
+    if (handleTagJumpKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, findBar, keyBindings,
+                         recentFiles, menuHandles)) {
         return;
     }
     // WI-07 step2: Save/Open/New/tab-switch/tab-close no longer appear in
@@ -1075,11 +1165,11 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     // under clang-tidy's threshold - the compound condition + CommandId
     // lookup would otherwise count directly against it.
     if (handleClipboardOrUndoRedoKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                                     keyBindings)) {
+                                     keyBindings, recentFiles, menuHandles, settings, autosave)) {
         return;
     }
     if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                                 keyBindings)) {
+                                 keyBindings, recentFiles, menuHandles, settings, autosave)) {
         return;
     }
     const bool changed =
@@ -1316,7 +1406,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     HWND hwnd, FindBar& findBar, Workspace& workspace, RenderPipeline& renderPipeline, core::Settings& settings,
     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
     const std::optional<std::filesystem::path>& keyBindingsPath, platform::AcceleratorTableHandle& accelTable,
-    bool& freeCursorModeEnabled, CommandPalette& commandPalette) {
+    bool& freeCursorModeEnabled, CommandPalette& commandPalette, core::RecentFiles& recentFiles,
+    const MenuBarHandles& menuHandles, AutosaveContext& autosave) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -1351,18 +1442,32 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         // body inline - the same case now also backs Ctrl+Z's own explicit
         // handleKeyDownEvent() check (Undo isn't accelerator-routed, see
         // command_dispatch.h's top comment).
-        .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
-            const CommandDispatchContext ctx{
-                .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+        .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave,
+                  &settings]() {
+            const CommandDispatchContext ctx{.hwnd           = hwnd,
+                                             .workspace      = workspace,
+                                             .renderPipeline = renderPipeline,
+                                             .findBar        = findBar,
+                                             .recentFiles    = recentFiles,
+                                             .menuHandles    = menuHandles,
+                                             .autosave       = autosave,
+                                             .settings       = settings};
             dispatchCommand(CommandId::Undo, ctx);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.redo", .title = u"Redo",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"edit.redo"),
         .commandId = CommandId::Redo,
-        .action = [hwnd, &workspace, &renderPipeline, &findBar]() {
-            const CommandDispatchContext ctx{
-                .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+        .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave,
+                  &settings]() {
+            const CommandDispatchContext ctx{.hwnd           = hwnd,
+                                             .workspace      = workspace,
+                                             .renderPipeline = renderPipeline,
+                                             .findBar        = findBar,
+                                             .recentFiles    = recentFiles,
+                                             .menuHandles    = menuHandles,
+                                             .autosave       = autosave,
+                                             .settings       = settings};
             dispatchCommand(CommandId::Redo, ctx);
         }});
     commands.push_back(CommandDescriptor{
@@ -1508,15 +1613,16 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .id = u"keybindings.reload", .title = u"Reload Keybindings", .keybindingLabel = u"",
         .commandId = CommandId::None,
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
-                   keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette]() {
+                   keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
+                   menuHandles, &autosave]() {
             if (!keyBindingsPath) {
                 return;
             }
             keyBindings = core::KeyBindings::loadFrom(*keyBindingsPath);
             accelTable  = neomifes::app::buildAcceleratorTable(keyBindings);
-            commandPalette.setCommands(buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings,
-                                                             settingsPath, keyBindings, keyBindingsPath,
-                                                             accelTable, freeCursorModeEnabled, commandPalette));
+            commandPalette.setCommands(buildCommandRegistry(
+                hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
+                accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -1545,17 +1651,17 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .keybindingLabel = u"",
             .commandId       = CommandId::None,
             .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
-                       keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette,
-                       presetName = std::u16string(choice.name)]() {
+                       keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
+                       menuHandles, &autosave, presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
                 }
                 accelTable = neomifes::app::buildAcceleratorTable(keyBindings);
-                commandPalette.setCommands(buildCommandRegistry(hwnd, findBar, workspace, renderPipeline,
-                                                                 settings, settingsPath, keyBindings,
-                                                                 keyBindingsPath, accelTable,
-                                                                 freeCursorModeEnabled, commandPalette));
+                commandPalette.setCommands(buildCommandRegistry(
+                    hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
+                    keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
+                    menuHandles, autosave));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -1644,7 +1750,8 @@ void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText,
 // takes EditorSession& (essentially every member); grepState stays separate
 // (document-independent, see runGrepQuery()'s comment).
 void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepState, EditorSession& session,
-                      RenderPipeline& renderPipeline, FindBar& findBar) {
+                      RenderPipeline& renderPipeline, FindBar& findBar, core::RecentFiles& recentFiles,
+                      const MenuBarHandles& menuHandles) {
     if (resultIndex >= grepState.currentResults.size()) {
         return;
     }
@@ -1653,7 +1760,7 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepS
     // leaves everything untouched on failure, same silent no-op contract as
     // before this WI. No error-toast UI exists yet to surface this.
     (void)openFileAndSyncView(match.path, match.line, match.columnRange.start, hwnd, session,
-                              renderPipeline, findBar);
+                              renderPipeline, findBar, recentFiles, menuHandles);
 }
 
 // Builds the GrepBarConfig callbacks (Phase 5c3) - same extraction rationale
@@ -1666,7 +1773,8 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepS
 // wireNormalMode()'s header comment for why).
 GrepBarConfig buildGrepBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                  FindBar& findBar, GrepBar& grepBar, GrepState& grepState,
-                                 SearchHistory& searchHistory) {
+                                 SearchHistory& searchHistory, core::RecentFiles& recentFiles,
+                                 const MenuBarHandles& menuHandles) {
     GrepBarConfig config{};
     config.onRunQuery = [&grepState, &grepBar, &searchHistory](std::u16string_view queryText,
                                                                 std::u16string_view folderText) {
@@ -1682,9 +1790,10 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
             grepBar.setQueryText(*newer);
         }
     };
-    config.onResultActivated = [hwnd, &grepState, &workspace, &renderPipeline,
-                                &findBar](std::size_t resultIndex) {
-        jumpToGrepResult(resultIndex, hwnd, grepState, workspace.active(), renderPipeline, findBar);
+    config.onResultActivated = [hwnd, &grepState, &workspace, &renderPipeline, &findBar, &recentFiles,
+                                menuHandles](std::size_t resultIndex) {
+        jumpToGrepResult(resultIndex, hwnd, grepState, workspace.active(), renderPipeline, findBar, recentFiles,
+                         menuHandles);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -1941,7 +2050,8 @@ void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, Workspace& works
 // No caret movement to the click position - deliberately out of scope for
 // this step.
 void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, RenderPipeline& renderPipeline,
-                         FindBar& findBar) {
+                         FindBar& findBar, core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                         const core::Settings& settings, AutosaveContext& autosave) {
     HMENU menu = ::CreatePopupMenu();
     if (menu == nullptr) {
         return;
@@ -1960,8 +2070,14 @@ void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, Render
     if (selected <= 0) {
         return;  // dismissed without a choice (Escape, click-away)
     }
-    const CommandDispatchContext ctx{
-        .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
+    const CommandDispatchContext ctx{.hwnd           = hwnd,
+                                     .workspace      = workspace,
+                                     .renderPipeline = renderPipeline,
+                                     .findBar        = findBar,
+                                     .recentFiles    = recentFiles,
+                                     .menuHandles    = menuHandles,
+                                     .autosave       = autosave,
+                                     .settings       = settings};
     dispatchCommand(static_cast<CommandId>(selected), ctx);
 }
 
@@ -1997,7 +2113,8 @@ StatusBarParts buildStatusBarParts(const EditorSession& session) {
 // case (WI-07 step2) - opening into new/existing OTHER tabs never touches
 // the currently-active tab's content.
 void handleDropFilesEvent(HWND hwnd, const std::vector<std::wstring>& paths, Workspace& workspace,
-                          RenderPipeline& renderPipeline, FindBar& findBar) {
+                          RenderPipeline& renderPipeline, FindBar& findBar, core::RecentFiles& recentFiles,
+                          const MenuBarHandles& menuHandles) {
     if (paths.empty()) {
         return;
     }
@@ -2005,8 +2122,11 @@ void handleDropFilesEvent(HWND hwnd, const std::vector<std::wstring>& paths, Wor
         const auto result = workspace.openFile(path);
         if (const auto* error = std::get_if<LoadError>(&result)) {
             neomifes::app::showOpenErrorDialog(hwnd, *error);
+        } else {
+            recentFiles.record(path);
         }
     }
+    refreshRecentFilesMenu(menuHandles, hwnd, recentFiles);
     syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
 }
 
@@ -2148,12 +2268,13 @@ void wireImeHooks(MainWindowConfig& cfg, Workspace& workspace, RenderPipeline& r
 // dispatchCommand()'s own comment for why IT must stay outside this
 // namespace.
 
-void dispatchSaveCommand(bool forceSaveAs, HWND hwnd, EditorSession& session) {
-    if (performSave(hwnd, session, forceSaveAs)) {
+void dispatchSaveCommand(bool forceSaveAs, const CommandDispatchContext& ctx, EditorSession& session) {
+    if (performSave(ctx.hwnd, session, forceSaveAs, ctx.settings, ctx.recentFiles, ctx.menuHandles,
+                    ctx.autosave)) {
         // WI-05: the tab strip's unsaved-changes marker is only refreshed on
         // the next repaint - see handleSaveKey()'s former comment for why
         // this is needed.
-        ::InvalidateRect(hwnd, nullptr, FALSE);
+        ::InvalidateRect(ctx.hwnd, nullptr, FALSE);
     }
 }
 
@@ -2167,11 +2288,36 @@ void dispatchOpenCommand(const CommandDispatchContext& ctx) {
         neomifes::app::showOpenErrorDialog(ctx.hwnd, *error);
         return;
     }
+    ctx.recentFiles.record(*chosen);
+    refreshRecentFilesMenu(ctx.menuHandles, ctx.hwnd, ctx.recentFiles);
     syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
 }
 
 void dispatchNewCommand(const CommandDispatchContext& ctx) {
     static_cast<void>(ctx.workspace.openBlank());
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+}
+
+// WI-11: a "最近使ったファイル" submenu click. `index` is already resolved by
+// the caller (commandId - kRecentFileIdBase) against recentFiles.entries()'
+// current size - out-of-range (stale menu vs. a since-shrunk list) is a
+// silent no-op, same defensive posture dispatchCommand()'s own default case
+// has for an unrecognized id. Mirrors dispatchOpenCommand()'s open+record+
+// refresh+sync sequence; re-recording an already-most-recent entry is
+// harmless (just re-writes the same MRU-front position).
+void dispatchRecentFileCommand(std::size_t index, const CommandDispatchContext& ctx) {
+    const auto& entries = ctx.recentFiles.entries();
+    if (index >= entries.size()) {
+        return;
+    }
+    const std::filesystem::path path = entries[index];
+    const auto result = ctx.workspace.openFile(path);
+    if (const auto* error = std::get_if<LoadError>(&result)) {
+        neomifes::app::showOpenErrorDialog(ctx.hwnd, *error);
+        return;
+    }
+    ctx.recentFiles.record(path);
+    refreshRecentFilesMenu(ctx.menuHandles, ctx.hwnd, ctx.recentFiles);
     syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
 }
 
@@ -2194,7 +2340,8 @@ void dispatchTabSwitchCommand(CommandId id, const CommandDispatchContext& ctx) {
 }
 
 void dispatchTabCloseCommand(const CommandDispatchContext& ctx, EditorSession& session) {
-    if (!confirmDiscardIfDirty(ctx.hwnd, session)) {
+    if (!confirmDiscardIfDirty(ctx.hwnd, session, ctx.settings, ctx.recentFiles, ctx.menuHandles,
+                               ctx.autosave)) {
         return;  // user cancelled the unsaved-changes prompt
     }
     if (ctx.workspace.sessionCount() <= 1) {
@@ -2361,10 +2508,10 @@ void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
     EditorSession& session = ctx.workspace.active();
     switch (id) {
         case CommandId::Save:
-            dispatchSaveCommand(/*forceSaveAs=*/false, ctx.hwnd, session);
+            dispatchSaveCommand(/*forceSaveAs=*/false, ctx, session);
             return;
         case CommandId::SaveAs:
-            dispatchSaveCommand(/*forceSaveAs=*/true, ctx.hwnd, session);
+            dispatchSaveCommand(/*forceSaveAs=*/true, ctx, session);
             return;
         case CommandId::Open:
             dispatchOpenCommand(ctx);
@@ -2453,7 +2600,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
                     const std::optional<std::filesystem::path>& keyBindingsPath,
                     platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
-                    bool& isDraggingMinimap, bool& imeComposing) {
+                    bool& isDraggingMinimap, bool& imeComposing, core::RecentFiles& recentFiles,
+                    MenuBarHandles menuHandles, AutosaveContext& autosave) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -2461,17 +2609,19 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     renderPipeline.setTabBarHeightDips(TabBar::heightDips());
     // WI-07 step4: same reasoning, bottom-edge counterpart.
     renderPipeline.setStatusBarHeightDips(StatusBar::heightDips());
-    // WI-07 step3: also a plain statement here, same reasoning -
-    // buildMenuBar()'s result must be assigned to cfg.menuBar BEFORE
-    // window.create() below (CreateWindowExW's hMenu is fixed at window
-    // creation), so it can't be deferred to onDeferredInit/onResize either.
-    // nullptr on failure is handled by MainWindow::create() as "no menu"
-    // (see menu_bar.h's own comment) - not checked here.
-    cfg.menuBar = neomifes::app::buildMenuBar();
+    // WI-11: unlike WI-07 step3's original design, buildMenuBar() is now
+    // called by the CALLER (main.cpp), before this function - it needs
+    // recentFiles (buildMenuBar()'s own new WI-11 parameter) and its result
+    // (`menuHandles`) must be assigned to cfg.menuBar BEFORE window.create()
+    // below (CreateWindowExW's hMenu is fixed at window creation), which is
+    // also before wireNormalMode() itself runs. `menuHandles` arrives here
+    // purely so refreshRecentFilesMenu() call sites below (opening/saving a
+    // file) can reuse the SAME HMENU pair - see this file's own callers of
+    // that function.
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
-                          &freeCursorModeEnabled](HWND hwnd) {
+                          &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -2526,7 +2676,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
                                              keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
-                                             commandPalette);
+                                             commandPalette, recentFiles, menuHandles, autosave);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -2538,7 +2688,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
 
         // Same non-fatal treatment as findBar.create() above.
         const GrepBarConfig grepBarConfig = buildGrepBarConfig(hwnd, workspace, renderPipeline, findBar,
-                                                               grepBar, grepState, searchHistory);
+                                                               grepBar, grepState, searchHistory, recentFiles,
+                                                               menuHandles);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
@@ -2569,6 +2720,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // Supersedes the bare InvalidateRect() this replaced - this already
         // invalidates internally.
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+        // WI-11: see startAutoSaveTimerIfConfigured()'s own comment (this
+        // file, near autoSaveAllDirtySessions()) for why this is a plain
+        // call rather than the conditional inlined here.
+        startAutoSaveTimerIfConfigured(window, settings);
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
                     &tabBar, &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
@@ -2587,7 +2742,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         statusBar.onParentResized(w, h, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &workspace,
-                     &renderPipeline](HWND hwnd, WPARAM wParam, LPARAM lParam) {
+                     &renderPipeline, &recentFiles, menuHandles, &settings,
+                     &autosave](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
@@ -2598,7 +2754,26 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // child-control notification above (find_bar.cpp/command_palette.cpp/
         // grep_bar.cpp all use control ids 1001-4003, far below CommandId's
         // 40000+ range, see command_ids.h's own range-separation comment).
-        const auto commandId = static_cast<CommandId>(LOWORD(wParam));
+        const auto rawId = LOWORD(wParam);
+        // WI-11: the "最近使ったファイル" submenu's dynamic id range
+        // (8001-8020, menu_bar.h's kRecentFileIdBase/kMaxRecentFileMenuItems)
+        // sits BELOW CommandId::FindShow's 40000+ range, so it must be
+        // checked before the early-return threshold below would otherwise
+        // discard it.
+        const CommandDispatchContext ctx{.hwnd           = hwnd,
+                                         .workspace      = workspace,
+                                         .renderPipeline = renderPipeline,
+                                         .findBar        = findBar,
+                                         .recentFiles    = recentFiles,
+                                         .menuHandles    = menuHandles,
+                                         .autosave       = autosave,
+                                         .settings       = settings};
+        if (rawId >= neomifes::app::kRecentFileIdBase &&
+            rawId < neomifes::app::kRecentFileIdBase + neomifes::app::kMaxRecentFileMenuItems) {
+            dispatchRecentFileCommand(static_cast<std::size_t>(rawId - neomifes::app::kRecentFileIdBase), ctx);
+            return;
+        }
+        const auto commandId = static_cast<CommandId>(rawId);
         if (commandId < CommandId::FindShow) {
             return;
         }
@@ -2610,8 +2785,6 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                       grepBar, gotoLineBar, outlinePane)) {
             return;
         }
-        const CommandDispatchContext ctx{
-            .hwnd = hwnd, .workspace = workspace, .renderPipeline = renderPipeline, .findBar = findBar};
         dispatchCommand(commandId, ctx);
     };
     // Phase 7g: OutlinePane's WC_TREEVIEW is this codebase's first control
@@ -2653,23 +2826,34 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // dirty, so this loop costs nothing extra for the common case of a
     // single clean tab. Stops at the first Cancel (the whole close is
     // vetoed, remaining tabs are left exactly as they were).
-    cfg.onClose = [&workspace](HWND hwnd) {
+    cfg.onClose = [&workspace, &settings, &recentFiles, menuHandles, &autosave](HWND hwnd) {
         for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
-            if (!confirmDiscardIfDirty(hwnd, workspace.sessionAt(i))) {
+            if (!confirmDiscardIfDirty(hwnd, workspace.sessionAt(i), settings, recentFiles, menuHandles,
+                                       autosave)) {
                 return false;
             }
         }
         return true;
     };
-    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar](HWND hwnd, const std::vector<std::wstring>& paths) {
-        handleDropFilesEvent(hwnd, paths, workspace, renderPipeline, findBar);
+    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar, &recentFiles,
+                       menuHandles](HWND hwnd, const std::vector<std::wstring>& paths) {
+        handleDropFilesEvent(hwnd, paths, workspace, renderPipeline, findBar, recentFiles, menuHandles);
     };
+    // WI-11: fired every startAutoSaveTimer() interval (kAutoSaveTimerId is
+    // the only timer this window ever starts, so no id comparison is
+    // needed here - see MainWindowConfig::onTimer's own comment).
+    cfg.onTimer = [&workspace, &autosave](HWND, UINT_PTR) { autoSaveAllDirtySessions(workspace, autosave); };
+    // WI-11: fired on WM_KILLFOCUS - the user switching to another window
+    // is exactly the kind of "about to walk away" moment autosave exists to
+    // protect against, same rationale as the periodic timer above.
+    cfg.onFocusLost = [&workspace, &autosave](HWND) { autoSaveAllDirtySessions(workspace, autosave); };
     // WI-07 step9: right-click context menu - see showEditContextMenu()'s
     // own comment above for why xScreen/yScreen pass straight through with
     // no additional coordinate handling here.
-    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar](HWND hwnd, std::int32_t xScreen,
-                                                                 std::int32_t yScreen) {
-        showEditContextMenu(hwnd, POINT{.x = xScreen, .y = yScreen}, workspace, renderPipeline, findBar);
+    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &settings,
+                        &autosave](HWND hwnd, std::int32_t xScreen, std::int32_t yScreen) {
+        showEditContextMenu(hwnd, POINT{.x = xScreen, .y = yScreen}, workspace, renderPipeline, findBar,
+                            recentFiles, menuHandles, settings, autosave);
     };
     // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
     // pulled into a standalone function rather than assigned inline here
@@ -2677,11 +2861,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &freeCursorModeEnabled, &imeComposing, &keyBindings](
-                        HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &outlinePane, &freeCursorModeEnabled, &imeComposing, &keyBindings, &recentFiles,
+                     menuHandles, &settings, &autosave](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                           commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled,
-                          imeComposing, keyBindings);
+                          imeComposing, keyBindings, recentFiles, menuHandles, settings, autosave);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
         return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, workspace.active(), renderPipeline);

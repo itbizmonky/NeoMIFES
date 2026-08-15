@@ -3,6 +3,7 @@
 # tests/unit/ can link and exercise it headlessly, matching src/core/'s
 # testing approach (no Win32 message simulation harness exists here).
 add_library(neomifes_app_input STATIC
+    autosave.cpp
     editor_input.cpp
     document_open.cpp
     editor_session.cpp

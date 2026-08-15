@@ -2,6 +2,7 @@ add_executable(neomifes_unit_tests
     util_version_test.cpp
     util_wchar_cast_test.cpp
     util_utf8_convert_test.cpp
+    util_hash_test.cpp
     platform_perf_clock_test.cpp
     platform_process_metrics_test.cpp
     platform_file_mapping_test.cpp
@@ -33,6 +34,8 @@ add_executable(neomifes_unit_tests
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp
     core_search_history_test.cpp
+    core_recent_files_test.cpp
+    core_autosave_index_test.cpp
     core_settings_test.cpp
     core_key_bindings_test.cpp
     core_selection_metrics_test.cpp
@@ -69,6 +72,7 @@ add_executable(neomifes_unit_tests
     plugin_plugin_host_test.cpp
     app_plugin_core_api_bridge_test.cpp
     app_workspace_test.cpp
+    app_autosave_test.cpp
     app_tab_index_math_test.cpp
     app_theme_settings_test.cpp
     ui_tab_bar_test.cpp

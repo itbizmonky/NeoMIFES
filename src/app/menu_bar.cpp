@@ -29,25 +29,65 @@ namespace {
     return ::AppendMenuW(menuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(menu), title) != 0;
 }
 
+// WI-11: the Win32-calling half of the recent-files submenu -
+// buildRecentFileMenuItems() (menu_bar.h, pure/testable) decides WHAT
+// items should exist, this just appends them. Shared by buildMenuBar()'s
+// initial population and refreshRecentFilesMenu()'s rebuild.
+void populateRecentFilesSubmenu(HMENU recentFilesSubmenu, const core::RecentFiles& recentFiles) {
+    for (const RecentFileMenuItemSpec& item : buildRecentFileMenuItems(recentFiles)) {
+        const UINT flags = item.id == 0 ? (MF_STRING | MF_GRAYED) : MF_STRING;
+        ::AppendMenuW(recentFilesSubmenu, flags, static_cast<UINT_PTR>(item.id), item.label.c_str());
+    }
+}
+
 }  // namespace
 
-HMENU buildMenuBar() {
+MenuBarHandles buildMenuBar(const core::RecentFiles& recentFiles) {
     // Not `const HMENU` - see appendPopupMenu()'s own comment.
     HMENU menuBar = ::CreateMenu();
     if (menuBar == nullptr) {
-        return nullptr;
+        return {.menuBar = nullptr, .recentFilesSubmenu = nullptr};
     }
-    const bool ok = appendPopupMenu(menuBar, L"ファイル(&F)", kFileMenuItems) &&
-                    appendPopupMenu(menuBar, L"編集(&E)", kEditMenuItems) &&
-                    appendPopupMenu(menuBar, L"検索(&S)", kSearchMenuItems) &&
-                    appendPopupMenu(menuBar, L"表示(&V)", kViewMenuItems) &&
-                    appendPopupMenu(menuBar, L"ツール(&T)", kToolsMenuItems) &&
-                    appendPopupMenu(menuBar, L"ヘルプ(&H)", kHelpMenuItems);
+    bool ok = appendPopupMenu(menuBar, L"ファイル(&F)", kFileMenuItems);
+
+    // WI-11: the "最近使ったファイル" submenu is appended to the File popup
+    // AFTER kFileMenuItems' 4 static entries, as its 5th item - a nested
+    // MF_POPUP, unlike every entry appendPopupMenu() itself builds (those
+    // are all flat MF_STRING commands).
+    HMENU recentFilesSubmenu = nullptr;
+    if (ok) {
+        recentFilesSubmenu = ::CreatePopupMenu();
+        if (recentFilesSubmenu == nullptr) {
+            ok = false;
+        } else {
+            populateRecentFilesSubmenu(recentFilesSubmenu, recentFiles);
+            HMENU fileMenu = ::GetSubMenu(menuBar, 0);
+            ok = fileMenu != nullptr &&
+                 ::AppendMenuW(fileMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(recentFilesSubmenu),
+                              L"最近使ったファイル(&R)") != 0;
+        }
+    }
+
+    ok = ok && appendPopupMenu(menuBar, L"編集(&E)", kEditMenuItems) &&
+         appendPopupMenu(menuBar, L"検索(&S)", kSearchMenuItems) &&
+         appendPopupMenu(menuBar, L"表示(&V)", kViewMenuItems) &&
+         appendPopupMenu(menuBar, L"ツール(&T)", kToolsMenuItems) &&
+         appendPopupMenu(menuBar, L"ヘルプ(&H)", kHelpMenuItems);
     if (!ok) {
-        ::DestroyMenu(menuBar);
-        return nullptr;
+        ::DestroyMenu(menuBar);  // also destroys every nested popup, including recentFilesSubmenu
+        return {.menuBar = nullptr, .recentFilesSubmenu = nullptr};
     }
-    return menuBar;
+    return {.menuBar = menuBar, .recentFilesSubmenu = recentFilesSubmenu};
+}
+
+void refreshRecentFilesMenu(const MenuBarHandles& handles, HWND hwnd, const core::RecentFiles& recentFiles) {
+    if (handles.recentFilesSubmenu == nullptr) {
+        return;
+    }
+    while (::RemoveMenu(handles.recentFilesSubmenu, 0, MF_BYPOSITION)) {
+    }
+    populateRecentFilesSubmenu(handles.recentFilesSubmenu, recentFiles);
+    ::DrawMenuBar(hwnd);
 }
 
 }  // namespace neomifes::app

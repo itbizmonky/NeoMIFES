@@ -204,6 +204,17 @@ struct MainWindowConfig {
     // exists for a Direct2D-painted client area with no WC_EDIT focus to
     // fall back to).
     std::function<void(HWND, std::int32_t xScreen, std::int32_t yScreen)> onContextMenu;
+    // Optional: invoked from WM_TIMER (WI-11 - this codebase's first Win32
+    // timer of any kind) with the raw timer id (WM_TIMER's wParam - a
+    // trivial decode, same "hand the app layer typed values" convention
+    // every other hook here follows). Only ever fired for the timer
+    // startAutoSaveTimer() below starts (kAutoSaveTimerId) - no filtering
+    // is done here, the caller compares timerId itself if it ever needs to
+    // distinguish multiple timers in the future.
+    std::function<void(HWND, UINT_PTR timerId)> onTimer;
+    // Optional: invoked from WM_KILLFOCUS (WI-11 - autosave-on-focus-loss).
+    // No payload - signals only that this window just lost keyboard focus.
+    std::function<void(HWND)> onFocusLost;
     // Optional: invoked from WM_IME_STARTCOMPOSITION (WI-06). No payload -
     // this only signals "a composition session began". MainWindow always
     // returns 0 for this message regardless of whether a handler is
@@ -290,6 +301,30 @@ public:
     // notes). No-op if the window hasn't been created yet.
     void setTitle(std::wstring_view title) noexcept;
 
+    // WI-11: fixed id for the one periodic timer this class ever starts
+    // (autosave) - exposed as a public constant (same "other layers
+    // compare against it" role as kMsgSyntaxTokensReady, render_pipeline.h)
+    // so MainWindowConfig::onTimer's caller can recognize it, even though
+    // today it's the only timer that could possibly fire.
+    static constexpr UINT_PTR kAutoSaveTimerId = 1;
+
+    // Imperative call (WI-11), same "app layer calls imperatively into a
+    // ui:: class" pattern as setTitle()/setImeCandidatePosition() above.
+    // Starts a recurring WM_TIMER at `intervalMs` via ::SetTimer(m_hwnd,
+    // kAutoSaveTimerId, intervalMs, nullptr) - passing a null TIMERPROC
+    // routes WM_TIMER through the normal message queue to this window's own
+    // wndProc (Win32's documented behavior), matching every other message
+    // this class already handles via a callback hook rather than a
+    // per-message procedure. No corresponding stop method: DestroyWindow
+    // implicitly kills every timer owned by the window (Win32's own
+    // contract), so no explicit cleanup is needed for this class's
+    // lifetime. Returns false (no-op) if the window hasn't been created
+    // yet or ::SetTimer itself fails; callers should simply not call this
+    // at all when autosave is configured disabled (interval == 0, see
+    // core::Settings::autoSaveIntervalSeconds's own sentinel convention) -
+    // this is not itself responsible for interpreting that sentinel.
+    bool startAutoSaveTimer(UINT intervalMs) noexcept;
+
 private:
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
 
@@ -313,6 +348,10 @@ private:
     // keyboard-triggered invocation - see MainWindowConfig::onContextMenu's
     // doc comment for the GetCursorPos() fallback in that case).
     void handleContextMenu(LPARAM lParam) noexcept;
+    // Decodes WM_TIMER's wParam (the timer id) - WI-11.
+    void handleTimer(WPARAM wParam) noexcept;
+    // WM_KILLFOCUS carries no payload to decode - WI-11.
+    void handleFocusLost() noexcept;
     void handleImeStartComposition() noexcept;
     // Extracts GCS_COMPSTR/GCS_COMPATTR (-> m_onImeComposition) and/or
     // GCS_RESULTSTR (-> m_onImeResult) from the live composition, per
@@ -339,6 +378,8 @@ private:
     std::function<bool(HWND)>                                         m_onClose;
     std::function<void(HWND, std::vector<std::wstring>)>              m_onDropFiles;
     std::function<void(HWND, std::int32_t, std::int32_t)>             m_onContextMenu;
+    std::function<void(HWND, UINT_PTR)>                               m_onTimer;
+    std::function<void(HWND)>                                         m_onFocusLost;
     std::function<void(HWND)>                                         m_onImeStartComposition;
     std::function<void(HWND, std::u16string, std::optional<std::pair<std::uint32_t, std::uint32_t>>)>
         m_onImeComposition;

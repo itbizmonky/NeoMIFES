@@ -77,6 +77,8 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onClose        = config.onClose;
     m_onDropFiles    = config.onDropFiles;
     m_onContextMenu  = config.onContextMenu;
+    m_onTimer        = config.onTimer;
+    m_onFocusLost    = config.onFocusLost;
     m_onImeStartComposition = config.onImeStartComposition;
     m_onImeComposition      = config.onImeComposition;
     m_onImeResult           = config.onImeResult;
@@ -142,6 +144,13 @@ void MainWindow::requestClose() noexcept {
 
 void MainWindow::setPaintHandler(std::function<void(HWND)> handler) noexcept {
     m_onPaint = std::move(handler);
+}
+
+bool MainWindow::startAutoSaveTimer(UINT intervalMs) noexcept {
+    if (m_hwnd == nullptr) {
+        return false;
+    }
+    return ::SetTimer(m_hwnd, kAutoSaveTimerId, intervalMs, nullptr) != 0;
 }
 
 LRESULT CALLBACK MainWindow::wndProcTrampoline(HWND hwnd, UINT msg,
@@ -222,6 +231,12 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_CONTEXTMENU:
             handleContextMenu(lParam);
+            return 0;
+        case WM_TIMER:
+            handleTimer(wParam);
+            return 0;
+        case WM_KILLFOCUS:
+            handleFocusLost();
             return 0;
         // WI-06: never forwarded to DefWindowProcW (unlike every case above
         // except WM_ERASEBKGND) - this class owns composition drawing/
@@ -464,6 +479,18 @@ void MainWindow::handleContextMenu(LPARAM lParam) noexcept {
         }
     }
     m_onContextMenu(m_hwnd, x, y);
+}
+
+void MainWindow::handleTimer(WPARAM wParam) noexcept {
+    if (m_onTimer) {
+        m_onTimer(m_hwnd, static_cast<UINT_PTR>(wParam));
+    }
+}
+
+void MainWindow::handleFocusLost() noexcept {
+    if (m_onFocusLost) {
+        m_onFocusLost(m_hwnd);
+    }
 }
 
 void MainWindow::handleImeStartComposition() noexcept {

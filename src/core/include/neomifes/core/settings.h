@@ -50,8 +50,18 @@ public:
                                                     // Tab-key insertion path (out of scope, see build_plan.md)
     bool           showLineNumbers       = true;
     bool           showMinimap           = true;
-    std::uint32_t  autoSaveIntervalSeconds = 0;    // consumed by WI-11 (autosave), unused today
-    std::u16string themeName             = u"dark"; // consumed by WI-09 (theme)
+    // WI-11: autosave interval in seconds (app::autoSaveAllDirtySessions(),
+    // wired via MainWindow::startAutoSaveTimer()). 0 is a distinct,
+    // explicit sentinel meaning "autosave disabled" (not merely "not yet
+    // configured") - a user who explicitly sets this to 0 in settings.json
+    // gets no periodic-timer autosave; the default below (60) is what a
+    // fresh install with no settings.json at all gets instead, via
+    // loadFrom()'s missing-field fallback.
+    std::uint32_t  autoSaveIntervalSeconds = 60;
+    // WI-11: whether saveFile() is asked to keep a durable path+".bak" of
+    // the pre-save content (document::saveFile()'s keepBackup parameter).
+    bool           createBackupOnSave    = true;
+    std::u16string themeName             = u"dark"; // consumed by WI-09 (theme), live
 
     friend bool operator==(const Settings&, const Settings&) = default;
 };

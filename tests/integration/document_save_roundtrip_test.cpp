@@ -273,4 +273,130 @@ TEST(DocumentSaveRoundtripTest, FailedSaveLeavesTheOriginalFileUntouched) {
     fs::remove(path);
 }
 
+// --- WI-11: keepBackup / markAsSaved -----------------------------------------
+
+TEST(DocumentSaveRoundtripTest, KeepBackupTruePreservesThePreSaveContentAsDotBak) {
+    auto              path            = uniqueTempPath(".txt");
+    const std::string originalContent = "the version before this save";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << originalContent;
+    }
+
+    Document doc;
+    doc.insertText(0, u"the version after this save");
+    const auto err = saveFile(doc, path, Encoding::Utf8, LineEnding::Lf, /*writeBom=*/false,
+                              /*keepBackup=*/true);
+    ASSERT_FALSE(err.has_value());
+
+    fs::path bakPath = path;
+    bakPath += ".bak";
+    ASSERT_TRUE(fs::exists(bakPath));
+    EXPECT_EQ(readWholeFile(bakPath), originalContent);
+    EXPECT_EQ(readWholeFile(path), "the version after this save");
+
+    fs::remove(path);
+    fs::remove(bakPath);
+}
+
+TEST(DocumentSaveRoundtripTest, KeepBackupFalseLeavesNoDotBak) {
+    // Default (existing pre-WI-11 behavior) - a second save's own backup
+    // machinery is exercised here, so this is also an implicit regression
+    // test that the default parameter values didn't change anything.
+    auto path = uniqueTempPath(".txt");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "original";
+    }
+
+    Document doc;
+    doc.insertText(0, u"replacement");
+    const auto err = saveFile(doc, path, Encoding::Utf8, LineEnding::Lf, /*writeBom=*/false);
+    ASSERT_FALSE(err.has_value());
+
+    fs::path bakPath = path;
+    bakPath += ".bak";
+    EXPECT_FALSE(fs::exists(bakPath));
+
+    fs::remove(path);
+}
+
+TEST(DocumentSaveRoundtripTest, KeepBackupTrueOnASecondSaveOverwritesThePreviousDotBak) {
+    // Single-generation backup, not accumulated history.
+    auto path = uniqueTempPath(".txt");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "version 1";
+    }
+
+    Document doc1;
+    doc1.insertText(0, u"version 2");
+    ASSERT_FALSE(
+        saveFile(doc1, path, Encoding::Utf8, LineEnding::Lf, /*writeBom=*/false, /*keepBackup=*/true)
+            .has_value());
+
+    Document doc2;
+    doc2.insertText(0, u"version 3");
+    ASSERT_FALSE(
+        saveFile(doc2, path, Encoding::Utf8, LineEnding::Lf, /*writeBom=*/false, /*keepBackup=*/true)
+            .has_value());
+
+    fs::path bakPath = path;
+    bakPath += ".bak";
+    ASSERT_TRUE(fs::exists(bakPath));
+    EXPECT_EQ(readWholeFile(bakPath), "version 2");  // the version immediately before the LAST save
+    EXPECT_EQ(readWholeFile(path), "version 3");
+
+    fs::remove(path);
+    fs::remove(bakPath);
+}
+
+TEST(DocumentSaveRoundtripTest, MarkAsSavedFalseLeavesTheDocumentDirtyAfterASuccessfulSave) {
+    auto path = uniqueTempPath(".txt");
+    Document doc;
+    doc.insertText(0, u"autosaved content");
+    ASSERT_TRUE(doc.isDirty());
+
+    const auto err = saveFile(doc, path, Encoding::Utf8, LineEnding::Lf, /*writeBom=*/false,
+                              /*keepBackup=*/false, /*markAsSaved=*/false);
+    ASSERT_FALSE(err.has_value());
+    EXPECT_TRUE(doc.isDirty());  // the REAL file this document represents was never touched
+    EXPECT_EQ(readWholeFile(path), "autosaved content");
+
+    fs::remove(path);
+}
+
+TEST(DocumentSaveRoundtripTest, WritingToASeparateAutosavePathNeverModifiesTheRealFile) {
+    // Direct proof of build_plan.md's WI-11 DoD line: "autosave が元ファイルを
+    // 破壊しないことをテストで保証している". Simulates exactly what
+    // app::performAutoSave() does - saves the document's CURRENT (unsaved)
+    // content to a DIFFERENT path than the one the document is nominally
+    // associated with - and asserts the real path's bytes are byte-for-byte
+    // unchanged both before and after.
+    auto              realPath        = uniqueTempPath(".txt");
+    auto              autosavePath    = uniqueTempPath(".tmp");
+    const std::string realFileContent = "the user's last explicitly saved content";
+    {
+        std::ofstream out(realPath, std::ios::binary);
+        out << realFileContent;
+    }
+
+    Document doc;
+    doc.insertText(0, u"newer, not-yet-saved content the user is still editing");
+
+    const auto err = saveFile(doc, autosavePath, Encoding::Utf8, LineEnding::Lf, /*writeBom=*/false,
+                              /*keepBackup=*/false, /*markAsSaved=*/false);
+    ASSERT_FALSE(err.has_value());
+
+    // The real file: untouched.
+    EXPECT_EQ(readWholeFile(realPath), realFileContent);
+    // The autosave file: holds the current in-memory content.
+    EXPECT_EQ(readWholeFile(autosavePath), "newer, not-yet-saved content the user is still editing");
+    // The document still reports unsaved changes relative to realPath.
+    EXPECT_TRUE(doc.isDirty());
+
+    fs::remove(realPath);
+    fs::remove(autosavePath);
+}
+
 }  // namespace

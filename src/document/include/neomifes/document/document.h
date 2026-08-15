@@ -87,6 +87,19 @@ public:
     // mutation after this call makes isDirty() true again.
     void markSaved() noexcept { m_savedVersion = m_version; }
 
+    // WI-11: symmetric counterpart to markSaved() - forces isDirty()==true
+    // WITHOUT a real mutation. A freshly-constructed Document always starts
+    // m_version==m_savedVersion==0 (clean by definition), even when its
+    // content came from a crash-recovery autosave snapshot rather than the
+    // document's own associated real file - see app::main.cpp's recovery
+    // path, the only caller. Does not append an EditDelta (unlike
+    // insertText()/eraseRange()/replaceRange()) since nothing was actually
+    // edited; RenderPipeline's own staleness detection doesn't need one
+    // either here, since attaching a recovered session to the active tab
+    // already goes through setLanguage()'s unconditional
+    // m_hasCachedSnapshot=false path (same as any other document swap).
+    void markDirty() noexcept { ++m_version; }
+
     // Convenience read of the whole document.
     [[nodiscard]] std::u16string toU16String() const;
 

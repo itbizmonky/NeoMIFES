@@ -31,6 +31,45 @@ constexpr int kFormatVersion = 1;
     return fontSizeDips <= 0.0F ? 14.0F : fontSizeDips;
 }
 
+// Split out of loadFrom() purely to keep clang-tidy's cognitive-complexity
+// check happy (the file-open/parse/version checks plus all nine field reads
+// inline pushed loadFrom past the src/ threshold of 25) - loadFrom() keeps
+// the "is this file usable at all" boundary checks, this keeps the "which
+// fields does it override" per-field logic.
+void applyFields(const nlohmann::json& parsed, Settings& out) {
+    if (const auto it = parsed.find("fontFamily"); it != parsed.end() && it->is_string()) {
+        if (auto text = fromUtf8(it->get<std::string>())) {
+            out.fontFamily = std::move(*text);
+        }
+    }
+    if (const auto it = parsed.find("fontSizeDips"); it != parsed.end() && it->is_number()) {
+        out.fontSizeDips = clampFontSizeDips(it->get<float>());
+    }
+    if (const auto it = parsed.find("tabWidth"); it != parsed.end() && it->is_number_unsigned()) {
+        out.tabWidth = clampTabWidth(it->get<std::uint32_t>());
+    }
+    if (const auto it = parsed.find("insertSpacesForTab"); it != parsed.end() && it->is_boolean()) {
+        out.insertSpacesForTab = it->get<bool>();
+    }
+    if (const auto it = parsed.find("showLineNumbers"); it != parsed.end() && it->is_boolean()) {
+        out.showLineNumbers = it->get<bool>();
+    }
+    if (const auto it = parsed.find("showMinimap"); it != parsed.end() && it->is_boolean()) {
+        out.showMinimap = it->get<bool>();
+    }
+    if (const auto it = parsed.find("autoSaveIntervalSeconds"); it != parsed.end() && it->is_number_unsigned()) {
+        out.autoSaveIntervalSeconds = it->get<std::uint32_t>();
+    }
+    if (const auto it = parsed.find("createBackupOnSave"); it != parsed.end() && it->is_boolean()) {
+        out.createBackupOnSave = it->get<bool>();
+    }
+    if (const auto it = parsed.find("themeName"); it != parsed.end() && it->is_string()) {
+        if (auto text = fromUtf8(it->get<std::string>())) {
+            out.themeName = std::move(*text);
+        }
+    }
+}
+
 }  // namespace
 
 Settings Settings::loadFrom(const std::filesystem::path& path) {
@@ -52,35 +91,7 @@ Settings Settings::loadFrom(const std::filesystem::path& path) {
         return settings;
     }
 
-    if (const auto it = parsed.find("fontFamily"); it != parsed.end() && it->is_string()) {
-        if (auto text = fromUtf8(it->get<std::string>())) {
-            settings.fontFamily = std::move(*text);
-        }
-    }
-    if (const auto it = parsed.find("fontSizeDips"); it != parsed.end() && it->is_number()) {
-        settings.fontSizeDips = clampFontSizeDips(it->get<float>());
-    }
-    if (const auto it = parsed.find("tabWidth"); it != parsed.end() && it->is_number_unsigned()) {
-        settings.tabWidth = clampTabWidth(it->get<std::uint32_t>());
-    }
-    if (const auto it = parsed.find("insertSpacesForTab"); it != parsed.end() && it->is_boolean()) {
-        settings.insertSpacesForTab = it->get<bool>();
-    }
-    if (const auto it = parsed.find("showLineNumbers"); it != parsed.end() && it->is_boolean()) {
-        settings.showLineNumbers = it->get<bool>();
-    }
-    if (const auto it = parsed.find("showMinimap"); it != parsed.end() && it->is_boolean()) {
-        settings.showMinimap = it->get<bool>();
-    }
-    if (const auto it = parsed.find("autoSaveIntervalSeconds"); it != parsed.end() && it->is_number_unsigned()) {
-        settings.autoSaveIntervalSeconds = it->get<std::uint32_t>();
-    }
-    if (const auto it = parsed.find("themeName"); it != parsed.end() && it->is_string()) {
-        if (auto text = fromUtf8(it->get<std::string>())) {
-            settings.themeName = std::move(*text);
-        }
-    }
-
+    applyFields(parsed, settings);
     return settings;
 }
 
@@ -94,6 +105,7 @@ void Settings::saveTo(const std::filesystem::path& path) const {
     j["showLineNumbers"]          = showLineNumbers;
     j["showMinimap"]              = showMinimap;
     j["autoSaveIntervalSeconds"]  = autoSaveIntervalSeconds;
+    j["createBackupOnSave"]       = createBackupOnSave;
     j["themeName"]                = toUtf8(themeName);
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);

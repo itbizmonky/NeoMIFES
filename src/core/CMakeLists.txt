@@ -1,4 +1,5 @@
 add_library(neomifes_core STATIC
+    src/autosave_index.cpp
     src/bookmark_manager.cpp
     src/command_dispatcher.cpp
     src/cumulative_shift_edit.cpp
@@ -8,6 +9,7 @@ add_library(neomifes_core STATIC
     src/json_string_convert.cpp
     src/key_bindings.cpp
     src/key_bindings_presets.cpp
+    src/recent_files.cpp
     src/replace_all_command.cpp
     src/search_history.cpp
     src/selection_model.cpp

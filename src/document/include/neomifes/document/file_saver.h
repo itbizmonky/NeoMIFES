@@ -51,17 +51,38 @@ enum class SaveError {
 // content is read and written in bounded chunks (see file_saver.cpp) so
 // peak transient memory does not scale with document size.
 //
-// On success, calls doc.markSaved() and returns std::nullopt. On failure,
-// `doc` is never mutated and `path` is left with its original content -
-// see file_saver.cpp's replaceIntoPlace() for exactly how this is verified
-// (via post-failure filesystem existence checks, not by trusting a
-// specific Win32 error code - GetLastError() values in this family proved
-// unreliable to discriminate against during design, see the WI-01 plan).
-// Works equally for "Save" (path already exists) and "Save As" (path does
-// not exist yet, or exists and should be overwritten) - no special-casing
-// needed, this function does not care which case it is.
+// On success, calls doc.markSaved() (unless `markAsSaved` is false - see
+// below) and returns std::nullopt. On failure, `doc` is never mutated and
+// `path` is left with its original content - see file_saver.cpp's
+// replaceIntoPlace() for exactly how this is verified (via post-failure
+// filesystem existence checks, not by trusting a specific Win32 error code
+// - GetLastError() values in this family proved unreliable to discriminate
+// against during design, see the WI-01 plan). Works equally for "Save"
+// (path already exists) and "Save As" (path does not exist yet, or exists
+// and should be overwritten) - no special-casing needed, this function
+// does not care which case it is.
+//
+// `keepBackup` (WI-11, default false - preserves every pre-WI-11 call
+// site's behavior unchanged): if true and the save succeeds, the pre-save
+// content that ReplaceFileW's own atomic-swap mechanism moves to
+// `path+".neomifes-bak"` as an implementation detail is RENAMED to
+// `path+".bak"` instead of being deleted - a durable, single-generation
+// backup (a second save overwrites the previous `.bak`, it does not
+// accumulate history). No-op (nothing to back up) when `path` didn't exist
+// before this call (a brand-new file's first save never goes through
+// ReplaceFileW's backup step at all - see replaceIntoPlace()).
+//
+// `markAsSaved` (WI-11, default true - preserves every pre-WI-11 call
+// site's behavior unchanged): pass false to skip the doc.markSaved() call
+// on success. Exists for autosave (app::performAutoSave()): writing the
+// CURRENT content to a side autosave file must NOT clear isDirty() against
+// the document's real, unmodified-by-this-call path - doing so would
+// incorrectly hide the tab's unsaved-changes marker and suppress
+// confirmDiscardIfDirty()'s warning even though the real file was never
+// touched.
 [[nodiscard]] std::optional<SaveError> saveFile(Document& doc, const std::filesystem::path& path,
                                                  encoding::Encoding    enc,
-                                                 encoding::LineEnding lineEnding, bool writeBom);
+                                                 encoding::LineEnding lineEnding, bool writeBom,
+                                                 bool keepBackup = false, bool markAsSaved = true);
 
 }  // namespace neomifes::document

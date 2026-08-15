@@ -83,6 +83,19 @@ TEST(SettingsTest, LoadFromPartiallyPopulatedJsonKeepsOtherFieldsAtDefault) {
     EXPECT_FALSE(settings.showMinimap);
     EXPECT_EQ(settings.fontFamily, u"Consolas");     // untouched field stays at default
     EXPECT_TRUE(settings.showLineNumbers);           // untouched field stays at default
+    EXPECT_EQ(settings.autoSaveIntervalSeconds, 60u);  // WI-11: untouched field stays at its (new) default
+    EXPECT_TRUE(settings.createBackupOnSave);          // untouched field stays at default
+    fs::remove(path);
+}
+
+TEST(SettingsTest, LoadFromZeroAutoSaveIntervalIsPreservedAsAnExplicitDisableNotClampedAway) {
+    // Unlike tabWidth, 0 is a MEANINGFUL value for autoSaveIntervalSeconds
+    // (WI-11's "autosave disabled" sentinel) - it must NOT be clamped back
+    // to the default the way tabWidth==0 is.
+    auto path = tempJsonPath();
+    writeRaw(path, R"({"version": 1, "autoSaveIntervalSeconds": 0})");
+    const Settings settings = Settings::loadFrom(path);
+    EXPECT_EQ(settings.autoSaveIntervalSeconds, 0u);
     fs::remove(path);
 }
 
@@ -95,6 +108,7 @@ TEST(SettingsTest, SaveThenLoadRoundTripsAllFields) {
     modified.showLineNumbers         = false;
     modified.showMinimap             = false;
     modified.autoSaveIntervalSeconds = 30;
+    modified.createBackupOnSave      = false;
     modified.themeName               = u"ライト";
 
     auto path = tempJsonPath();
