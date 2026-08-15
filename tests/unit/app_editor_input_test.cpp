@@ -302,6 +302,44 @@ TEST(EditorInputTest, HandleCharTranslatesCarriageReturnToNewline) {
     EXPECT_EQ(env.doc.toU16String(), u"\n");
 }
 
+TEST(EditorInputTest, HandleCharOnEnterInheritsPreviousLineIndentation) {
+    Env env;
+    env.doc.insertText(0, u"    abc");
+    env.selection.moveAllTo(7);  // end of the line, after 'c'
+
+    const bool changed = handleChar(u'\r', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"    abc\n    ");
+}
+
+TEST(EditorInputTest, HandleCharOnEnterInheritsTabIndentationVerbatimWithoutConvertingToSpaces) {
+    Env env;
+    env.doc.insertText(0, u"\tfoo");
+    env.selection.moveAllTo(4);  // end of the line
+
+    handleChar(u'\r', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_EQ(env.doc.toU16String(), u"\tfoo\n\t");
+}
+
+TEST(EditorInputTest, HandleCharOnEnterWithNoLeadingWhitespaceInsertsABareNewline) {
+    Env env;
+    env.doc.insertText(0, u"abc");
+    env.selection.moveAllTo(3);
+
+    handleChar(u'\r', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_EQ(env.doc.toU16String(), u"abc\n");
+}
+
+TEST(EditorInputTest, HandleCharOnEnterGivesEachCursorItsOwnLinesIndentation) {
+    Env env;
+    env.doc.insertText(0, u"  foo\n    bar");
+    env.selection.moveAllTo(5);                          // end of line0 ("  foo")
+    env.selection.addCursor(13);                         // end of line1 ("    bar")
+
+    handleChar(u'\r', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_EQ(env.doc.toU16String(), u"  foo\n  \n    bar\n    ");
+}
+
 TEST(EditorInputTest, HandleCharInsertsTab) {
     Env env;
     handleChar(u'\t', env.dispatcher, env.selection, env.viewport, env.doc);

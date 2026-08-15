@@ -126,6 +126,12 @@ public:
     // resulting selection removes the line cleanly (Phase 4b4).
     void selectLineAt(document::TextPos pos, const document::Document& doc);
 
+    // Ctrl+A (WI-12): replaces the entire cursor set with a single cursor
+    // spanning the whole document (anchor at the start, position at the
+    // end, so the caret visually rests at the end like every other
+    // mainstream editor's select-all).
+    void selectAll(const document::Document& doc);
+
     // Extends exactly one cursor - the one whose anchor equals
     // `identifyingAnchor` - to `newPos`, leaving every other cursor
     // untouched (Phase 4b6d: Alt+Shift+click / Alt+drag extending the

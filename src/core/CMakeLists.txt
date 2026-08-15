@@ -9,6 +9,8 @@ add_library(neomifes_core STATIC
     src/json_string_convert.cpp
     src/key_bindings.cpp
     src/key_bindings_presets.cpp
+    src/line_operation_command.cpp
+    src/line_operations.cpp
     src/recent_files.cpp
     src/replace_all_command.cpp
     src/search_history.cpp

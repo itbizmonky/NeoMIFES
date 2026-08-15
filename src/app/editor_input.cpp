@@ -241,10 +241,35 @@ bool handleChar(wchar_t ch, CommandDispatcher& dispatcher, SelectionModel& selec
     if (ch < 0x20 && ch != u'\r' && ch != u'\t') {
         return false;
     }
-    auto inserted = static_cast<char16_t>(ch);
     if (ch == u'\r') {
-        inserted = u'\n';
+        // WI-12 auto-indent: each cursor inherits ITS OWN current line's
+        // leading whitespace (copied verbatim, capped to the cursor's own
+        // column so a cursor sitting inside the indentation itself doesn't
+        // duplicate whitespace past it). Deliberately does not consult
+        // core::Settings::insertSpacesForTab/tabWidth - copying existing
+        // characters rather than synthesizing new ones automatically
+        // matches whatever tab/space convention the line already uses,
+        // with no separate "smart" bracket-based indent increase (out of
+        // scope - build_plan.md's WI-12 wording is "inherit the previous
+        // line's indentation", not a full re-indent engine). Uses
+        // insertPerCursorTexts() (not insertTextAtEveryCursor()) since
+        // different cursors can inherit different indentation.
+        std::vector<std::u16string> texts;
+        texts.reserve(selection.cursors().size());
+        for (const Cursor& cursor : selection.cursors()) {
+            const auto line   = document.offsetToLine(cursor.position);
+            const auto column = static_cast<std::uint32_t>(cursor.position - document.lineToOffset(line));
+            const std::u16string lineText = document.lineText(line);
+            std::size_t           indentLen = 0;
+            while (indentLen < lineText.size() && indentLen < column &&
+                  (lineText[indentLen] == u' ' || lineText[indentLen] == u'\t')) {
+                ++indentLen;
+            }
+            texts.push_back(u"\n" + lineText.substr(0, indentLen));
+        }
+        return insertPerCursorTexts(std::move(texts), dispatcher, selection, viewport, document);
     }
+    const auto inserted = static_cast<char16_t>(ch);
     return insertTextAtEveryCursor(std::u16string_view(&inserted, 1), dispatcher, selection, viewport,
                                    document);
 }

@@ -38,6 +38,8 @@
 #include "neomifes/core/folding_model.h"
 #include "neomifes/core/indentation_conversion.h"
 #include "neomifes/core/key_bindings.h"
+#include "neomifes/core/line_operation_command.h"
+#include "neomifes/core/line_operations.h"
 #include "neomifes/core/replace_all_command.h"
 #include "neomifes/core/selection_metrics.h"
 #include "neomifes/core/selection_model.h"
@@ -1005,6 +1007,76 @@ void applyFreeCursorChar(wchar_t ch, std::uint32_t virtualColumns, HWND hwnd, Ed
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
+// WI-12: Ctrl+A (select all) - a pure selection change, not an ICommand (no
+// document mutation, so there is nothing for Undo to reverse).
+void dispatchSelectAllCommand(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session) {
+    session.selection().selectAll(session.document());
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
+// WI-12: Ctrl+D / Alt+Up / Alt+Down / Ctrl+Shift+K share the same "compute
+// a core::LineOperationPlan (core/line_operations.h), skip if it's a no-op,
+// dispatch it as one core::LineOperationCommand" shape - factored into this
+// one helper so the 4 call sites below stay a single line each.
+void dispatchLineOperation(core::LineOperationPlan plan, std::string_view id, HWND hwnd,
+                           RenderPipeline& renderPipeline, EditorSession& session) {
+    if (plan.edits.empty()) {
+        return;  // fully blocked (move-line) or nothing to do - no Undo step
+    }
+    std::vector<Cursor> before(session.selection().cursors().begin(), session.selection().cursors().end());
+    session.dispatcher().dispatch(std::make_unique<core::LineOperationCommand>(
+        std::move(plan.edits), std::move(before), std::move(plan.cursorMappings), id));
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
+void dispatchDuplicateLineCommand(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session) {
+    dispatchLineOperation(core::computeDuplicateLineEdits(session.document(), session.selection().cursors()),
+                          "edit.duplicateLine", hwnd, renderPipeline, session);
+}
+
+void dispatchDeleteLineCommand(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session) {
+    dispatchLineOperation(core::computeDeleteLineEdits(session.document(), session.selection().cursors()),
+                          "edit.deleteLine", hwnd, renderPipeline, session);
+}
+
+// `moveDown` selects Alt+Down (true) vs Alt+Up (false).
+void dispatchMoveLineCommand(bool moveDown, HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session) {
+    dispatchLineOperation(
+        core::computeMoveLineEdits(session.document(), session.selection().cursors(), moveDown),
+        moveDown ? "edit.moveLineDown" : "edit.moveLineUp", hwnd, renderPipeline, session);
+}
+
+// WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K. Deliberately hardcoded VK_* comparisons
+// - NOT routed through core::KeyBindings/chordMatches() like
+// Copy/Cut/Paste/Undo/Redo in handleClipboardOrUndoRedoKey() below - these 5
+// features (this function plus Alt+Up/Alt+Down, handled separately in
+// handleSysKeyDownEvent() since Alt implies WM_SYSKEYDOWN, not WM_KEYDOWN)
+// stay outside the remappable CommandId system entirely: build_plan.md's
+// WI-12 DoD does not ask for preset customization of them, and they are
+// closer in spirit to editor_input.cpp's already-hardcoded continuous-
+// editing keys (arrows/Home/End/Backspace/Delete) than to the menu/palette-
+// facing commands core::KeyBindings governs.
+[[nodiscard]] bool handleLineEditKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
+                                     RenderPipeline& renderPipeline) {
+    if (!ctrlDown) {
+        return false;
+    }
+    EditorSession& session = workspace.active();
+    if (!shiftDown && vkCode == 'A') {
+        dispatchSelectAllCommand(hwnd, renderPipeline, session);
+        return true;
+    }
+    if (!shiftDown && vkCode == 'D') {
+        dispatchDuplicateLineCommand(hwnd, renderPipeline, session);
+        return true;
+    }
+    if (shiftDown && vkCode == 'K') {
+        dispatchDeleteLineCommand(hwnd, renderPipeline, session);
+        return true;
+    }
+    return false;
+}
+
 // WI-07 step2: handleClipboardKey()/handleSaveKey()/handleOpenKey()/
 // handleNewDocumentKey()/handleTabSwitchKey()/handleTabCloseKey() (Ctrl+C/
 // X/V, Ctrl+S/Shift+S, Ctrl+O, Ctrl+N, Ctrl+Tab/Shift+Tab/PgUp/PgDn/1-9,
@@ -1168,6 +1240,11 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
                                      keyBindings, recentFiles, menuHandles, settings, autosave)) {
         return;
     }
+    // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K - see handleLineEditKey()'s own
+    // comment for why these stay outside the KeyBindings-driven chain above.
+    if (handleLineEditKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline)) {
+        return;
+    }
     if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                                  keyBindings, recentFiles, menuHandles, settings, autosave)) {
         return;
@@ -1260,6 +1337,18 @@ void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSessio
 // document/rectangularAnchor - 4 members).
 bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession& session,
                            RenderPipeline& renderPipeline) {
+    // WI-12: plain Alt+Up/Alt+Down (no Shift) move the current line(s) -
+    // checked before the Shift+Alt-only rectangular-selection logic below
+    // (which early-returns on !shiftDown), since this is the one case in
+    // this function that must NOT require Shift. Always reports "handled"
+    // (true) even when computeMoveLineEdits() turned out to be a no-op
+    // (e.g. already at the document boundary) - the keystroke is still
+    // fully consumed, matching how a boundary Backspace/Delete press is
+    // handled elsewhere in this codebase.
+    if (!shiftDown && (vkCode == VK_UP || vkCode == VK_DOWN)) {
+        dispatchMoveLineCommand(vkCode == VK_DOWN, hwnd, renderPipeline, session);
+        return true;
+    }
     if (!shiftDown) {
         return false;
     }
@@ -1491,6 +1580,43 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                                                           session.selection(), settings.tabWidth)) {
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }
+        }});
+    // WI-12: Ctrl+A/Ctrl+D/Alt+Up/Alt+Down/Ctrl+Shift+K - CommandId::None
+    // (same "palette-only, no keybindingLabelFor() lookup" pattern as
+    // edit.convertTabsToSpaces/convertSpacesToTabs above), deliberately
+    // NOT added to ui::kAllRemappableCommandIds/core::KeyBindings (see
+    // handleLineEditKey()'s own comment for why) - the labels below are
+    // therefore hardcoded literals describing the fixed shortcut, not a
+    // keyBindings lookup.
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.selectAll", .title = u"Select All", .keybindingLabel = u"Ctrl+A",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchSelectAllCommand(hwnd, renderPipeline, workspace.active());
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.duplicateLine", .title = u"Duplicate Line", .keybindingLabel = u"Ctrl+D",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchDuplicateLineCommand(hwnd, renderPipeline, workspace.active());
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.moveLineUp", .title = u"Move Line Up", .keybindingLabel = u"Alt+Up",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchMoveLineCommand(false, hwnd, renderPipeline, workspace.active());
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.moveLineDown", .title = u"Move Line Down", .keybindingLabel = u"Alt+Down",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchMoveLineCommand(true, hwnd, renderPipeline, workspace.active());
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.deleteLine", .title = u"Delete Line", .keybindingLabel = u"Ctrl+Shift+K",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchDeleteLineCommand(hwnd, renderPipeline, workspace.active());
         }});
     commands.push_back(CommandDescriptor{
         .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",

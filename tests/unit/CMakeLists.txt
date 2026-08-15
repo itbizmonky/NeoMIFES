@@ -30,6 +30,7 @@ add_executable(neomifes_unit_tests
     core_edit_commands_test.cpp
     core_indentation_conversion_test.cpp
     core_replace_all_command_test.cpp
+    core_line_operations_test.cpp
     core_undo_stack_test.cpp
     core_command_dispatcher_test.cpp
     core_viewport_test.cpp

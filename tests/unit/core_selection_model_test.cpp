@@ -654,4 +654,28 @@ TEST(SelectionModelTest, ConvertToLineEndCursorsUsesBothAnchorAndPositionToFindS
     EXPECT_EQ(model.cursors()[2].position, 14U);
 }
 
+TEST(SelectionModelTest, SelectAllReplacesEveryCursorWithOneSpanningTheWholeDocument) {
+    const Document doc = threeLineDoc();
+    SelectionModel model(0);
+    model.addCursor(2);  // some pre-existing multi-cursor state to be discarded
+
+    model.selectAll(doc);
+
+    ASSERT_EQ(model.cursors().size(), 1U);
+    EXPECT_EQ(model.cursors()[0].anchor, 0U);
+    EXPECT_EQ(model.cursors()[0].position, doc.length());
+    EXPECT_TRUE(model.cursors()[0].isPrimary);
+}
+
+TEST(SelectionModelTest, SelectAllOnAnEmptyDocumentSelectsNothingWithoutCrashing) {
+    const Document doc;
+    SelectionModel model(0);
+
+    model.selectAll(doc);
+
+    ASSERT_EQ(model.cursors().size(), 1U);
+    EXPECT_EQ(model.cursors()[0].anchor, 0U);
+    EXPECT_EQ(model.cursors()[0].position, 0U);
+}
+
 }  // namespace
