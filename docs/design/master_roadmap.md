@@ -1807,6 +1807,8 @@ class Workspace {
 - クラッシュ復旧: 起動時に autosave を検出したら復旧を提案
 - 最近開いたファイル: メニュー + Jump List (roadmap §21.7)
 
+> ✅ **実装後の確定事項 (WI-11 完了、2026-08-15、コミット `bf03ff0`):** 上記スケッチ通りに実装完了。`util::fnv1aHash64()` によるファイルパス→autosaveファイル名の決定的ハッシュ、`core::AutosaveIndex`(hash→元パス逆引き)、`core::RecentFiles`(MRU 20件)を新設し、既存3クラス(`Settings`/`SearchHistory`/`KeyBindings`)と同じ `loadFrom`/`saveTo` JSON パターンへ統一した。Jump List (`ICustomDestinationList`) は roadmap 原文が明示的に任意としている通り本WIではスコープ外(未実装)のまま。`document::saveFile()` に `keepBackup`/`markAsSaved` を追加し、自動保存が `doc.markSaved()` を誤って呼ばない(=タブの未保存マーカーを誤って消さない)ことを保証した。クラッシュ復旧は `Workspace::adoptSession()` で「通常起動 + 復旧セッションを追加タブとして復元」する方式を採用し、「復旧対象を初期タブとして使う」特別扱いはしなかった。
+
 ### 8.6.5 サブフェーズ 8.6e — 基本編集の穴埋め
 
 `Ctrl+A` (全選択)、自動インデント (前行のインデントを継承)、行複製 (`Ctrl+D`) / 行移動 (`Alt+↑/↓`) / 行削除 (`Ctrl+Shift+K`)。

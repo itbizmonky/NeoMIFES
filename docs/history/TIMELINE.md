@@ -2877,4 +2877,32 @@ WI-09完了後、ユーザーから「次のPhaseへ進め」と指示された�
 
 コミット済み(実装`dc5a724`+ドキュメント同期1件)、pushはユーザーの明示指示待ち。次はWI-11(自動保存/バックアップ/クラッシュ復旧/最近開いたファイル)。
 
+## Session 89 (2026-08-15): WI-11(自動保存/バックアップ/クラッシュ復旧/最近開いたファイル)実装完了
+
+WI-10完了(コミット`dc5a724`/`c6f72f4`、push未実施)後、ユーザーから「次のPhaseに進め」と指示された。着手前調査(既存コードの直接読解、CLAUDE.mdルール3)で設計方針を確定した。
+
+**既存の3つの永続化JSONクラスパターン(`core::Settings`/`core::SearchHistory`/`core::KeyBindings`)をそのまま踏襲。** `static loadFrom(path)`/`void saveTo(path) const`、nlohmann::json、`kFormatVersion`、パス欠落/JSON破損/バージョン不一致は既定値へ安全にフォールバック、という規約を新設2クラス(`core::RecentFiles`/`core::AutosaveIndex`)にも適用した。
+
+**`document::saveFile()`の副作用分離が必須と判明。** 既存`saveFile()`は成功時に無条件で`doc.markSaved()`を呼ぶため、自動保存がそのまま使うと実ファイルに書き込んでいないのに`Document::isDirty()`が誤って`false`になる実害バグになる。また保存前バックアップ(`ReplaceFileW`が内部生成する`path+".neomifes-bak"`)は成功時に無条件でbest-effort削除されており、WI-11要件の「保存時に`.bak`を残す」を満たす永続バックアップが現状一切存在しないと判明した。対処として`saveFile()`に末尾トレーリングの`bool keepBackup = false, bool markAsSaved = true`を追加し(既存呼び出し元・テストの挙動を1バイトも変えない)、`keepBackup=true`なら`.bak`へrename、`markAsSaved=false`なら`doc.markSaved()`を呼ばないようにした。`Document::markDirty()`(`markSaved()`と対称な1行API)も新設した。
+
+**自動保存ファイルのハッシュ命名に新規`util::fnv1aHash64()`(FNV-1a 64bit、決定的)が必要。** `std::hash<std::filesystem::path>`はプロセスをまたいだ決定性が保証されないため。ハッシュは不可逆なので、クラッシュ復旧のため`core::AutosaveIndex`(hash→元パス逆引き)を新設し、`searchHistory`と異なり変更のたびに即座に`saveTo()`する設計にした(クラッシュ前に確実にディスクへ書かれている必要があるため)。
+
+**「最近開いたファイル」は実メニュー統合が必須。** `MenuBarHandles{HMENU menuBar, HMENU recentFilesSubmenu}`を新設し、`buildMenuBar()`初回構築時のHMENUをそのまま`refreshRecentFilesMenu()`で再利用する設計にした(位置インデックスによる脆い再検索を避ける)。これに伴い`buildMenuBar()`の呼び出しタイミングを`wireNormalMode()`内部から`main.cpp`の`window.create()`より前へ移動する必要があると判明した(`CreateWindowExW`の`hMenu`はウィンドウ作成時に固定されるため)。
+
+**クラッシュ復旧UXは`Workspace::adoptSession()`(新設、`openBlank()`と同型)で簡略化。** 複数タブが同時に復旧対象になりうるが、`Workspace`のコンストラクタは1つの初期文書しか取らないため、常に通常通りWorkspaceを構築した上で復旧候補ごとに`adoptSession()`で追加する方式にした(「復旧対象を初期タブとして使う」特別扱いはしない)。
+
+**実装:** ステップ1〜3(`util::fnv1aHash64`+`core::RecentFiles`+`core::AutosaveIndex`、各テスト付き)→ステップ4〜6(`Document::markDirty()`/`saveFile()`拡張/`Settings`拡張(`createBackupOnSave`、`autoSaveIntervalSeconds`既定値0→60)/`Workspace::adoptSession()`)→ステップ7〜10(`src/app/autosave.h/.cpp`/`MainWindow::onTimer`/`onFocusLost`/`showCrashRecoveryDialog()`/「最近使ったファイル」メニュー)→ステップ11〜14(`CommandDispatchContext`/`AutosaveContext`拡張→`normal_mode_wiring.h/.cpp`全配線(~15関数)→`main.cpp`配線→CMake登録)→ステップ15(最終検証・ドッグフーディング・ドキュメント同期)。
+
+**実装中に発見・修正した設計バグ2件:** (1) `normal_mode_wiring.h`が`AutosaveContext`を宣言する`command_dispatch.h`を`#include`しておらずC2061エラー、(2) `CommandDispatchContext::autosave`/`AutosaveContext::index`が非const参照メンバのため、これらを内部で構築する`handleClipboardOrUndoRedoKey`/`handleOverwriteToggleKey`/`showEditContextMenu`/`handleKeyDownEvent`の4関数が`const AutosaveContext&`のままだとMSVC C2440(修飾子の喪失)でコンパイル失敗した——全呼び出し元を遡って可変`AutosaveContext&`が利用可能であることを確認した上で非const化した。加えて`wireNormalMode()`の関数**定義**(`normal_mode_wiring.cpp`)がヘッダの新シグネチャに追従しておらず、旧来の`buildMenuBar()`無引数呼び出しが残っていた(ヘッダは先行して更新済みだったが定義側が取り残されていた)ことも発見・修正した。
+
+**バックグラウンド検証エージェント**が、clang-tidyの`readability-function-cognitive-complexity`(`src/`閾値25)を満たすため`main.cpp`から3ヘルパー(`loadRecentFilesForLaunch()`/`AutosaveStartupState`+`resolveAutosaveStartupState()`/`processRecoverableAutoSaves()`)、`normal_mode_wiring.cpp`から1ヘルパー(`startAutoSaveTimerIfConfigured()`)を抽出した。コードレビューで`AutosaveStartupState`の各フィールドが後続の`AutosaveContext`構築まで正しく配線されていることを確認した。`menu_bar.cpp`の2箇所の`return {nullptr, nullptr};`を`return {.menuBar = nullptr, .recentFilesSubmenu = nullptr};`へ、`app_autosave_test.cpp`の`EditorSession session;`を`const EditorSession session;`へ、`util_hash_test.cpp`の`constexpr`ローカル変数名2件を`kPascalCase`規約へ揃える微修正も同エージェントが実施した。
+
+**検証カデンス(2026-08-12改訂ルール通り):** 中間ステップはDebugのみ2回(バックグラウンドエージェントへ委任、コンパイルエラーの反復修正)、WI完了時に1回のフル3構成(Debug/Release/ubsan)スイープをバックグラウンドエージェントへ委任し、Debug/Release/ubsan全green・clang-tidy新規警告0を確認した。
+
+**実機ドッグフーディング(新しいスクリーンショット技術の発見):** `PrintWindow`ベースの手法に加え、`SetForegroundWindow`+画面全体キャプチャ(`Graphics.CopyFromScreen`)+マウスクリック合成(`SetCursorPos`+`mouse_event`)という組み合わせがこの環境で初めて成功した(過去セッションの記憶では修飾キー合成のみが不安定と記録されていたが、単純なマウスクリックは問題なく動作した)。`NeoMIFES.exe --open <file>`を実際に起動し: (1) 起動時の`autosave/`ディレクトリ自動作成、(2) `recent.json`が実行中は不在で終了時にのみ生成される正しい挙動(`--open`起動はRecentFilesを更新しない設計通り)、(3) `WM_CLOSE`への正しい応答(`CloseMainWindow()`によるクリーン終了)、(4)「ファイル」メニューの「最近使ったファイル」サブメニューが正しく描画され`(なし)`プレースホルダも表示されること、を実機で確認した。クラッシュ復旧の実際の強制終了→再起動フローは修飾キー合成制約(TaskDialogのボタン操作を要する)により完全な実演はできず、`app_autosave_test.cpp`のヘッドレステスト(実ファイル無変更の直接検証込み)+コードレビューで代替した。
+
+**ドキュメント同期:** `build_plan.md`(WI-11 DoD全項目`[x]`化+実装後の確定事項節新設、進捗チェックリストの`[x]`化)、`master_roadmap.md`(§8.6.4に実装後の確定事項追記)、`RESUME_HERE.md`(冒頭ポインタ+§1状態表8.6b/8.6d行+新規§3.77(WI-10完了記録、前セッションで未記録だった)/§3.78(WI-11完了記録)+§6推奨プロンプト更新、次はWI-12)。
+
+コミット済み(実装`bf03ff0`)、pushはユーザーの明示指示待ち。次はWI-12(基本編集の穴埋め: Ctrl+A/自動インデント/行複製・移動・削除、🎉 M3)。
+
 <!-- 次セッションはここに追記 -->

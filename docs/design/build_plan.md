@@ -122,7 +122,7 @@ ctest --preset debug --output-on-failure
 - [x] **WI-08** 設定システム (`core::Settings`) + ハードコード定数の移行 → コミット: `6a76722` (ステップ1) / `0fbd148` (ステップ2) / `0b55e86` (ステップ3)
 - [x] **WI-09** テーマ (ダーク / ライト / ハイコントラスト) → コミット: `be65533` (実装) / `da1da01` (ドキュメント同期)
 - [x] **WI-10** キーバインド設定 + プリセット (秀丸 / サクラ / VSCode) → コミット: `dc5a724`
-- [ ] **WI-11** 自動保存 / バックアップ / クラッシュ復旧 / 最近開いたファイル → `________`
+- [x] **WI-11** 自動保存 / バックアップ / クラッシュ復旧 / 最近開いたファイル → コミット: `bf03ff0`
 - [ ] **WI-12** 基本編集の穴埋め (Ctrl+A / 自動インデント / 行複製・移動・削除) → `________`
   - 🎉 **M3 達成: 設定・テーマが揃う**
 
@@ -856,12 +856,21 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 
 ### DoD
 
-- [ ] 編集後 N 秒放置すると autosave ファイルが生成される
-- [ ] 保存時に `.bak` が生成される (設定オフで生成されない)
-- [ ] プロセスを強制終了 → 再起動 で復旧が提案され、承諾すると内容が戻る
-- [ ] 最近開いたファイルがメニューに出て、クリックで開ける
-- [ ] **autosave が元ファイルを破壊しないことをテストで保証している**
-- [ ] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
+- [x] 編集後 N 秒放置すると autosave ファイルが生成される (`MainWindow::onTimer`/`onFocusLost` → `autoSaveAllDirtySessions()` → `performAutoSave()`、ドッグフーディングで `autosave/` ディレクトリの起動時自動作成を確認)
+- [x] 保存時に `.bak` が生成される (設定オフで生成されない) (`saveFile(keepBackup=settings.createBackupOnSave)`、`document_save_roundtrip_test.cpp` で往復検証済み)
+- [x] プロセスを強制終了 → 再起動 で復旧が提案され、承諾すると内容が戻る (`scanForRecoverableAutoSaves()` + `showCrashRecoveryDialog()` + `Workspace::adoptSession()`。実機での強制終了→再起動の対話フロー自体は本セッションの環境制約 (キーボード修飾キー合成不安定) により完全な実演はできず、`app_autosave_test.cpp` のヘッドレステスト + コードレビューで正しさを担保した。起動時のスキャン自体は実機で「候補0件」を確認済み)
+- [x] 最近開いたファイルがメニューに出て、クリックで開ける (実機ドッグフーディングで「ファイル」メニューの「最近使ったファイル」サブメニューが正しく描画され、`(なし)` プレースホルダも確認済み。クリックでの実際のオープンは `dispatchRecentFileCommand()` のコードレビューで検証、`--open` 起動はRecentFilesを更新しない設計のため実機では空リストのままだった)
+- [x] **autosave が元ファイルを破壊しないことをテストで保証している** (`app_autosave_test.cpp`: `performAutoSave()` 後に実ファイルが完全無変更であることを直接検証)
+- [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0 (バックグラウンドエージェントによる最終フルスイープで確認)
+
+### 実装後の確定事項
+
+- **`saveFile()` の `keepBackup`/`markAsSaved` は末尾トレーリング引数で拡張** — 既存呼び出し元・テストの挙動を1バイトも変えずに済んだ。`performAutoSave()` は `markAsSaved=false` で呼ぶため、自動保存後も `Document::isDirty()` は正しく `true` のまま(タブの未保存マーカーが誤って消えない)。
+- **`AutosaveIndex` は searchHistory 等と異なり毎回変更のたびに即座に `saveTo()` する** — クラッシュ復旧の全趣旨が「クラッシュ前に確実にディスクへ書かれている」ことのため、exit時バッチ書き込みでは不可。
+- **`MenuBarHandles{HMENU menuBar, HMENU recentFilesSubmenu}` を新設し、`buildMenuBar()` の呼び出しタイミングを `wireNormalMode()` 内部から `main.cpp`(`window.create()` より前)へ移動した** — `CreateWindowExW` の `hMenu` はウィンドウ作成時に固定されるため。
+- **クラッシュ復旧は常に通常通り `Workspace` を構築した上で `adoptSession()` により追加タブとして復元する方式を採用**(「復旧対象を初期タブとして使う」特別扱いはしない)。`--open` なしで復旧時に空タブが1つ余分に残る軽微なUXコストを許容し、分岐の複雑化を避けた。
+- **`CommandDispatchContext::autosave`/`AutosaveContext::index` が非const参照メンバのため、これらを内部で構築する全ての関数は自身の `autosave` パラメータを非const `AutosaveContext&` として宣言する必要があった**(`const AutosaveContext&` のままだと `CommandDispatchContext{...}` 構築時にMSVC C2440「修飾子の喪失」でコンパイル失敗する)。既に受け取った `CommandDispatchContext&`/`AutosaveContext&` を転送するだけの関数は影響を受けない。
+- **`--open` CLI引数はRecentFilesを更新しない**(設計通り、対話的なオープン(Ctrl+O/F12/Grep結果クリック/D&D/最近使ったファイルメニュー)のみが `recentFiles.record()` を呼ぶ)。実機ドッグフーディングで確認済み。
 
 ---
 
