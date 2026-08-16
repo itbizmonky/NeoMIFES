@@ -135,7 +135,7 @@ ctest --preset debug --output-on-failure
 
 roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直した (詳細は §5)。CSV (§10.2) / JSON-XML Tree (§10.3) は未着手、着手時に同様に切り直す。
 
-- [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `<WI-14a-hash>`
+- [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [ ] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化
 - [ ] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成 WI)
 - [ ] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル (優先度中)
