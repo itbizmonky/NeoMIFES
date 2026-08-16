@@ -281,10 +281,11 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6a** | **設定システム** (`core::Settings`、JSON。ハードコード定数 13 箇所を移行、`kTabWidth` 二重定義を解消) | ✅ **完了 (WI-08, 2026-08-13)** | §8.6 |
 | **8.6b** | **キーバインド設定** (`HACCEL` の設定ファイル化、秀丸/サクラ/VSCode プリセット) | ✅ **完了 (WI-10, 2026-08-15)** | §8.6, §13.1 |
 | **8.6c** | **テーマ** (ダーク / ライト / ハイコントラスト。ハードコード `D2D1_COLOR_F` を `Theme` 経由へ) | ✅ **完了 (WI-09, 2026-08-14)** | §8.6, §13.6 |
-| **8.6d** | **自動保存・バックアップ・クラッシュ復旧・最近開いたファイル** | ⏭️ **P1 (次候補)** | §8.6 |
-| **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ⏭️ P1 | §8.6 |
-| **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ⏭️ 新設 | §12.4 |
-| 10 | ログ解析 / CSV / JSON-XML tree (**最大の差別化点。v2.1 で AI より前倒し**) | 未着手 | §10 |
+| **8.6d** | **自動保存・バックアップ・クラッシュ復旧・最近開いたファイル** | ✅ **完了 (WI-11, 2026-08-15)** | §8.6 |
+| **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
+| **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
+| 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🔶 **進行中 (WI-14a完了、2026-08-16。WI-14b〜dが次候補)** | §10.1 |
+| 10.2/10.3 | CSV / JSON-XML tree | 未着手 | §10.2, §10.3 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
 | 12 | 総合品質保証 + 正式出荷 | 未着手 | §12 |
@@ -2082,6 +2083,17 @@ public:
 #### 影響ファイル
 - **新規:** `src/logmode/{log_pattern.h, log_pattern_loader.cpp, log_model.cpp, log_filter.cpp, timestamp_parser.cpp, trace_indexer.cpp, log_statistics.cpp, log_tail_watcher.cpp}`、`src/ui/{log_mode_pane.{h,cpp}, log_stats_pane.{h,cpp}}`、`assets/log_patterns/*.json5` (組込パターン 16 種、v2.0 で OpenTelemetry/X-Ray/Loki/Fluentd 追加)、`tests/unit/logmode_*_test.cpp`
 - **変更:** `src/app/main.cpp` (ログモード検出・切替)、`src/core/mode.h` (Mode::Log)
+
+#### 実装後の確定事項 (WI-14a、ヘッドレス基盤、2026-08-16)
+
+`build_plan.md`の「1セッションに収まらない章はWIを切り直す」方針に従い、本節をWI-14a〜dへ4分割した(詳細はbuild_plan.md §5)。WI-14aで確定した、本節スケッチとの主な差分:
+
+- **組込パターンはv2.0拡張の16種ではなく、公開・検証可能な標準4種 (RFC 5424/3164 syslog、Apache/Nginx Common+Combined Log Format、汎用ISO-8601+レベル行) のみをMVPスコープとした。** SAP/AWS CloudTrail/Azure Monitor/HANA/Tomcat/Docker/Kubernetes/OpenTelemetry/X-Ray/Loki/Fluentd等のベンダー固有パターンは、実データが手元に無い状態で書くとCLAUDE.mdルール3(推測実装をしない)に反するため、実データ入手まで先送りした(`docs/issues/phase_10_1_v2_extended_patterns.md`)。
+- **`LogModel::attach(Document&, rule)` (mutate-in-place) ではなく `LogModel::build(const Document&, rule) -> std::expected<LogModel, LogPatternError>` (static、値返却) を採用した。** `Document*`を保持する設計は文書スワップ時の寿命管理問題を持ち込むため、`search::SearchService::findAll()`と同じ「呼び出しごとに完結」パターンを踏襲した。
+- **`LogLine`はメッセージ本文/traceId/spanIdの文字列を持たない、`document::LineNumber`+`optional<Timestamp>`+`LogLevel`+`matched`のみの軽量構造体にした。** 数百万行規模のログで1行あたり複数の`std::u16string`コピーを保持するとWI-14bの10GB/60秒目標に対して構造的に不利になるため。
+- **タイムスタンプ書式の自動推定(「先頭100行で最頻フォーマットを推定」)は行わず、各`LogPatternRule`が固定の`timestampFormat`を1つ持つ設計にした。** どのルールがマッチしたかで書式は既に決まっており、複数フォーマット混在を想定した自動推定は本段階では過剰(YAGNI)。
+- **リアルタイムテール・分散トレースID対応・Structured Log (JSON/Logfmt)・統計ダッシュボードはWI-14a〜dのいずれにも含めず、`docs/issues/phase_10_1_v2_extended_patterns.md`にv2.0拡張候補としてまとめて起票した。**
+- 非同期化(`LogIndexWorker`)・`EditorSession`統合・UIはWI-14b/cへ。
 
 ### 10.2 CSV モード (要件定義書 §9)
 

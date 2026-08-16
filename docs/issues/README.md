@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-16 (WI-13完了、Authenticode証明書未取得issue・ASanプリセット未CI化issueを新規起票)
+**最終更新:** 2026-08-16 (WI-14a完了、Phase 10.1 v2.0拡張候補issueを新規起票)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -37,6 +37,7 @@
 | [`MSVC_RUNTIME_LIBRARY` 修正の脆弱性](cmake_msvc_runtime_library_fragility.md) | 将来の Abseil 更新時にのみ顕在化しうる潜在リスク | 待機 |
 | [`search`/`utf8_convert` の小規模改善 3 件](search_utf8_convert_minor_cleanup.md) | 正しさ・性能に実害なし | 待機 |
 | [`asan` プリセットがCIに常設化されていない](asan_preset_not_in_ci.md) | WI-13でローカル初回実行しDoD自体は満たしたが、以後の継続検証機構が無い | 待機 (CI実行時間とのトレードオフ検討) |
+| [Phase 10.1 v2.0拡張候補が未実装](phase_10_1_v2_extended_patterns.md) | リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/SAP・AWS・Azure等ベンダー固有パターンは実データ入手まで意図的に先送り (WI-14a) | 待機 (WI-14c MVP達成後、実データ入手時に再評価) |
 
 ## 対応不能 / 外部要因待ち
 

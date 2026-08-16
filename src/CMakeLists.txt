@@ -30,6 +30,10 @@ add_subdirectory(core)
 # src/app/CMakeLists.txt's NeoMIFES target links neomifes::search directly
 # (Find bar UI), not just tests/bench.
 add_subdirectory(search)
+# neomifes_logmode (WI-14a, Phase 10.1 headless core) depends on
+# neomifes::document (Document/LineNumber) and links re2::re2 privately,
+# same shape as neomifes_search above.
+add_subdirectory(logmode)
 add_subdirectory(render)
 add_subdirectory(ui)
 add_subdirectory(app)

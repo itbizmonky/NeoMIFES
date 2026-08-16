@@ -3130,6 +3130,48 @@ LogModeController
 - TimelineIndex に (timestamp, offset) を挿入
 - UI から 2010-01-01 12:34:56 のように入力 → 最近傍検索 → ジャンプ
 
+### 11.3 `neomifes::logmode` リファレンス (WI-14a実装、ヘッドレス基盤)
+
+`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`)。スレッド化・`EditorSession`統合・UIは未実装 (WI-14b/c、§10.1「実装後の確定事項」参照)。
+
+```cpp
+// neomifes/logmode/log_pattern.h
+enum class LogLevel : std::uint8_t { Trace, Debug, Info, Warning, Error, Fatal, Unknown };
+[[nodiscard]] LogLevel parseLevel(std::u16string_view text) noexcept;  // ASCII casefold、WARN/WARNING等の同義語対応
+
+struct LogPatternRule {
+    std::u16string id, displayName, pattern /* RE2、名前付きグループ */, timestampFormat /* chrono::parse書式 */;
+};
+[[nodiscard]] const std::vector<LogPatternRule>& builtInLogPatterns();  // 4件固定 (RFC5424/RFC3164 syslog、Apache/Nginx CLF、汎用ISO-8601+レベル)
+
+// neomifes/logmode/timestamp_parser.h
+using Timestamp = std::chrono::sys_time<std::chrono::milliseconds>;
+[[nodiscard]] std::optional<Timestamp> parseTimestamp(std::u16string_view text, std::u16string_view format,
+                                                        std::optional<int> assumedYear = std::nullopt);
+
+// neomifes/logmode/log_model.h
+enum class LogPatternError { InvalidRegex };
+struct LogLine {
+    document::LineNumber line = 0;
+    std::optional<Timestamp> timestamp;
+    LogLevel level = LogLevel::Unknown;
+    bool matched = false;
+};
+class LogModel {
+public:
+    [[nodiscard]] static std::expected<LogModel, LogPatternError> build(
+        const document::Document& doc, const LogPatternRule& rule,
+        std::optional<int> assumedYear = std::nullopt);
+    [[nodiscard]] std::span<const LogLine> lines() const noexcept;
+};
+```
+
+**設計上の要点:**
+- `LogModel::build()`は毎回`doc.lineCount()`行ぶんの`LogLine`を返す (マッチしない行は`matched=false`で保持、破棄しない — 構造的不変条件`lines().size() == doc.lineCount()`)。
+- フィールド抽出は`RE2::NamedCapturingGroups()`でルールのコンパイル時に1回だけ`"timestamp"`/`"level"`のサブマッチ番号を解決し、位置インデックスをハードコードしない。
+- `Document::lineText()`が返す行末尾の`\r`(CRLF文書の行内容)は、マッチング前に`LogModel::build()`内で1回だけトリムする。
+- RFC 5424/3164 syslogは重要度が`<PRI>`に数値エンコードされ`"level"`名前付きグループを持たないため、常に`LogLevel::Unknown`になる (実装の不備ではなく規格通り)。
+
 ---
 
 ## 12. CSV モード 詳細

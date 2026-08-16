@@ -2951,4 +2951,29 @@ WI-12完了・push・CI green確認後、ユーザーから「次のPhaseに進�
 
 **追記4 (2026-08-16):** 12/14項目達成の状況をユーザーへ提示し、AskUserQuestionで「🎉M4(MVP出荷判定)をこの状態で正式達成扱いとしますか?」と確認したところ、**「達成扱いにする(推奨)」が選ばれた。** build_plan.md WI-13節・Phase 12'節に🎉M4達成の正式記録(DoDの「§6全項目チェック」は文字通りには2項目未達だが、その2項目は当初からユーザーの出荷判断に委ねる設計だったこと、ユーザーが確認の上で達成扱いを承認したことを明記)、master_roadmap.md §12.4の参照ノートを完了記録へ更新、RESUME_HERE.md §3.80の見出し・推奨プロンプトを「進行中」から「完了」へ更新。**これでWI-01〜WI-13(build_plan.md §5・§6の全範囲)が完了し、Phase 8.5(アプリケーションシェル)・Phase 8.6(製品化基盤)・Phase 12'(MVP出荷判定)が完結した。** 次のroadmapフェーズ(WI-14〜、Phase 10優先)着手はユーザーの意向確認後。コミット予定、pushはユーザーの明示指示待ち。
 
+## Session 92 (2026-08-16): WI-14a(ログ解析モード ヘッドレス基盤)実装完了、Phase 10着手
+
+WI-13完了・🎉M4正式達成後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionでPhase 10の3領域(ログ解析/CSV/JSON-XML Tree)のどれから着手するか確認し、**「ログ解析モード」(推奨案)**が選ばれた — roadmap §1.5が「本ソフト最大の差別化点」と明記する領域。
+
+**着手前調査(Explore agent+Plan agent、CLAUDE.mdルール3)で確定した設計方針:** build_plan.mdの「1セッションに収まらない章はWIを切り直す」方針に従い、Phase 10.1をWI-14a(ヘッドレス基盤)〜WI-14d(複数行グルーピング+パターンファイル)の4サブWIへ切り分けた。roadmap §10.1のv2.0拡張スケッチ(リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/16種のベンダー固有パターン)ではなく、要件定義書§8が実際に求める核心機能(検索・ERROR/WARNING抽出・色分け・フィルタ・タイムスタンプ解析)のMVPをまず作る方針とし、AskUserQuestionは経ずPlan Mode内で明記して進めた。
+
+**WI-14a実装:** 新規`src/logmode/`モジュール(`neomifes::logmode`、PUBLIC=`neomifes::document`、PRIVATE=RE2、`neomifes::search`と同じCMake形)。`LogPatternRule`/`LogLevel`/`parseLevel()`/`builtInLogPatterns()`(標準4パターン: RFC 5424 syslog、RFC 3164 syslog、Apache/Nginx Common+Combined Log Format、汎用ISO-8601+レベル行)、`parseTimestamp()`(`std::chrono::parse`ベース)、`LogModel::build()`を実装した。
+
+**設計上の主要判断:** `LogModel::build()`はroadmapスケッチの`attach(Document&, rule)`(mutate-in-place)ではなく`search::SearchService::findAll()`と同じ「static、値返却、呼び出しごとに完結」形を採用した — `Document*`を保持する設計は文書スワップ時の寿命管理問題を持ち込むため。ベンダー固有パターン(SAP/AWS/Azure/K8s等)は実データが無い状態で書くと推測実装(CLAUDE.mdルール3違反)になるため、標準4種のみに限定し新規issue `docs/issues/phase_10_1_v2_extended_patterns.md`へ先送りした。
+
+**`std::chrono::parse`の実機挙動を3件、スタンドアロンprobeで確認(実装前に必ず実機検証、記憶からの推測はしていない):** (1) `sys_time`へのパースは完全な暦日(年月日)を要求するため、年フィールドを持たないRFC 3164には`assumedYear`引数を追加、(2) `%Ez`はリテラル`"Z"`サフィックスを受け付けないため、RFC 5424の`"...Z"`形式は`"...+00:00"`へ正規化してからパース、(3) カンマ区切り小数秒は`failbit`を立てずに無言で途中停止するため、フルストリーム消費チェック(`(iss >> std::ws).eof()`)を追加して切り詰め結果を誤って正常値として返さないようにした。
+
+**RE2の名前付きキャプチャグループ**(`(?P<timestamp>...)`等)を`RE2::NamedCapturingGroups()`でコンパイル時に1回だけ解決し、フィールド抽出を位置インデックスに依存させない設計にした。RFC 5424/3164 syslogは重要度が`<PRI>`に数値エンコードされテキストの"level"フィールドが存在しないことを実装時に確認し、両syslogルールのテストは`level==Unknown`検証、レベル検出テストは汎用ISO-8601ルールのみに限定する形に是正した。
+
+**CMake配線後のフル3構成検証(サブエージェントへ委任)で発見・修正した実バグ:**
+1. `logmode_timestamp_parser_test.cpp`: `hh_mm_ss::seconds()/subseconds().count()`が`__int64`を返すため、テスト用`Ymdhms`構造体の`long`フィールドへの縮小変換でMSVC C2397エラー — `static_cast<long>`を追加。
+2. `logmode_log_model_test.cpp`: 末尾`\n`終端の文書に対する`Document::lineCount()`は行数そのものではなく行数+1(暗黙の空最終行、既存の「空文書→1」と同じ規約の帰結)を返す仕様を、4件のテストが誤って想定していた(サイズ期待値・末尾行のアサーションを修正)。
+3. clang-tidy: `log_pattern.cpp`の`parseLevel()`内6箇所の単文`if`に波括弧を追加(`hicpp-braces-around-statements`、`src/.clang-tidy`のWarningsAsErrors対象)。2テストファイルの`readability-function-cognitive-complexity`超過を、既存プロジェクトの前例通りループのフラット展開で解消。
+
+最終ゲート: Debug/Release/ubsan全1259件green、clang-tidy新規警告0(`src/`配下)を確認。ヘッドレス変更(main.cpp/UIに一切触れない)のため実アプリ視覚確認は対象外、正しさの証明は単体テスト3ファイル(logmode_log_pattern_test/logmode_timestamp_parser_test/logmode_log_model_test)で完結させた。
+
+**ドキュメント同期:** `build_plan.md`(§3のPhase 10節をWI-14a完了+WI-14b〜d/WI-15〜17へ再構成、§5にWI-14a完全エントリ+WI-14b〜d概要を追加)、`master_roadmap.md`(§10.1に実装後の確定事項、§2フェーズ表のPhase 10/12'/8.6d/8.6e行の陳腐化を併せて修正)、`detailed_design.md`(§11.3に`neomifes::logmode`リファレンス新設)、`docs/issues/`(`phase_10_1_v2_extended_patterns.md`新規起票+README.md索引更新)、`RESUME_HERE.md`(§1状態表+新規§3.81完了記録+§6推奨プロンプト更新)。
+
+コミット予定、pushはユーザーの明示指示待ち。次はWI-14b(非同期インデックス構築+フォーマット自動検出+`EditorSession`配線+ピース単位ストリーミング最適化)。
+
 <!-- 次セッションはここに追記 -->

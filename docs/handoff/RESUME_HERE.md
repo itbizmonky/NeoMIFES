@@ -163,8 +163,9 @@
 | **8.6b** | **キーバインド設定 + プリセット** (秀丸/サクラ/VSCode) | ✅ **完了 (WI-10、2026-08-15、§3.77参照)** |
 | **8.6d** | **自動保存/バックアップ/クラッシュ復旧/最近開いたファイル** | ✅ **完了 (WI-11、2026-08-15、§3.78参照)** |
 | **8.6e** | **基本編集の穴埋め (🎉 M3)** | ✅ **完了 (WI-12、2026-08-15、§3.79参照)** |
-| **12'** | **MVP 出荷判定** | 🟢 **技術項目12/14達成 (WI-13、§3.80参照)** — 残り2項目(本物のAuthenticode証明書・日常的ドッグフーディング)はユーザーの出荷判断待ち |
-| 10 → 11 → 9 → 12 | ログ解析 → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
+| **12'** | **MVP 出荷判定** | ✅ **完了 (WI-13、§3.80参照)。🎉 M4 達成 (2026-08-16): 秀丸/サクラの代替として出荷可能** — 技術項目12/14達成、残り2項目(本物のAuthenticode証明書・日常的ドッグフーディング)はユーザー判断でこの状態のまま達成扱いとする承認済み |
+| **10.1a** | **ログ解析モード ヘッドレス基盤** (`neomifes::logmode`、`LogPatternRule`/`LogModel`、標準4パターン) | ✅ **完了 (WI-14a、2026-08-16、§3.81参照)** |
+| 10.1b〜d → 10.2/10.3 → 11 → 9 → 12 | ログ解析残り → CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2370,6 +2371,27 @@ WI-12完了・push・CI green確認後、ユーザーから「次のPhaseに進�
 
 **コミット済み(ツール/ドキュメントのみ、ソースコード変更なし)、pushはユーザーの明示指示待ち。**
 
+### 3.81 WI-14a (ログ解析モード ヘッドレス基盤) 完了記録 (2026-08-16)
+
+WI-13完了・🎉M4正式達成後、ユーザーから「次のPhaseに進め」と指示された。AskUserQuestionでPhase 10の3領域(ログ解析/CSV/JSON-XML Tree)のどれから着手するか確認し、**「ログ解析モード」(推奨案)** が選ばれた — roadmap §1.5が「本ソフト最大の差別化点」と明記する領域。
+
+build_plan.mdの「1セッションに収まらない章はWIを切り直す」方針に従い、Phase 10.1をWI-14a〜dの4サブWIへ切り直した。本セッションはWI-14a(ヘッドレス基盤)のみ実装。新規`src/logmode/`モジュール(`neomifes::logmode`、PUBLIC=`neomifes::document`、PRIVATE=RE2)を新設し、`LogPatternRule`/`LogLevel`/`parseLevel()`/`builtInLogPatterns()`(標準4パターン: RFC 5424/3164 syslog、Apache/Nginx CLF、汎用ISO-8601+レベル行)、`parseTimestamp()`(`std::chrono::parse`ベース)、`LogModel::build()`を実装した。
+
+**設計上の主要判断:** `LogModel::build()`は roadmap スケッチの`attach(Document&, rule)`(mutate-in-place)ではなく`search::SearchService::findAll()`と同じ「static、値返却、呼び出しごとに完結」形を採用した(文書スワップ時の寿命管理問題を避けるため)。ベンダー固有パターン(SAP/AWS/Azure/K8s等)は実データが無い状態で書くと推測実装になるため、標準4種のみに限定し`docs/issues/phase_10_1_v2_extended_patterns.md`へ先送りした。
+
+**`std::chrono::parse`の実機挙動を3件、スタンドアロンprobeで確認(記憶からの推測はしていない):** (1) `sys_time`へのパースは完全な暦日(年月日)を要求するため、年フィールドを持たないRFC 3164には`assumedYear`引数が必要、(2) `%Ez`はリテラル`"Z"`サフィックスを受け付けないため、RFC 5424の`"...Z"`形式は`"...+00:00"`へ正規化してからパースする、(3) カンマ区切り小数秒は`failbit`を立てずに無言で途中停止するため、フルストリーム消費チェック(`(iss >> std::ws).eof()`)を追加して誤った切り詰め成功を防いだ。
+
+**CMake配線完了後、フル3構成検証(サブエージェントへ委任)で以下を発見・修正:**
+1. `logmode_timestamp_parser_test.cpp`: `hh_mm_ss::seconds()/subseconds().count()`が`__int64`を返すため、テスト用`Ymdhms`構造体の`long`フィールドへの縮小変換でC2397エラー — `static_cast<long>`を追加。
+2. `logmode_log_model_test.cpp`: 末尾`\n`終端の1行文書に対する`Document::lineCount()`は1ではなく2(暗黙の空最終行、既存の「空文書→1」と同じ規約の帰結)を返す仕様を、4件のテストが誤って想定していた(サイズ期待値・末尾行のアサーションを修正)。
+3. clang-tidy: `log_pattern.cpp`の`parseLevel()`内6箇所の単文`if`に波括弧を追加(`hicpp-braces-around-statements`、`src/.clang-tidy`のWarningsAsErrors対象)。2テストファイルの`readability-function-cognitive-complexity`超過を、この既存プロジェクトの前例(TIMELINE.md記載)通りループのフラット展開で解消。
+
+最終ゲート: Debug/Release/ubsan全1259件green、clang-tidy新規警告0(サブエージェントへ委任、`src/`配下は必須の新規警告0を達成)。ヘッドレス変更(main.cpp/UIに一切触れない)のため実アプリ視覚確認は対象外、正しさの証明は単体テスト3ファイルで完結させた。
+
+**新規issue:** `docs/issues/phase_10_1_v2_extended_patterns.md`(リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/ベンダー固有パターン、P2)。
+
+コミット予定、pushはユーザーの明示指示待ち。次は **WI-14b (非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化)** — `build_plan.md` §5参照。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2419,27 +2441,21 @@ WI-12完了・push・CI green確認後、ユーザーから「次のPhaseに進�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.80 (WI-13 MVP出荷判定、🎉 M4完了記録) を読んで
-現状を把握せよ。
+RESUME_HERE.md §3.81 (WI-14a ログ解析モード ヘッドレス基盤 完了記録) を
+読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
-build_plan.md §6のチェックリストは14項目中12項目達成(8時間ソーク・
-ASan含め技術的に自分で検証可能な項目はすべてgreen)。残り2項目
-(本物のAuthenticode証明書取得・日常的ドッグフーディング)はコードの
-正しさとは独立した出荷判断であり、当初からユーザーに委ねる設計だった
-項目 — AskUserQuestionでユーザーに確認し、この状態で🎉M4を正式達成
-扱いとする承認を得た。docs/issues/authenticode_certificate_not_acquired.md
-参照。
+続けてPhase 10(ログ解析/CSV/JSON-XML Tree)に着手し、AskUserQuestionで
+「ログ解析モード」(推奨案)が選ばれた。roadmap §10.1をWI-14a〜dの
+4サブWIへ切り直し(build_plan.md §5参照)、WI-14a(`neomifes::logmode`
+ヘッドレス基盤 — LogPatternRule/LogModel、標準4パターンのみ、スレッド/
+UIなし)を完了した。Debug/Release/ubsan全1259件green、clang-tidy新規
+警告0を確認済み。
 
-D:\_wi13_scratch\一式とNeoMIFES_WI13_SoakTestタスクスケジューラタスクは
-ソークテスト結果記録後にユーザー指示通り削除済み。証明書ストア
-(Cert:\CurrentUser\My、サムプリントE2751414BF13EBD878278447DC00BE6ED83B1B74)
-は保持している。
-
-次は、ユーザーの意向を確認した上でWI-14以降(build_plan.md「WI-14〜
-WI-17 — Phase 10/11/9/12」、Phase 10=ログ解析/CSV/JSON-XML Tree が
-最優先候補)へ進む。着手前に該当するmaster_roadmap.mdの章を読み、
-本書§5と同じ形式でWIを切り直すこと。
+次はWI-14b(非同期インデックス構築`LogIndexWorker` + フォーマット
+自動検出 + `EditorSession`per-tab配線 + ピース単位ストリーミング最適化
+10GB/60秒目標)。着手前にbuild_plan.md §5のWI-14b概要とmaster_roadmap.md
+§10.1を読み、本書§5と同じ形式でWIを切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

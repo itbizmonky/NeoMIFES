@@ -131,9 +131,14 @@ ctest --preset debug --output-on-failure
 - [x] **WI-13** MVP 出荷判定 (§6 のチェックリスト14項目中12達成、残り2項目はユーザー判断で保留のまま🎉M4達成扱いに確定) → コミット: `89d4dcf`〜`6ccc992`
   - 🎉 **M4 達成 (2026-08-16): 秀丸/サクラの代替として出荷可能**
 
-## Phase 10 以降 (WI-13 完了まで着手禁止)
+## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-- [ ] **WI-14** Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点)
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直した (詳細は §5)。CSV (§10.2) / JSON-XML Tree (§10.3) は未着手、着手時に同様に切り直す。
+
+- [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `<WI-14a-hash>`
+- [ ] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化
+- [ ] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成 WI)
+- [ ] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル (優先度中)
 - [ ] **WI-15** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-16** Phase 9 — AI プラグイン
 - [ ] **WI-17** Phase 12 — 総合品質保証・正式出荷
@@ -938,21 +943,76 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 
 ---
 
-## WI-14 〜 WI-17 — Phase 10 / 11 / 9 / 12
+## WI-14a — ログ解析モード ヘッドレス基盤
 
-**WI-13 完了まで着手禁止。**
+**目的:** ログファイルのパターンマッチング (RFC 5424/3164 syslog・Apache/Nginx Common+Combined Log Format・汎用 ISO-8601+レベル行) をヘッドレスに実装する。roadmap §10.1 (ログ解析モード、「本ソフト最大の差別化点」) の最初のサブ WI。
+
+**前提:** WI-01〜WI-13 全て (Phase 8.5/8.6/12' 完結、WI-13完了によりPhase 10着手が解禁された)
+
+**参照:** `master_roadmap.md` §10.1
+
+### 既に決まっている設計
+
+- `LogModel::build(const Document&, const LogPatternRule&, assumedYear) -> std::expected<LogModel, LogPatternError>` という静的ファクトリ (roadmap スケッチの `LogModel::attach(Document&, rule)` mutate-in-place 形からの意図的な逸脱、理由は下記参照)
+- 組込パターンは公開・検証可能な標準4種のみ: RFC 5424 syslog / RFC 3164 syslog / Apache・Nginx Common+Combined Log Format / 汎用 ISO-8601+レベル行。ベンダー固有パターン (SAP/AWS/Azure/K8s 等) は実データ入手まで実装しない (CLAUDE.md ルール3)
+- フィールド抽出は RE2 の名前付きキャプチャグループ (`(?P<timestamp>...)` 等) で表現し、位置インデックスをハードコードしない (`RE2::NamedCapturingGroups()` でコンパイル時に1回だけ解決)
+- `LogLine` は `document::LineNumber` + `optional<Timestamp>` + `LogLevel` + `matched` のみを持つ軽量構造体。メッセージ本文/traceId 等はキャッシュせず、必要な呼び出し側が都度 `Document::lineText()` を呼ぶ
+- スレッド化 (`LogIndexWorker`)・`EditorSession` 統合・UI は本 WI のスコープ外 (WI-14b/c へ)
+
+### 実施内容
+
+`src/logmode/` モジュール新設 (`neomifes::logmode`、PUBLIC=`neomifes::document`、PRIVATE=RE2)。`log_pattern.h/.cpp` (`LogLevel`/`parseLevel()`/`LogPatternRule`/`builtInLogPatterns()`)、`timestamp_parser.h/.cpp` (`parseTimestamp()`)、`log_model.h/.cpp` (`LogModel::build()`)。単体テスト3ファイル。
+
+### DoD
+
+- [x] `LogPatternRule`/`LogLevel`/`parseLevel()`/`builtInLogPatterns()` (4件) 実装
+- [x] `parseTimestamp()` (`std::chrono::parse` ベース、`assumedYear` 対応)
+- [x] `LogModel::build()` (RE2 マッチング、CRLF `\r` トリム、UTF-16↔UTF-8 境界変換)
+- [x] 単体テスト3ファイル (log_pattern/timestamp_parser/log_model)
+- [x] Debug/Release/ubsan 全 green、clang-tidy 新規警告 0
+
+### 実装後の確定事項
+
+**`std::chrono::parse` の実機挙動 (スタンドアロン probe で確認、CLAUDE.md ルール3、記憶からの推測はしていない):**
+1. `sys_time<Duration>` へのパースは**完全な暦日** (年+月+日) の解決を要求する — `%b %d` 単体のように年月日が揃わない書式は失敗する。RFC 3164 syslog は年フィールドを持たない (RFC 自体の仕様であり実装の不備ではない) ため、`parseTimestamp()` に `assumedYear` 引数を追加し、フォーマット文字列に `%Y` が無ければテキスト/フォーマット双方の先頭へ注入する方式で解決した。
+2. `%Ez` (RFC 3339 拡張 UTC オフセット) はリテラル `"Z"` (Zulu) サフィックスを受け付けない (`"+HH:MM"` は受け付ける)。RFC 5424 の一般的な `"...15.003Z"` 形式は `"...15.003+00:00"` へ正規化してからパースする。
+3. カンマ区切りの小数秒 (`"10:15:32,123"`) はパース失敗にならず、カンマの手前で無言でストリーム消費が止まる (`failbit` が立たない、`",123"` が未消費のまま残る)。`(iss >> std::ws).eof()` によるフルストリーム消費チェックを追加し、切り詰め結果を誤って正常値として返さないようにした。
+
+**`attach()` → `build()` への逸脱:** roadmap スケッチは `LogModel::attach(Document&, rule)` という mutate-in-place 形だったが、`Document*` を保持する設計は「文書がスワップされたら誰が再構築するか」という寿命管理の問題を持ち込む。`search::SearchService::findAll()` が既に確立している「static、呼び出しごとに完結」という設計をそのまま踏襲した。
+
+**RFC 5424/3164 に "level" フィールドが無いことの確認:** 両 RFC とも重要度は `<PRI>` (facility×8+severity) に数値エンコードされ、テキストの "level" フィールドは存在しない。実装時にこれを確認し、両 syslog ルールは `level==Unknown` を検証、レベル検出は汎用 ISO-8601 ルールのみでテストする形に是正した (spec 精度の是正であり計画からの黙った逸脱ではない)。
+
+**`Document::lineCount()` は末尾 `\n` 終端の文書に対し実行数+1 を返す** (暗黙の空最終行、既存の「空文書→1」と同じ規約の帰結)。単体テストの一部がこれを見落とし `lines().size()` の期待値を1小さく書いていたが、実装ではなくテスト側の誤りと判明し、フル3構成検証時に4件のテスト失敗として顕在化・修正した (`LogModelTest.ApacheCombinedLogFormatMatchesWithUnknownLevel`等)。
+
+**ベンダー固有パターンの先送り:** `docs/issues/phase_10_1_v2_extended_patterns.md` に起票 (リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/SAP・AWS・Azure・K8s 固有パターン)。
+
+---
+
+## WI-14b 〜 WI-14d — Phase 10.1 (ログ解析モード) 残りサブ WI
+
+着手時は下記の概要を出発点に、本書 §5 と同じ形式で WI を切り直すこと。
+
+| WI | 内容 | 目安 |
+|---|---|---|
+| WI-14b | 非同期インデックス構築 (`LogIndexWorker`、`SyntaxWorker`型のスレッド構造) + フォーマット自動検出 (先頭 N 行を組込パターンに試行) + `EditorSession` per-tab 状態配線 + `LogModel::build()` のピース単位ストリーミング最適化 (10GB/60秒目標) | 1 サブ WI |
+| WI-14c | UI モード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ (要件定義書 §8 残り全項目)、完了をもって Phase 10.1 の MVP 達成とする | 1〜2 サブ WI |
+| WI-14d | 複数行エントリのグルーピング (Java スタックトレース等の継続行) + ユーザー編集可能パターンファイル (`%APPDATA%\NeoMIFES\log_patterns\`) + パターン拡充 (MVP後の磨き上げ、優先度中) | 1 サブ WI |
+
+---
+
+## WI-15 〜 WI-17 — Phase 11 / 9 / 12
+
+**WI-14 (Phase 10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。
 
 着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
 
 | WI | 内容 | roadmap 章 | 目安 |
 |---|---|---|---|
-| WI-14 | Phase 10 — ログ解析 / CSV / JSON-XML Tree | §10 | 3 領域 × 各 3〜5 サブ WI |
 | WI-15 | Phase 11 — Git 統合 / LSP / マクロ | §11 | 3 領域 × 各 3〜6 サブ WI |
 | WI-16 | Phase 9 — AI プラグイン | §9 | 4〜6 サブ WI |
 | WI-17 | Phase 12 — 総合品質保証・正式出荷 | §12 | §12.3 の 22 項目 |
 
 **順序の根拠:**
-- **Phase 10 が先** — roadmap §1.5 が「本ソフト最大の差別化点」と位置づけ、外部サービスに依存せず陳腐化しない
 - **Phase 9 (AI) が最後** — CLAUDE.md が「エディタ本体は AI 無しでも 100% 動作しなければならない」と定めており、本体完成後に載せるのが筋。加えて外部 API 依存で陳腐化が速い
 
 ---

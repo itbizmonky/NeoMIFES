@@ -78,6 +78,9 @@ add_executable(neomifes_unit_tests
     app_theme_settings_test.cpp
     ui_tab_bar_test.cpp
     ui_main_window_test.cpp
+    logmode_log_pattern_test.cpp
+    logmode_timestamp_parser_test.cpp
+    logmode_log_model_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -90,6 +93,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::render
         neomifes::core
         neomifes::search
+        neomifes::logmode
         neomifes::syntax
         neomifes::plugin
         neomifes::app_input
