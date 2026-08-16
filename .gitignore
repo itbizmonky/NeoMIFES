@@ -39,3 +39,7 @@ Desktop.ini
 
 # ---- Local scratch ----
 scratchpad/
+
+# ---- WI-13: code-signing private key + packaging output (never commit) ----
+tools/*.pfx
+/dist/

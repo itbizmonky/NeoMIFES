@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-15 (WI-10完了、メニューバーキーバインド表示陳腐化issueを新規起票)
+**最終更新:** 2026-08-16 (WI-13完了、Authenticode証明書未取得issue・ASanプリセット未CI化issueを新規起票)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -20,6 +20,7 @@
 | Issue | 概要 | 対応 Phase |
 |---|---|---|
 | [検索が CRLF 行末を考慮しない](search_crlf_line_ending.md) | 正規表現の `$`/`^` が `\r` を行内容として扱う | 未定 (Phase 12 前) |
+| [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
 
 ## P2 — 凍結 / 再評価待ち
 
@@ -35,6 +36,7 @@
 | [`ReplaceAllCommand` の `extract()` 再走査](replace_all_buffer_snapshot_extract_scaling.md) | 再評価条件は成立済み、ベンチマーク未実施 | 待機 |
 | [`MSVC_RUNTIME_LIBRARY` 修正の脆弱性](cmake_msvc_runtime_library_fragility.md) | 将来の Abseil 更新時にのみ顕在化しうる潜在リスク | 待機 |
 | [`search`/`utf8_convert` の小規模改善 3 件](search_utf8_convert_minor_cleanup.md) | 正しさ・性能に実害なし | 待機 |
+| [`asan` プリセットがCIに常設化されていない](asan_preset_not_in_ci.md) | WI-13でローカル初回実行しDoD自体は満たしたが、以後の継続検証機構が無い | 待機 (CI実行時間とのトレードオフ検討) |
 
 ## 対応不能 / 外部要因待ち
 
