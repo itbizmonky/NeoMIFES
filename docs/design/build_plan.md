@@ -967,7 +967,7 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 - [x] 60fps スクロール維持 (`--measure-frame`) — **実測 avgFrame 16.6ms (≈60fps)**、10GB実ファイルでの定常スクロールでも同水準 (p50=16.67ms/p95=16.84ms) を維持
 - [x] 10GB ファイルを開ける — 実際に10GBのテキストファイルを生成し`--open`で開封、クラッシュなし、スクロール性能も維持することを確認
 - [ ] クラッシュ 0 (8 時間ソーク) — **進行中。** バックグラウンドでソークテストを実行中(署名済みReleaseバイナリ、15分おきにプロセス生存+メモリ量を記録)。本セッション内では8時間の経過を待てないため、次回セッションでログ (`docs/issues/`または引き継ぎメモ参照) を確認して結果を記録する
-- [ ] ASan / UBSan クラッシュ 0、clang-tidy 新規指摘 0 — UBSan/clang-tidyはWI-12完了時点(本WIはソース無変更)で確認済み。ASanは本WIで初めてバックグラウンドエージェントに実行を依頼中、結果確認後に更新する
+- [x] ASan / UBSan クラッシュ 0、clang-tidy 新規指摘 0 — UBSan/clang-tidyはWI-12完了時点(本WIはソース無変更)で確認済み。ASanは本WIで`asan`プリセットを初めてビルド+`ctest`実行し、**1227/1227件全green、AddressSanitizer/UndefinedBehaviorSanitizerの実行時エラー検出0件**を確認(`build/asan/Testing/Temporary/LastTest.log`実測)。`asan`プリセット自体が通常のWI検証フローに未組込みのままCI常設化されていない点は`docs/issues/asan_preset_not_in_ci.md`として別途起票済み
 - [ ] Authenticode 署名 + Portable Zip 配布 — **Portable Zipは完成、署名機構も自己署名証明書で実装・動作確認済み(`tools/create_dev_certificate.ps1`+`tools/sign_release_binary.ps1`)。ただし本物のAuthenticode証明書は未取得(購入・組織身元確認が必要でユーザー判断待ち)** — `docs/issues/authenticode_certificate_not_acquired.md`参照。この項目は厳密には未達のまま記録する
 - [ ] **開発者が日常的に NeoMIFES で NeoMIFES を開発している** — M1(2026-08-05)以降、WI-11/WI-12等で複数回実機ドッグフーディングを重ね保存パイプラインの実動作は繰り返し実証済みだが、「毎日の開発作業そのものをNeoMIFESのGUI経由で行っている」わけではない(実装はClaude CodeのRead/Editツール経由)。正直な現状として未達のまま記録し、出荷判断はユーザーに委ねる
 - [x] ユーザーマニュアル (キーバインドリファレンス) を同梱 — `docs/user/keybindings.md`作成済み(4プリセットの既定キー・固定キー・設定ファイル場所を実際の値から転記)
