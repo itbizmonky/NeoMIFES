@@ -2357,7 +2357,7 @@ WI-12完了・push・CI green確認後、ユーザーから「次のPhaseに進�
 **達成済み(9/14項目):** ファイル開く/編集/保存(実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認)、10タブ/横スクロール/設定永続化(いずれも既存実装+テストスイート、対話的再確認は下記の理由により限定)、**起動時間29.3ms実測**(`--measure-startup`、目標300msの1/10)、**avgFrame16.6ms(≈60fps)実測**(`--measure-frame`)、**10GBファイルの実際の生成→開封→性能維持を確認**(定常スクロールp50=16.67ms/p95=16.84ms、合成50,000行文書とほぼ同水準)、ユーザーマニュアル(`docs/user/keybindings.md`新設、4プリセットの実際の値をソースから転記)。
 
 **未達/進行中(5/14項目):**
-- **8時間ソークテスト:** バックグラウンドで実行中(署名済みReleaseバイナリ、15分おきにプロセス生存+メモリ量を記録するPowerShellスクリプト)。本セッション内では8時間の経過を待てず、次回セッションで結果を確認する必要がある。ログは`C:\Users\kenbo\AppData\Local\Temp\claude\...\scratchpad\wi13_soak_log.csv`(セッション固有パス、次回セッションでは無効の可能性が高い点に注意 — 実際には次回セッション開始時に新規ソークを再実行するか、Windowsタスクスケジューラ等の永続的な仕組みへ切り替えるかの判断が必要)。
+- **8時間ソークテスト:** 当初セッション固有のスクラッチパスでバックグラウンド実行していたが、ユーザーが(ソークテスト用と気づかず)NeoMIFESウィンドウを手動で閉じてしまい2回中断した(真のクラッシュではないことをWindowsクラッシュダンプ/WERログの不在で確認済み)。**Windowsタスクスケジューラへ独立タスク`NeoMIFES_WI13_SoakTest`として登録し直し、Claude Codeのセッション終了とは無関係に動作する方式へ切り替えた。** スクリプト本体は`D:\_wi13_scratch\wi13_soak_test.ps1`(永続パス、リポジトリ外)、NeoMIFES.exeは`-WindowStyle Minimized`で起動(誤って閉じられるリスクを低減)。ログは`D:\_wi13_scratch\wi13_soak_log.csv`。2026-08-16 10:18頃に開始、実際に起動したことを確認済み(PID 6064)。8時間後(本日18:18頃)に完了予定、次回セッションでこのログを確認すること。PCのスリープ/シャットダウンでは中断される点に注意。
 - **ASan:** `CMakePresets.json`に定義済みだが一度もCIはおろかローカルWI検証フローでも実行されていなかった`asan`プリセットを、バックグラウンドエージェントに初回実行を依頼中。結果未確認のまま本記録を書いている。
 - **Authenticode署名:** 自己署名証明書(`tools/create_dev_certificate.ps1`)+署名スクリプト(`tools/sign_release_binary.ps1`)を新設し、署名の仕組み自体は実機で動作確認済み(タイムスタンプ付与も含め正しく機能、`signtool verify`は自己署名ゆえの信頼チェーンエラーのみ)。**本物のAuthenticode証明書は未取得**(購入・組織身元確認が必要でClaude Codeが代行不可、着手前にAskUserQuestionで確認しユーザーが「自己署名で暫定対応」を選択済み)。`docs/issues/authenticode_certificate_not_acquired.md`参照。
 - **Portable Zip:** `tools/package_portable.ps1`で完成、`dumpbin /dependents`で実際のDLL依存を確認した上でVC++ランタイムDLL(`vcruntime140.dll`/`vcruntime140_1.dll`/`msvcp140.dll`)をアプリローカル配置。パッケージ単体(`dist/NeoMIFES-portable-0.0.1/`)から`--measure-startup`が正常動作することを実機確認し、「インストール不要」の主張が実証済み。
@@ -2425,9 +2425,12 @@ RESUME_HERE.md §3.80 (WI-13 MVP出荷判定、🎉 M4着手記録・進行中) 
 
 WI-01〜WI-12は全て完了。WI-13(MVP出荷判定)は着手済みで9/14項目達成、
 5項目が進行中/未達(詳細は§3.80参照)。特に:
-- 8時間ソークテストがバックグラウンドで実行中だった(前回セッション終了時点で
-  未完了の可能性が高い) — ログを確認するか、完了していなければ
-  tools/配下のスクリプトを参考に再実行すること
+- 8時間ソークテストはWindowsタスクスケジューラ(タスク名`NeoMIFES_WI13_SoakTest`)
+  で独立実行中。D:\_wi13_scratch\wi13_soak_log.csv を確認すること
+  (`SOAK_COMPLETE_NO_CRASH`なら成功、`CRASHED_OR_EXITED`なら要調査、
+  まだ短い行数しか無ければ8時間経過を待つ)。タスクは
+  `Get-ScheduledTask -TaskName NeoMIFES_WI13_SoakTest`で確認・
+  `Unregister-ScheduledTask`で削除できる
 - ASanプリセット(初回実行)の結果を確認すること
 - 両方greenなら🎉M4達成をユーザーへ報告し、build_plan.md §6の
   残りチェックボックスを更新すること
