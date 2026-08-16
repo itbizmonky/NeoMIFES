@@ -2428,9 +2428,14 @@ WI-01〜WI-12は全て完了。WI-13(MVP出荷判定)は着手済みで9/14項�
 - 8時間ソークテストはWindowsタスクスケジューラ(タスク名`NeoMIFES_WI13_SoakTest`)
   で独立実行中。D:\_wi13_scratch\wi13_soak_log.csv を確認すること
   (`SOAK_COMPLETE_NO_CRASH`なら成功、`CRASHED_OR_EXITED`なら要調査、
-  まだ短い行数しか無ければ8時間経過を待つ)。タスクは
-  `Get-ScheduledTask -TaskName NeoMIFES_WI13_SoakTest`で確認・
-  `Unregister-ScheduledTask`で削除できる
+  まだ短い行数しか無ければ8時間経過を待つ)
+- **【ユーザー指示・必須】ソークテスト完了確認後、`D:\_wi13_scratch\`フォルダ一式
+  (10GBテストファイル含む)と`NeoMIFES_WI13_SoakTest`タスクスケジューラタスクを
+  削除すること**(`Remove-Item D:\_wi13_scratch -Recurse -Force` +
+  `Unregister-ScheduledTask -TaskName NeoMIFES_WI13_SoakTest -Confirm:$false`)。
+  **証明書ストア(`Cert:\CurrentUser\My`)の自己署名開発用証明書は削除しない**
+  (今後`sign_release_binary.ps1`を再利用する想定でユーザーが明示的に残す指示)。
+  結果を記録してから削除すること(先に消すとログが失われる)
 - ASanプリセット(初回実行)の結果を確認すること
 - 両方greenなら🎉M4達成をユーザーへ報告し、build_plan.md §6の
   残りチェックボックスを更新すること
