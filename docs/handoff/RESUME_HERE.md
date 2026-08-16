@@ -2422,23 +2422,27 @@ WI-12完了・push・CI green確認後、ユーザーから「次のPhaseに進�
 RESUME_HERE.md §3.80 (WI-13 MVP出荷判定、🎉 M4完了記録) を読んで
 現状を把握せよ。
 
-WI-01〜WI-13は全て完了。build_plan.md §6のMVP出荷判定チェックリストは
-14項目中12項目達成(8時間ソーク・ASan含め技術的に自分で検証可能な項目は
-すべてgreen)。残り2項目(本物のAuthenticode証明書取得・日常的
-ドッグフーディング)はコードの正しさとは独立した出荷判断であり、
-ユーザーへ最終確認が必要(docs/issues/authenticode_certificate_not_acquired.md参照)。
-🎉M4をこの状態で正式達成扱いとするかはユーザーの回答待ち。
+WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
+build_plan.md §6のチェックリストは14項目中12項目達成(8時間ソーク・
+ASan含め技術的に自分で検証可能な項目はすべてgreen)。残り2項目
+(本物のAuthenticode証明書取得・日常的ドッグフーディング)はコードの
+正しさとは独立した出荷判断であり、当初からユーザーに委ねる設計だった
+項目 — AskUserQuestionでユーザーに確認し、この状態で🎉M4を正式達成
+扱いとする承認を得た。docs/issues/authenticode_certificate_not_acquired.md
+参照。
 
 D:\_wi13_scratch\一式とNeoMIFES_WI13_SoakTestタスクスケジューラタスクは
 ソークテスト結果記録後にユーザー指示通り削除済み。証明書ストア
 (Cert:\CurrentUser\My、サムプリントE2751414BF13EBD878278447DC00BE6ED83B1B74)
 は保持している。
 
+次は、ユーザーの意向を確認した上でWI-14以降(build_plan.md「WI-14〜
+WI-17 — Phase 10/11/9/12」、Phase 10=ログ解析/CSV/JSON-XML Tree が
+最優先候補)へ進む。着手前に該当するmaster_roadmap.mdの章を読み、
+本書§5と同じ形式でWIを切り直すこと。
+
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。
-
-次のroadmapフェーズ(WI-14以降 or Phase 9以降)着手前に、ユーザーへ
-🎉M4の扱いを確認すること。
 ```
 
 **着手前に必ず確認すること (中間レビューによる新ルール):**
