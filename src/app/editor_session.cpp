@@ -5,6 +5,7 @@
 
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/syntax_language.h"
+#include "neomifes/logmode/log_index_worker.h"
 
 namespace neomifes::app {
 
@@ -51,6 +52,13 @@ std::optional<document::LoadError> EditorSession::openFile(const std::filesystem
     // here would additionally clear currentQuery, a behavior change this
     // pure refactor must not introduce.
     return std::nullopt;
+}
+
+void EditorSession::beginLogIndexing(logmode::LogIndexWorker& worker, const logmode::LogPatternRule& rule,
+                                      std::optional<int> assumedYear) {
+    worker.requestIndex(m_document.snapshot(), rule, assumedYear, /*sessionToken=*/this);
+    m_logPatternRule   = rule;
+    m_logIndexInFlight = true;
 }
 
 void EditorSession::resetToBlank() {

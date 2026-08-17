@@ -44,6 +44,11 @@ target_link_libraries(neomifes_app_input
         # public signature (toNeoMifesToastSink()) - same reasoning as
         # neomifes::plugin_sdk above.
         neomifes::ui
+        # editor_session.h (WI-14b) exposes logmode::LogModel/
+        # logmode::LogPatternRule/logmode::LogIndexWorker in its public
+        # signature (logModel()/logPatternRule()/beginLogIndexing()) - same
+        # reasoning as neomifes::search/neomifes::syntax above.
+        neomifes::logmode
     PRIVATE
         neomifes::compile_options
         neomifes::util

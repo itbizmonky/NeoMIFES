@@ -40,8 +40,14 @@
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/text_pos.h"
 #include "neomifes/encoding/encoding.h"
+#include "neomifes/logmode/log_model.h"
+#include "neomifes/logmode/log_pattern.h"
 #include "neomifes/search/search_service.h"
 #include "neomifes/syntax/syntax.h"
+
+namespace neomifes::logmode {
+class LogIndexWorker;
+}  // namespace neomifes::logmode
 
 namespace neomifes::app {
 
@@ -125,6 +131,36 @@ public:
     [[nodiscard]] bool& overwriteMode() noexcept { return m_overwriteMode; }
     [[nodiscard]] bool  overwriteMode() const noexcept { return m_overwriteMode; }
 
+    // WI-14b: per-tab log-mode state. Always constructed, conditionally
+    // populated - same "always there, empty until a feature turns it on"
+    // pattern as m_folding/m_bookmarks above. std::optional (not a bare
+    // LogModel) because "log mode never enabled for this tab" and "enabled,
+    // 0 matching lines" are distinct states a plain LogModel::lines().empty()
+    // check couldn't tell apart. No UI/command wires into these yet (WI-14c) -
+    // this WI proves correctness via unit/integration tests only.
+    [[nodiscard]] const std::optional<logmode::LogModel>& logModel() const noexcept { return m_logModel; }
+    [[nodiscard]] const std::optional<logmode::LogPatternRule>& logPatternRule() const noexcept {
+        return m_logPatternRule;
+    }
+    [[nodiscard]] bool logIndexInFlight() const noexcept { return m_logIndexInFlight; }
+
+    // Fires an async LogIndexWorker request for this session's current
+    // document snapshot, using `this` as the opaque sessionToken (see
+    // log_index_worker.h - never dereferenced by the worker, only round-
+    // tripped back via kMsgLogIndexReady's wParam so the receiver can find
+    // this exact EditorSession again). Sets logPatternRule()/
+    // logIndexInFlight() immediately; logModel() is populated later by
+    // applyLogIndexResult() once the worker's response arrives.
+    void beginLogIndexing(logmode::LogIndexWorker& worker, const logmode::LogPatternRule& rule,
+                          std::optional<int> assumedYear);
+
+    // Called by the kMsgLogIndexReady receiver once it has matched a
+    // response's sessionToken back to this EditorSession.
+    void applyLogIndexResult(logmode::LogModel result) noexcept {
+        m_logModel         = std::move(result);
+        m_logIndexInFlight = false;
+    }
+
     // Always derived from path()/isUntitled() - see this file's header
     // comment on why this is not cached.
     [[nodiscard]] std::optional<syntax::Language> language() const noexcept;
@@ -196,6 +232,9 @@ private:
     std::filesystem::path                 m_path;
     bool                                   m_isUntitled = true;
     bool                                   m_overwriteMode = false;
+    std::optional<logmode::LogModel>       m_logModel;
+    std::optional<logmode::LogPatternRule> m_logPatternRule;
+    bool                                   m_logIndexInFlight = false;
 };
 
 }  // namespace neomifes::app

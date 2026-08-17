@@ -73,6 +73,7 @@ add_executable(neomifes_unit_tests
     plugin_plugin_host_test.cpp
     app_plugin_core_api_bridge_test.cpp
     app_workspace_test.cpp
+    app_editor_session_test.cpp
     app_autosave_test.cpp
     app_tab_index_math_test.cpp
     app_theme_settings_test.cpp
