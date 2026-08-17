@@ -30,12 +30,16 @@ void LogIndexWorker::requestIndex(std::shared_ptr<const document::BufferSnapshot
 }
 
 void LogIndexWorker::workerLoop() {
-    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - see the same
-    // NOLINT in syntax_worker.cpp's workerLoop(): ownership of the heap-
-    // allocated LogModel below is transferred across the
+    // See the same NOLINT in syntax_worker.cpp's workerLoop(): ownership of
+    // the heap-allocated LogModel below is transferred across the
     // PostMessageW/kMsgLogIndexReady boundary to a different translation
     // unit (normal_mode_wiring.cpp's onAppMessage hook), which the
-    // single-TU static analyzer can't see reclaims it.
+    // single-TU static analyzer can't see reclaims it. The directive must
+    // sit on the line immediately above the code it suppresses (NOLINTNEXTLINE
+    // only applies to the very next physical line) - an earlier version of
+    // this comment placed it 6 lines too high, at the top of this block,
+    // where it suppressed nothing and let the CI clang-tidy job fail.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     while (true) {
         PendingLogIndexRequest request;
         {
