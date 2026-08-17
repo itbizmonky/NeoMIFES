@@ -3130,9 +3130,9 @@ LogModeController
 - TimelineIndex に (timestamp, offset) を挿入
 - UI から 2010-01-01 12:34:56 のように入力 → 最近傍検索 → ジャンプ
 
-### 11.3 `neomifes::logmode` リファレンス (WI-14a実装、ヘッドレス基盤)
+### 11.3 `neomifes::logmode` リファレンス (WI-14a/b実装)
 
-`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`)。スレッド化・`EditorSession`統合・UIは未実装 (WI-14b/c、§10.1「実装後の確定事項」参照)。
+`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`)。UIは未実装 (WI-14c、§10.1「実装後の確定事項」参照)。
 
 ```cpp
 // neomifes/logmode/log_pattern.h
@@ -3162,15 +3162,48 @@ public:
     [[nodiscard]] static std::expected<LogModel, LogPatternError> build(
         const document::Document& doc, const LogPatternRule& rule,
         std::optional<int> assumedYear = std::nullopt);
+    // WI-14b: ピース単位ストリーミングの実体。上のDocument版はこれへの
+    // 1行委譲 (`return build(*doc.snapshot(), rule, assumedYear);`)。
+    [[nodiscard]] static std::expected<LogModel, LogPatternError> build(
+        const document::BufferSnapshot& snapshot, const LogPatternRule& rule,
+        std::optional<int> assumedYear = std::nullopt);
     [[nodiscard]] std::span<const LogLine> lines() const noexcept;
+};
+
+// neomifes/logmode/format_detection.h (WI-14b)
+[[nodiscard]] std::optional<LogPatternRule> detectLogPatternRule(
+    const document::Document& doc, std::size_t sampleLines = 100);
+
+// neomifes/logmode/log_index_worker.h (WI-14b)
+inline constexpr UINT kMsgLogIndexReady = WM_APP + 3;
+struct PendingLogIndexRequest {
+    std::shared_ptr<const document::BufferSnapshot> snapshot;
+    LogPatternRule rule;
+    std::optional<int> assumedYear;
+    const void* sessionToken = nullptr;  // opaque - never dereferenced
+};
+class LogIndexWorker {
+public:
+    explicit LogIndexWorker(HWND targetHwnd);
+    ~LogIndexWorker();
+    void requestIndex(std::shared_ptr<const document::BufferSnapshot> snapshot, LogPatternRule rule,
+                      std::optional<int> assumedYear, const void* sessionToken) noexcept;
+    // private: std::deque<PendingLogIndexRequest> m_pending (FIFO、mutex/condition_variable保護)
 };
 ```
 
-**設計上の要点:**
+**設計上の要点 (WI-14a):**
 - `LogModel::build()`は毎回`doc.lineCount()`行ぶんの`LogLine`を返す (マッチしない行は`matched=false`で保持、破棄しない — 構造的不変条件`lines().size() == doc.lineCount()`)。
 - フィールド抽出は`RE2::NamedCapturingGroups()`でルールのコンパイル時に1回だけ`"timestamp"`/`"level"`のサブマッチ番号を解決し、位置インデックスをハードコードしない。
 - `Document::lineText()`が返す行末尾の`\r`(CRLF文書の行内容)は、マッチング前に`LogModel::build()`内で1回だけトリムする。
 - RFC 5424/3164 syslogは重要度が`<PRI>`に数値エンコードされ`"level"`名前付きグループを持たないため、常に`LogLevel::Unknown`になる (実装の不備ではなく規格通り)。
+
+**設計上の要点 (WI-14b追加):**
+- `LogModel::build(const BufferSnapshot&, ...)`は`snapshot.pieces()`を1回だけ走査し、行ごとに`currentLine`という単一のバッファを再利用する (`LineIndex::build()`と同型のピース単位ストリーミング)。文書全体を一度もメモリに実体化しない — コストはO(document length)の単一線形パス。実測値は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14b)」参照。
+- `detectLogPatternRule()`は先頭`min(sampleLines, doc.lineCount())`行に対し組込4パターン全てを試行(専用の軽量RE2マッチのみ、`LogModel::build()`は経由しない)、マッチ率最多のルールを返す。マッチ率が50%未満なら`std::nullopt`(誤検出防止の閾値、未チューニングの初期値)。
+- `LogIndexWorker`は`render::SyntaxWorker`(Phase 7c)を型として踏襲するが、「保留中リクエストは最新の1件のみ・上書き」というSyntaxWorkerの設計は**採用しない**。複数タブが独立して結果を必要とするため、`std::deque`によるFIFOキュー(全リクエストを提出順に処理、取りこぼさない)を採用する。
+- 完了メッセージ(`kMsgLogIndexReady`、`wParam`=opaqueな`sessionToken`)のタブへのルーティングは、受信側(`normal_mode_wiring.cpp`の`handleAppMessage()`)が`&workspace.sessionAt(i)`とのポインタ値比較のみ(絶対にdereferenceしない)で対象`EditorSession`を特定する。対象が見つからない(タブが閉じられていた)場合は無言で破棄する。
+- `EditorSession`(`src/app/include/neomifes/app/editor_session.h`)に`m_logModel`(`std::optional<logmode::LogModel>`)/`m_logPatternRule`/`m_logIndexInFlight`のper-tab状態と`beginLogIndexing()`/`applyLogIndexResult()`メソッドを追加した(`m_folding`/`m_bookmarks`と同じ「常時構築・条件付き使用」パターン)。WI-14b時点ではこれらを実際に呼び出すUI/コマンドは配線されていない(WI-14cへ)。
 
 ---
 

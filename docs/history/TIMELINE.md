@@ -2976,4 +2976,27 @@ WI-13完了・🎉M4正式達成後、ユーザーから「次のPhaseに進め�
 
 コミット予定、pushはユーザーの明示指示待ち。次はWI-14b(非同期インデックス構築+フォーマット自動検出+`EditorSession`配線+ピース単位ストリーミング最適化)。
 
+## Session 93 (2026-08-17): WI-14b(非同期インデックス構築+ピース単位ストリーミング最適化)実装完了
+
+WI-14a完了後、ユーザーから「次のPhaseに進め」と指示された。Plan agentサブエージェント呼び出しがアカウントの月次API利用上限に到達し途中終了する事象が発生(PARTIAL出力のみ回収)。ユーザーから「もう一度試す」との指示があったが、既に十分な着手前調査(既存コードの直接読解)と設計判断を完了していたため、追加のPlan agent呼び出しを避け、自ら計画をplanファイルへ直接記述しExitPlanModeでユーザー承認を得る形で進めた。
+
+**着手前調査で確定した設計方針(既存コードの直接読解、CLAUDE.mdルール3):**
+1. `Document::lineText()`は毎行`m_pieceTable.snapshot()`を新規取得しO(pieces)のコストを持つ — 単純ループだとO(lines×pieces)になり10GB/60秒目標に構造的に不利。`LineIndex::build()`(`snapshot.pieces()`を1回だけ走査、`pieceView()`を使い`extract()`は使わない)が正しいピース単位ストリーミングの直接テンプレートと判明。`SearchService::scanDocument()`は`pieceView()`を使ってはいるが全ピースを1つの`u16string`へ連結する「全文書1バッファ方式」であり10GB対応には使えないと判明、アンチパターンとして明示的に不採用とした。
+2. `SyntaxWorker`(Phase 7c)の「保留中リクエストは最新の1件のみ保持・上書き」という設計は`LogIndexWorker`にはそのまま使えないと判明。`RenderPipeline`は常に1つのアクティブタブしか気にしないためSyntaxWorkerはこれで正しいが、`LogIndexWorker`は複数タブが独立して結果を必要とするため、上書き方式だと一部タブが永久に処理されない実害あるバグになる。`std::deque`によるFIFOキュー(複数保留可能、順に処理)を採用。
+3. 完了メッセージのタブへのルーティングに`Workspace`への新規API追加は不要と判明。`EditorSession`自身のポインタを不透明な「セッショントークン」として完了メッセージに載せ、受信側が`&workspace.sessionAt(i)`との**ポインタ値比較のみ**(絶対にdereferenceしない)で解決すれば、対象タブが既に閉じられていても安全に結果を破棄できる。新規メッセージ定数`kMsgLogIndexReady = WM_APP+3`(grep確認済みで未使用)。
+
+**実装(6ステップ、6コミット):**
+1. `LogModel::build()`にピース単位ストリーミングの`BufferSnapshot`オーバーロードを新設、既存`Document`オーバーロードは1行委譲化。ピース境界をまたぐ行の正しさをテストで検証(`insertText()`→`eraseRange()`で意図的にピースを分割する手法)。(`4f55d8b`)
+2. `format_detection.h/.cpp`(`detectLogPatternRule()`)実装。設計時に`doc.lineText(line)`の戻り値(一時オブジェクト)への`string_view`が即座にdanglingになる問題を自己検出し、named local経由の実装に訂正してから書いた。(`062bfd9`)
+3. `LogIndexWorker`実装(FIFOキュー+`kMsgLogIndexReady`)+統合テスト`logmode_log_index_worker_test.cpp`(`render_syntax_worker_test.cpp`のHiddenWindow/ポーリングパターンを直接流用)。核心テスト`MultipleSessionsAreAllProcessedNotJustTheLatest`で2つの異なるセッショントークンへの連続リクエストが両方とも処理されることを直接証明。(`9c5c982`)
+4. `EditorSession`にper-tab状態(`m_logModel`/`m_logPatternRule`/`m_logIndexInFlight`)+`beginLogIndexing()`/`applyLogIndexResult()`を追加(`m_folding`/`m_bookmarks`と同じ「常時構築・条件付き使用」パターン)。(`2f856b1`)
+5. `main.cpp`/`normal_mode_wiring.cpp`への受信インフラ配線。当初計画の「`window.create()`成功後・メッセージループ開始前にmain.cppで直接構築」は`wireNormalMode()`が`window.create()`より前に呼ばれる既存順序と噛み合わず、`RenderPipeline::attach(hwnd)`と同じ`cfg.onDeferredInit`での構築に変更。`kMsgLogIndexReady`ルーティングを`cfg.onAppMessage`ラムダへ追加したところ`wireNormalMode()`のclang-tidy `readability-function-cognitive-complexity`が閾値25を超過(33→部分抽出で26→まだ超過)、`cfg.onAppMessage`ラムダの本体全体を新規`handleAppMessage()`へ抽出して解消。(`a6c1849`)
+6. `tests/bench/logmode_index_bench.cpp`新設+実測。Release実測: 50,000行=164ms、500,000行(10倍)=1550ms、items/sがほぼ一定(約302k〜325k/s)であり、O(lines×pieces)からO(document length)への複雑度クラス改善を確認。(`525e0f1`)
+
+最終ゲート: Debug/Release/ubsan全1273件green、clang-tidy新規警告0(サブエージェントへ委任、上記の cognitive-complexity 修正を含め全て解消)。WI-14bではUI/コマンドの配線は一切行わず(`beginLogIndexing()`/`applyLogIndexResult()`を呼び出す経路が存在しない、WI-14cへ)、実アプリ視覚確認は「LogIndexWorkerの背景スレッドが動いた状態でのプロセス生存確認」のみで代替した。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、§5にWI-14b完全エントリ新設+WI-14c〜dへ再構成)、`master_roadmap.md`(§10.1に実装後の確定事項追記、§2フェーズ表更新)、`detailed_design.md`(§11.3を拡張し`LogIndexWorker`/`detectLogPatternRule()`/`BufferSnapshot`オーバーロードのリファレンス追加)、`RESUME_HERE.md`(§1状態表+新規§3.82完了記録+§6推奨プロンプト更新)。
+
+コミット済み、pushはユーザーの明示指示待ち。次はWI-14c(UIモード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ、完了をもってPhase 10.1のMVP達成)。
+
 <!-- 次セッションはここに追記 -->

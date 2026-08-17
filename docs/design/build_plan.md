@@ -136,7 +136,7 @@ ctest --preset debug --output-on-failure
 roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直した (詳細は §5)。CSV (§10.2) / JSON-XML Tree (§10.3) は未着手、着手時に同様に切り直す。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
-- [ ] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化
+- [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
 - [ ] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成 WI)
 - [ ] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル (優先度中)
 - [ ] **WI-15** Phase 11 — Git 統合 / LSP / マクロ
@@ -988,14 +988,68 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 
 ---
 
-## WI-14b 〜 WI-14d — Phase 10.1 (ログ解析モード) 残りサブ WI
+## WI-14b — 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化
+
+**目的:** WI-14a のヘッドレス基盤 (`LogPatternRule`/`LogModel`) を、実アプリで使える形の一歩手前まで進める — バックグラウンドスレッドでの非同期インデックス構築 (`LogIndexWorker`)、フォーマット自動検出、`EditorSession` per-tab 状態、そして `LogModel::build()` 自体を 10GB/60秒目標に見合う O(document length) の単一線形パスへ書き換える。roadmap §10.1 の第2サブ WI。
+
+**前提:** WI-14a 完了 (コミット `2512c76`/`1374a67`)
+
+**参照:** `master_roadmap.md` §10.1、`docs/design/detailed_design.md` §11.3
+
+### 既に決まっている設計
+
+- `LogModel::build()` に `const document::BufferSnapshot&` を取る新規オーバーロードを追加し、`snapshot.pieces()` を1回だけ走査するピース単位ストリーミング実装に置き換える (`LineIndex::build()` を直接のテンプレートとする)。既存の `Document&` オーバーロードはこの新オーバーロードへの1行委譲になり、WI-14a の全13単体テストが無変更のまま回帰オラクルとして機能する
+- フォーマット自動検出 (`detectLogPatternRule()`) は `format_detection.h/.cpp` に分離実装し、先頭 N 行 (既定100) に組込4パターン全てを試行してマッチ率最多のものを返す (50% 未満は `nullopt`)
+- `LogIndexWorker` は `render::SyntaxWorker` (Phase 7c) を直接のテンプレートとするが、**「保留中リクエストは最新の1件のみ・上書き」という SyntaxWorker の設計は踏襲しない**。`LogIndexWorker` は複数タブ (`EditorSession`) から独立して結果を必要とするため、`std::deque` ベースの FIFO キュー (全リクエストを提出順に処理、取りこぼさない) を採用する
+- 完了メッセージのタブへのルーティングは `Workspace` への新規 API 追加なしで実現する。`EditorSession` 自身のポインタを不透明な `sessionToken` として往復させ、受信側が `&workspace.sessionAt(i)` との**ポインタ値比較のみ**(絶対に dereference しない) で対象タブを特定する
+- `LogIndexWorker` は `neomifes::render` ではなく `neomifes::logmode` 名前空間に置く (ログインデックス構築はレンダリング関心事ではなく、`neomifes::logmode` は既に `neomifes::document` のみに依存する自己完結モジュールのため)
+- WI-14b では `beginLogIndexing()`/`applyLogIndexResult()` を実際に呼び出す UI/コマンドは一切配線しない (WI-14c へ)。ただし完了メッセージの「受信インフラ」(`LogIndexWorker` の構築 + `kMsgLogIndexReady` ハンドラ + `Workspace` 線形走査ルーティング) は本 WI で実装し、統合テストで検証する
+
+### 実施内容 (6ステップ、コミット単位)
+
+1. `LogModel::build(const BufferSnapshot&, ...)` 新設 + 多ピーステスト追加 (`4f55d8b`)
+2. `format_detection.h/.cpp` 実装 (`062bfd9`)
+3. `log_index_worker.h/.cpp` 実装 (FIFOキュー + `kMsgLogIndexReady = WM_APP+3`) + 統合テスト新設 (`9c5c982`)
+4. `EditorSession` per-tab 状態配線 (`logModel()`/`logPatternRule()`/`logIndexInFlight()`/`beginLogIndexing()`/`applyLogIndexResult()`) (`2f856b1`)
+5. `main.cpp`/`normal_mode_wiring.cpp` 配線 (`LogIndexWorker` 構築 + `kMsgLogIndexReady` 受信ルーティング) (`a6c1849`)
+6. ベンチマーク `logmode_index_bench.cpp` 新設 + 実測 + 最終ゲート (`525e0f1`)
+
+### DoD
+
+- [x] `LogModel::build(const BufferSnapshot&, ...)` (ピース単位ストリーミング、O(document length) 単一線形パス)
+- [x] `detectLogPatternRule()` (先頭 N 行試行、50% 閾値)
+- [x] `LogIndexWorker` (FIFOキュー、`kMsgLogIndexReady`)
+- [x] `EditorSession` per-tab 状態 (`m_logModel`/`m_logPatternRule`/`m_logIndexInFlight`)
+- [x] `main.cpp`/`normal_mode_wiring.cpp` 受信インフラ配線
+- [x] ベンチマーク実測 (下記参照)
+- [x] Debug/Release/ubsan 全 green (1273/1273)、clang-tidy 新規警告 0
+
+### 実装後の確定事項
+
+**ピース単位ストリーミングの実測結果 (Release、`--benchmark_min_time=0.2s`):**
+
+| 行数 | 時間 | items/s | source_KiB |
+|---|---|---|---|
+| 50,000 | 164ms | 301.9k/s | 7.65k |
+| 500,000 (10倍) | 1550ms | 325.2k/s | 77.49k |
+
+items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間) であり、O(lines×pieces) だった旧実装から O(document length) の単一線形パスへの書き換えが複雑度クラスとして実測でも確認できた。実際に10GBファイルを生成する検証は WI-13 の `tools/` スクリプト前例を踏襲せず、複雑度クラスの証明に留めた (このベンチマークの目的は「アルゴリズムがO(N)であること」の証明であり、エンドツーエンドの受け入れ確認ではないため)。
+
+**`SyntaxWorker`型からの意図的な逸脱 (FIFOキュー採用):** 着手前調査で「保留中リクエストは1件のみ・上書き」という `SyntaxWorker` の設計をそのまま `LogIndexWorker` に適用すると、複数タブが同時にインデックス要求した場合に一部のタブが永久に処理されない実害あるバグになると判明した。`std::deque` による FIFO キューへ変更し、`tests/integration/logmode_log_index_worker_test.cpp` の `MultipleSessionsAreAllProcessedNotJustTheLatest` テストでこの契約を直接検証した (2つの異なるセッショントークンで連続してリクエストし、両方の結果が届くことを確認)。
+
+**`wireNormalMode()` のコード同時複雑度 (clang-tidy `readability-function-cognitive-complexity`) 超過への対処:** `kMsgLogIndexReady` の受信ルーティングロジックを最初 `cfg.onAppMessage` ラムダへインラインで追加したところ、`wireNormalMode()` 全体の同時複雑度が閾値25を超過した (33 → 部分的抽出で26 → まだ超過)。最終的に `cfg.onAppMessage` ラムダの本体全体 (`kMsgSyntaxTokensReady`/`kMsgLogIndexReady` 両分岐) を新規 `handleAppMessage()` へ抽出し解消した。中間ステップの「Debugのみ検証」運用下でも clang-tidy による静的解析は独立して都度実行することの重要性を再確認した事例。
+
+**`LogIndexWorker` の構築タイミング:** 当初案 (`window.create()` 成功確認後・メッセージループ開始前に main.cpp で直接構築) は、`wireNormalMode()` が `window.create()` より前に呼ばれる既存の呼び出し順序と噛み合わなかった。`RenderPipeline::attach(hwnd)` と同じ `cfg.onDeferredInit` (実 HWND が判明した時点で発火) での構築に変更し、既存の HWND 依存初期化パターンと一貫させた。
+
+---
+
+## WI-14c 〜 WI-14d — Phase 10.1 (ログ解析モード) 残りサブ WI
 
 着手時は下記の概要を出発点に、本書 §5 と同じ形式で WI を切り直すこと。
 
 | WI | 内容 | 目安 |
 |---|---|---|
-| WI-14b | 非同期インデックス構築 (`LogIndexWorker`、`SyntaxWorker`型のスレッド構造) + フォーマット自動検出 (先頭 N 行を組込パターンに試行) + `EditorSession` per-tab 状態配線 + `LogModel::build()` のピース単位ストリーミング最適化 (10GB/60秒目標) | 1 サブ WI |
-| WI-14c | UI モード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ (要件定義書 §8 残り全項目)、完了をもって Phase 10.1 の MVP 達成とする | 1〜2 サブ WI |
+| WI-14c | UI モード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ (要件定義書 §8 残り全項目)、`EditorSession::beginLogIndexing()`/`applyLogIndexResult()` を実際に呼び出すコマンド/UI配線、完了をもって Phase 10.1 の MVP 達成とする | 1〜2 サブ WI |
 | WI-14d | 複数行エントリのグルーピング (Java スタックトレース等の継続行) + ユーザー編集可能パターンファイル (`%APPDATA%\NeoMIFES\log_patterns\`) + パターン拡充 (MVP後の磨き上げ、優先度中) | 1 サブ WI |
 
 ---

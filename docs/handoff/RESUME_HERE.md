@@ -165,7 +165,8 @@
 | **8.6e** | **基本編集の穴埋め (🎉 M3)** | ✅ **完了 (WI-12、2026-08-15、§3.79参照)** |
 | **12'** | **MVP 出荷判定** | ✅ **完了 (WI-13、§3.80参照)。🎉 M4 達成 (2026-08-16): 秀丸/サクラの代替として出荷可能** — 技術項目12/14達成、残り2項目(本物のAuthenticode証明書・日常的ドッグフーディング)はユーザー判断でこの状態のまま達成扱いとする承認済み |
 | **10.1a** | **ログ解析モード ヘッドレス基盤** (`neomifes::logmode`、`LogPatternRule`/`LogModel`、標準4パターン) | ✅ **完了 (WI-14a、2026-08-16、§3.81参照)** |
-| 10.1b〜d → 10.2/10.3 → 11 → 9 → 12 | ログ解析残り → CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
+| **10.1b** | **非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化** (`LogIndexWorker`、`detectLogPatternRule()`) | ✅ **完了 (WI-14b、2026-08-17、§3.82参照)** |
+| 10.1c〜d → 10.2/10.3 → 11 → 9 → 12 | UIモードMVP(🎉Phase 10.1 MVP達成予定) → CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2392,6 +2393,24 @@ build_plan.mdの「1セッションに収まらない章はWIを切り直す」�
 
 コミット予定、pushはユーザーの明示指示待ち。次は **WI-14b (非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化)** — `build_plan.md` §5参照。
 
+### 3.82 WI-14b (非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化) 完了記録 (2026-08-17)
+
+WI-14a完了後、ユーザーから「次のPhaseに進め」と指示された。Plan agentサブエージェント呼び出しが月次API利用上限に達し途中終了したため、既に完了していた着手前調査(既存コードの直接読解)を基に自ら計画を書き、ユーザーの承認(ExitPlanMode)を得て実装した。6ステップ・6コミットで完了(`4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`)。
+
+**ステップ1〜2 (ヘッドレス):** `LogModel::build()`に`const document::BufferSnapshot&`を取る新規オーバーロードを追加し、`snapshot.pieces()`を1回だけ走査するピース単位ストリーミング実装へ書き換えた(`LineIndex::build()`が直接のテンプレート)。既存の`Document&`オーバーロードはこれへの1行委譲になり、WI-14aの全13単体テストが無変更のまま回帰オラクルとして機能した。`format_detection.h/.cpp`(`detectLogPatternRule()`)を新設 — `doc.lineText(line)`の戻り値(一時オブジェクト)へのdangling `string_view`を書く前に自己検出し、named local経由の安全な実装に訂正した。
+
+**ステップ3:** `LogIndexWorker`(`render::SyntaxWorker`型のバックグラウンドスレッド)を新設したが、「保留中リクエストは最新の1件のみ・上書き」というSyntaxWorkerの設計は意図的に不採用とし、`std::deque`ベースのFIFOキューを採用した(複数タブが独立して結果を必要とするため、SyntaxWorker型だと一部のタブが永久に処理されない実害あるバグになると判明)。`kMsgLogIndexReady = WM_APP+3`(grep確認済みで未使用)。統合テスト`logmode_log_index_worker_test.cpp`で「2つの異なるセッショントークンへの連続リクエストが両方とも処理される」ことを直接証明した。
+
+**ステップ4:** `EditorSession`に`m_logModel`/`m_logPatternRule`/`m_logIndexInFlight`のper-tab状態+`beginLogIndexing()`/`applyLogIndexResult()`を追加(`m_folding`/`m_bookmarks`と同じ「常時構築・条件付き使用」パターン)。
+
+**ステップ5:** `main.cpp`/`normal_mode_wiring.cpp`へ受信インフラを配線した。当初の計画では「`window.create()`成功確認後・メッセージループ開始前にmain.cppで直接構築」を想定していたが、`wireNormalMode()`が`window.create()`より前に呼ばれる既存の呼び出し順序と噛み合わないと判明し、`RenderPipeline::attach(hwnd)`と同じ`cfg.onDeferredInit`(実HWND判明時に発火)での構築に変更した。`kMsgLogIndexReady`の受信ルーティング(`Workspace`線形走査+ポインタ値比較)を`cfg.onAppMessage`ラムダへ追加したところ、`wireNormalMode()`全体のclang-tidy `readability-function-cognitive-complexity`が閾値25を超過(33→部分抽出で26→まだ超過)。最終的に`cfg.onAppMessage`ラムダの本体全体を新規`handleAppMessage()`へ抽出して解消した。
+
+**ステップ6:** `tests/bench/logmode_index_bench.cpp`新設(`syntax_parse_bench.cpp`のmakeSyntheticCppSource()と同じ合成手法)。実測(Release): 50,000行=164ms、500,000行(10倍)=1550ms、items/sがほぼ一定(約302k〜325k/s)であり、O(document length)への複雑度クラス改善を確認した。
+
+最終ゲート: Debug/Release/ubsan全1273件green、clang-tidy新規警告0(サブエージェントへ委任)。WI-14bではUI/コマンドの配線は一切行わず(WI-14cへ)、実アプリ視覚確認は「起動+プロセス生存確認(LogIndexWorkerの背景スレッドが動いた状態でも安定して動作すること)」のみで代替した — ドッグフーディングDoDの「対象がUIを持たないヘッドレス変更である」に該当する理由として明記する。
+
+コミット済み、pushはユーザーの明示指示待ち。次は **WI-14c (UIモード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ、`beginLogIndexing()`/`applyLogIndexResult()`を実際に呼び出すコマンド配線、完了をもってPhase 10.1のMVP達成)** — `build_plan.md` §5参照。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2441,21 +2460,25 @@ build_plan.mdの「1セッションに収まらない章はWIを切り直す」�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.81 (WI-14a ログ解析モード ヘッドレス基盤 完了記録) を
-読んで現状を把握せよ。
+RESUME_HERE.md §3.82 (WI-14b 非同期インデックス構築+ピース単位
+ストリーミング最適化 完了記録) を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
-続けてPhase 10(ログ解析/CSV/JSON-XML Tree)に着手し、AskUserQuestionで
-「ログ解析モード」(推奨案)が選ばれた。roadmap §10.1をWI-14a〜dの
-4サブWIへ切り直し(build_plan.md §5参照)、WI-14a(`neomifes::logmode`
-ヘッドレス基盤 — LogPatternRule/LogModel、標準4パターンのみ、スレッド/
-UIなし)を完了した。Debug/Release/ubsan全1259件green、clang-tidy新規
-警告0を確認済み。
+続けてPhase 10.1(ログ解析モード)のWI-14a(ヘッドレス基盤)・
+WI-14b(非同期インデックス構築 `LogIndexWorker` + フォーマット自動検出
+`detectLogPatternRule()` + `EditorSession` per-tab配線 + `LogModel::build()`
+のピース単位ストリーミング最適化)が完了した。実測(Release): 50,000行
+=164ms、500,000行(10倍)=1550ms、items/sがほぼ一定でありO(document
+length)への複雑度クラス改善を確認済み。Debug/Release/ubsan全1273件
+green、clang-tidy新規警告0を確認済み。
 
-次はWI-14b(非同期インデックス構築`LogIndexWorker` + フォーマット
-自動検出 + `EditorSession`per-tab配線 + ピース単位ストリーミング最適化
-10GB/60秒目標)。着手前にbuild_plan.md §5のWI-14b概要とmaster_roadmap.md
-§10.1を読み、本書§5と同じ形式でWIを切り直すこと。
+WI-14bではUI/コマンドは一切配線していない(`beginLogIndexing()`/
+`applyLogIndexResult()`を呼び出す経路が無い)。
+
+次はWI-14c(UIモード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ、
+要件定義書§8残り全項目、完了をもってPhase 10.1のMVP達成)。着手前に
+build_plan.md §5のWI-14c概要とmaster_roadmap.md §10.1を読み、
+本書§5と同じ形式でWIを切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。
