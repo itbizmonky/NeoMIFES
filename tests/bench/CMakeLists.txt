@@ -97,3 +97,20 @@ target_link_libraries(neomifes_syntax_bench
 set_target_properties(neomifes_syntax_bench PROPERTIES
     FOLDER "tests"
 )
+
+add_executable(neomifes_logmode_bench
+    logmode_index_bench.cpp
+)
+
+target_link_libraries(neomifes_logmode_bench
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::logmode
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+set_target_properties(neomifes_logmode_bench PROPERTIES
+    FOLDER "tests"
+)
