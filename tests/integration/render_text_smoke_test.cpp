@@ -17,6 +17,7 @@
 #include <string>
 
 #include "neomifes/document/document.h"
+#include "neomifes/logmode/log_pattern.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/render/theme.h"
@@ -25,6 +26,8 @@ namespace {
 
 using neomifes::document::Document;
 using neomifes::document::TextRange;
+using neomifes::logmode::LogLevel;
+using neomifes::logmode::logLevelFilterBit;
 using neomifes::render::CursorVisual;
 using neomifes::render::ImeComposition;
 using neomifes::render::RenderPipeline;
@@ -1788,6 +1791,111 @@ TEST(RenderTextSmokeTest, SetThemeThenRenderStillSucceeds) {
     const auto second = pipeline.render();
     EXPECT_TRUE(second.has_value())
         << "render() after setTheme() failed: " << neomifes::render::describe(second.error());
+}
+
+// WI-14c: setLogLineLevels() forces drawLogLevelOnLine() to run for every
+// visible line on the next render() - this only checks that the rebuild
+// completes without error (pixel-level verification is out of scope for
+// this file, same as every other test here).
+TEST(RenderTextSmokeTest, SetLogLineLevelsThenRenderStillSucceeds) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"2026-08-17 10:00:00 INFO  started\n2026-08-17 10:00:01 ERROR  failed\n");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+
+    pipeline.setLogLineLevels({LogLevel::Info, LogLevel::Error});
+    const auto second = pipeline.render();
+    EXPECT_TRUE(second.has_value())
+        << "render() after setLogLineLevels() failed: " << neomifes::render::describe(second.error());
+}
+
+// WI-14c: exercises isLineHidden()'s log-level filter branch end-to-end -
+// same "click below the filtered-out line must land on the next visible
+// one" technique FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines
+// above uses for folding. line1 (Info) is filtered out by an errors-only
+// mask, so a click at that row must resolve to line2 instead.
+TEST(RenderTextSmokeTest, LogLevelFilterHidesMatchingLines) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+    pipeline.setLogLineLevels({LogLevel::Error, LogLevel::Info, LogLevel::Error});
+    pipeline.setLogLevelFilter(logLevelFilterBit(LogLevel::Error));
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with a log-level filter failed: " << neomifes::render::describe(rendered.error());
+
+    // Same y=50/EXPECT_GE looseness as
+    // FoldedRegionRendersWithoutErrorAndHitTestSkipsHiddenLines above (row
+    // height in dips isn't pinned down here) - the row where line1 would be
+    // must resolve to line2 (offset 12-17) or later, never to the
+    // filtered-out line1, since hitTest() only ever walks lines
+    // drawVisibleLines() actually drew.
+    const auto rowOneHit = pipeline.hitTest(0, 50);
+    ASSERT_TRUE(rowOneHit.has_value());
+    EXPECT_GE(*rowOneHit, 12U);
+}
+
+// WI-14c: FrameState::logLevelFilterMask must be included in the coarse
+// frame-skip comparison (Phase 3c/ADR-011) - same hazard class
+// LeftColumnOnlyChangeForcesRedraw/ThemeOnlyChangeForcesRedrawInsteadOfFrameSkip
+// above guard against. This test instead exercises setLogLineLevels()'s own
+// m_lastRenderedFrameState.reset() call (the array itself is deliberately
+// NOT part of FrameState - see that method's declaration comment) using the
+// same "layout cache stats must move" technique.
+TEST(RenderTextSmokeTest, LogLineLevelsOnlyChangeForcesRedrawInsteadOfFrameSkip) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"line0\nline1\nline2");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // Log line levels only - Document/topLine/cursor/etc. all stay
+    // identical.
+    pipeline.setLogLineLevels({LogLevel::Error, LogLevel::Warning, LogLevel::Info});
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (log line levels changed) failed: " << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "log-line-levels-only change was frame-skipped instead of triggering a redraw";
 }
 
 // WI-08: setLineNumbersVisible(false) shrinks gutterWidthDips() back to the

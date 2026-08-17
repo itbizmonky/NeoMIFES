@@ -33,6 +33,14 @@
 
 #include "neomifes/document/document.h"
 #include "neomifes/document/text_pos.h"
+// WI-14c: m_logLineLevels below needs logmode::LogLevel's complete type
+// (a std::vector member, not a pointer). neomifes::logmode depends only on
+// neomifes::document (a self-contained leaf module, same as neomifes::
+// syntax above) so RenderPipeline uses logmode::LogLevel directly rather
+// than mirroring it into a render::-only type - the same precedent
+// syntax::Token/syntax::Language already established (see this class's
+// setLanguage()).
+#include "neomifes/logmode/log_pattern.h"
 #include "neomifes/render/render_device.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/syntax_worker.h"
@@ -372,6 +380,32 @@ public:
         m_foldRegions = std::move(regions);
     }
 
+    // WI-14c: per-document-line log severity, 1:1 with logmode::LogModel::
+    // lines() (empty vector = log mode disabled for the attached document,
+    // matching m_tokens/m_bookmarkedLines/m_foldRegions' own "empty means
+    // off" convention). UNLIKE those smaller vectors, this one can be
+    // O(document line count) - potentially millions of entries - so it is
+    // deliberately NOT part of FrameState's per-frame equality comparison
+    // (captureFrameState() would have to copy the whole vector every frame
+    // just to compare it, a real cost against the 10GB/60fps target). Same
+    // "force exactly one redraw on arrival" technique
+    // applyAsyncSyntaxTokens() already uses for m_tokens (also populated
+    // asynchronously, also excluded from FrameState for a related but
+    // distinct reason - see that method's own comment).
+    void setLogLineLevels(std::vector<logmode::LogLevel> levels) noexcept {
+        m_logLineLevels = std::move(levels);
+        m_lastRenderedFrameState.reset();
+    }
+
+    // WI-14c: bitmask of logmode::LogLevel values currently shown
+    // (logmode::logLevelFilterBit()) - consulted by isLineHidden() together
+    // with m_logLineLevels above. Unlike setLogLineLevels(), this IS part
+    // of FrameState (a single byte, cheap to compare every frame) so a
+    // filter-only command (no document/topLine change) still forces a
+    // redraw - same "leftColumn/themeKind" treatment FrameState's own
+    // comment documents for similarly small, frequently-toggled state.
+    void setLogLevelFilter(std::uint8_t mask) noexcept { m_logLevelFilterMask = mask; }
+
     // The current IME composition to overlay-draw, or nullopt while nothing
     // is being composed (WI-06). Same non-owning, document::-typed-only
     // shape as setMatchVisuals()/setFoldRegions() above - the app layer
@@ -559,6 +593,13 @@ private:
         // pixels on screen until some unrelated state change eventually
         // forces a real repaint.
         ThemeKind themeKind = ThemeKind::Dark;
+        // WI-14c: same rationale as leftColumn/themeKind above - a filter-
+        // only change (no document/topLine/etc change) must not be coarse-
+        // frame-skipped either. m_logLineLevels itself (the per-line
+        // severity data) is deliberately NOT here - see setLogLineLevels()'s
+        // own comment for why (O(document size), forces a redraw via
+        // m_lastRenderedFrameState.reset() on arrival instead).
+        std::uint8_t logLevelFilterMask = logmode::kAllLogLevelsVisible;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };
@@ -598,10 +639,19 @@ private:
     // m_textBrush (see drawFoldedHeaderMarker()'s identical choice for its
     // own synthesized marker text) - no separate brush needed for that part.
     [[nodiscard]] RenderExpected<void> ensureImeCompositionBrushes(ID2D1DeviceContext6& dc) noexcept;
+    // WI-14c: 2 brushes (Error/Fatal share one, Warning gets the other) for
+    // drawLogLevelOnLine() - see logLevelBrush()'s own comment for why only
+    // 2 of LogLevel's 7 values get a dedicated color.
+    [[nodiscard]] RenderExpected<void> ensureLogLevelBrushes(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7i: true if `line` sits strictly inside a currently-folded
-    // m_foldRegions entry (never true for a region's own headerLine).
+    // m_foldRegions entry (never true for a region's own headerLine), OR
+    // (WI-14c) `line` has a log severity excluded by m_logLevelFilterMask.
     // Shared by drawVisibleLines()'s line walk and hitTest()'s yDip->line
-    // conversion so both agree on which lines are actually drawn/clickable.
+    // conversion so both agree on which lines are actually drawn/clickable -
+    // folding into this single existing predicate (rather than adding a
+    // second, parallel "is this line filtered" check at each of those call
+    // sites) means the log-level filter automatically gets correct
+    // scrolling/hit-testing behavior for free.
     [[nodiscard]] bool isLineHidden(document::LineNumber line) const noexcept;
     // Walks forward from `startLine`, skipping folded-hidden lines, until
     // the `visibleRowOffset`-th VISIBLE line is reached (or the document
@@ -946,6 +996,26 @@ private:
     // unstyled - they fall through to DrawTextLayout()'s default brush,
     // m_textBrush, exactly like a run with no DrawingEffect set at all).
     [[nodiscard]] ID2D1SolidColorBrush* tokenBrush(syntax::TokenKind kind) noexcept;
+    // WI-14c: colors an entire line's text by log severity (unlike
+    // tokenBrush(), which colors sub-ranges within a line). nullptr for
+    // Trace/Debug/Info/Unknown - this WI's MVP scope only visually
+    // distinguishes Error/Fatal (logError) and Warning (logWarning); the
+    // other 4 values fall back to m_textBrush unmodified, same "no
+    // DrawingEffect means the default brush" contract tokenBrush() already
+    // documents.
+    [[nodiscard]] ID2D1SolidColorBrush* logLevelBrush(logmode::LogLevel level) noexcept;
+    // Sets `layout`'s entire text range to logLevelBrush(m_logLineLevels
+    // [line])'s color, if `line` has an entry and it maps to a non-null
+    // brush - a no-op line (log mode disabled, or a severity with no
+    // dedicated color) draws exactly as if this were never called. Must run
+    // BEFORE DrawTextLayout() draws `layout` (SetDrawingEffect() is a
+    // layout-mutation call, same ordering constraint drawTokensOnLine()
+    // documents) - called from drawTextLine() right after
+    // drawTokensOnLine() so a log-severity color always wins over any
+    // (in practice absent, since log files aren't language-syntax-
+    // highlighted) overlapping token color.
+    void drawLogLevelOnLine(IDWriteTextLayout& layout, document::LineNumber line, document::TextPos lineStart,
+                            document::TextPos lineEnd) noexcept;
     // Draws one thin vertical line per indent-guide level computed from
     // lineSpan's leading whitespace (Phase 7e, indent_guide_math.h), at
     // vertical offset `y`. Called from drawVisibleLines() alongside
@@ -1038,6 +1108,10 @@ private:
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
     std::vector<FoldVisual>                           m_foldRegions;      // empty: folding disabled (Phase 7i)
+    // WI-14c: see setLogLineLevels()'s own comment for why this can be
+    // O(document size) and is deliberately excluded from FrameState.
+    std::vector<logmode::LogLevel>                    m_logLineLevels;    // empty: log mode disabled
+    std::uint8_t                                       m_logLevelFilterMask = logmode::kAllLogLevelsVisible;
     // WI-06: nullopt - no active IME composition (the common case). See
     // setImeComposition()/drawImeCompositionOnLine().
     std::optional<ImeComposition>                     m_imeComposition;
@@ -1141,6 +1215,10 @@ private:
     // drawImeCompositionOnLine().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_imeCompositionBackgroundBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_imeTargetClauseBrush;
+    // WI-14c: same device-bound reset lifecycle as the brushes above. See
+    // ensureLogLevelBrushes()/logLevelBrush()/drawLogLevelOnLine().
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_logErrorBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_logWarningBrush;
     float                                          m_lineHeightDips = 0.0F;  // 0 == not yet measured
     // Phase 4b8e: one fixed-pitch character's advance width, probed once
     // alongside m_lineHeightDips (see ensureTextFormat()) - drawCaretOnLine()

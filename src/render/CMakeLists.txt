@@ -33,6 +33,13 @@ target_link_libraries(neomifes_render
         # render_pipeline.h - chiefly neomifes_app_input/main.cpp - needs
         # syntax.h's include path to compile that header at all.
         neomifes::syntax
+        # WI-14c: render_pipeline.h's private m_logLineLevels member needs
+        # logmode::LogLevel's complete type, and setLogLineLevels()'s
+        # parameter is logmode::LogLevel directly - same PUBLIC reasoning as
+        # neomifes::syntax above (neomifes::logmode depends only on
+        # neomifes::document, a self-contained leaf module, so RenderPipeline
+        # uses its LogLevel type directly rather than mirroring it).
+        neomifes::logmode
     PRIVATE
         neomifes::compile_options
         # wchar_cast.h (u16string_view -> WCHAR* for DrawText)

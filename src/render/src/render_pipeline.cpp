@@ -122,6 +122,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .leftColumn      = m_leftColumn,
         .imeComposition  = m_imeComposition,
         .themeKind       = m_themeKind,
+        .logLevelFilterMask = m_logLevelFilterMask,
     };
 }
 
@@ -192,6 +193,8 @@ void RenderPipeline::resetThemeBrushes() noexcept {
     m_minimapUnpopulatedBrush.Reset();
     m_imeCompositionBackgroundBrush.Reset();
     m_imeTargetClauseBrush.Reset();
+    m_logErrorBrush.Reset();
+    m_logWarningBrush.Reset();
 }
 
 RenderExpected<void> RenderPipeline::recreateDevice() noexcept {
@@ -521,6 +524,24 @@ RenderExpected<void> RenderPipeline::ensureTokenBrushes(ID2D1DeviceContext6& dc)
     return {};
 }
 
+RenderExpected<void> RenderPipeline::ensureLogLevelBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // WI-14c: see theme.h/theme.cpp for these colors' values/rationale.
+    const Theme& theme = themeForKind(m_themeKind);
+    if (!m_logErrorBrush) {
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.logError, m_logErrorBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_logWarningBrush) {
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.logWarning, m_logWarningBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
 ID2D1SolidColorBrush* RenderPipeline::tokenBrush(syntax::TokenKind kind) noexcept {
     switch (kind) {
         case syntax::TokenKind::Keyword:      return m_keywordBrush.Get();
@@ -537,6 +558,40 @@ ID2D1SolidColorBrush* RenderPipeline::tokenBrush(syntax::TokenKind kind) noexcep
             return nullptr;
     }
     return nullptr;  // unreachable, every TokenKind enumerator handled above
+}
+
+ID2D1SolidColorBrush* RenderPipeline::logLevelBrush(logmode::LogLevel level) noexcept {
+    switch (level) {
+        case logmode::LogLevel::Error:
+        case logmode::LogLevel::Fatal:
+            return m_logErrorBrush.Get();
+        case logmode::LogLevel::Warning:
+            return m_logWarningBrush.Get();
+        // Trace/Debug/Info/Unknown deliberately unstyled - see this
+        // function's declaration comment in render_pipeline.h.
+        case logmode::LogLevel::Trace:
+        case logmode::LogLevel::Debug:
+        case logmode::LogLevel::Info:
+        case logmode::LogLevel::Unknown:
+            return nullptr;
+    }
+    return nullptr;  // unreachable, every LogLevel enumerator handled above
+}
+
+void RenderPipeline::drawLogLevelOnLine(IDWriteTextLayout& layout, document::LineNumber line,
+                                        document::TextPos lineStart, document::TextPos lineEnd) noexcept {
+    if (line >= m_logLineLevels.size()) {
+        return;
+    }
+    ID2D1SolidColorBrush* brush = logLevelBrush(m_logLineLevels[line]);
+    if (brush == nullptr) {
+        return;
+    }
+    const DWRITE_TEXT_RANGE dwRange{
+        .startPosition = 0,
+        .length        = static_cast<UINT32>(lineEnd - lineStart),
+    };
+    layout.SetDrawingEffect(brush, dwRange);
 }
 
 RenderExpected<void> RenderPipeline::ensureIndentGuideBrushes(ID2D1DeviceContext6& dc) noexcept {
@@ -822,6 +877,10 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
         caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
     drawIndentGuidesOnLine(dc, y, lineSpan, isActiveLine);
     drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
+    // WI-14c: runs after drawTokensOnLine() so a log-severity color always
+    // wins over any overlapping token color - see this method's own
+    // declaration comment.
+    drawLogLevelOnLine(**layoutResult, line, lineStart, lineEnd);
     // WI-03: shifted left by leftColumnOffsetDips() so scrolling right moves
     // the glyphs, not kGutterWidthDips itself (which never changes).
     dc.DrawTextLayout(D2D1::Point2F(gutterWidthDips() - leftColumnOffsetDips(), y), *layoutResult,
@@ -848,9 +907,23 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
 }
 
 bool RenderPipeline::isLineHidden(document::LineNumber line) const noexcept {
-    return std::ranges::any_of(m_foldRegions, [line](const FoldVisual& region) {
+    const bool foldHidden = std::ranges::any_of(m_foldRegions, [line](const FoldVisual& region) {
         return region.folded && line > region.headerLine && line <= region.endLineInclusive;
     });
+    if (foldHidden) {
+        return true;
+    }
+    // WI-14c: log-level filter. m_logLineLevels being shorter than `line`
+    // (log mode disabled, or a stale array from a since-swapped document)
+    // means "no filtering opinion" rather than "hidden" - same fail-open
+    // default as m_foldRegions being empty.
+    if (line < m_logLineLevels.size()) {
+        const auto bit = logmode::logLevelFilterBit(m_logLineLevels[line]);
+        if ((m_logLevelFilterMask & bit) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void RenderPipeline::drawFoldedHeaderMarker(ID2D1DeviceContext6& dc, float x, float y) noexcept {
@@ -1761,6 +1834,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!tokenBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return tokenBrushResult;
+    }
+    auto logLevelBrushResult = ensureLogLevelBrushes(*dc);
+    if (!logLevelBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return logLevelBrushResult;
     }
     auto indentGuideBrushResult = ensureIndentGuideBrushes(*dc);
     if (!indentGuideBrushResult) {
