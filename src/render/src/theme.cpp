@@ -65,6 +65,14 @@ constexpr Theme kDarkTheme = {
     // yellow above so all three remain visually distinguishable if they
     // ever coincide.
     .imeTargetClause = {100.0F / 255.0F, 150.0F / 255.0F, 220.0F / 255.0F, 0.45F},
+    // WI-14c: a legible severity red/amber for this dark background - NOT
+    // a claim of pixel-precise fidelity to any single vendor's diagnostic
+    // palette (same "inspired by, not identical to" caveat this file's own
+    // header comment already makes about the base VSCode Dark+ palette).
+    // Distinct from `bookmark`'s red and `match`'s yellow so log severity
+    // coloring stays visually distinguishable from unrelated highlights.
+    .logError = {244.0F / 255.0F, 71.0F / 255.0F, 71.0F / 255.0F, 1.0F},
+    .logWarning = {204.0F / 255.0F, 167.0F / 255.0F, 0.0F / 255.0F, 1.0F},
 };
 
 // VSCode Light+-inspired palette (new for WI-09). Overlay colors
@@ -112,6 +120,11 @@ constexpr Theme kLightTheme = {
     .minimapUnpopulated = {225.0F / 255.0F, 225.0F / 255.0F, 225.0F / 255.0F, 1.0F},
     .imeCompositionBackground = {230.0F / 255.0F, 230.0F / 255.0F, 235.0F / 255.0F, 1.0F},
     .imeTargetClause = {80.0F / 255.0F, 130.0F / 255.0F, 220.0F / 255.0F, 0.45F},
+    // WI-14c: deeper red/amber than Dark's for legibility on white, same
+    // "inspired by, not identical to" caveat as Dark's own logError/
+    // logWarning comment.
+    .logError = {209.0F / 255.0F, 34.0F / 255.0F, 34.0F / 255.0F, 1.0F},
+    .logWarning = {133.0F / 255.0F, 95.0F / 255.0F, 0.0F / 255.0F, 1.0F},
 };
 
 // Windows-standard black/white/yellow high-contrast palette (new for
@@ -168,6 +181,12 @@ constexpr Theme kHighContrastTheme = {
     .minimapUnpopulated = {96.0F / 255.0F, 96.0F / 255.0F, 96.0F / 255.0F, 1.0F},
     .imeCompositionBackground = {0.0F / 255.0F, 0.0F / 255.0F, 128.0F / 255.0F, 1.0F},  // navy
     .imeTargetClause = {0.0F / 255.0F, 200.0F / 255.0F, 1.0F, 0.5F},
+    // WI-14c: reuses this theme's existing fully-saturated red/yellow hues
+    // (same severity meaning as `bookmark`/`lineNumber` respectively) -
+    // consistent with this theme's own "reduced to a handful of fully-
+    // saturated hues" design (see this constant's header comment).
+    .logError = {1.0F, 0.0F, 0.0F, 1.0F},
+    .logWarning = {1.0F, 1.0F, 0.0F, 1.0F},
 };
 
 }  // namespace

@@ -62,4 +62,16 @@ TEST(ThemeTest, EachThemeKeepsSelectionMatchAndCurrentMatchDistinctFromOneAnothe
     }
 }
 
+// WI-14c: logError/logWarning must each read as distinct from plain body
+// text and from each other in every theme, or log-mode color-coding would
+// be indistinguishable from unhighlighted lines / from one another.
+TEST(ThemeTest, EachThemeKeepsLogErrorAndLogWarningDistinctFromTextAndEachOther) {
+    for (const ThemeKind kind : {ThemeKind::Dark, ThemeKind::Light, ThemeKind::HighContrast}) {
+        const Theme& theme = themeForKind(kind);
+        EXPECT_FALSE(colorsEqual(theme.logError, theme.text));
+        EXPECT_FALSE(colorsEqual(theme.logWarning, theme.text));
+        EXPECT_FALSE(colorsEqual(theme.logError, theme.logWarning));
+    }
+}
+
 }  // namespace

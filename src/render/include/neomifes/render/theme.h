@@ -50,6 +50,14 @@ struct Theme {
     D2D1_COLOR_F minimapUnpopulated;
     D2D1_COLOR_F imeCompositionBackground;
     D2D1_COLOR_F imeTargetClause;
+    // WI-14c: log-mode line color-coding (RenderPipeline::
+    // drawLogLevelOnLine()). Only 2 severities get a dedicated color -
+    // Error/Fatal share logError, Warning uses logWarning; Trace/Debug/
+    // Info/Unknown fall back to `text` unmodified (see logLevelBrush()'s
+    // own comment for why the other 5 LogLevel values aren't distinguished
+    // visually in this WI's MVP scope).
+    D2D1_COLOR_F logError;
+    D2D1_COLOR_F logWarning;
 };
 
 // Dark/Light/HighContrast -> the Theme RenderPipeline should paint with.
