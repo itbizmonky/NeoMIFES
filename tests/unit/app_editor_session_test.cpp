@@ -28,8 +28,9 @@ TEST(EditorSessionLogModeStateTest, ApplyLogIndexResultPopulatesLogModelAndClear
     LogModel model;
     session.applyLogIndexResult(std::move(model));
 
-    ASSERT_TRUE(session.logModel().has_value());
-    EXPECT_TRUE(session.logModel()->lines().empty());
+    const auto& logModel = session.logModel();
+    ASSERT_TRUE(logModel.has_value());
+    EXPECT_TRUE(logModel.value().lines().empty());
     EXPECT_FALSE(session.logIndexInFlight());
 }
 

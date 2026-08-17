@@ -34,6 +34,7 @@
 #include "neomifes/core/recent_files.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
+#include "neomifes/logmode/log_index_worker.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
@@ -172,6 +173,23 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // autoSaveAllDirtySessions() helper this function wires to WM_TIMER/
 // WM_KILLFOCUS) all need the same {autosaveDir, index, indexPath} triple
 // together, every time.
+//
+// WI-14b: takes std::optional<logmode::LogIndexWorker>& logIndexWorker,
+// EMPTY at the time this function runs (LogIndexWorker's constructor
+// requires a real HWND and starts a background std::thread immediately -
+// unlike render::RenderPipeline, there is no default-construct-then-attach()
+// shape available). cfg.onDeferredInit below emplace()s it once the real
+// hwnd is known - same timing this function already uses for
+// renderPipeline.attach(hwnd)/findBar.create(hwnd, ...)/outlinePane's
+// CreateWindowExW, not the "construct in main.cpp right after
+// window.create() returns" phrasing an earlier draft of this WI's plan used
+// (window.create() returning true only means CreateWindowExW succeeded -
+// onDeferredInit is this codebase's existing, consistent place for
+// HWND-dependent initialization that must happen before the window is truly
+// usable). No command/UI calls logIndexWorker->requestIndex() yet (WI-14c) -
+// this WI only wires the construction plus cfg.onAppMessage's
+// kMsgLogIndexReady receiving/routing branch (see this file's .cpp body),
+// proven correct by tests/integration/logmode_log_index_worker_test.cpp.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -181,6 +199,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     const std::optional<std::filesystem::path>& keyBindingsPath,
                     platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing, core::RecentFiles& recentFiles,
-                    MenuBarHandles menuHandles, AutosaveContext& autosave);
+                    MenuBarHandles menuHandles, AutosaveContext& autosave,
+                    std::optional<logmode::LogIndexWorker>& logIndexWorker);
 
 }  // namespace neomifes::app

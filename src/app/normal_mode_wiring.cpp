@@ -2584,6 +2584,55 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
     }
 }
 
+// WI-14b: LogIndexWorker's background-thread indexing completion signal
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgLogIndexReady branch) -
+// extracted into its own function purely to keep wireNormalMode() under the
+// cognitive-complexity threshold (this file's established reason for
+// extracting inline lambda bodies into named helpers). `wParam` is the
+// opaque sessionToken requestIndex() was given back - in practice a
+// *EditorSession, but this function never dereferences it directly; it
+// only compares the raw pointer VALUE against &workspace.sessionAt(i) for
+// each still-open tab (well-defined even if the tab that issued the
+// request has since been closed - pointer equality comparison doesn't
+// require either operand to point to a live object). No match (tab closed
+// mid-flight) silently discards the result, same tolerance SyntaxWorker's
+// own stale-response handling already has.
+void applyLogIndexReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+    const std::unique_ptr<neomifes::logmode::LogModel> model(
+        reinterpret_cast<neomifes::logmode::LogModel*>(lParam));
+    const auto* const token = reinterpret_cast<const void*>(wParam);
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
+            workspace.sessionAt(i).applyLogIndexResult(std::move(*model));
+            break;
+        }
+    }
+}
+
+// MainWindowConfig::onAppMessage's body (WM_APP+N messages MainWindow
+// forwards unexamined - neomifes::ui never learns what
+// kMsgSyntaxTokensReady/kMsgLogIndexReady mean, see that field's own doc
+// comment; this file is the layer that already depends on render:: and
+// logmode:: so it's the only place that can safely compare against the
+// constants and reconstruct each payload's real type). Extracted out of
+// wireNormalMode() into its own function (WI-14b) purely to keep
+// wireNormalMode() under the cognitive-complexity threshold - the two
+// message branches below were previously inline in wireNormalMode()'s own
+// cfg.onAppMessage lambda.
+void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND hwnd, UINT msg, WPARAM wParam,
+                      LPARAM lParam) {
+    if (msg == neomifes::render::kMsgSyntaxTokensReady) {
+        const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
+            reinterpret_cast<std::vector<neomifes::syntax::Token>*>(lParam));
+        renderPipeline.applyAsyncSyntaxTokens(std::move(*tokens));
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    if (msg == neomifes::logmode::kMsgLogIndexReady) {
+        applyLogIndexReadyMessage(workspace, wParam, lParam);
+    }
+}
+
 }  // namespace
 
 // No logging engine exists yet (basic_design.md sec.6.5 is a later phase);
@@ -2727,7 +2776,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     const std::optional<std::filesystem::path>& keyBindingsPath,
                     platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing, core::RecentFiles& recentFiles,
-                    MenuBarHandles menuHandles, AutosaveContext& autosave) {
+                    MenuBarHandles menuHandles, AutosaveContext& autosave,
+                    std::optional<logmode::LogIndexWorker>& logIndexWorker) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -2747,12 +2797,20 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
-                          &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave](HWND hwnd) {
+                          &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave,
+                          &logIndexWorker](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
             return;
         }
+        // WI-14b: LogIndexWorker's constructor requires a real HWND and
+        // starts its background thread immediately (no default-construct-
+        // then-attach() shape like RenderPipeline above) - onDeferredInit is
+        // this codebase's existing place for that kind of HWND-dependent
+        // initialization (same timing findBar.create(hwnd, ...)/
+        // outlinePane's CreateWindowExW below already rely on).
+        logIndexWorker.emplace(hwnd);
         // Resolved once here for this lambda's own synchronous body below -
         // safe (nothing can switch tabs before the window's first deferred
         // init has even run). The nested paint handler lambda just below
@@ -2927,21 +2985,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         statusBar.handleNotify(wParam, lParam);
         return tabBar.handleNotify(wParam, lParam);
     };
-    // Phase 7c: SyntaxWorker's background-thread parse completion signal.
-    // MainWindow forwards every WM_APP+ message it doesn't itself interpret
-    // here unexamined (neomifes::ui never learns what kMsgSyntaxTokensReady
-    // means - see MainWindowConfig::onAppMessage's doc comment); main.cpp
-    // is the layer that already depends on both ui:: and render:: so it's
-    // the only place that can safely compare against the constant and
-    // reconstruct the payload's real type.
-    cfg.onAppMessage = [&renderPipeline](HWND hwnd, UINT msg, WPARAM, LPARAM lParam) {
-        if (msg != neomifes::render::kMsgSyntaxTokensReady) {
-            return;
-        }
-        const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
-            reinterpret_cast<std::vector<neomifes::syntax::Token>*>(lParam));
-        renderPipeline.applyAsyncSyntaxTokens(std::move(*tokens));
-        ::InvalidateRect(hwnd, nullptr, FALSE);
+    // Phase 7c/WI-14b: SyntaxWorker/LogIndexWorker background-thread
+    // completion signals - see handleAppMessage()'s own doc comment above
+    // for why the actual branching logic lives there, not in this lambda.
+    cfg.onAppMessage = [&renderPipeline, &workspace](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        handleAppMessage(renderPipeline, workspace, hwnd, msg, wParam, lParam);
     };
     // WI-02: WM_CLOSE veto - goes through confirmDiscardIfDirty() so an
     // unsaved edit is never silently discarded by closing the window. WI-05

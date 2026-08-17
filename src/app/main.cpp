@@ -123,6 +123,7 @@ using neomifes::core::RecentFiles;
 using neomifes::core::SearchHistory;
 using neomifes::core::Settings;
 using neomifes::document::Document;
+using neomifes::logmode::LogIndexWorker;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
 using neomifes::platform::PerfClock;
@@ -537,6 +538,15 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // normal_mode_wiring.cpp's handleKeyDownEvent()/handleCharEvent()
     // comments for what this gates).
     bool imeComposing = false;
+    // WI-14b: empty until wireNormalMode()'s onDeferredInit lambda
+    // emplace()s it with a real HWND - LogIndexWorker's constructor
+    // requires one and starts a background std::thread immediately, so
+    // (unlike renderPipeline below) there is no default-construct-here
+    // shape available. Declared unconditionally (harmless/unused for
+    // MeasureStartup/MeasureMemory/MeasureFrame launches, which never call
+    // wireNormalMode() at all - same "harmless unused" treatment as
+    // menuHandles above) rather than branching on `args.mode` here too.
+    std::optional<LogIndexWorker> logIndexWorker;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -609,7 +619,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
-                       autosave);
+                       autosave, logIndexWorker);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
