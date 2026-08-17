@@ -2,6 +2,7 @@ add_library(neomifes_logmode STATIC
     src/log_pattern.cpp
     src/timestamp_parser.cpp
     src/log_model.cpp
+    src/format_detection.cpp
 )
 add_library(neomifes::logmode ALIAS neomifes_logmode)
 

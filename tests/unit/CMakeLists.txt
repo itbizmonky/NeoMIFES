@@ -81,6 +81,7 @@ add_executable(neomifes_unit_tests
     logmode_log_pattern_test.cpp
     logmode_timestamp_parser_test.cpp
     logmode_log_model_test.cpp
+    logmode_format_detection_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
