@@ -166,8 +166,9 @@
 | **12'** | **MVP 出荷判定** | ✅ **完了 (WI-13、§3.80参照)。🎉 M4 達成 (2026-08-16): 秀丸/サクラの代替として出荷可能** — 技術項目12/14達成、残り2項目(本物のAuthenticode証明書・日常的ドッグフーディング)はユーザー判断でこの状態のまま達成扱いとする承認済み |
 | **10.1a** | **ログ解析モード ヘッドレス基盤** (`neomifes::logmode`、`LogPatternRule`/`LogModel`、標準4パターン) | ✅ **完了 (WI-14a、2026-08-16、§3.81参照)** |
 | **10.1b** | **非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化** (`LogIndexWorker`、`detectLogPatternRule()`) | ✅ **完了 (WI-14b、2026-08-17、§3.82参照)** |
-| **10.1c** | **UI モード MVP 🎉** (色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ、要件定義書§8完結) | ✅ **完了 (WI-14c、2026-08-17、§3.83参照)。🎉 Phase 10.1 MVP達成** |
-| 10.1d → 10.2/10.3 → 11 → 9 → 12 | 複数行グルーピング+パターンファイル(優先度中) → CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
+| **10.1c** | **UI モード MVP 🎉** (色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ、要件定義書§8完結) | ✅ **完了 (WI-14c、2026-08-17、§3.83参照)** |
+| **10.1d** | **複数行グルーピング + ユーザー編集可能パターンファイル 🎉** (Phase 10.1 完結) | ✅ **完了 (WI-14d、2026-08-18、§3.84参照)。🎉 Phase 10.1 完結** |
+| 10.2/10.3 → 11 → 9 → 12 | CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2428,7 +2429,23 @@ WI-14b完了後、ユーザーから「次のPhaseに進め」と指示された
 
 最終ゲート: Debug/Release/ubsan全1290件green、clang-tidy新規警告0(修正後の再検証込み)。実アプリでの視覚確認(サンプルログファイルでのAuto-Detect→色分け→フィルタ→ジャンプの一連の操作)は本セッションでは未実施 — 次回ドッグフーディング時に確認すること。
 
-コミット済み、pushはユーザーの明示指示待ち。次は **WI-14d (複数行エントリのグルーピング + ユーザー編集可能パターンファイル、優先度中)**、またはユーザー指定の次項目 — `build_plan.md` §5参照。
+コミット済み、pushはユーザーの明示指示待ち。次は WI-14d — §3.84参照。
+
+### 3.84 WI-14d (複数行グルーピング + ユーザー編集可能パターンファイル 🎉、Phase 10.1 完結) 完了記録 (2026-08-18)
+
+WI-14c完了・CI green確認後、ユーザーから「次のPhaseに進め」と指示された。着手前調査(`docs/issues/phase_10_1_v2_extended_patterns.md`でパターン拡充がCLAUDE.mdルール3に抵触すると再確認)を基に計画を書き、`ExitPlanMode`でユーザー承認を得て実装した。7ステップ・2コミットで完了(`2c16e79`/`9673824`)。
+
+**設計方針の要点:** `nextVisibleLogLine()`/`previousVisibleLogLine()`は無変更 — `qualifies()`が既に`matched==true`のみをジャンプ対象にしていた。実際のバグは`pushLogVisualsForSession()`にあり、継続行が親のERROR/WARNINGと独立してフィルタされていた(`computeGroupedLogLevels()`で解消)。ユーザー編集可能パターンファイルは「1ファイル=1`LogPatternRule`」のJSONを`%APPDATA%\NeoMIFES\log_patterns\`からディレクトリスキャンする方式にし、既存パターンを`%APPDATA%`へ自動コピーするroadmap原案は不採用とした(バージョニング陳腐化の懸念)。詳細は`build_plan.md` WI-14dセクション、`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。
+
+**Step1〜3:** `log_grouping.h/.cpp`(`computeGroupedLogLevels()`)、`log_pattern_file.h/.cpp`+`json_string_convert.h/.cpp`(ユーザーパターンのロード/ディレクトリスキャン)、`detectLogPatternRule()`への`candidates`引数追加を、単体テスト付きで実装した。着手前調査で立てた設計方針(`std::filesystem::directory_iterator`の非throwing走査に`it.increment(ec)`を使う`grep_service.cpp`前例の踏襲、`candidates`パラメータを`sampleLines`の後に配置し既存呼び出し元を無改修に保つ)が計画通り機能した。
+
+**Step4〜6:** `main.cpp`の`resolveLogPatternsStartupState()`、`normal_mode_wiring.h/.cpp`の`wireNormalMode()`/`buildCommandRegistry()`シグネチャ拡張(全3呼び出し箇所)、`appendLogModeCommands()`拡張、`logmode.patterns.reload`コマンドを実装した。ビルド検証で2件のバグを発見・即座に修正した — ①`main.cpp`が`neomifes/logmode/log_pattern_file.h`の`#include`漏れでコンパイル失敗、②`cfg.onDeferredInit`ラムダの明示キャプチャリストへ`userLogPatterns`/`logPatternsDir`を追加し忘れC3493/C2326エラー。いずれもローカルビルド検証(サブエージェント委任)で即座に検出・修正できた。
+
+**最終ゲート:** Debug/Release/ubsan全1309件green、clang-tidy新規警告0(変更ファイル9件を個別スイープ、`tests/unit/logmode_log_pattern_file_test.cpp`の未使用using宣言1件を修正、残り9件の指摘は`rand()`ベース一時ファイル名/`ASSERT_TRUE(x.has_value()); x->field`のこのテストスイート全体で既に確立されている慣習と同型のため対象外と判断)。実アプリでの視覚確認は本セッションでは未実施 — 次回ドッグフーディング時に確認すること。
+
+**サブエージェント運用面の教訓:** 最終ゲート検証中、委任先エージェントが自身のバックグラウンド待機ループを使った際にターンが早期完了扱いになる事象が2回発生し、都度「同期的に実行しターンを終えない」よう再指示して解消した。今後の長時間ビルド検証委任では最初のプロンプトにこの制約を明記するとよい。
+
+コミット済み、pushはユーザーの明示指示待ち。**🎉 Phase 10.1(ログ解析モード)完結。** 次はPhase 10.2(CSVモード)/10.3(JSON-XML Tree)、いずれも着手時にサブWIへ切り直す — `build_plan.md` §5参照。
 
 ---
 
@@ -2479,23 +2496,22 @@ WI-14b完了後、ユーザーから「次のPhaseに進め」と指示された
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.83 (WI-14c UIモード MVP 🎉 完了記録) を読んで
-現状を把握せよ。
+RESUME_HERE.md §3.84 (WI-14d 複数行グルーピング+ユーザー編集可能
+パターンファイル 🎉 完了記録) を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
-Phase 10.1(ログ解析モード)はWI-14a(ヘッドレス基盤)・WI-14b(非同期
-インデックス構築+ピース単位ストリーミング)・WI-14c(UIモード MVP、
-色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ)の3サブWIで
-🎉 MVP達成・完結した(2026-08-17)。要件定義書§8の必須項目は全て実装
-済み。UIは新規ネイティブウィジェットを追加せず`ui::CommandPalette`
-のコマンド群(`logmode.enable.*`/`disable`/`filter.*`/`jump.*`)のみ
-で提供している。Debug/Release/ubsan全1290件green、clang-tidy新規
-警告0(2回の再検証込み)を確認済み。
+Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
+(2026-08-18)。要件定義書§8の必須項目に加え、複数行エントリの
+グルーピング(Javaスタックトレース等の継続行)とユーザー編集可能
+パターンファイル(%APPDATA%\NeoMIFES\log_patterns\)を実装済み。
+UIは新規ネイティブウィジェットを追加せず`ui::CommandPalette`の
+コマンド群(`logmode.enable.*`/`disable`/`filter.*`/`jump.*`/
+`patterns.reload`)のみで提供している。Debug/Release/ubsan全1309件
+green、clang-tidy新規警告0を確認済み。
 
-次はWI-14d(複数行エントリのグルーピング + ユーザー編集可能パターン
-ファイル、優先度中)、またはユーザー指定の次項目。着手前に
-build_plan.md §5のWI-14d概要とmaster_roadmap.md §10.1を読み、
-本書§5と同じ形式でWIを切り直すこと。
+次はPhase 10.2(CSVモード)またはPhase 10.3(JSON-XML Tree)、
+またはユーザー指定の次項目。着手前にbuild_plan.md §5とmaster_roadmap.md
+§10.2/§10.3を読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

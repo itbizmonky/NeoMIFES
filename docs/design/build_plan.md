@@ -55,7 +55,7 @@ ctest --preset debug --output-on-failure
 **NeoMIFES = Windows 向け純粋ネイティブテキストエディタ。** C++23 + Win32 + Direct2D/DirectWrite。秀丸/サクラ/MIFES を超える「最速・最軽量・AI 親和」を掲げる。
 
 - リポジトリ: `D:\IDE\Claude\NeoMIFES` (GitHub `itbizmonky/NeoMIFES`、main ブランチ)
-- 規模: 約 35,000 行 / 966 テスト / ADR 21 本
+- 規模: 約 35,000 行 / 1309 テスト / ADR 21 本
 - **禁止:** Electron / Qt / WPF / WinUI3 主体 / Avalonia / WebView / Chromium / .NET MAUI
 
 **現在の状態を一行で:**
@@ -138,7 +138,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
 - [x] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成) → コミット: `e92ddfb`/`84f5bf9`/`0f5af55`/`8250f3d`/`d41f52b`/`4d30233`
-- [ ] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル (優先度中)
+- [x] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル 🎉 (Phase 10.1 完結) → コミット: `2c16e79`/`9673824`
 - [ ] **WI-15** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-16** Phase 9 — AI プラグイン
 - [ ] **WI-17** Phase 12 — 総合品質保証・正式出荷
@@ -1090,13 +1090,43 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
-## WI-14d — Phase 10.1 (ログ解析モード) 残りサブ WI
+## WI-14d — 複数行グルーピング + ユーザー編集可能パターンファイル 🎉 (Phase 10.1 完結)
 
-着手時は下記の概要を出発点に、本書 §5 と同じ形式で WI を切り直すこと。
+**目的:** WI-14a〜c で達成した Phase 10.1 MVP に、roadmap §10.1 が元々見込んでいた「複数行エントリのグルーピング (Java スタックトレース等の継続行)」と「ユーザー編集可能パターンファイル」を追加し、Phase 10.1 を完結させる。「パターン拡充」は `docs/issues/phase_10_1_v2_extended_patterns.md` により CLAUDE.md ルール3 (推測実装をしない) に抵触すると WI-14a 時点で確定済みのため、開発側がベンダーパターンを推測で追加するのではなく、ユーザー自身が検証済みの正規表現を持ち込める手段として満たした。
 
-| WI | 内容 | 目安 |
-|---|---|---|
-| WI-14d | 複数行エントリのグルーピング (Java スタックトレース等の継続行) + ユーザー編集可能パターンファイル (`%APPDATA%\NeoMIFES\log_patterns\`) + パターン拡充 (MVP後の磨き上げ、優先度中) | 1 サブ WI |
+**前提:** WI-14c 完了 (コミット `e92ddfb`〜`4d30233`)
+
+### 既に決まっている設計
+
+- `nextVisibleLogLine()`/`previousVisibleLogLine()` (WI-14c) は無変更 — `qualifies()` が既に `matched==true` のみをジャンプ対象にしており、継続行は元々除外されている
+- 実際に修正が必要だったのは `pushLogVisualsForSession()` — 全行の `line.level` を直接 push していたため、継続行 (既定 `LogLevel::Unknown`) が親の ERROR/WARNING と独立してフィルタされ、「Errors only でフィルタしたのにスタックトレース本体だけ残る」という実害があった。`neomifes::logmode::computeGroupedLogLevels(std::span<const LogLine>) -> std::vector<LogLevel>` という純粋関数1つに集約し解消 (`LogLine` 自体には新規フィールドを追加しない — 多メガ行文書のため小さく保つという既存方針を維持)
+- ユーザー編集可能パターンファイルは「1ファイル = 1 `LogPatternRule`」の JSON をディレクトリ (`%APPDATA%\NeoMIFES\log_patterns\`) スキャンする方式。不正ファイルはそのファイルのみスキップ (`KeyBindings::loadFrom()` と同じ寛容契約)。UTF-16↔UTF-8 変換は `core::detail::toUtf8/fromUtf8` と同じ実装を `neomifes::logmode::detail` へ複製 (`neomifes::logmode` が `neomifes::core` に依存するのはレイヤ違反のため)
+- 既存の組込パターンを `%APPDATA%` へ自動コピーする roadmap 原案は不採用 (バージョニング/陳腐化の懸念、実際のギャップは「未対応フォーマットを追加できること」であって「既存パターンを上書きできること」ではない)
+- `detectLogPatternRule()` に `std::span<const LogPatternRule> candidates = builtInLogPatterns()` を `sampleLines` の後に追加 (既存呼び出し元は無改修)。`candidates` は候補列を置き換える (補うのではない)
+- `logmode.patterns.reload` コマンドは `keybindings.reload` と同型 (`buildCommandRegistry()` 内に直接実装、ディレクトリ再スキャン→パレット再構築)
+
+### 実施内容 (2コミット)
+
+1. `log_grouping.h/.cpp` + `log_pattern_file.h/.cpp` + `json_string_convert.h/.cpp` 新設 + `format_detection.h/.cpp` の `candidates` 拡張 + 単体テスト一式 + CMake登録 (`2c16e79`)
+2. `main.cpp`: `resolveLogPatternsStartupState()` 新設。`normal_mode_wiring.h/.cpp`: `wireNormalMode()`/`buildCommandRegistry()` へ `userLogPatterns`/`logPatternsDir` を配線 (全3呼び出し箇所)、`appendLogModeCommands()` 拡張、`pushLogVisualsForSession()` のバグ修正、`logmode.patterns.reload` コマンド新設 (`9673824`)
+
+### DoD
+
+- [x] `computeGroupedLogLevels()` (継続行が直近の matched 行のレベルを継承)
+- [x] `loadLogPatternRuleFromFile()`/`loadUserLogPatternsFromDirectory()` (不正ファイル黒板消し、id衝突はアルファベット順で最初のファイルが勝つ)
+- [x] `detectLogPatternRule()` の `candidates` 拡張 (組込パターンとユーザーパターンの結合)
+- [x] `resolveLogPatternsStartupState()` (`%APPDATA%\NeoMIFES\log_patterns\` 起動時作成+スキャン、失敗時は空状態)
+- [x] `logmode.enable.*` コマンドがユーザーパターンにも生成される
+- [x] `logmode.patterns.reload` コマンド
+- [x] Debug/Release/ubsan 全 green (1309/1309)、clang-tidy 新規警告 0 (未使用using宣言1件を修正、残りはこのテストスイート全体で既に確立されている `rand()` ベース一時ファイル名/`ASSERT_TRUE(x.has_value()); x->field` の既存慣習と同型のため対象外と判断)
+
+### 実装後の確定事項
+
+**`cfg.onDeferredInit` ラムダのキャプチャ漏れ:** `wireNormalMode()`/`buildCommandRegistry()` へ新規パラメータを追加した際、明示キャプチャリストを使うラムダは1つ1つ手動でキャプチャを追加する必要があり、`cfg.onDeferredInit` (この関数内で最も長いラムダの1つ) への追加を1回失念し、C3493/C2326 のコンパイルエラーになった。ローカルビルド検証で即座に検出・修正できたが、「シグネチャ拡張は全呼び出し箇所だけでなく全キャプチャリストも機械的に洗い出す」ことの重要性を再確認した事例。
+
+**`buildCommandRegistry()` の認知的複雑度: 3WI連続で閾値未超過を確認。** WI-14b/c で2回連続超過した経緯があったため、本WIでは `logmode.patterns.reload` コマンド追加直後に個別 clang-tidy 実行を計画に明記していた。実際には超過しなかった (WI-14c で `appendLogModeCommands()` へ抽出済みだったため、`buildCommandRegistry()` 本体側の追加分は1コマンド20行程度に収まった) — 「抽出しておけば次の追加が安全になる」という設計判断が機能した実例。
+
+**サブエージェントの完了報告フローで背景待機ループが早期終了扱いになる問題:** 本WIの最終ゲート検証中、委任先エージェントが自身のバックグラウンド待機ループ (`run_in_background`/ポーリング) を使った際、そのエージェント自身のターンが「バックグラウンド子プロセスなし」として完了通知されてしまい、実際には未完了の検証結果を報告する事態が2回発生した。都度エージェントへ「同期的に(フォアグラウンドで)実行し、完了するまでターンを終えないこと」を明示的に再指示して解消した。今後サブエージェントへ長時間ビルド検証を委任する際は、最初のプロンプトから「run_in_background/待機ループを使わず同期実行すること」を明記しておくとよい。
 
 ---
 

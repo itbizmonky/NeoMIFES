@@ -284,7 +284,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6d** | **自動保存・バックアップ・クラッシュ復旧・最近開いたファイル** | ✅ **完了 (WI-11, 2026-08-15)** | §8.6 |
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
-| 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **MVP達成・完結 (WI-14a〜c完了、2026-08-17。WI-14dは磨き上げ、優先度中)** | §10.1 |
+| 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
 | 10.2/10.3 | CSV / JSON-XML tree | 未着手 | §10.2, §10.3 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
@@ -2123,7 +2123,18 @@ public:
 - **`m_logLineLevels`(文書全体サイズになりうる)は`FrameState`の比較対象から除外し、`applyAsyncSyntaxTokens()`と同じ「到着時に強制再描画」パターンを踏襲した。** 軽量なフィルタマスクのみ`FrameState`へ直接含めた。
 - **ログ編集追従(行番号ズレの自動補正)はスコープ外とした。** `core::BookmarkManager`の既知の制約と同じ理由。再インデックスで手動復旧する。
 - **`buildCommandRegistry()`の認知的複雑度超過(43、閾値25)が発生し、`appendLogModeCommands()`への抽出で解消した。** WI-14bの`wireNormalMode()`と同種の問題が2WI連続で発生しており、5個を超えるコマンド群を1関数へ追加する際は着手前に抽出を前提とした設計を検討すべき教訓を得た。
-- 詳細は`build_plan.md` WI-14cセクション、`detailed_design.md` §11.3参照。次はWI-14d(複数行エントリのグルーピング+ユーザー編集可能パターンファイル、優先度中)。
+- 詳細は`build_plan.md` WI-14cセクション、`detailed_design.md` §11.3参照。
+
+#### 実装後の確定事項 (WI-14d、複数行グルーピング+ユーザー編集可能パターンファイル 🎉、2026-08-18、Phase 10.1 完結)
+
+roadmap本節が元々見込んでいた「複数行エントリのグルーピング」「ユーザー編集可能パターンファイル」を実装し、Phase 10.1を完結させた。「パターン拡充」はWI-14a時点でCLAUDE.mdルール3(推測実装をしない)により見送り確定済みのため、ユーザー自身が検証済み正規表現を持ち込める手段として満たした(ベンダー固有組込パターンの追加は`docs/issues/phase_10_1_v2_extended_patterns.md`のP2のまま据え置き)。
+
+- **実際の複数行グルーピングのバグは`nextVisibleLogLine()`/`previousVisibleLogLine()`ではなく`pushLogVisualsForSession()`にあった。** ジャンプ系は`matched==true`のみを対象にしており元々正しかったが、色分け/フィルタ用の`RenderPipeline::setLogLineLevels()`へ全行の`line.level`をそのまま渡していたため、継続行(既定`LogLevel::Unknown`)が親のERROR/WARNINGと独立してフィルタされ、「Errors onlyでフィルタしたのにJavaスタックトレース本体だけ残る」という実害があった。`neomifes::logmode::computeGroupedLogLevels(std::span<const LogLine>) -> std::vector<LogLevel>`という純粋関数へ集約して解消した。
+- **ユーザー編集可能パターンファイルは「1ファイル=1`LogPatternRule`」のJSONを`%APPDATA%\NeoMIFES\log_patterns\`からディレクトリスキャンする方式にした。** 単一集約ファイル(Settings/KeyBindings型)ではなく、ユーザーが新規フォーマットを1つ追加する操作が常に「新規ファイル1つを置く」だけで完結するようにするための設計判断。不正ファイルはそのファイルのみ黒板消しし、id衝突はアルファベット順で先勝ち。
+- **既存の組込パターンを`%APPDATA%`へ自動コピーする本節冒頭の原案スケッチは不採用とした。** コピーを作ると本体側の改善がユーザーのコピーに反映されないバージョニング問題を生むため。実際のギャップは「未対応フォーマットをユーザーが追加できること」であり「既存パターンを上書きできること」ではない。
+- **`detectLogPatternRule()`に`std::span<const LogPatternRule> candidates = builtInLogPatterns()`を追加し、候補列を外部から差し替え可能にした。** `candidates`は候補列を置き換える(補うのではない)ため、`logmode.enable.auto`コマンド側で組込+ユーザー定義を結合してから渡す。
+- **`buildCommandRegistry()`の認知的複雑度は3WI連続で閾値未超過を確認した。** WI-14b/cで2回連続超過した教訓を踏まえ`logmode.patterns.reload`コマンド追加直後に個別clang-tidy実行を計画に明記していたが、WI-14cで`appendLogModeCommands()`へ既に抽出済みだったため実際には超過しなかった — 「抽出しておけば次の追加が安全になる」という設計判断が機能した実例。
+- 詳細は`build_plan.md` WI-14dセクション、`docs/design/detailed_design.md` §11.3参照。**Phase 10.1(ログ解析モード)完結。** 次はPhase 10.2(CSVモード)/10.3(JSON-XML Tree)、いずれも着手時にサブWIへ切り直す。
 
 ### 10.2 CSV モード (要件定義書 §9)
 

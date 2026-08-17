@@ -3130,9 +3130,9 @@ LogModeController
 - TimelineIndex に (timestamp, offset) を挿入
 - UI から 2010-01-01 12:34:56 のように入力 → 最近傍検索 → ジャンプ
 
-### 11.3 `neomifes::logmode` リファレンス (WI-14a〜c実装)
+### 11.3 `neomifes::logmode` リファレンス (WI-14a〜d実装、Phase 10.1 完結)
 
-`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`)。UIはWI-14cで実装済み(`ui::CommandPalette`経由、下記「WI-14c追加」参照)。
+`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`/`nlohmann_json::nlohmann_json`/`neomifes::encoding`)。UIはWI-14cで実装済み(`ui::CommandPalette`経由、下記「WI-14c追加」参照)。
 
 ```cpp
 // neomifes/logmode/log_pattern.h
@@ -3225,6 +3225,35 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `EditorSession::logLevelFilterMask()`(可変参照アクセサ、既定`kAllLogLevelsVisible`)と`disableLogMode()`(logModel/logPatternRule/フィルタマスクを初期状態へ戻す、`beginLogIndexing()`と対称)を追加。
 - `app::message_dialogs.h`に`showLogFormatNotDetectedDialog(HWND)`を追加(`detectLogPatternRule()`が失敗した際のOK-onlyダイアログ、`showSaveErrorDialog()`と同型)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14c)」参照。
+
+```cpp
+// neomifes/logmode/log_grouping.h (WI-14d)
+[[nodiscard]] std::vector<LogLevel> computeGroupedLogLevels(std::span<const LogLine> lines);
+// 継続行(matched=false)は直近のmatched行のレベルを継承。最初のmatched行より
+// 前の行はLogLevel::Unknownのまま。
+
+// neomifes/logmode/log_pattern_file.h (WI-14d)
+[[nodiscard]] std::optional<LogPatternRule> loadLogPatternRuleFromFile(const std::filesystem::path& path);
+[[nodiscard]] std::vector<LogPatternRule> loadUserLogPatternsFromDirectory(const std::filesystem::path& dir);
+// JSON schema: {"version":1,"id":"...","displayName":"...","pattern":"...","timestampFormat":"..."(省略可)}
+// 失敗(欠落/不正JSON/versionミスマッチ/必須フィールド欠落/UTF-8不正/RE2コンパイル失敗)は
+// 全てnulloptで統一。ディレクトリスキャンは*.jsonをファイル名昇順、不正ファイルはスキップ、
+// id衝突はアルファベット順で最初のファイルが勝つ。
+
+// neomifes/logmode/format_detection.h (WI-14d拡張)
+[[nodiscard]] std::optional<LogPatternRule> detectLogPatternRule(
+    const document::Document& doc, std::size_t sampleLines = 100,
+    std::span<const LogPatternRule> candidates = builtInLogPatterns());
+// candidatesはsampleLinesの後に追加(既存呼び出し元は無改修)。candidatesは
+// 候補列を置き換える(補うのではない) - builtInLogPatterns()と結合したい場合は
+// 呼び出し側で結合してから渡す。
+```
+
+**設計上の要点 (WI-14d追加):**
+- `pushLogVisualsForSession()`(`normal_mode_wiring.cpp`)は全行の`line.level`を直接pushしていたループを`computeGroupedLogLevels(session.logModel()->lines())`呼び出しへ置換した。継続行(matched=false、既定`LogLevel::Unknown`)が親のERROR/WARNING行と独立してフィルタされていた実害あるバグの修正(`nextVisibleLogLine()`/`previousVisibleLogLine()`は`matched==true`のみをジャンプ対象にしており元々正しく、変更不要だった)。
+- ユーザー編集可能パターンファイルの UTF-16↔UTF-8 変換は `src/core/src/json_string_convert.h` と同一実装を `src/logmode/src/json_string_convert.h`(`neomifes::logmode::detail`名前空間)へ複製した — `neomifes::logmode`が`neomifes::core`へ依存するのはレイヤ違反のため。
+- `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
 ---
 

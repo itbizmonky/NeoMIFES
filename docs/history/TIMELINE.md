@@ -3026,4 +3026,29 @@ WI-14b完了後、ユーザーから「次のPhaseに進め」と指示された
 
 コミット済み、pushはユーザーの明示指示待ち。次はWI-14d(複数行エントリのグルーピング + ユーザー編集可能パターンファイル、優先度中)、またはユーザー指定の次項目。
 
+## Session 95 (2026-08-18): WI-14c CI修正 + WI-14d(複数行グルーピング+ユーザー編集可能パターンファイル 🎉、Phase 10.1 完結)実装完了
+
+ユーザーから「pushせよ」と指示され、WI-14cの保留コミット一式(`e92ddfb`〜`4d30233`、`53df429`)をpushした。直後にユーザーから「CIが失敗している」と報告があり、`gh run view --log-failed`で調査したところ、`src/logmode/src/log_index_worker.cpp`の`workerLoop()`にあった`NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)`が、抑制対象の直前行(`while (true) {`)ではなく6行上のコメントブロック先頭に置かれており、WI-14b(コミット`a6c1849`)から2回のpushにわたって無効なまま静かに失敗し続けていたと判明した(ローカルのサブエージェント検証はWIごとに変更ファイルのみをclang-tidyするためこの種の全リポジトリスキャン差分を検出できず、CIの全体スキャンで初めて顕在化した)。`syntax_worker.cpp`の`workerLoop()`にある同型の既存NOLINTを参照し、コメント直下の正しい行へ移設して解消、コミット(`e69dbc8`)・push・CI green確認まで完了した。
+
+CI green確認後、ユーザーから「次のPhaseに進め」と指示され、WI-14dへ着手した。着手前調査で「パターン拡充」がWI-14a時点でCLAUDE.mdルール3(推測実装をしない)により見送り確定済みと再確認し(`docs/issues/phase_10_1_v2_extended_patterns.md`)、既存コードの直接読解を基に計画を書き`ExitPlanMode`でユーザー承認を得て実装した。
+
+**着手前調査で確定した設計方針:**
+1. `nextVisibleLogLine()`/`previousVisibleLogLine()`(WI-14c)は無変更 — `qualifies()`が既に`matched==true`のみをジャンプ対象にしており継続行は元々正しく除外されていた。実際のバグは`pushLogVisualsForSession()`にあり、継続行(matched=false、既定`LogLevel::Unknown`)が親のERROR/WARNING行の`level`と独立してフィルタされ、「Errors onlyでフィルタしたのにJavaスタックトレース本体だけ残る」実害があった。
+2. ユーザー編集可能パターンファイルは「1ファイル=1`LogPatternRule`」のJSONを`%APPDATA%\NeoMIFES\log_patterns\`からディレクトリスキャンする方式に確定(単一集約ファイルではなく、ユーザーが新規フォーマットを1つ追加する操作が常に新規ファイル1つで完結するように)。既存パターンを`%APPDATA%`へ自動コピーするroadmap原案は不採用(バージョニング陳腐化の懸念)。
+3. `detectLogPatternRule()`の`candidates`引数は`sampleLines`の後に追加(既存テスト`logmode_format_detection_test.cpp:96`が位置引数で`detectLogPatternRule(doc, /*sampleLines=*/5)`と呼んでいたため、その呼び出しを無改修に保つ制約から確定)。
+
+**実装(7ステップ、2コミット):**
+1〜3. `log_grouping.h/.cpp`(`computeGroupedLogLevels()`)+`log_pattern_file.h/.cpp`+`json_string_convert.h/.cpp`(`neomifes::core`への依存を避けるため`src/core/src/json_string_convert.h`と同一実装を`neomifes::logmode::detail`へ複製)+`format_detection.h/.cpp`の`candidates`拡張を、単体テスト一式付きで実装。`log_pattern_file.cpp`のディレクトリスキャンで`std::filesystem::directory_iterator`の範囲for文が内部的にthrowingな`operator++()`を呼ぶ問題を自ら発見し、`grep_service.cpp`の`grepOneRoot()`前例に倣い`it.increment(ec)`を使う手動ループへ書き直した。(`2c16e79`)
+4〜6. `main.cpp`の`resolveLogPatternsStartupState()`(`resolveAutosaveStartupState()`と同型)、`normal_mode_wiring.h/.cpp`の`wireNormalMode()`/`buildCommandRegistry()`シグネチャ拡張(全3呼び出し箇所)、`appendLogModeCommands()`拡張、`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)を実装。(`9673824`)
+
+**検証中に発見・即座に修正したバグ2件:** ①`main.cpp`が`neomifes::logmode::loadUserLogPatternsFromDirectory()`を呼んでいるのに`neomifes/logmode/log_pattern_file.h`の`#include`が漏れておりコンパイル失敗(C2039/C3861)。②`cfg.onDeferredInit`ラムダの明示キャプチャリストに`&userLogPatterns, logPatternsDir`を追加し忘れ、C3493/C2326のコンパイルエラー。いずれもサブエージェントへ委任したビルド検証で即座に検出・修正できた。加えて、最終ゲートのclang-tidyスイープで`tests/unit/logmode_log_pattern_file_test.cpp`の未使用using宣言(`LogPatternRule`)を検出・削除した(残り9件の指摘は`rand()`ベース一時ファイル名/`ASSERT_TRUE(x.has_value()); x->field`という、このテストスイート全体で既に12以上の既存ファイルに確立されている慣習と同型のため対象外と判断)。
+
+**サブエージェント運用面の教訓:** 最終ゲート検証(Debug/Release/ubsan 3構成+clang-tidyスイープ)を委任したサブエージェントが、自身のバックグラウンド待機ループ(`run_in_background`/ポーリング)を使った際にターンが「バックグラウンド子プロセスなし」として早期完了扱いになり、未完了の中間結果が報告される事象が2回発生した。都度「同期的に(フォアグラウンドで)実行しターンを終えないこと」を明示的に再指示して解消した。今後、長時間ビルド検証を委任する際は最初のプロンプトからこの制約を明記しておくとよい。
+
+最終ゲート: Debug/Release/ubsan全1309件green、clang-tidy新規警告0(未使用using宣言1件を修正、変更ファイル9件を個別スイープ)。実アプリでの視覚確認(Javaスタックトレース入りログファイルでのグルーピング確認、`%APPDATA%`パターンファイルの`Log: Reload Patterns`確認)は本セッションでは未実施 — 次回ドッグフーディング時に確認すること。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、§5のWI-14dプレースホルダを完全エントリへ差し替え)、`master_roadmap.md`(§10.1に実装後の確定事項追記、§2フェーズ表のPhase 10.1行を🎉完結へ更新)、`detailed_design.md`(§11.3を拡張し`computeGroupedLogLevels()`/`loadUserLogPatternsFromDirectory()`等のリファレンス+WI-14d設計要点を追加)、`RESUME_HERE.md`(§1状態表+新規§3.84完了記録+§6推奨プロンプト更新)。
+
+コミット済み(`2c16e79`/`9673824`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.1(ログ解析モード)完結。** 次はPhase 10.2(CSVモード)またはPhase 10.3(JSON-XML Tree)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
