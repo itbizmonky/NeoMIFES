@@ -20,6 +20,7 @@
 
 namespace neomifes::document {
 class Document;
+class BufferSnapshot;
 }  // namespace neomifes::document
 
 namespace neomifes::logmode {
@@ -67,6 +68,22 @@ public:
     // "static, self-contained per call" precedent this class follows.
     [[nodiscard]] static std::expected<LogModel, LogPatternError> build(
         const document::Document& doc, const LogPatternRule& rule,
+        std::optional<int> assumedYear = std::nullopt);
+
+    // WI-14b: piece-streaming core - walks `snapshot.pieces()` exactly once
+    // (BufferSnapshot::pieceView(), not extract() - see this WI's 設計方針1
+    // for why: Document::lineText() re-takes a snapshot() and re-walks the
+    // whole piece list from cursor 0 on EVERY line, an O(lines * pieces)
+    // cost this overload eliminates in favor of a single O(document length)
+    // linear pass with only one line's worth of text ever held in memory at
+    // once - the "never materialize the whole document" principle WI-01
+    // established for saveFile() also applies here for the 10GB/60s target
+    // (master_roadmap.md sec.10.1). The Document-taking overload above is a
+    // one-line delegation to this one (`return build(*doc.snapshot(), rule,
+    // assumedYear);`) - its own public contract and every WI-14a test are
+    // unaffected by this internal change.
+    [[nodiscard]] static std::expected<LogModel, LogPatternError> build(
+        const document::BufferSnapshot& snapshot, const LogPatternRule& rule,
         std::optional<int> assumedYear = std::nullopt);
 
     [[nodiscard]] std::span<const LogLine> lines() const noexcept { return m_lines; }

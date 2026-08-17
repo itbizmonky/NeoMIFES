@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/util/utf8_convert.h"
 
@@ -116,9 +117,9 @@ struct FieldIndices {
 
 }  // namespace
 
-std::expected<LogModel, LogPatternError> LogModel::build(const document::Document& doc,
-                                                           const LogPatternRule&     rule,
-                                                           std::optional<int>        assumedYear) {
+std::expected<LogModel, LogPatternError> LogModel::build(const document::BufferSnapshot& snapshot,
+                                                           const LogPatternRule&           rule,
+                                                           std::optional<int>              assumedYear) {
     const std::unique_ptr<re2::RE2> re = compileRule(rule);
     if (re == nullptr) {
         return std::unexpected(LogPatternError::InvalidRegex);
@@ -126,13 +127,39 @@ std::expected<LogModel, LogPatternError> LogModel::build(const document::Documen
     const FieldIndices indices = resolveFieldIndices(*re);
 
     LogModel model;
-    const std::uint64_t totalLines = doc.lineCount();
-    model.m_lines.reserve(totalLines);
-    for (document::LineNumber line = 0; line < totalLines; ++line) {
-        model.m_lines.push_back(
-            matchLine(*re, indices, rule.timestampFormat, assumedYear, line, doc.lineText(line)));
+    model.m_lines.reserve(snapshot.lineCount());
+
+    // Single linear pass over the piece list (mirrors LineIndex::build()'s
+    // pieceView()-based walk, line_index.cpp) - `currentLine` accumulates
+    // one line's content at a time, correctly spanning piece boundaries
+    // (a line's text may straddle two pieces after edits), and is cleared
+    // after every '\n'. Never holds more than one line's worth of text,
+    // unlike Document::lineText()'s per-line snapshot()+extract() cost.
+    std::u16string        currentLine;
+    document::LineNumber  lineNumber = 0;
+    for (const document::Piece& piece : snapshot.pieces()) {
+        for (const char16_t ch : snapshot.pieceView(piece)) {
+            if (ch == u'\n') {
+                model.m_lines.push_back(
+                    matchLine(*re, indices, rule.timestampFormat, assumedYear, lineNumber, currentLine));
+                currentLine.clear();
+                ++lineNumber;
+            } else {
+                currentLine.push_back(ch);
+            }
+        }
     }
+    // Final line, whether or not it ends in '\n' (BufferSnapshot::lineCount()
+    // == newlineCount()+1 always counts it, matching the empty-document ->
+    // one-unmatched-line convention this WI's tests already pin down).
+    model.m_lines.push_back(matchLine(*re, indices, rule.timestampFormat, assumedYear, lineNumber, currentLine));
     return model;
+}
+
+std::expected<LogModel, LogPatternError> LogModel::build(const document::Document& doc,
+                                                           const LogPatternRule&     rule,
+                                                           std::optional<int>        assumedYear) {
+    return build(*doc.snapshot(), rule, assumedYear);
 }
 
 }  // namespace neomifes::logmode

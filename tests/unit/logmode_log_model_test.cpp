@@ -2,13 +2,16 @@
 
 #include <string>
 
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
+#include "neomifes/document/text_pos.h"
 #include "neomifes/logmode/log_model.h"
 #include "neomifes/logmode/log_pattern.h"
 
 namespace {
 
 using neomifes::document::Document;
+using neomifes::document::TextRange;
 using neomifes::logmode::builtInLogPatterns;
 using neomifes::logmode::LogLevel;
 using neomifes::logmode::LogModel;
@@ -192,6 +195,58 @@ TEST(LogModelTest, VeryLongSingleLineDoesNotCrash) {
     ASSERT_TRUE(result.has_value());
     ASSERT_EQ(result->lines().size(), 1U);
     EXPECT_FALSE(result->lines()[0].matched);
+}
+
+TEST(LogModelTest, LineContentSpanningMultiplePiecesMatchesCorrectly) {
+    // WI-14b: LogModel::build()'s piece-streaming rewrite accumulates each
+    // line into a buffer across piece boundaries - this test forces the
+    // Apache/Nginx CLF line below to actually span 3+ pieces (not just 1,
+    // which every other test in this file exercises via makeDoc()'s single
+    // insertText() call) and verifies matching still succeeds.
+    const std::u16string line =
+        u"127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326 "
+        u"\"http://www.example.com/start.html\" \"Mozilla/4.08\"\n";
+    Document doc;
+    doc.insertText(0, line);
+    // Inserting then erasing inside the line splits the original single
+    // piece into fragments - PieceTable::eraseRange() does not recombine
+    // them, so the net text is unchanged but now spans multiple pieces.
+    constexpr std::uint64_t kSplitPos = 50;  // inside "GET /apache_pb.gif..."
+    doc.insertText(kSplitPos, u"XXXX");
+    doc.eraseRange(TextRange{.start = kSplitPos, .end = kSplitPos + 4});
+
+    // Precondition check: confirm this test actually exercises the
+    // multi-piece path rather than silently degrading to a single piece.
+    ASSERT_GT(doc.snapshot()->pieces().size(), 1U);
+
+    const auto result = LogModel::build(doc, ruleById(u"apache_nginx_clf"));
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->lines().size(), doc.lineCount());
+    EXPECT_TRUE(result->lines()[0].matched);
+    EXPECT_EQ(result->lines()[0].level, LogLevel::Unknown);
+    ASSERT_TRUE(result->lines()[0].timestamp.has_value());
+}
+
+TEST(LogModelTest, BuildFromSnapshotOverloadMatchesDocumentOverload) {
+    // The Document-taking build() is a one-line delegation to the
+    // BufferSnapshot-taking one (WI-14b 設計方針2) - confirm both entry
+    // points produce identical results for the same document.
+    const Document doc = makeDoc(
+        u"2026-08-16 10:15:32.123 ERROR Something broke\n"
+        u"this line matches nothing\n"
+        u"2026-08-16 10:15:34 INFO App started\n");
+    const LogPatternRule& rule = ruleById(u"generic_iso8601_level");
+
+    const auto viaDocument = LogModel::build(doc, rule);
+    const auto viaSnapshot = LogModel::build(*doc.snapshot(), rule);
+    ASSERT_TRUE(viaDocument.has_value());
+    ASSERT_TRUE(viaSnapshot.has_value());
+    ASSERT_EQ(viaDocument->lines().size(), viaSnapshot->lines().size());
+    for (std::size_t i = 0; i < viaDocument->lines().size(); ++i) {
+        EXPECT_EQ(viaDocument->lines()[i].matched, viaSnapshot->lines()[i].matched);
+        EXPECT_EQ(viaDocument->lines()[i].level, viaSnapshot->lines()[i].level);
+        EXPECT_EQ(viaDocument->lines()[i].timestamp.has_value(), viaSnapshot->lines()[i].timestamp.has_value());
+    }
 }
 
 }  // namespace
