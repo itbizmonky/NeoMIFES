@@ -31,6 +31,19 @@ enum class LogLevel : std::uint8_t { Trace, Debug, Info, Warning, Error, Fatal, 
 // vocabulary, e.g. once user-editable pattern files land, WI-14d).
 [[nodiscard]] LogLevel parseLevel(std::u16string_view text) noexcept;
 
+// WI-14c: LogLevel's value (0..6) as a bitmask bit, for the per-tab level
+// filter (EditorSession::logLevelFilterMask()) and RenderPipeline's
+// isLineHidden() filter check - both need the exact same conversion, so it
+// lives here next to LogLevel itself rather than being duplicated at each
+// call site (same "small self-contained helper sits beside the enum it
+// converts" reasoning as parseLevel() above).
+[[nodiscard]] constexpr std::uint8_t logLevelFilterBit(LogLevel level) noexcept {
+    return static_cast<std::uint8_t>(1U << static_cast<std::uint8_t>(level));
+}
+
+// Default filter mask: all 7 LogLevel values visible (bits 0..6 set).
+inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;
+
 struct LogPatternRule {
     std::u16string id;               // stable id, e.g. u"rfc5424_syslog"
     std::u16string displayName;      // e.g. u"Syslog (RFC 5424)"

@@ -4,6 +4,7 @@ add_library(neomifes_logmode STATIC
     src/log_model.cpp
     src/format_detection.cpp
     src/log_index_worker.cpp
+    src/log_navigation.cpp
 )
 add_library(neomifes::logmode ALIAS neomifes_logmode)
 

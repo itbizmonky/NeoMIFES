@@ -8,7 +8,9 @@ namespace {
 
 using neomifes::document::Document;
 using neomifes::logmode::builtInLogPatterns;
+using neomifes::logmode::kAllLogLevelsVisible;
 using neomifes::logmode::LogLevel;
+using neomifes::logmode::logLevelFilterBit;
 using neomifes::logmode::LogModel;
 using neomifes::logmode::parseLevel;
 
@@ -86,6 +88,30 @@ TEST(LogPatternTest, ParseLevelReturnsUnknownForUnrecognizedOrEmptyText) {
     EXPECT_EQ(parseLevel(u""), LogLevel::Unknown);
     EXPECT_EQ(parseLevel(u"garbage"), LogLevel::Unknown);
     EXPECT_EQ(parseLevel(u"NOTICE"), LogLevel::Unknown);
+}
+
+// WI-14c: logLevelFilterBit()/kAllLogLevelsVisible back EditorSession's
+// per-tab filter mask and RenderPipeline::isLineHidden()'s filter check -
+// every LogLevel value must map to a distinct bit, and the "show
+// everything" default must have all 7 of them set.
+TEST(LogPatternTest, LogLevelFilterBitAssignsADistinctBitPerLevel) {
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Trace), 0x01U);
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Debug), 0x02U);
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Info), 0x04U);
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Warning), 0x08U);
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Error), 0x10U);
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Fatal), 0x20U);
+    EXPECT_EQ(logLevelFilterBit(LogLevel::Unknown), 0x40U);
+}
+
+TEST(LogPatternTest, KAllLogLevelsVisibleHasEveryLevelBitSet) {
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Trace), logLevelFilterBit(LogLevel::Trace));
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Debug), logLevelFilterBit(LogLevel::Debug));
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Info), logLevelFilterBit(LogLevel::Info));
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Warning), logLevelFilterBit(LogLevel::Warning));
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Error), logLevelFilterBit(LogLevel::Error));
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Fatal), logLevelFilterBit(LogLevel::Fatal));
+    EXPECT_EQ(kAllLogLevelsVisible & logLevelFilterBit(LogLevel::Unknown), logLevelFilterBit(LogLevel::Unknown));
 }
 
 }  // namespace
