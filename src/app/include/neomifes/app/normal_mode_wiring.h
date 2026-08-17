@@ -35,6 +35,7 @@
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
 #include "neomifes/logmode/log_index_worker.h"
+#include "neomifes/logmode/log_pattern.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/render/render_error.h"
 #include "neomifes/render/render_pipeline.h"
@@ -190,6 +191,15 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // this WI only wires the construction plus cfg.onAppMessage's
 // kMsgLogIndexReady receiving/routing branch (see this file's .cpp body),
 // proven correct by tests/integration/logmode_log_index_worker_test.cpp.
+//
+// WI-14d: takes `userLogPatterns` (mutable - "Log: Reload Patterns"
+// reassigns it) and `logPatternsDir` (the %APPDATA%\NeoMIFES\log_patterns\
+// directory resolveLogPatternsStartupState() (main.cpp) already resolved -
+// nullopt if that resolution failed, same graceful-degradation contract
+// settingsPath/keyBindingsPath above have). Threaded straight through to
+// buildCommandRegistry() (this file's own .cpp) - see
+// appendLogModeCommands()'s comment for how these two feed the
+// "logmode.enable.*"/"Log: Reload Patterns" commands.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -200,6 +210,8 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing, core::RecentFiles& recentFiles,
                     MenuBarHandles menuHandles, AutosaveContext& autosave,
-                    std::optional<logmode::LogIndexWorker>& logIndexWorker);
+                    std::optional<logmode::LogIndexWorker>& logIndexWorker,
+                    std::vector<logmode::LogPatternRule>& userLogPatterns,
+                    const std::optional<std::filesystem::path>& logPatternsDir);
 
 }  // namespace neomifes::app

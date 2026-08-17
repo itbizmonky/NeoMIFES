@@ -79,6 +79,7 @@
 #include "neomifes/core/settings.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
+#include "neomifes/logmode/log_pattern_file.h"
 #include "neomifes/platform/app_data_dir.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/platform/perf_clock.h"
@@ -293,6 +294,40 @@ AutosaveStartupState resolveAutosaveStartupState(const LaunchArgs& args) {
     return state;
 }
 
+// WI-14d: bundles the 2 values resolveLogPatternsStartupState() below
+// produces - same "own function purely for the cognitive-complexity budget"
+// rationale as AutosaveStartupState/resolveAutosaveStartupState() above,
+// and the same "%APPDATA% subdirectory NOT created automatically by
+// resolveAppDataDir() itself, so create_directories() here, best-effort,
+// degrade to empty state on any failure" shape too - a directory of
+// user-editable pattern files (log_pattern_file.h) rather than a single
+// settings-style file, since a user adding one new format only ever
+// touches one new file (see this WI's plan point 設計方針4).
+struct LogPatternsStartupState {
+    std::optional<std::filesystem::path>       logPatternsDir;
+    std::vector<neomifes::logmode::LogPatternRule> userLogPatterns;
+};
+
+LogPatternsStartupState resolveLogPatternsStartupState(const LaunchArgs& args) {
+    LogPatternsStartupState state;
+    if (args.mode != LaunchMode::Normal) {
+        return state;
+    }
+    const auto appDataDir = resolveAppDataDir();
+    if (!appDataDir) {
+        return state;
+    }
+    const std::filesystem::path candidateDir = *appDataDir / L"log_patterns";
+    std::error_code              ec;
+    std::filesystem::create_directories(candidateDir, ec);
+    if (ec) {
+        return state;
+    }
+    state.logPatternsDir  = candidateDir;
+    state.userLogPatterns = neomifes::logmode::loadUserLogPatternsFromDirectory(candidateDir);
+    return state;
+}
+
 // WI-11: the startup crash-recovery prompt loop - call once, right after
 // `workspace` exists (Workspace::adoptSession() needs it), for every
 // candidate resolveAutosaveStartupState() found above. Extracted from
@@ -401,6 +436,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // once `workspace` exists for adoptSession() to append to.
     // (resolveAutosaveStartupState() defined above.)
     AutosaveStartupState autosaveStartup = resolveAutosaveStartupState(args);
+
+    // WI-14d: user-editable log-pattern files - same Normal-mode-only,
+    // resolve-once-at-startup shape as autosaveStartup above.
+    // (resolveLogPatternsStartupState() defined above.)
+    LogPatternsStartupState logPatternsStartup = resolveLogPatternsStartupState(args);
 
     // WI-04: "the currently open document"'s complete state (Document/
     // SelectionModel/CommandDispatcher/Viewport/FoldingModel/
@@ -619,7 +659,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
-                       autosave, logIndexWorker);
+                       autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
+                       logPatternsStartup.logPatternsDir);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

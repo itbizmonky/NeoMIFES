@@ -52,7 +52,9 @@
 #include "neomifes/document/file_saver.h"
 #include "neomifes/encoding/encoding.h"
 #include "neomifes/logmode/format_detection.h"
+#include "neomifes/logmode/log_grouping.h"
 #include "neomifes/logmode/log_navigation.h"
+#include "neomifes/logmode/log_pattern_file.h"
 #include "neomifes/platform/clipboard.h"
 #include "neomifes/search/grep_service.h"
 #include "neomifes/search/replacement.h"
@@ -84,10 +86,12 @@ using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::TextRange;
 using neomifes::logmode::builtInLogPatterns;
+using neomifes::logmode::computeGroupedLogLevels;
 using neomifes::logmode::detectLogPatternRule;
 using neomifes::logmode::kAllLogLevelsVisible;
 using neomifes::logmode::LogIndexWorker;
 using neomifes::logmode::LogLevel;
+using neomifes::logmode::loadUserLogPatternsFromDirectory;
 using neomifes::logmode::logLevelFilterBit;
 using neomifes::logmode::LogPatternRule;
 using neomifes::logmode::nextVisibleLogLine;
@@ -531,17 +535,19 @@ void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, Edito
 // "one shared push function, multiple call sites" shape
 // syncFoldingState()/syncMatchVisuals() already established for their own
 // per-tab visuals.
+//
+// WI-14d: routes through computeGroupedLogLevels() rather than pushing each
+// LogLine's own level directly - a continuation line (e.g. a Java stack
+// trace frame) now inherits its group leader's level, so isLineHidden()'s
+// filter check and drawLogLevelOnLine()'s color lookup both treat a
+// multi-line entry as one unit instead of the continuation lines defaulting
+// to LogLevel::Unknown and disagreeing with their own ERROR/WARNING header.
 void pushLogVisualsForSession(RenderPipeline& renderPipeline, const EditorSession& session) {
     if (!session.logModel()) {
         renderPipeline.setLogLineLevels({});
         return;
     }
-    std::vector<neomifes::logmode::LogLevel> levels;
-    levels.reserve(session.logModel()->lines().size());
-    for (const auto& line : session.logModel()->lines()) {
-        levels.push_back(line.level);
-    }
-    renderPipeline.setLogLineLevels(std::move(levels));
+    renderPipeline.setLogLineLevels(computeGroupedLogLevels(session.logModel()->lines()));
     renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
 }
 
@@ -1551,19 +1557,22 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
 // limit on their own, same reasoning as every other "pulled out of X for the
 // same cognitive-complexity reason" extraction already in this file.
 void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
-                           RenderPipeline& renderPipeline, std::optional<LogIndexWorker>& logIndexWorker) {
-    // "Log: Enable (...)" - one command per builtInLogPatterns() rule
-    // (explicit override for when auto-detect picks the wrong rule or
-    // fails) plus one auto-detect command. All CommandId::None, palette-
-    // only - same footprint as edit.convertTabsToSpaces/view.theme.* in
-    // buildCommandRegistry() (build_plan.md's established "don't invent a
-    // dedicated UI surface for something the palette already covers"
-    // precedent for this file). logIndexWorker is empty until
-    // wireNormalMode()'s onDeferredInit lambda emplace()s it (see
-    // normal_mode_wiring.h's own comment) - the null check below is this
-    // WI's only defense against a command somehow firing before that
-    // happens.
-    for (const LogPatternRule& rule : builtInLogPatterns()) {
+                           RenderPipeline& renderPipeline, std::optional<LogIndexWorker>& logIndexWorker,
+                           const std::vector<LogPatternRule>& userLogPatterns) {
+    // "Log: Enable (...)" - one command per candidate rule (explicit
+    // override for when auto-detect picks the wrong rule or fails), drawn
+    // from BOTH builtInLogPatterns() and userLogPatterns (WI-14d - a
+    // pattern loaded from %APPDATA%\NeoMIFES\log_patterns\, see
+    // log_pattern_file.h) - plus one auto-detect command. All
+    // CommandId::None, palette-only - same footprint as
+    // edit.convertTabsToSpaces/view.theme.* in buildCommandRegistry()
+    // (build_plan.md's established "don't invent a dedicated UI surface
+    // for something the palette already covers" precedent for this file).
+    // logIndexWorker is empty until wireNormalMode()'s onDeferredInit
+    // lambda emplace()s it (see normal_mode_wiring.h's own comment) - the
+    // null check below is this WI's only defense against a command
+    // somehow firing before that happens.
+    auto appendEnableCommand = [&commands, &workspace, &logIndexWorker](const LogPatternRule& rule) {
         commands.push_back(CommandDescriptor{
             .id              = std::u16string(u"logmode.enable.") + rule.id,
             .title           = std::u16string(u"Log: Enable (") + rule.displayName + u")",
@@ -1575,16 +1584,28 @@ void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, 
                 }
                 workspace.active().beginLogIndexing(*logIndexWorker, rule, currentYear());
             }});
+    };
+    for (const LogPatternRule& rule : builtInLogPatterns()) {
+        appendEnableCommand(rule);
+    }
+    for (const LogPatternRule& rule : userLogPatterns) {
+        appendEnableCommand(rule);
     }
     commands.push_back(CommandDescriptor{
         .id = u"logmode.enable.auto", .title = u"Log: Enable (Auto-Detect)", .keybindingLabel = u"",
         .commandId = CommandId::None,
-        .action = [hwnd, &workspace, &logIndexWorker]() {
+        // WI-14d: `candidates` combines builtInLogPatterns() with
+        // userLogPatterns so auto-detect can match a user-supplied format
+        // too, not just the 4 built-ins - see detectLogPatternRule()'s own
+        // header comment for why it takes a candidate span at all.
+        .action = [hwnd, &workspace, &logIndexWorker, &userLogPatterns]() {
             if (!logIndexWorker) {
                 return;
             }
             EditorSession& session = workspace.active();
-            const auto     rule    = detectLogPatternRule(session.document());
+            std::vector<LogPatternRule> candidates = builtInLogPatterns();
+            candidates.insert(candidates.end(), userLogPatterns.begin(), userLogPatterns.end());
+            const auto rule = detectLogPatternRule(session.document(), 100, candidates);
             if (!rule) {
                 showLogFormatNotDetectedDialog(hwnd);
                 return;
@@ -1725,7 +1746,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const std::optional<std::filesystem::path>& keyBindingsPath, platform::AcceleratorTableHandle& accelTable,
     bool& freeCursorModeEnabled, CommandPalette& commandPalette, core::RecentFiles& recentFiles,
     const MenuBarHandles& menuHandles, AutosaveContext& autosave,
-    std::optional<LogIndexWorker>& logIndexWorker) {
+    std::optional<LogIndexWorker>& logIndexWorker, std::vector<LogPatternRule>& userLogPatterns,
+    const std::optional<std::filesystem::path>& logPatternsDir) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -1969,7 +1991,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .commandId = CommandId::None,
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                   menuHandles, &autosave, &logIndexWorker]() {
+                   menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -1978,7 +2000,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker));
+                logIndexWorker, userLogPatterns, logPatternsDir));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2008,7 +2030,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .commandId       = CommandId::None,
             .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                       menuHandles, &autosave, &logIndexWorker, presetName = std::u16string(choice.name)]() {
+                       menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir,
+                       presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2017,15 +2040,43 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 commandPalette.setCommands(buildCommandRegistry(
                     hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
-                    menuHandles, autosave, logIndexWorker));
+                    menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
 
+    // WI-14d: mirrors keybindings.reload's shape above - re-scans
+    // logPatternsDir (%APPDATA%\NeoMIFES\log_patterns\) and rebuilds this
+    // very registry so the palette's "Log: Enable (...)" entries (built by
+    // appendLogModeCommands() below) pick up any pattern file the user
+    // added/edited/removed since launch, without a restart. Lives here
+    // (not inside appendLogModeCommands()) for the same reason
+    // keybindings.reload/keybindings.preset.* live in buildCommandRegistry()
+    // itself - only this function has commandPalette + every other
+    // parameter buildCommandRegistry() needs to call itself again.
+    // No-op if logPatternsDir is nullopt (same graceful-degradation
+    // treatment as keybindings.reload's keyBindingsPath check above).
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.patterns.reload", .title = u"Log: Reload Patterns", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
+                   keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
+                   menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir]() {
+            if (!logPatternsDir) {
+                return;
+            }
+            userLogPatterns = loadUserLogPatternsFromDirectory(*logPatternsDir);
+            commandPalette.setCommands(buildCommandRegistry(
+                hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
+                accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
+                logIndexWorker, userLogPatterns, logPatternsDir));
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+
     // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
     // appendLogModeCommands()'s own doc comment for why this block lives in
     // its own function rather than inline here.
-    appendLogModeCommands(commands, hwnd, workspace, renderPipeline, logIndexWorker);
+    appendLogModeCommands(commands, hwnd, workspace, renderPipeline, logIndexWorker, userLogPatterns);
 
     return commands;
 }
@@ -3024,7 +3075,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     platform::AcceleratorTableHandle& accelTable, bool& freeCursorModeEnabled,
                     bool& isDraggingMinimap, bool& imeComposing, core::RecentFiles& recentFiles,
                     MenuBarHandles menuHandles, AutosaveContext& autosave,
-                    std::optional<logmode::LogIndexWorker>& logIndexWorker) {
+                    std::optional<logmode::LogIndexWorker>& logIndexWorker,
+                    std::vector<logmode::LogPatternRule>& userLogPatterns,
+                    const std::optional<std::filesystem::path>& logPatternsDir) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -3044,8 +3097,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
-                          &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave,
-                          &logIndexWorker](HWND hwnd) {
+                          &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
+                          &userLogPatterns, logPatternsDir](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -3107,7 +3160,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
                                              keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
-                                             commandPalette, recentFiles, menuHandles, autosave, logIndexWorker);
+                                             commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
+                                             userLogPatterns, logPatternsDir);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
