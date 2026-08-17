@@ -136,8 +136,17 @@ public:
     // pattern as m_folding/m_bookmarks above. std::optional (not a bare
     // LogModel) because "log mode never enabled for this tab" and "enabled,
     // 0 matching lines" are distinct states a plain LogModel::lines().empty()
-    // check couldn't tell apart. No UI/command wires into these yet (WI-14c) -
-    // this WI proves correctness via unit/integration tests only.
+    // check couldn't tell apart. WI-14c wires the "Log: Enable/Disable"
+    // commands (normal_mode_wiring.cpp) that populate/clear this.
+    //
+    // Known limitation (documented, not solved here, WI-14c): logModel()
+    // does NOT track document edits after indexing - same reasoning as
+    // core::BookmarkManager's own documented gap (bookmark_manager.h): this
+    // codebase has no edit-event/observer mechanism to subscribe to, only
+    // Document::version() polling. Editing a document after enabling log
+    // mode can leave line-number-keyed color-coding/filtering/jump targets
+    // pointing at the wrong lines until the user re-runs a "Log: Enable"
+    // command to re-index.
     [[nodiscard]] const std::optional<logmode::LogModel>& logModel() const noexcept { return m_logModel; }
     [[nodiscard]] const std::optional<logmode::LogPatternRule>& logPatternRule() const noexcept {
         return m_logPatternRule;
@@ -159,6 +168,34 @@ public:
     void applyLogIndexResult(logmode::LogModel result) noexcept {
         m_logModel         = std::move(result);
         m_logIndexInFlight = false;
+    }
+
+    // WI-14c: per-tab log-level filter mask (bit i = logmode::
+    // logLevelFilterBit(LogLevel(i))). Meaningless while logModel() is
+    // nullopt - RenderPipeline::isLineHidden() only consults its own copy
+    // of this value when it also holds a non-empty per-line level array
+    // (see pushLogVisualsForSession(), normal_mode_wiring.cpp). Mutable
+    // reference accessor, same shape as overwriteMode() above - the toggle/
+    // preset logic itself lives in normal_mode_wiring.cpp's palette
+    // commands, not here (this class stays thin storage, matching
+    // overwriteMode()'s own division of responsibility).
+    [[nodiscard]] std::uint8_t& logLevelFilterMask() noexcept { return m_logLevelFilterMask; }
+    [[nodiscard]] std::uint8_t  logLevelFilterMask() const noexcept { return m_logLevelFilterMask; }
+
+    // WI-14c: "Log: Disable" command. Symmetric with beginLogIndexing() -
+    // clears logModel()/logPatternRule() and resets the filter mask to
+    // "show everything", so a later beginLogIndexing() call starts from a
+    // clean slate rather than an old filter selection silently carrying
+    // over. Does not cancel an in-flight LogIndexWorker request (there is
+    // no cancellation mechanism - see log_index_worker.h); a stale response
+    // arriving afterward simply gets applied and then immediately
+    // superseded by whatever the next real action does, same as any other
+    // "fire and forget" async result in this codebase.
+    void disableLogMode() noexcept {
+        m_logModel.reset();
+        m_logPatternRule.reset();
+        m_logIndexInFlight   = false;
+        m_logLevelFilterMask = logmode::kAllLogLevelsVisible;
     }
 
     // Always derived from path()/isUntitled() - see this file's header
@@ -235,6 +272,7 @@ private:
     std::optional<logmode::LogModel>       m_logModel;
     std::optional<logmode::LogPatternRule> m_logPatternRule;
     bool                                   m_logIndexInFlight = false;
+    std::uint8_t                           m_logLevelFilterMask = logmode::kAllLogLevelsVisible;
 };
 
 }  // namespace neomifes::app
