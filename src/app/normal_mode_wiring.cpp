@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -50,6 +51,8 @@
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/file_saver.h"
 #include "neomifes/encoding/encoding.h"
+#include "neomifes/logmode/format_detection.h"
+#include "neomifes/logmode/log_navigation.h"
 #include "neomifes/platform/clipboard.h"
 #include "neomifes/search/grep_service.h"
 #include "neomifes/search/replacement.h"
@@ -80,6 +83,15 @@ using neomifes::core::Viewport;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::TextRange;
+using neomifes::logmode::builtInLogPatterns;
+using neomifes::logmode::detectLogPatternRule;
+using neomifes::logmode::kAllLogLevelsVisible;
+using neomifes::logmode::LogIndexWorker;
+using neomifes::logmode::LogLevel;
+using neomifes::logmode::logLevelFilterBit;
+using neomifes::logmode::LogPatternRule;
+using neomifes::logmode::nextVisibleLogLine;
+using neomifes::logmode::previousVisibleLogLine;
 using neomifes::render::FoldVisual;
 using neomifes::render::ImeComposition;
 using neomifes::render::MatchVisual;
@@ -510,6 +522,29 @@ void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, Edito
     ::SetFocus(hwnd);
 }
 
+// WI-14c: pushes `session`'s log-mode color-coding/filter into
+// `renderPipeline` (or turns them off, if `session` never enabled log
+// mode) - shared by syncViewForActiveSession() below (tab switch) and
+// applyLogIndexReadyMessage() (async LogIndexWorker result arriving for
+// the currently active tab) so both keep RenderPipeline's log-mode state
+// in sync with whichever EditorSession is actually on screen, the same
+// "one shared push function, multiple call sites" shape
+// syncFoldingState()/syncMatchVisuals() already established for their own
+// per-tab visuals.
+void pushLogVisualsForSession(RenderPipeline& renderPipeline, const EditorSession& session) {
+    if (!session.logModel()) {
+        renderPipeline.setLogLineLevels({});
+        return;
+    }
+    std::vector<neomifes::logmode::LogLevel> levels;
+    levels.reserve(session.logModel()->lines().size());
+    for (const auto& line : session.logModel()->lines()) {
+        levels.push_back(line.level);
+    }
+    renderPipeline.setLogLineLevels(std::move(levels));
+    renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
+}
+
 // WI-05: pushes `session`'s OWN already-existing view state into
 // RenderPipeline/FindBar - the tab-switch counterpart to
 // resetViewAfterDocumentSwap() above. Deliberately NOT reused for a tab
@@ -529,6 +564,11 @@ void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorS
     renderPipeline.setBookmarkedLines(std::vector<neomifes::document::LineNumber>(
         session.bookmarks().lines().begin(), session.bookmarks().lines().end()));
     syncFoldingState(hwnd, renderPipeline, session.folding());
+    // WI-14c: pushes the NEWLY active session's own log-mode color-coding/
+    // filter (or turns them off, if this session never enabled log mode) -
+    // pushLogVisualsForSession()'s own comment explains why this is shared
+    // with the async kMsgLogIndexReady path instead of only living there.
+    pushLogVisualsForSession(renderPipeline, session);
     syncMatchVisuals(session.findReplaceState(), renderPipeline);
     findBar.setMatchCount(session.findReplaceState().currentMatchIndex,
                           session.findReplaceState().currentMatches.size());
@@ -1463,6 +1503,16 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
     return neomifes::app::keyChordToString(*chord);
 }
 
+// WI-14c: the year to assume for RFC 3164 syslog's year-less timestamp
+// format (LogPatternRule::timestampFormat has no "%Y" for that rule - a
+// property of the RFC itself, see log_pattern.h). Read from the wall clock
+// at the moment "Log: Enable" is invoked, not cached - each invocation gets
+// whatever year it is right now.
+[[nodiscard]] int currentYear() noexcept {
+    const auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    return static_cast<int>(std::chrono::year_month_day(today).year());
+}
+
 // keybinding or document-wide action through the palette (Find/Find+Replace/
 // Find Next/Find Previous/Undo/Redo/Convert Tabs to Spaces/Convert Spaces to
 // Tabs/Toggle Free Cursor Mode). None of the last 3 has a dedicated
@@ -1491,12 +1541,191 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
 // "keybindings.*" commands let a reload/preset-switch rebuild BOTH
 // accelTable and this very registry (for fresh labels) live, via
 // commandPalette.setCommands() - see those commands' own comments below.
+// WI-14c: appends the "Log: Enable/Disable/Toggle*/Show*/Jump*" command set
+// (要件定義書§8 - 色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ, see
+// this WI's plan for the full requirements-to-command mapping). Pulled out
+// of buildCommandRegistry() into its own function purely to keep that
+// function's cognitive complexity under clang-tidy's threshold - the ~20
+// command registrations below (5 enable + disable + 7 filter toggles + 3
+// filter presets + 2 jump commands) pushed buildCommandRegistry() over the
+// limit on their own, same reasoning as every other "pulled out of X for the
+// same cognitive-complexity reason" extraction already in this file.
+void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
+                           RenderPipeline& renderPipeline, std::optional<LogIndexWorker>& logIndexWorker) {
+    // "Log: Enable (...)" - one command per builtInLogPatterns() rule
+    // (explicit override for when auto-detect picks the wrong rule or
+    // fails) plus one auto-detect command. All CommandId::None, palette-
+    // only - same footprint as edit.convertTabsToSpaces/view.theme.* in
+    // buildCommandRegistry() (build_plan.md's established "don't invent a
+    // dedicated UI surface for something the palette already covers"
+    // precedent for this file). logIndexWorker is empty until
+    // wireNormalMode()'s onDeferredInit lambda emplace()s it (see
+    // normal_mode_wiring.h's own comment) - the null check below is this
+    // WI's only defense against a command somehow firing before that
+    // happens.
+    for (const LogPatternRule& rule : builtInLogPatterns()) {
+        commands.push_back(CommandDescriptor{
+            .id              = std::u16string(u"logmode.enable.") + rule.id,
+            .title           = std::u16string(u"Log: Enable (") + rule.displayName + u")",
+            .keybindingLabel = u"",
+            .commandId       = CommandId::None,
+            .action = [&workspace, &logIndexWorker, rule]() {
+                if (!logIndexWorker) {
+                    return;
+                }
+                workspace.active().beginLogIndexing(*logIndexWorker, rule, currentYear());
+            }});
+    }
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.enable.auto", .title = u"Log: Enable (Auto-Detect)", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &logIndexWorker]() {
+            if (!logIndexWorker) {
+                return;
+            }
+            EditorSession& session = workspace.active();
+            const auto     rule    = detectLogPatternRule(session.document());
+            if (!rule) {
+                showLogFormatNotDetectedDialog(hwnd);
+                return;
+            }
+            session.beginLogIndexing(*logIndexWorker, *rule, currentYear());
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.disable", .title = u"Log: Disable", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        // Symmetric with beginLogIndexing() above - see
+        // EditorSession::disableLogMode()'s own comment.
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
+            session.disableLogMode();
+            pushLogVisualsForSession(renderPipeline, session);
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+
+    // Per-level filter toggles + 3 presets (要件定義書§8's フィルタ, with
+    // errorsOnly/warningsOnly directly satisfying ERROR抽出/WARNING抽出 -
+    // see this WI's plan point 設計方針6/table for why one filter mechanism
+    // covers all three requirements). Generated from a small table rather
+    // than 7 hand-written blocks, same "loop over a choice array" shape
+    // kPresetChoices already established in buildCommandRegistry().
+    struct LogLevelChoice {
+        LogLevel            level;
+        std::u16string_view name;  // matches the LogLevel enumerator's own spelling - used for both id suffix and title
+    };
+    constexpr std::array<LogLevelChoice, 7> kLogLevelChoices{{
+        {.level = LogLevel::Trace, .name = u"Trace"},
+        {.level = LogLevel::Debug, .name = u"Debug"},
+        {.level = LogLevel::Info, .name = u"Info"},
+        {.level = LogLevel::Warning, .name = u"Warning"},
+        {.level = LogLevel::Error, .name = u"Error"},
+        {.level = LogLevel::Fatal, .name = u"Fatal"},
+        {.level = LogLevel::Unknown, .name = u"Unknown"},
+    }};
+    for (const LogLevelChoice& choice : kLogLevelChoices) {
+        commands.push_back(CommandDescriptor{
+            .id              = std::u16string(u"logmode.filter.toggle") + std::u16string(choice.name),
+            .title           = std::u16string(u"Log: Toggle ") + std::u16string(choice.name),
+            .keybindingLabel = u"",
+            .commandId       = CommandId::None,
+            .action = [hwnd, &workspace, &renderPipeline, level = choice.level]() {
+                EditorSession& session = workspace.active();
+                session.logLevelFilterMask() ^= logLevelFilterBit(level);
+                renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }});
+    }
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.filter.showAll", .title = u"Log: Show All Levels", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session        = workspace.active();
+            session.logLevelFilterMask() = kAllLogLevelsVisible;
+            renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.filter.errorsOnly", .title = u"Log: Show Only Errors", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
+            session.logLevelFilterMask() =
+                static_cast<std::uint8_t>(logLevelFilterBit(LogLevel::Error) | logLevelFilterBit(LogLevel::Fatal));
+            renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.filter.warningsOnly", .title = u"Log: Show Only Warnings", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session        = workspace.active();
+            session.logLevelFilterMask() = logLevelFilterBit(LogLevel::Warning);
+            renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+
+    // "Log: Jump to Next/Previous Log Entry" - one navigation primitive
+    // that, depending on the active filter, doubles as 時系列ジャンプ (no
+    // filter: walks every matched line in document order), ERROR抽出
+    // navigation (errorsOnly filter active), or WARNING抽出 navigation
+    // (warningsOnly filter active) - see this WI's plan point 設計方針6.
+    // Same cursor-move/reveal-fold/sync shape as handleBookmarkKey()'s
+    // next/previous handling in buildCommandRegistry().
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.jump.next", .title = u"Log: Jump to Next Log Entry", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
+            if (!session.logModel()) {
+                return;
+            }
+            const Document& document    = session.document();
+            const auto      currentLine = document.offsetToLine(session.selection().primaryCursor().position);
+            const auto      target =
+                nextVisibleLogLine(session.logModel()->lines(), currentLine, session.logLevelFilterMask());
+            if (!target) {
+                return;
+            }
+            const auto pos = document.lineToOffset(*target);
+            session.selection().moveAllTo(pos);
+            session.viewport().ensureVisible(pos, document);
+            if (session.folding().revealLine(*target)) {
+                syncFoldingState(hwnd, renderPipeline, session.folding());
+            }
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"logmode.jump.previous", .title = u"Log: Jump to Previous Log Entry", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
+            if (!session.logModel()) {
+                return;
+            }
+            const Document& document    = session.document();
+            const auto      currentLine = document.offsetToLine(session.selection().primaryCursor().position);
+            const auto      target =
+                previousVisibleLogLine(session.logModel()->lines(), currentLine, session.logLevelFilterMask());
+            if (!target) {
+                return;
+            }
+            const auto pos = document.lineToOffset(*target);
+            session.selection().moveAllTo(pos);
+            session.viewport().ensureVisible(pos, document);
+            if (session.folding().revealLine(*target)) {
+                syncFoldingState(hwnd, renderPipeline, session.folding());
+            }
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+        }});
+}
+
 std::vector<CommandDescriptor> buildCommandRegistry(
     HWND hwnd, FindBar& findBar, Workspace& workspace, RenderPipeline& renderPipeline, core::Settings& settings,
     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
     const std::optional<std::filesystem::path>& keyBindingsPath, platform::AcceleratorTableHandle& accelTable,
     bool& freeCursorModeEnabled, CommandPalette& commandPalette, core::RecentFiles& recentFiles,
-    const MenuBarHandles& menuHandles, AutosaveContext& autosave) {
+    const MenuBarHandles& menuHandles, AutosaveContext& autosave,
+    std::optional<LogIndexWorker>& logIndexWorker) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -1740,7 +1969,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .commandId = CommandId::None,
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                   menuHandles, &autosave]() {
+                   menuHandles, &autosave, &logIndexWorker]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -1748,7 +1977,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             accelTable  = neomifes::app::buildAcceleratorTable(keyBindings);
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
-                accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave));
+                accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
+                logIndexWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -1778,7 +2008,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .commandId       = CommandId::None,
             .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                       menuHandles, &autosave, presetName = std::u16string(choice.name)]() {
+                       menuHandles, &autosave, &logIndexWorker, presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -1787,10 +2017,16 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 commandPalette.setCommands(buildCommandRegistry(
                     hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
-                    menuHandles, autosave));
+                    menuHandles, autosave, logIndexWorker));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
+
+    // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
+    // appendLogModeCommands()'s own doc comment for why this block lives in
+    // its own function rather than inline here.
+    appendLogModeCommands(commands, hwnd, workspace, renderPipeline, logIndexWorker);
+
     return commands;
 }
 
@@ -2597,13 +2833,24 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
 // require either operand to point to a live object). No match (tab closed
 // mid-flight) silently discards the result, same tolerance SyntaxWorker's
 // own stale-response handling already has.
-void applyLogIndexReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+// WI-14c: gained hwnd/renderPipeline (previously just workspace/wParam/
+// lParam, WI-14b) so a result landing for the CURRENTLY ACTIVE session can
+// push its log visuals immediately - an inactive tab's result is still
+// applied to its EditorSession (so it's ready whenever that tab becomes
+// active) but doesn't touch RenderPipeline/repaint until
+// syncViewForActiveSession() does that for it on the eventual tab switch.
+void applyLogIndexReadyMessage(Workspace& workspace, RenderPipeline& renderPipeline, HWND hwnd, WPARAM wParam,
+                               LPARAM lParam) {
     const std::unique_ptr<neomifes::logmode::LogModel> model(
         reinterpret_cast<neomifes::logmode::LogModel*>(lParam));
     const auto* const token = reinterpret_cast<const void*>(wParam);
     for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
         if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
             workspace.sessionAt(i).applyLogIndexResult(std::move(*model));
+            if (i == workspace.activeIndex()) {
+                pushLogVisualsForSession(renderPipeline, workspace.sessionAt(i));
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }
             break;
         }
     }
@@ -2629,7 +2876,7 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND
         return;
     }
     if (msg == neomifes::logmode::kMsgLogIndexReady) {
-        applyLogIndexReadyMessage(workspace, wParam, lParam);
+        applyLogIndexReadyMessage(workspace, renderPipeline, hwnd, wParam, lParam);
     }
 }
 
@@ -2860,7 +3107,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
         auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
                                              keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
-                                             commandPalette, recentFiles, menuHandles, autosave);
+                                             commandPalette, recentFiles, menuHandles, autosave, logIndexWorker);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
