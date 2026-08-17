@@ -3130,9 +3130,9 @@ LogModeController
 - TimelineIndex に (timestamp, offset) を挿入
 - UI から 2010-01-01 12:34:56 のように入力 → 最近傍検索 → ジャンプ
 
-### 11.3 `neomifes::logmode` リファレンス (WI-14a/b実装)
+### 11.3 `neomifes::logmode` リファレンス (WI-14a〜c実装)
 
-`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`)。UIは未実装 (WI-14c、§10.1「実装後の確定事項」参照)。
+`src/logmode/` (`neomifes_logmode` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`re2::re2`)。UIはWI-14cで実装済み(`ui::CommandPalette`経由、下記「WI-14c追加」参照)。
 
 ```cpp
 // neomifes/logmode/log_pattern.h
@@ -3190,6 +3190,18 @@ public:
                       std::optional<int> assumedYear, const void* sessionToken) noexcept;
     // private: std::deque<PendingLogIndexRequest> m_pending (FIFO、mutex/condition_variable保護)
 };
+
+// neomifes/logmode/log_pattern.h (WI-14c追加)
+[[nodiscard]] constexpr std::uint8_t logLevelFilterBit(LogLevel level) noexcept;  // 1U << static_cast<uint8_t>(level)
+inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビット
+
+// neomifes/logmode/log_navigation.h (WI-14c)
+[[nodiscard]] std::optional<document::LineNumber> nextVisibleLogLine(
+    std::span<const LogLine> lines, document::LineNumber from, std::uint8_t levelFilterMask) noexcept;
+[[nodiscard]] std::optional<document::LineNumber> previousVisibleLogLine(
+    std::span<const LogLine> lines, document::LineNumber from, std::uint8_t levelFilterMask) noexcept;
+// matched && (levelFilterMask & logLevelFilterBit(line.level)) を満たす直近行への
+// ラップアラウンド探索 (core::BookmarkManager::next()/previous()と同じ規約)。
 ```
 
 **設計上の要点 (WI-14a):**
@@ -3204,6 +3216,15 @@ public:
 - `LogIndexWorker`は`render::SyntaxWorker`(Phase 7c)を型として踏襲するが、「保留中リクエストは最新の1件のみ・上書き」というSyntaxWorkerの設計は**採用しない**。複数タブが独立して結果を必要とするため、`std::deque`によるFIFOキュー(全リクエストを提出順に処理、取りこぼさない)を採用する。
 - 完了メッセージ(`kMsgLogIndexReady`、`wParam`=opaqueな`sessionToken`)のタブへのルーティングは、受信側(`normal_mode_wiring.cpp`の`handleAppMessage()`)が`&workspace.sessionAt(i)`とのポインタ値比較のみ(絶対にdereferenceしない)で対象`EditorSession`を特定する。対象が見つからない(タブが閉じられていた)場合は無言で破棄する。
 - `EditorSession`(`src/app/include/neomifes/app/editor_session.h`)に`m_logModel`(`std::optional<logmode::LogModel>`)/`m_logPatternRule`/`m_logIndexInFlight`のper-tab状態と`beginLogIndexing()`/`applyLogIndexResult()`メソッドを追加した(`m_folding`/`m_bookmarks`と同じ「常時構築・条件付き使用」パターン)。WI-14b時点ではこれらを実際に呼び出すUI/コマンドは配線されていない(WI-14cへ)。
+
+**設計上の要点 (WI-14c追加):**
+- UIは新規ネイティブウィジェットを追加せず、`ui::CommandPalette`のコマンド群(`logmode.enable.*`/`disable`/`filter.toggle*`/`filter.showAll`/`filter.errorsOnly`/`filter.warningsOnly`/`jump.next`/`jump.previous`)のみで提供する。`normal_mode_wiring.cpp`の`appendLogModeCommands()`に集約。
+- `render::RenderPipeline`が`logmode::LogLevel`を仲介型なしで直接使用する(`syntax::Token`/`syntax::Language`と同じ「自己完結モジュールは直接依存可」の扱い)。`RenderPipeline::setLogLineLevels(std::vector<LogLevel>)`/`setLogLevelFilter(std::uint8_t mask)`が公開API。
+- 色分けは`drawLogLevelOnLine()`(`drawTokensOnLine()`と同型の`IDWriteTextLayout::SetDrawingEffect`経由)。フィルタは`RenderPipeline::isLineHidden()`(Phase 7iの折り畳み非表示判定)へOR合流させ、新規の隠蔽経路を作らない。
+- `m_logLineLevels`(文書全体サイズになりうる`std::vector<LogLevel>`)は`FrameState`の比較対象から除外し、`setLogLineLevels()`自身が`m_lastRenderedFrameState.reset()`を呼んで到着時に1回だけ強制再描画する(`applyAsyncSyntaxTokens()`と同じパターン)。フィルタマスク(`std::uint8_t`)は軽量なので`FrameState`へ直接含める。
+- `EditorSession::logLevelFilterMask()`(可変参照アクセサ、既定`kAllLogLevelsVisible`)と`disableLogMode()`(logModel/logPatternRule/フィルタマスクを初期状態へ戻す、`beginLogIndexing()`と対称)を追加。
+- `app::message_dialogs.h`に`showLogFormatNotDetectedDialog(HWND)`を追加(`detectLogPatternRule()`が失敗した際のOK-onlyダイアログ、`showSaveErrorDialog()`と同型)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14c)」参照。
 
 ---
 

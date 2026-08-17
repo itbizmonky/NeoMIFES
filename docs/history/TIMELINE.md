@@ -2999,4 +2999,31 @@ WI-14a完了後、ユーザーから「次のPhaseに進め」と指示された
 
 コミット済み、pushはユーザーの明示指示待ち。次はWI-14c(UIモード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ、完了をもってPhase 10.1のMVP達成)。
 
+## Session 94 (2026-08-17): WI-14c(UIモード MVP 🎉、Phase 10.1 MVP達成)実装完了
+
+WI-14b完了後、ユーザーから「次のPhaseに進め」と指示された。着手前調査(既存コードの直接読解)を基に計画を書き、`ExitPlanMode`でユーザー承認を得て実装した。
+
+**着手前調査で確定した設計方針:**
+1. roadmap §10.1のUIスケッチ(左右ペインの専用ツリー/統計ダッシュボード)は不採用とし、`ui::CommandPalette`のパレット限定コマンド(`CommandId::None`、WI-08〜WI-10で確立済みパターン)のみで全機能を提供する。新規ネイティブウィジェットのリスク(`docs/issues/native_overlay_widgets_invisible.md`型)とWI規模の両方を避けるため。
+2. `neomifes::render`が`neomifes::logmode::LogLevel`を仲介型なしで直接使う。`RenderPipeline`が既に`syntax::Token`/`syntax::Language`を直接扱っているのと同じ理由(`neomifes::logmode`は`document::`のみに依存する自己完結モジュール)。
+3. フィルタ(非表示行)は既存の`RenderPipeline::isLineHidden()`(Phase 7iの折り畳み機構)へOR合流させ、新規の隠蔽経路を作らない。`drawVisibleLines()`/`hitTest()`等の既存可視行ロジックは無変更のまま対応させた。
+4. `m_logLineLevels`(文書全体サイズになりうる)は`FrameState`比較対象から除外し、`applyAsyncSyntaxTokens()`と同じ「到着時に強制再描画」パターンを踏襲。フィルタマスクは軽量なので`FrameState`へ直接含める。
+5. 時系列ジャンプ/ERROR抽出/WARNING抽出の3要件は`logmode.jump.next/previous`という単一機構(フィルタ状態に応じて挙動が変わる)で満たし、専用UIを追加しない。
+
+**実装(6ステップ、6コミット):**
+1. `log_pattern.h`のフィルタビット変換ヘルパー(`logLevelFilterBit()`/`kAllLogLevelsVisible`)+新規`log_navigation.h/.cpp`(`nextVisibleLogLine()`/`previousVisibleLogLine()`、`core::BookmarkManager::next()/previous()`と同じラップアラウンド規約)+単体テスト。(`e92ddfb`)
+2. `EditorSession::logLevelFilterMask()`(可変参照アクセサ)+`disableLogMode()`(`beginLogIndexing()`と対称)を追加+テスト。(`84f5bf9`)
+3. `Theme::logError`/`logWarning`をDark/Light/HighContrast全3テーマに追加+テスト。(`0f5af55`)
+4. `RenderPipeline::setLogLineLevels()`/`setLogLevelFilter()`/`drawLogLevelOnLine()`(`drawTokensOnLine()`と同型)/`isLineHidden()`拡張を実装、`src/render/CMakeLists.txt`へ`neomifes::logmode`をPUBLIC追加+統合テスト3件。(`8250f3d`)
+5. `showLogFormatNotDetectedDialog()`(`showSaveErrorDialog()`と同型のOK-onlyダイアログ)を追加。(`d41f52b`)
+6. `normal_mode_wiring.cpp`へ`pushLogVisualsForSession()`(tab切替と`kMsgLogIndexReady`受信の両方から共有呼び出し)+`applyLogIndexReadyMessage()`のアクティブセッション即時反映拡張+`currentYear()`(RFC 3164のassumedYear用)+コマンドパレットへの~20コマンド(`logmode.enable.*`×5/`disable`/`filter.toggle*`×7/`filter.showAll/errorsOnly/warningsOnly`/`jump.next/previous`)を追加。(`4d30233`)
+
+**Step6完了後の検証で発覚した問題(WI-14bと同種の再発)と対処:** バックグラウンドエージェントによるDebug構成の検証(1290/1290 green、0警告)は通過したが、続くRelease/ubsan/clang-tidy検証で`buildCommandRegistry()`が~20個の新規コマンド追加により`readability-function-cognitive-complexity`の閾値(25)を43まで超過していたと判明した。WI-14bの`wireNormalMode()`と同種の問題が2WI連続で発生。`appendLogModeCommands(std::vector<CommandDescriptor>&, HWND, Workspace&, RenderPipeline&, std::optional<LogIndexWorker>&)`へ丸ごと抽出して解消した(純粋なコード移動、ロジック変更なし)。同時に`tests/integration/render_text_smoke_test.cpp`の未使用using宣言(`kAllLogLevelsVisible`)も検出・削除した。修正後、Debug構成で0警告・1290/1290 green・clang-tidy新規指摘0を再確認した(Release/ubsanの再実行は、直前の完全な3構成ゲートが既にgreenだったこと・修正が純粋なコード移動+1行削除に限られることを踏まえて省略した)。**教訓:** 大量のコマンドをループ生成するパターン自体は`kPresetChoices`(WI-10)以来繰り返し使われてきたが、その量が単一関数に累積すると認知的複雑度が超過することが2WI連続で確認された。今後5個を超えるコマンド群を1関数へ追加する際は着手前に抽出を前提とした設計を検討すべき。
+
+最終ゲート: Debug/Release/ubsan全1290件green、clang-tidy新規警告0(修正後の再検証込み)。実アプリでの視覚確認(サンプルログファイルでのAuto-Detect→色分け→フィルタ→ジャンプの一連操作)は本セッションでは未実施 — 次回ドッグフーディング時に確認すること、として正直に記録する。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、§5にWI-14c完全エントリ新設+WI-14dへ再構成)、`master_roadmap.md`(§10.1に実装後の確定事項追記、§2フェーズ表のPhase 10.1行を🎉MVP達成・完結へ更新)、`detailed_design.md`(§11.3を拡張し`log_navigation.h`/`logLevelFilterBit`等のリファレンス+WI-14c設計要点を追加)、`RESUME_HERE.md`(§1状態表+新規§3.83完了記録+§6推奨プロンプト更新)。
+
+コミット済み、pushはユーザーの明示指示待ち。次はWI-14d(複数行エントリのグルーピング + ユーザー編集可能パターンファイル、優先度中)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

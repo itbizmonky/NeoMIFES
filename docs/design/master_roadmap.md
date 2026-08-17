@@ -284,7 +284,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6d** | **自動保存・バックアップ・クラッシュ復旧・最近開いたファイル** | ✅ **完了 (WI-11, 2026-08-15)** | §8.6 |
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
-| 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🔶 **進行中 (WI-14a/b完了、2026-08-17。WI-14c〜dが次候補)** | §10.1 |
+| 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **MVP達成・完結 (WI-14a〜c完了、2026-08-17。WI-14dは磨き上げ、優先度中)** | §10.1 |
 | 10.2/10.3 | CSV / JSON-XML tree | 未着手 | §10.2, §10.3 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
@@ -2102,6 +2102,28 @@ public:
 - **完了メッセージのタブへのルーティングは`Workspace`への新規API追加なしで実現した。** `EditorSession`自身のポインタを不透明な`sessionToken`として往復させ、受信側が`&workspace.sessionAt(i)`とのポインタ値比較のみ(dereferenceしない)で対象タブを特定する。閉じられたタブへの結果は安全に破棄される。
 - **WI-14bでは`beginLogIndexing()`/`applyLogIndexResult()`を実際に呼び出すUI/コマンドは一切配線しなかった(WI-14cへ)。** ただし完了メッセージの受信インフラ(`LogIndexWorker`の構築+`kMsgLogIndexReady`ハンドラ+`Workspace`線形走査ルーティング)はWI-14bで実装・統合テストで検証済み。
 - 詳細は`build_plan.md` WI-14bセクション、`detailed_design.md` §11.3参照。
+
+#### 実装後の確定事項 (WI-14c、UI モード MVP 🎉、2026-08-17、Phase 10.1 完結)
+
+要件定義書§8の残り全項目(色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ)を実装し、Phase 10.1のMVPを達成した。
+
+- **本節冒頭のUIスケッチ(左ペイン+右ペインの専用ツリー/統計ダッシュボード)は不採用とした。** `ui::CommandPalette`のみで全機能を提供する(WI-08〜WI-10で確立済みの`CommandId::None`パレット限定コマンドパターン)。新規ネイティブウィジェット追加のリスクとWI規模を避けるための判断。
+- **要件定義書§8の5項目を、実質3機構(色分け/フィルタ/ジャンプ)で満たした。** ERROR抽出/WARNING抽出は「フィルタのプリセット(`logmode.filter.errorsOnly`/`warningsOnly`) + 既存のジャンプコマンド」の組み合わせで実現し、専用コマンドを新設していない — 時系列ジャンプ(`logmode.jump.next/previous`)がフィルタ状態に応じて自然にERROR/WARNING抽出ナビゲーションへ変化する設計。
+
+| 要件定義書§8の項目 | 実装 |
+|---|---|
+| タイムスタンプ解析 | WI-14aで実装済み |
+| 色分け | `RenderPipeline::setLogLineLevels()` + `drawLogLevelOnLine()` |
+| フィルタ | `EditorSession::logLevelFilterMask()` + `isLineHidden()`拡張 |
+| ERROR抽出/WARNING抽出 | フィルタのプリセット + `logmode.jump.next/previous` |
+| 時系列ジャンプ | `logmode.jump.next/previous`(フィルタ無しなら全マッチ行を時系列順) |
+
+- **`neomifes::render`が`neomifes::logmode::LogLevel`を仲介型なしで直接使う設計にした。** `RenderPipeline`が既に`syntax::Token`/`syntax::Language`を直接扱っているのと同じ理由(`neomifes::logmode`は`document::`のみに依存する自己完結モジュール)。`CursorVisual`/`MatchVisual`/`FoldVisual`が採用した「independent mirror struct」パターンは不要と判断した。
+- **フィルタ(非表示行)は新規の隠蔽経路を作らず、既存の`RenderPipeline::isLineHidden()`(Phase 7iの折り畳み機構)へOR合流させた。** `drawVisibleLines()`/`hitTest()`等の既存可視行ロジックは無変更のままフィルタに対応させた。
+- **`m_logLineLevels`(文書全体サイズになりうる)は`FrameState`の比較対象から除外し、`applyAsyncSyntaxTokens()`と同じ「到着時に強制再描画」パターンを踏襲した。** 軽量なフィルタマスクのみ`FrameState`へ直接含めた。
+- **ログ編集追従(行番号ズレの自動補正)はスコープ外とした。** `core::BookmarkManager`の既知の制約と同じ理由。再インデックスで手動復旧する。
+- **`buildCommandRegistry()`の認知的複雑度超過(43、閾値25)が発生し、`appendLogModeCommands()`への抽出で解消した。** WI-14bの`wireNormalMode()`と同種の問題が2WI連続で発生しており、5個を超えるコマンド群を1関数へ追加する際は着手前に抽出を前提とした設計を検討すべき教訓を得た。
+- 詳細は`build_plan.md` WI-14cセクション、`detailed_design.md` §11.3参照。次はWI-14d(複数行エントリのグルーピング+ユーザー編集可能パターンファイル、優先度中)。
 
 ### 10.2 CSV モード (要件定義書 §9)
 

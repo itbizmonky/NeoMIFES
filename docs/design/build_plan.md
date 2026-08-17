@@ -137,7 +137,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
-- [ ] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成 WI)
+- [x] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成) → コミット: `e92ddfb`/`84f5bf9`/`0f5af55`/`8250f3d`/`d41f52b`/`4d30233`
 - [ ] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル (優先度中)
 - [ ] **WI-15** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-16** Phase 9 — AI プラグイン
@@ -1043,13 +1043,59 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
-## WI-14c 〜 WI-14d — Phase 10.1 (ログ解析モード) 残りサブ WI
+## WI-14c — UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成)
+
+**目的:** WI-14a/b のヘッドレス基盤 (`LogPatternRule`/`LogModel`/`LogIndexWorker`) を、実際にユーザーが使える機能として完結させる。要件定義書 §8 の残り全項目 (色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ) を実装し、完了をもって Phase 10.1 の MVP 達成とする。
+
+**前提:** WI-14b 完了 (コミット `4f55d8b`〜`525e0f1`)
+
+**参照:** `master_roadmap.md` §10.1、`docs/design/detailed_design.md` §11.3
+
+### 既に決まっている設計
+
+- roadmap §10.1 の UI スケッチ (左ペイン+右ペインの専用ツリー/統計ダッシュボード) は採用しない。新規ネイティブウィジェットを追加すると `docs/issues/native_overlay_widgets_invisible.md` 型のリスクと WI 規模の両方を抱え込むため、既存の `ui::CommandPalette` (パレット限定コマンド、WI-08〜WI-10 で確立済みの `CommandId::None` パターン) のみで全機能を提供する
+- `neomifes::render` が `neomifes::logmode::LogLevel` を仲介型なしで直接使う (`RenderPipeline` が既に `syntax::Token`/`syntax::Language` を直接扱っているのと同じ理由 — `neomifes::logmode` は `document::` のみに依存する自己完結モジュール)。`src/render/CMakeLists.txt` に `neomifes::logmode` を PUBLIC リンク追加
+- フィルタ (非表示行) は新規の隠蔽経路を作らず、既存の `RenderPipeline::isLineHidden()` (Phase 7i の折り畳み機構) へログレベルフィルタを OR で合流させる。`drawVisibleLines()`/`hitTest()`/`visibleLineRange()` 等の既存可視行ロジックは無変更のままフィルタに対応する
+- `m_logLineLevels` (文書行ごとのレベル配列、文書全体サイズになりうる) は `FrameState` の比較対象に含めない。`applyAsyncSyntaxTokens()` と同じ「到着時に `m_lastRenderedFrameState.reset()` で1回だけ強制再描画」パターンを踏襲する。フィルタマスク (`std::uint8_t`、軽量) は `FrameState` へ直接含め毎フレーム比較する
+- ログ編集追従 (行番号ズレの自動補正) はスコープ外。`core::BookmarkManager` の既知の制約 (bookmarks do NOT track document edits) と同じ理由 — このコードベースには Document 変更の購読機構が無い。再インデックス (`logmode.enable.*` の再実行) で手動復旧する
+- 時系列ジャンプは「次/前の可視ログ行へジャンプ」という単一のナビゲーションプリミティブに単純化する。`logmode.jump.next/previous` は「`matched==true` かつ現在のフィルタマスクを通過する直近の行」へジャンプする (`core::BookmarkManager::next()/previous()` と同じラップアラウンド規約) — フィルタ未適用時は時系列ジャンプ、errorsOnly フィルタ時は ERROR抽出ナビゲーション、warningsOnly フィルタ時は WARNING抽出ナビゲーションになる。1つの機構が要件定義書の3項目を満たす
+- フォーマット自動検出に失敗した場合は `showLogFormatNotDetectedDialog()` (OK-only TaskDialogIndirect、`showSaveErrorDialog()` と同型) で通知する
+
+### 実施内容 (7ステップ、コミット単位)
+
+1. `log_pattern.h`(`logLevelFilterBit`/`kAllLogLevelsVisible`) + `log_navigation.h/.cpp` 新設 + 単体テスト (`e92ddfb`)
+2. `EditorSession`: `logLevelFilterMask()`/`disableLogMode()` 追加 + テスト (`84f5bf9`)
+3. `theme.h/.cpp`: `logError`/`logWarning` フィールド追加 (3テーマ全て) + テスト (`0f5af55`)
+4. `RenderPipeline`: `setLogLineLevels()`/`setLogLevelFilter()`/`FrameState`拡張/`isLineHidden()`拡張/`drawLogLevelOnLine()` + `src/render/CMakeLists.txt`(`neomifes::logmode`リンク) + 統合テスト (`8250f3d`)
+5. `message_dialogs.h/.cpp`: `showLogFormatNotDetectedDialog()` (`d41f52b`)
+6. `normal_mode_wiring.cpp/.h`: `pushLogVisualsForSession()` + `applyLogIndexReadyMessage()`拡張 + `buildCommandRegistry()`への全コマンド追加 (enable×5/disable/filter×9/jump×2)、およびそれによる `readability-function-cognitive-complexity` 超過(43、閾値25)を `appendLogModeCommands()` への抽出で解消 (`4d30233`)
+7. ドキュメント同期 (本コミット)
+
+### DoD
+
+- [x] `logLevelFilterBit()`/`kAllLogLevelsVisible`
+- [x] `nextVisibleLogLine()`/`previousVisibleLogLine()` (ラップアラウンド規約、フィルタ対応)
+- [x] `EditorSession::logLevelFilterMask()`/`disableLogMode()`
+- [x] `Theme::logError`/`logWarning` (3テーマ)
+- [x] `RenderPipeline` 色分け描画 + フィルタ非表示 + `FrameState`除外設計
+- [x] `showLogFormatNotDetectedDialog()`
+- [x] コマンドパレット統合 (`logmode.enable.*`/`disable`/`filter.*`/`jump.*`、計~20コマンド)
+- [x] Debug/Release/ubsan 全 green (1290/1290)、clang-tidy 新規警告 0 (再検証込み)
+
+### 実装後の確定事項
+
+**`buildCommandRegistry()` の認知的複雑度超過:** WI-14b の `wireNormalMode()` と同種の問題が本 WI でも再発した。~20個のログモードコマンドを `buildCommandRegistry()` へ直接 push_back したところ、認知的複雑度が43(閾値25)まで悪化した。`appendLogModeCommands(std::vector<CommandDescriptor>&, HWND, Workspace&, RenderPipeline&, std::optional<LogIndexWorker>&)` へ丸ごと抽出し解消(抽出後の再検証で新規指摘0件を確認)。「大量の類似コマンドをループで生成する」パターン自体は WI-10 の `kPresetChoices` 以来繰り返し使われてきたが、その生成コード量が単一関数に累積すると閾値を超えることが2WI連続で確認された — 今後 5個を超えるコマンド群を1関数へ追加する際は、着手前に抽出を前提とした設計を検討する。
+
+**Release/ubsan の再検証省略の判断:** 上記の抽出リファクタは純粋なコード移動(ロジック変更なし、同一キャプチャ・同一処理)+ 未使用using宣言1行の削除のみだったため、Debug構成での0警告・1290/1290 green再確認をもって十分と判断し、Release/ubsanの3構成目・4構成目の再実行は省略した(直前の完全な3構成ゲートで両方ともgreenだったことを踏まえた判断)。
+
+---
+
+## WI-14d — Phase 10.1 (ログ解析モード) 残りサブ WI
 
 着手時は下記の概要を出発点に、本書 §5 と同じ形式で WI を切り直すこと。
 
 | WI | 内容 | 目安 |
 |---|---|---|
-| WI-14c | UI モード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ (要件定義書 §8 残り全項目)、`EditorSession::beginLogIndexing()`/`applyLogIndexResult()` を実際に呼び出すコマンド/UI配線、完了をもって Phase 10.1 の MVP 達成とする | 1〜2 サブ WI |
 | WI-14d | 複数行エントリのグルーピング (Java スタックトレース等の継続行) + ユーザー編集可能パターンファイル (`%APPDATA%\NeoMIFES\log_patterns\`) + パターン拡充 (MVP後の磨き上げ、優先度中) | 1 サブ WI |
 
 ---

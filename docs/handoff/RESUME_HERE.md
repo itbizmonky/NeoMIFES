@@ -166,7 +166,8 @@
 | **12'** | **MVP 出荷判定** | ✅ **完了 (WI-13、§3.80参照)。🎉 M4 達成 (2026-08-16): 秀丸/サクラの代替として出荷可能** — 技術項目12/14達成、残り2項目(本物のAuthenticode証明書・日常的ドッグフーディング)はユーザー判断でこの状態のまま達成扱いとする承認済み |
 | **10.1a** | **ログ解析モード ヘッドレス基盤** (`neomifes::logmode`、`LogPatternRule`/`LogModel`、標準4パターン) | ✅ **完了 (WI-14a、2026-08-16、§3.81参照)** |
 | **10.1b** | **非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化** (`LogIndexWorker`、`detectLogPatternRule()`) | ✅ **完了 (WI-14b、2026-08-17、§3.82参照)** |
-| 10.1c〜d → 10.2/10.3 → 11 → 9 → 12 | UIモードMVP(🎉Phase 10.1 MVP達成予定) → CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
+| **10.1c** | **UI モード MVP 🎉** (色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ、要件定義書§8完結) | ✅ **完了 (WI-14c、2026-08-17、§3.83参照)。🎉 Phase 10.1 MVP達成** |
+| 10.1d → 10.2/10.3 → 11 → 9 → 12 | 複数行グルーピング+パターンファイル(優先度中) → CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2413,6 +2414,24 @@ WI-14a完了後、ユーザーから「次のPhaseに進め」と指示された
 
 ---
 
+### 3.83 WI-14c (UIモード MVP 🎉、Phase 10.1 MVP達成) 完了記録 (2026-08-17)
+
+WI-14b完了後、ユーザーから「次のPhaseに進め」と指示された。着手前調査(既存コードの直接読解)を基に計画を書き、`ExitPlanMode`でユーザー承認を得て実装した。7ステップ・6コミットで完了(`e92ddfb`/`84f5bf9`/`0f5af55`/`8250f3d`/`d41f52b`/`4d30233`)。
+
+**設計方針の要点:** roadmap §10.1のUIスケッチ(左右ペインの専用ツリー/統計ダッシュボード)は不採用とし、`ui::CommandPalette`のパレット限定コマンドのみで全機能を提供した。`neomifes::render`が`neomifes::logmode::LogLevel`を仲介型なしで直接使う設計にした(`syntax::Token`と同じ「自己完結モジュールは直接依存可」の扱い)。フィルタは新規の隠蔽経路を作らず既存の`isLineHidden()`(Phase 7iの折り畳み機構)へOR合流させた。時系列ジャンプ/ERROR抽出/WARNING抽出の3要件を`logmode.jump.next/previous`という単一機構(フィルタ状態に応じて挙動が変わる)で満たした。詳細な設計判断は`build_plan.md` WI-14cセクション、`master_roadmap.md` §10.1「実装後の確定事項 (WI-14c)」参照。
+
+**ステップ1〜5:** `log_pattern.h`のフィルタビット変換ヘルパー、`log_navigation.h/.cpp`(ラップアラウンド探索)、`EditorSession::logLevelFilterMask()`/`disableLogMode()`、`Theme::logError`/`logWarning`(3テーマ)、`RenderPipeline`の色分け+フィルタ描画(`FrameState`除外設計含む)、`showLogFormatNotDetectedDialog()`を、それぞれ単体/統合テスト付きで実装した。いずれも既存パターン(`applyAsyncSyntaxTokens()`のFrameStateリセット、`showSaveErrorDialog()`のダイアログ型、`isLineHidden()`の拡張)を踏襲する設計で、着手前調査通りに完結した。
+
+**ステップ6:** `normal_mode_wiring.cpp`へ~20個のログモードコマンド(`logmode.enable.*`×5/`disable`/`filter.toggle*`×7/`filter.showAll/errorsOnly/warningsOnly`/`jump.next/previous`)を`buildCommandRegistry()`へ追加した。`pushLogVisualsForSession()`(tab切替と`kMsgLogIndexReady`受信の両方から共有呼び出し)、`applyLogIndexReadyMessage()`のアクティブセッション即時反映拡張も実装した。
+
+**Step6完了後の検証で判明した問題と対処 (Step7):** バックグラウンドエージェントによるDebug構成の検証(1290/1290 green、0警告)は問題なく通過したが、続くRelease/ubsan/clang-tidy検証で、`buildCommandRegistry()`が~20個の新規コマンド追加により`readability-function-cognitive-complexity`の閾値(25)を43まで超過していたことが判明した。WI-14bの`wireNormalMode()`と同種の問題が2WI連続で発生したことになる。`appendLogModeCommands(std::vector<CommandDescriptor>&, HWND, Workspace&, RenderPipeline&, std::optional<LogIndexWorker>&)`へ丸ごと抽出して解消した(純粋なコード移動、ロジック変更なし)。同時に`tests/integration/render_text_smoke_test.cpp`の未使用using宣言(`kAllLogLevelsVisible`)も検出・削除した。抽出後、Debug構成で0警告・1290/1290 green・clang-tidy新規指摘0を再確認した。直前の完全な3構成ゲート(Release/ubsan含む)がこの修正前に既にgreenだったこと、修正自体が純粋なコード移動+1行削除だったことを踏まえ、Release/ubsanの再実行(3構成目・4構成目)は省略した。
+
+最終ゲート: Debug/Release/ubsan全1290件green、clang-tidy新規警告0(修正後の再検証込み)。実アプリでの視覚確認(サンプルログファイルでのAuto-Detect→色分け→フィルタ→ジャンプの一連の操作)は本セッションでは未実施 — 次回ドッグフーディング時に確認すること。
+
+コミット済み、pushはユーザーの明示指示待ち。次は **WI-14d (複数行エントリのグルーピング + ユーザー編集可能パターンファイル、優先度中)**、またはユーザー指定の次項目 — `build_plan.md` §5参照。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2460,24 +2479,22 @@ WI-14a完了後、ユーザーから「次のPhaseに進め」と指示された
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.82 (WI-14b 非同期インデックス構築+ピース単位
-ストリーミング最適化 完了記録) を読んで現状を把握せよ。
+RESUME_HERE.md §3.83 (WI-14c UIモード MVP 🎉 完了記録) を読んで
+現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
-続けてPhase 10.1(ログ解析モード)のWI-14a(ヘッドレス基盤)・
-WI-14b(非同期インデックス構築 `LogIndexWorker` + フォーマット自動検出
-`detectLogPatternRule()` + `EditorSession` per-tab配線 + `LogModel::build()`
-のピース単位ストリーミング最適化)が完了した。実測(Release): 50,000行
-=164ms、500,000行(10倍)=1550ms、items/sがほぼ一定でありO(document
-length)への複雑度クラス改善を確認済み。Debug/Release/ubsan全1273件
-green、clang-tidy新規警告0を確認済み。
+Phase 10.1(ログ解析モード)はWI-14a(ヘッドレス基盤)・WI-14b(非同期
+インデックス構築+ピース単位ストリーミング)・WI-14c(UIモード MVP、
+色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ)の3サブWIで
+🎉 MVP達成・完結した(2026-08-17)。要件定義書§8の必須項目は全て実装
+済み。UIは新規ネイティブウィジェットを追加せず`ui::CommandPalette`
+のコマンド群(`logmode.enable.*`/`disable`/`filter.*`/`jump.*`)のみ
+で提供している。Debug/Release/ubsan全1290件green、clang-tidy新規
+警告0(2回の再検証込み)を確認済み。
 
-WI-14bではUI/コマンドは一切配線していない(`beginLogIndexing()`/
-`applyLogIndexResult()`を呼び出す経路が無い)。
-
-次はWI-14c(UIモード MVP 🎉 — 色分け/フィルタ/時系列ジャンプ、
-要件定義書§8残り全項目、完了をもってPhase 10.1のMVP達成)。着手前に
-build_plan.md §5のWI-14c概要とmaster_roadmap.md §10.1を読み、
+次はWI-14d(複数行エントリのグルーピング + ユーザー編集可能パターン
+ファイル、優先度中)、またはユーザー指定の次項目。着手前に
+build_plan.md §5のWI-14d概要とmaster_roadmap.md §10.1を読み、
 本書§5と同じ形式でWIを切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
