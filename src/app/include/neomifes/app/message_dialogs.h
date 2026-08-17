@@ -39,6 +39,14 @@ void showSaveErrorDialog(HWND owner, document::SaveError error);
 // OK-only error dialog for a failed Ctrl+O/drag-drop-open document::LoadError.
 void showOpenErrorDialog(HWND owner, document::LoadError error);
 
+// WI-14c: OK-only dialog shown when detectLogPatternRule() (format_detection.h)
+// found no built-in log pattern confident enough to match the current
+// document's leading lines ("Log: Enable (Auto-Detect)" command). Same
+// shape as showSaveErrorDialog() - a single fixed message, no error enum
+// (there is only one way this can happen, unlike SaveError's 5 distinct
+// failure modes).
+void showLogFormatNotDetectedDialog(HWND owner);
+
 // WI-11: Restore/Discard prompt shown once per recoverable autosave found at
 // startup (app::scanForRecoverableAutoSaves()). Returns true if the user
 // chose to restore. `owner` may be nullptr - this runs at startup, BEFORE

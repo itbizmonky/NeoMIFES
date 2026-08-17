@@ -169,4 +169,19 @@ bool showCrashRecoveryDialog(HWND owner, std::wstring_view fileName) {
     return pressedButtonId == kRestoreButtonId;
 }
 
+void showLogFormatNotDetectedDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // See showUnsavedChangesDialog()'s comment on pszMainIcon's union access.
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_INFORMATION_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"ログ形式を判定できませんでした";
+    config.pszContent =
+        L"組込のログ形式(Syslog RFC 5424/3164、Apache/Nginx Common・Combined Log Format、"
+        L"汎用 ISO-8601 + レベル行)のいずれにも十分な確信度で一致しませんでした。"
+        L"コマンドパレットから特定の形式を直接選んで有効化することもできます。";
+    config.dwCommonButtons = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
 }  // namespace neomifes::app
