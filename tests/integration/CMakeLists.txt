@@ -115,6 +115,36 @@ set_tests_properties(render_syntax_worker PROPERTIES
     TIMEOUT 30
 )
 
+# logmode_log_index_worker_test - exercises LogIndexWorker's real background
+# std::thread + PostMessageW completion handoff end-to-end (WI-14b), modeled
+# directly on render_syntax_worker_test above.
+add_executable(neomifes_logmode_log_index_worker_test
+    logmode_log_index_worker_test.cpp
+)
+
+target_link_libraries(neomifes_logmode_log_index_worker_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::logmode
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_logmode_log_index_worker_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    logmode_log_index_worker
+    COMMAND neomifes_logmode_log_index_worker_test
+)
+
+set_tests_properties(logmode_log_index_worker PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # platform_clipboard_test - exercises the real OS clipboard (Phase 4b6c),
 # which the plain unit-test binary avoids entirely.
 add_executable(neomifes_platform_clipboard_test
