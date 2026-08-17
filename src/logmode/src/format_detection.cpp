@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -38,15 +39,17 @@ struct CompiledRule {
     std::unique_ptr<re2::RE2> re;
 };
 
-// Compiles every built-in rule's pattern once (mirrors log_model.cpp's
+// Compiles every candidate rule's pattern once (mirrors log_model.cpp's
 // compileRule(), minus the FieldIndices resolution detection doesn't need -
 // PartialMatch() below never asks for submatches, only whether the pattern
 // matches at all). Rules that fail to compile are silently skipped (cannot
-// happen for the shipped built-in table today, but this function makes no
-// assumption about that).
-[[nodiscard]] std::vector<CompiledRule> compileBuiltInRules() {
+// happen for the shipped built-in table today, but a hand-edited
+// user-supplied rule reaching here - WI-14d - could plausibly fail here if
+// loadLogPatternRuleFromFile()'s own compile check were ever bypassed, so
+// this function still makes no assumption that every candidate compiles).
+[[nodiscard]] std::vector<CompiledRule> compileRules(std::span<const LogPatternRule> candidates) {
     std::vector<CompiledRule> compiled;
-    for (const LogPatternRule& rule : builtInLogPatterns()) {
+    for (const LogPatternRule& rule : candidates) {
         const util::Utf8Conversion patternConv = util::toUtf8WithOffsets(rule.pattern);
         re2::RE2::Options          options;
         options.set_log_errors(false);
@@ -60,14 +63,15 @@ struct CompiledRule {
 
 }  // namespace
 
-std::optional<LogPatternRule> detectLogPatternRule(const document::Document& doc, std::size_t sampleLines) {
+std::optional<LogPatternRule> detectLogPatternRule(const document::Document& doc, std::size_t sampleLines,
+                                                     std::span<const LogPatternRule> candidates) {
     const std::uint64_t totalLines      = doc.lineCount();
     const std::uint64_t consideredLines = std::min<std::uint64_t>(sampleLines, totalLines);
     if (consideredLines == 0) {
         return std::nullopt;
     }
 
-    const std::vector<CompiledRule> compiled = compileBuiltInRules();
+    const std::vector<CompiledRule> compiled = compileRules(candidates);
     std::vector<std::uint64_t>      matchCounts(compiled.size(), 0);
 
     for (document::LineNumber line = 0; line < consideredLines; ++line) {

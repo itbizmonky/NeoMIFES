@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <string>
 
 #include "neomifes/document/document.h"
@@ -9,6 +10,7 @@ namespace {
 
 using neomifes::document::Document;
 using neomifes::logmode::detectLogPatternRule;
+using neomifes::logmode::LogPatternRule;
 
 [[nodiscard]] Document makeDoc(std::u16string_view text) {
     Document doc;
@@ -96,6 +98,40 @@ TEST(FormatDetectionTest, RespectsExplicitSmallerSampleLines) {
     const auto     rule = detectLogPatternRule(doc, /*sampleLines=*/5);
     ASSERT_TRUE(rule.has_value());
     EXPECT_EQ(rule->id, u"generic_iso8601_level");
+}
+
+// WI-14d: `candidates` lets a caller detect against a rule list that
+// doesn't come from builtInLogPatterns() at all - e.g. a user-editable
+// pattern file (log_pattern_file.h) combined into the auto-detect
+// candidate list by normal_mode_wiring.cpp's "Log: Enable (Auto-Detect)"
+// command.
+TEST(FormatDetectionTest, DetectsAgainstAnExplicitCandidateListWithNoBuiltInRules) {
+    const Document doc = makeRepeatedLineDoc(u"[app] level=ERROR msg=boom\n", 50);
+    const LogPatternRule customRule{
+        .id              = u"custom_app_format",
+        .displayName     = u"Custom App Format",
+        .pattern         = uR"(^\[app\] level=(?P<level>\w+) msg=.*$)",
+        .timestampFormat = u"",
+    };
+    const std::array<LogPatternRule, 1> candidates{customRule};
+    const auto rule = detectLogPatternRule(doc, 100, candidates);
+    ASSERT_TRUE(rule.has_value());
+    EXPECT_EQ(rule->id, u"custom_app_format");
+}
+
+// A candidate list that omits the rule which would otherwise win under the
+// default builtInLogPatterns() list must not fall back to the built-ins -
+// `candidates` REPLACES the search space, it does not supplement it.
+TEST(FormatDetectionTest, ExplicitCandidateListDoesNotFallBackToBuiltIns) {
+    const Document doc = makeRepeatedLineDoc(u"2026-08-16 10:15:32.123 ERROR Something broke\n", 50);
+    const LogPatternRule unrelatedRule{
+        .id              = u"unrelated",
+        .displayName     = u"Unrelated",
+        .pattern         = u"^NEVER_MATCHES_ANYTHING_XYZ$",
+        .timestampFormat = u"",
+    };
+    const std::array<LogPatternRule, 1> candidates{unrelatedRule};
+    EXPECT_FALSE(detectLogPatternRule(doc, 100, candidates).has_value());
 }
 
 }  // namespace

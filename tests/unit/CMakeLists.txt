@@ -84,6 +84,8 @@ add_executable(neomifes_unit_tests
     logmode_log_model_test.cpp
     logmode_format_detection_test.cpp
     logmode_log_navigation_test.cpp
+    logmode_log_grouping_test.cpp
+    logmode_log_pattern_file_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
