@@ -86,6 +86,7 @@ add_executable(neomifes_unit_tests
     logmode_log_navigation_test.cpp
     logmode_log_grouping_test.cpp
     logmode_log_pattern_file_test.cpp
+    jsontree_json_tree_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -99,6 +100,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::core
         neomifes::search
         neomifes::logmode
+        neomifes::jsontree
         neomifes::syntax
         neomifes::plugin
         neomifes::app_input
