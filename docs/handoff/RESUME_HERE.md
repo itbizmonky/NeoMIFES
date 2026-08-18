@@ -168,7 +168,8 @@
 | **10.1b** | **非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化** (`LogIndexWorker`、`detectLogPatternRule()`) | ✅ **完了 (WI-14b、2026-08-17、§3.82参照)** |
 | **10.1c** | **UI モード MVP 🎉** (色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ、要件定義書§8完結) | ✅ **完了 (WI-14c、2026-08-17、§3.83参照)** |
 | **10.1d** | **複数行グルーピング + ユーザー編集可能パターンファイル 🎉** (Phase 10.1 完結) | ✅ **完了 (WI-14d、2026-08-18、§3.84参照)。🎉 Phase 10.1 完結** |
-| 10.2/10.3 → 11 → 9 → 12 | CSV/JSON-XML Tree → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更) |
+| **10.3a** | **JSON ツリーモデル ヘッドレス基盤** (`neomifes::jsontree`、`JsonNode`/`parseJsonTree()`、XML/UI/整形/バリデーション/XPath/JSONPathは未着手) | ✅ **完了 (WI-15a、2026-08-18、§3.85参照)** |
+| 10.2/10.3残り → 11 → 9 → 12 | CSV/JSON-XML Tree続き → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-16/17/18へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2447,6 +2448,26 @@ WI-14c完了・CI green確認後、ユーザーから「次のPhaseに進め」�
 
 コミット済み、pushはユーザーの明示指示待ち。**🎉 Phase 10.1(ログ解析モード)完結。** 次はPhase 10.2(CSVモード)/10.3(JSON-XML Tree)、いずれも着手時にサブWIへ切り直す — `build_plan.md` §5参照。
 
+### 3.85 WI-15a (JSON ツリーモデル ヘッドレス基盤、Phase 10.3 着手) 完了記録 (2026-08-18)
+
+CI green確認・push完了後、ユーザーから「CI完了したつぎにすすめ」と指示された。AskUserQuestionでPhase 10の残り2領域(CSVモード/JSON-XML Treeモード)のどちらから着手するか確認し、**「JSON/XML Treeモード」(推奨案)** が選ばれた — roadmap §10.3・要件定義書§10が「三大エディタが持たない差別化点」と明記する機能。
+
+**着手前調査(Explore agent 1件):** `ui::OutlinePane`は`syntax::SymbolTable`に一切依存しない汎用`WC_TREEVIEW`ラッパーと判明したが、現状は「フル幅レンダーサーフェスへのオーバーレイ」方式で真の分割ペインではない。`core::FoldingModel`は完全に汎用でそのまま再利用可能。nlohmann/json(ADR-013採用済み)の`json_sax`コールバックには位置情報が一切渡らないと実機ソース読解で確認、`ordered_json`(同一ヘッダ内に既存)がキー順保持済みDOMを提供する。XMLライブラリはこのコードベースに一切存在しない。中央`Mode`enumは存在せず、WI-14(ログモード)が`EditorSession`の`std::optional<T>`方式(中央enumなし)で実装済みの前例がある。
+
+**設計(Plan agent 1件 + Plan Mode):** 二段構成(`ordered_json::parse()`で構文検証+DOM構築 → 同じ検証済みテキストを独自の`PositionScanner`で並走させ位置復元)を採用。Plan agentは読み取り専用のため設計の核心(SAXに位置情報が渡らないこと)は実機コンパイル・実行ではなく静的読解で確認し、「実装Step1の最初にprobeを実際に実行して裏付ける」ことを計画自体に明記した。ExitPlanModeでユーザー承認を得た後、実装開始直後にprobeを実際に実行し3点(`ordered_json`のキー順序保持/非throw契約/SAXコールバックに位置情報が無いこと)を実証してから本実装に着手した。
+
+**実施内容(2コミット):** 新規`src/jsontree/`モジュール(`neomifes::logmode`と同型)に`JsonNode`/`JsonNodeKind`/`parseJsonTree()`を実装。木構築は明示スタック。リーフ値(文字列含む全種別)は生ソーステキストをそのまま保持(再シリアライズしない — 数値は表記の精度損失回避、文字列は将来のツリーUIが埋め込み改行を心配せずに済むという副次的利点)。単体テスト4カテゴリ14件(構造的正しさ/キー順序保持/位置の正確さ/不正JSON)。
+
+**clang-tidyで2ラウンドの反復修正が発生した。** 1ラウンド目: `buildTree()`のcognitive complexityが36(閾値25)まで悪化 → `openValue()`/`closeContainer()`/`consumeNextChild()`の3関数へ抽出し`ParseState`という参照束縛構造体で状態を渡す設計に書き換えて解消。2ラウンド目: その`ParseState`の参照メンバが今度は`cppcoreguidelines-avoid-const-or-ref-data-members`に新規抵触 → 調査の結果、`command_dispatch.h`の`CommandDispatchContext`(6個の参照メンバを持つ、本WI以前から存在)が全く同じ形でありながら一度も個別にclang-tidyされたことがなかっただけと判明(新しいパターンではなく既存パターンが初めてこのチェックに晒された事例)。`ParseState`はNOLINTで抑制し理由をコメントで明記、`CommandDispatchContext`自体は本WIのスコープ外のため未修正のまま将来のWIへ持ち越した。
+
+**最終ゲート:** Debug/Release/ubsan全1323件green(ubsanは`ParseState`の参照メンバ+`PendingContainer`の生ポインタによる明示スタック木構築という、寿命管理上リスクの高い設計を特に注意して再検証、UB検出0件)、clang-tidy新規警告0(json_tree.cpp/json_string_convert.cpp)。実アプリでの視覚確認は対象外(ヘッドレス変更、UIに一切触れない)。
+
+**サブエージェント運用面の教訓の再確認:** 前回WI-14dで発生した「サブエージェントがバックグラウンド待機ループを使いターンが早期完了扱いになる」問題への対策(最初のプロンプトに「同期的に実行しターンを終えないこと」を明記)を今回は全ての検証委任プロンプトへ最初から組み込んだ結果、同じ問題は一度も再発しなかった。
+
+**WI番号の衝突を解消した。** roadmap原案はPhase 10全体を「WI-14」1本と見込んでおり、Phase 11の枠は「WI-15」を予約していた。しかしPhase 10.1だけでWI-14a〜dの4サブWIを要し、Phase 10.3もWI-15aから始まる複数サブWIに分かれる見通しとなったため、Phase 11/9/12の割当をWI-16/17/18へ繰り下げた(`build_plan.md` §5「WI-16〜WI-18」節参照)。
+
+コミット済み(`9334f0c`/`1f21780`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで基盤(ヘッドレスJSON構造ツリー)のみ完了 — ツリーUI・XML・折り畳み統合・整形・バリデーション・XPath/JSONPath・`EditorSession`配線は全て後続サブWIへ。次はPhase 10.3の続き、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2496,22 +2517,25 @@ WI-14c完了・CI green確認後、ユーザーから「次のPhaseに進め」�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.84 (WI-14d 複数行グルーピング+ユーザー編集可能
-パターンファイル 🎉 完了記録) を読んで現状を把握せよ。
+RESUME_HERE.md §3.85 (WI-15a JSONツリーモデル ヘッドレス基盤 完了記録)
+を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
-(2026-08-18)。要件定義書§8の必須項目に加え、複数行エントリの
-グルーピング(Javaスタックトレース等の継続行)とユーザー編集可能
-パターンファイル(%APPDATA%\NeoMIFES\log_patterns\)を実装済み。
-UIは新規ネイティブウィジェットを追加せず`ui::CommandPalette`の
-コマンド群(`logmode.enable.*`/`disable`/`filter.*`/`jump.*`/
-`patterns.reload`)のみで提供している。Debug/Release/ubsan全1309件
-green、clang-tidy新規警告0を確認済み。
+(2026-08-18)。続けてPhase 10.3(JSON/XML Treeモード)へ着手し、
+WI-15a(neomifes::jsontree、JsonNode/parseJsonTree()、ヘッドレス、
+XML/UI/整形/バリデーション/XPath/JSONPathは未着手)が完了した
+(2026-08-18)。Debug/Release/ubsan全1323件green、clang-tidy新規警告0
+を確認済み。
 
-次はPhase 10.2(CSVモード)またはPhase 10.3(JSON-XML Tree)、
+**WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
+いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
+(WI-15/16/17)をWI-16/17/18へ繰り下げた(build_plan.md §5「WI-16〜18」節)。
+
+次はPhase 10.3の続き(ツリーUI・XML・折り畳み統合・整形・バリデーション・
+XPath/JSONPath・EditorSession配線)、またはPhase 10.2(CSVモード)、
 またはユーザー指定の次項目。着手前にbuild_plan.md §5とmaster_roadmap.md
-§10.2/§10.3を読み、本書§5と同じ形式でサブWIへ切り直すこと。
+§10.3(または§10.2)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

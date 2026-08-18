@@ -133,15 +133,17 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直した (詳細は §5)。CSV (§10.2) / JSON-XML Tree (§10.3) は未着手、着手時に同様に切り直す。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) から着手、残りは切り直しながら継続する。CSV (§10.2) は未着手、着手時に同様に切り直す。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
 - [x] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成) → コミット: `e92ddfb`/`84f5bf9`/`0f5af55`/`8250f3d`/`d41f52b`/`4d30233`
 - [x] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル 🎉 (Phase 10.1 完結) → コミット: `2c16e79`/`9673824`
-- [ ] **WI-15** Phase 11 — Git 統合 / LSP / マクロ
-- [ ] **WI-16** Phase 9 — AI プラグイン
-- [ ] **WI-17** Phase 12 — 総合品質保証・正式出荷
+- [x] **WI-15a** JSON ツリーモデル ヘッドレス基盤 (Phase 10.3 最初のサブ WI、XML/UI は非スコープ) → コミット: `9334f0c`/`1f21780`
+- [ ] **WI-15b以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath) + Phase 10.2 (CSV モード) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [ ] **WI-16** Phase 11 — Git 統合 / LSP / マクロ
+- [ ] **WI-17** Phase 9 — AI プラグイン
+- [ ] **WI-18** Phase 12 — 総合品質保証・正式出荷
   - 🎉 **M5 達成: 正式出荷**
 
 ---
@@ -1130,17 +1132,61 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
-## WI-15 〜 WI-17 — Phase 11 / 9 / 12
+## WI-15a — JSON ツリーモデル ヘッドレス基盤
 
-**WI-14 (Phase 10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。
+**目的:** Phase 10.1(ログ解析モード)完結後、ユーザーがAskUserQuestionでPhase 10の残り2領域(CSVモード/JSON-XML Treeモード)から「JSON/XML Treeモード」(推奨案)を選択。roadmap §10.3・要件定義書§10が「三大エディタが持たない差別化点」と明記する機能の最初のサブWI。WI-14a がヘッドレスな `LogModel` を先に作ってから WI-14c でUIを繋いだ順序を踏襲し、UI抜きのJSON構造ツリーモデルのみを作る。
+
+**前提:** WI-14d 完了・push・CI green確認 (2026-08-18)
+
+**参照:** `master_roadmap.md` §10.3、`NeoMIFES_要件定義書.md` §10
+
+### 着手前調査で確定した設計方針
+
+- `ui::OutlinePane`(Phase 7f/g)は`syntax::SymbolTable`に一切依存しない汎用`WC_TREEVIEW`ラッパーで、JSON/XMLツリーもそのまま乗せられると判明。ただし現状は「フル幅レンダーサーフェスの右端にオーバーレイ」方式で真の分割ペインではなく、常時全展開で折り畳み状態を持たない — この2点はUIサブWIの課題として本WIのスコープ外
+- `core::FoldingModel`(Phase 7i)は`FoldRegion{headerLine, endLineInclusive}`のみのヘッドレス型で完全に汎用、そのまま再利用可能と判明。結合しているのは`app::buildFoldRegions()`側であり、JSON用の同型関数は別途必要
+- nlohmann/json(ADR-013採用済み)の`json_sax`コールバックには位置情報が一切渡されないと、実機ソース読解+スタンドアロンprobeの両方で確認(`json_sax<T>`の全仮想関数を実機ソースで確認、`ordered_json::sax_parse()`のコールバックトレースで位置情報が一切現れないことをprobe実行で実証)。既定の`nlohmann::json`はキー順をアルファベット順(`std::map`ベース)に並び替えるが、`nlohmann::ordered_json`(同一ヘッダ内に既存、追加ADR不要)が挿入順を保持する
+- XMLライブラリはこのコードベースに一切存在しない(`pugixml`はroadmapのスケッチのみ、ADR未発行)。**XMLは本WIのスコープから完全に除外**
+- 中央`Mode`enum(roadmap原案の`src/core/mode.h`)はこのコードベースに存在せず、WI-14(ログモード)は`EditorSession`が機能ごとに`std::optional<T>`を持つ方式(中央enumなし)で実装済み。この前例に従い本WIでも中央Mode enumは導入しない
+
+### 実施内容 (2コミット)
+
+1. `src/jsontree/`モジュール新設(`neomifes::logmode`と同型)、`JsonNode`/`JsonNodeKind`/`parseJsonTree()`実装 — 二段構成(`ordered_json::parse()`で構文検証+DOM構築 → 同じ検証済みテキストを独自の`PositionScanner`で並走させ位置復元)、木構築は明示スタック(`misc-no-recursion`対応) (`9334f0c`)
+2. 単体テスト4カテゴリ14件(構造的正しさ/キー順序保持/位置の正確さ/不正JSON) (`1f21780`)
+
+### DoD
+
+- [x] `JsonNode`/`JsonNodeKind`(公開ヘッダ、`document::TextPos`のみ依存)
+- [x] `parseJsonTree(const document::Document&) -> std::optional<JsonNode>`
+- [x] probe実行でordered_jsonのキー順序保持・非throw契約・SAX位置情報の不在を確認
+- [x] 木構築が明示スタック(再帰なし、clang-tidy新規警告0)
+- [x] 単体テスト4カテゴリ14件
+- [x] Debug/Release/ubsan全1323件green、clang-tidy新規警告0
+
+### 実装後の確定事項
+
+**リーフ値は全種別で生ソーステキストをそのまま保持する設計にした。** 当初は文字列値だけDOMの復号済み値(引用符/エスケープ解決済み)を使う案も検討したが、JSON文字列リテラルは仕様上エスケープされていない制御文字(改行等)を含み得ないため、生ソースのまま保持することで「1ノード=1行表示」を前提とする将来のツリーUIが埋め込み改行を心配せずに済むという副次的な利点があると判明し、数値と同じ「生ソースのまま」で統一した(数値側の元の理由は`"1.50"`のような表記の精度損失回避)。
+
+**`openValue()`を`buildTree()`内のネストしたラムダとして最初に実装したところ、`readability-function-cognitive-complexity`が36(閾値25)まで悪化した。** `openValue()`/`closeContainer()`/`consumeNextChild()`の3関数へ抽出し、状態(`scanner`/`byteToUtf16`/`buffer`/`stack`)を`ParseState`という小さな参照束縛構造体で渡す設計に書き換えて解消。この`ParseState`の参照メンバが今度は`cppcoreguidelines-avoid-const-or-ref-data-members`に新規抵触したが、調査の結果`src/app/include/neomifes/app/command_dispatch.h`の`CommandDispatchContext`(6個の参照メンバを持つ、本WI以前から存在)が全く同じ形でありながら一度も個別にclang-tidyされたことがなかっただけと判明 — 新しいパターンではなく、既存パターンが初めてこのチェックに晒された事例。`ParseState`は`NOLINTBEGIN/END`で抑制し理由をコメントで明記した。**`CommandDispatchContext`自体は本WIのスコープ外のため未修正のまま — 将来いずれかのWIが`command_dispatch.h`/`command_dispatch.cpp`を変更ファイルとしてclang-tidyする際に同じ指摘が出ることを見込んでおく。**
+
+**Explore agent 1件による着手前調査 + Plan agent 1件による設計立案を経てPlan Modeでユーザー承認を得てから実装した。** Plan agentは読み取り専用エージェントとして起動されていたため、設計の核心(nlohmann `json_sax`に位置情報が渡らないこと)は実機コンパイル・実行ではなく実機ソースの静的読解で確認し、「実装セッションの最初のステップとして実際にprobeを実行し裏付けること」を計画自体に明記した。承認後、実装開始直後に実際にprobeを実行し3点(キー順序/非throw契約/SAX位置情報なし)を実証してから本実装に着手した。
+
+**WI番号がroadmap原案の割当(Phase 11=WI-15)と衝突したため、Phase 11/9/12の割当をWI-16/17/18へ繰り下げた** (本書§5冒頭の「WI-16〜WI-18」節参照)。roadmap原案はPhase 10全体を「WI-14」1本と見込んでいたが、Phase 10.1だけでWI-14a〜dの4サブWIを要し、Phase 10.3もWI-15aから始まる複数サブWIに分かれる見通しとなったため。
+
+---
+
+## WI-16 〜 WI-18 — Phase 11 / 9 / 12
+
+**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a(ヘッドレス基盤)着手済み・残り未完了、Phase 10.2 (CSV) は未着手。
 
 着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
 
+**WI 番号の注記 (2026-08-18):** roadmap原案は Phase 10 全体を「WI-14」1本に見込んでいたが、実際には Phase 10.1 だけで WI-14a〜d の4サブ WI を要し、Phase 10.3 も WI-15a から始まる複数サブ WI に分かれる見通しとなったため、Phase 11/9/12 の当初の割当番号 (WI-15/16/17) を1つずつ繰り下げて WI-16/17/18 とした。
+
 | WI | 内容 | roadmap 章 | 目安 |
 |---|---|---|---|
-| WI-15 | Phase 11 — Git 統合 / LSP / マクロ | §11 | 3 領域 × 各 3〜6 サブ WI |
-| WI-16 | Phase 9 — AI プラグイン | §9 | 4〜6 サブ WI |
-| WI-17 | Phase 12 — 総合品質保証・正式出荷 | §12 | §12.3 の 22 項目 |
+| WI-16 | Phase 11 — Git 統合 / LSP / マクロ | §11 | 3 領域 × 各 3〜6 サブ WI |
+| WI-17 | Phase 9 — AI プラグイン | §9 | 4〜6 サブ WI |
+| WI-18 | Phase 12 — 総合品質保証・正式出荷 | §12 | §12.3 の 22 項目 |
 
 **順序の根拠:**
 - **Phase 9 (AI) が最後** — CLAUDE.md が「エディタ本体は AI 無しでも 100% 動作しなければならない」と定めており、本体完成後に載せるのが筋。加えて外部 API 依存で陳腐化が速い

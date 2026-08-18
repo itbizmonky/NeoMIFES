@@ -3051,4 +3051,34 @@ CI green確認後、ユーザーから「次のPhaseに進め」と指示され�
 
 コミット済み(`2c16e79`/`9673824`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.1(ログ解析モード)完結。** 次はPhase 10.2(CSVモード)またはPhase 10.3(JSON-XML Tree)、またはユーザー指定の次項目。
 
+## Session 96 (2026-08-18): push+CI確認、WI-15a(JSONツリーモデル ヘッドレス基盤、Phase 10.3着手)実装完了
+
+WI-14dの保留コミット一式をユーザーの「pushせよ」指示でpushし(`e69dbc8..3cedebe`)、CIのgreen確認をユーザーから受けた。続けて「CI完了したつぎにすすめ」と指示され、AskUserQuestionでPhase 10の残り2領域(CSVモード/JSON-XML Treeモード)のどちらから着手するか確認し、**「JSON/XML Treeモード」(推奨案)** が選ばれた — roadmap §10.3・要件定義書§10が「三大エディタが持たない差別化点」と明記する機能。
+
+**着手前調査(Explore agent 1件、CLAUDE.mdルール3):**
+1. `ui::OutlinePane`(Phase 7f/g)は`syntax::SymbolTable`に一切依存しない汎用`WC_TREEVIEW`ラッパーと判明、JSON/XMLツリーもそのまま乗せられる。ただし現状は「フル幅レンダーサーフェスの右端にオーバーレイ」方式で真の分割ペインではなく、常時全展開で折り畳み状態を持たない。
+2. `core::FoldingModel`(Phase 7i)は`FoldRegion{headerLine, endLineInclusive}`のみの完全に汎用なヘッドレス型でそのまま再利用可能、結合しているのは`app::buildFoldRegions()`側のみ。
+3. nlohmann/json(ADR-013採用済み)の`json_sax`コールバックには位置情報が一切渡されないと実機ソース読解(`build/debug/_deps/nlohmann_json-src/single_include/nlohmann/json.hpp`)で確認。`ordered_json`(同一ヘッダ内に既存)がキー順保持済みDOMを提供する(既定の`json`は`std::map`ベースでアルファベット順に並び替わる)。
+4. XMLライブラリはこのコードベースに一切存在しない(`pugixml`はroadmapのスケッチのみ)。
+5. 中央`Mode`enum(roadmap原案の`src/core/mode.h`)は存在せず、WI-14(ログモード)が`EditorSession`の`std::optional<T>`方式(中央enumなし)で実装済みの前例がある。
+
+**設計(Plan agent 1件、Plan Mode):** 二段構成を採用 — ①`nlohmann::ordered_json::parse()`で構文検証+DOM構築、②既に検証済みの同じUTF-8テキストを独自の`PositionScanner`(構造トークンと文字列リテラルの開始位置だけを辿る極小スキャナ、デコードはしない)で並走させ各ノードの位置区間を復元。Plan agentは読み取り専用エージェントとして起動されていたため、SAXに位置情報が渡らないという設計の核心は静的読解のみで確認し、「実装Step1の最初に実際にprobeを実行して裏付ける」ことを計画自体に明記した。ExitPlanModeでユーザー承認を得た。
+
+**実装(承認後、着手前probeから開始):**
+1. probe実行(`nlohmann::ordered_json`のキー順序保持・非throw契約・`json_sax`コールバックに位置情報が一切現れないこと、の3点を実機コンパイル・実行で確認)。
+2. 新規`src/jsontree/`モジュール(`neomifes::logmode`と同型、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)に`JsonNode`/`JsonNodeKind`/`parseJsonTree()`を実装。木構築は明示スタック(`.clang-tidy`の`misc-no-recursion`対応)。リーフ値(String/Number/Boolean/Null全種別)は生ソーステキストをそのまま保持する設計にした — 数値は`"1.50"`のような表記の精度損失回避が理由だが、文字列側にも「JSON文字列リテラルは仕様上エスケープされていない制御文字を含み得ないため、将来のツリーUIの『1ノード=1行』表示が埋め込み改行を心配せずに済む」という副次的な利点があると気づき、異なる理由から同じ結論(生ソースのまま)で統一した。オブジェクトメンバの位置区間は「キーの開き引用符から値の終端まで」(roadmapのUIモックアップが1行=1メンバー想定のため)。(`9334f0c`)
+3. 単体テスト4カテゴリ14件(構造的正しさ/キー順序保持/位置の正確さ/不正JSON)、位置精度テストはエスケープキー・非ASCII文字列値・ネストしたメンバ区間の3パターンを個別ケース化。(`1f21780`)
+
+**clang-tidyで2ラウンドの反復修正が発生した。** 1ラウンド目: `buildTree()`のcognitive complexityが36(閾値25)まで悪化(状態を捕捉するネストしたラムダ`openValue`+while-loop本体が全て1関数に収まっていたため) → `openValue()`/`closeContainer()`/`consumeNextChild()`の3関数へ抽出し、状態(`scanner`/`byteToUtf16`/`buffer`/`stack`)を`ParseState`という小さな参照束縛構造体で渡す設計に書き換えて解消。2ラウンド目: その`ParseState`の4つの参照メンバが今度は`cppcoreguidelines-avoid-const-or-ref-data-members`に新規抵触 → 調査の結果、`src/app/include/neomifes/app/command_dispatch.h`の`CommandDispatchContext`(6個の参照メンバを持つ、本WI以前から存在)が全く同じ形でありながら一度も個別にclang-tidyされたことがなかっただけと判明した(新しいパターンではなく、既存パターンが初めてこのチェックに晒されただけの事例)。`ParseState`はNOLINTBEGIN/ENDで抑制し理由をコメントで明記、`CommandDispatchContext`自体は本WIのスコープ外のため未修正のまま将来のWIへ持ち越した。
+
+**最終ゲート:** Debug/Release/ubsan全1323件green(ubsanは`ParseState`の参照メンバ+`PendingContainer`の生ポインタによる明示スタック木構築という寿命管理上リスクの高い設計を特に注意して再検証、UB検出0件)、clang-tidy新規警告0(`json_tree.cpp`/`json_string_convert.cpp`)。実アプリでの視覚確認は対象外(ヘッドレス変更、UIに一切触れない)。
+
+**サブエージェント運用面の教訓が定着した。** WI-14dで発生した「サブエージェントがバックグラウンド待機ループを使いターンが早期完了扱いになる」問題への対策(最初のプロンプトに「同期的に実行しターンを終えないこと」を明記)を、本WIでは全ての検証委任プロンプトへ最初から組み込んだ結果、同じ問題は一度も再発しなかった。
+
+**WI番号の衝突を解消した。** roadmap原案はPhase 10全体を「WI-14」1本と見込んでおり、Phase 11の枠として「WI-15」を予約していた。しかしPhase 10.1だけでWI-14a〜dの4サブWIを要し、Phase 10.3もWI-15aから始まる複数サブWIに分かれる見通しとなったため、Phase 11/9/12の割当をWI-16/17/18へ繰り下げた。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-15a」セクション、「WI-15〜17」→「WI-16〜18」へ改番)、`master_roadmap.md`(§10.3に実装後の確定事項追記、§2フェーズ表のPhase 10.3行を🚧着手済みへ更新)、`detailed_design.md`(§11.4を新設し`JsonNode`/`parseJsonTree()`のリファレンス+WI-15a設計要点を追加)、`RESUME_HERE.md`(§1状態表+新規§3.85完了記録+§6推奨プロンプト更新)。
+
+コミット済み(`9334f0c`/`1f21780`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで基盤(ヘッドレスJSON構造ツリー)のみ完了 — ツリーUI・XML・折り畳み統合・整形・バリデーション・XPath/JSONPath・`EditorSession`配線は全て後続サブWIへ。
+
 <!-- 次セッションはここに追記 -->

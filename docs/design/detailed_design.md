@@ -3255,6 +3255,36 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
+### 11.4 `neomifes::jsontree` リファレンス (WI-15a実装、Phase 10.3 着手)
+
+`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。UI/XML/折り畳み統合/整形/バリデーション/XPath/JSONPathは未実装(WI-15a後続サブWIへ)。
+
+```cpp
+// neomifes/jsontree/json_tree.h (WI-15a)
+enum class JsonNodeKind : std::uint8_t { Object, Array, String, Number, Boolean, Null };
+
+struct JsonNode {
+    JsonNodeKind kind = JsonNodeKind::Null;
+    std::optional<std::u16string> key;   // Objectメンバのみ(デコード済み)。Array要素/ルートはnullopt
+    std::u16string text;                  // 全リーフ種別で生ソーステキストそのまま(再シリアライズしない)
+    document::TextPos startPos = 0;       // Objectメンバはキーの開き引用符から。それ以外は値自身の開始
+    document::TextPos endPos   = 0;       // 値自身の終端 (exclusive)
+    std::vector<JsonNode> children;       // Object/Arrayのみ非空、ソース中の出現順
+};
+
+// docの全文書をJSONとして解析しツリーを返す。整形式でない場合(空文書含む)はnullopt、例外は投げない。
+[[nodiscard]] std::optional<JsonNode> parseJsonTree(const document::Document& doc);
+```
+
+**設計上の要点 (WI-15a):**
+- 位置追跡は二段構成。`nlohmann::ordered_json::parse()`が構文検証+DOM構築(既定の`nlohmann::json`ではなく`ordered_json`を使うのはオブジェクトキーの入力順を保持するため — 既定の`object_t`は`std::map`ベースでアルファベット順に並び替わる)、続けて既に検証済みの同じUTF-8テキストを独自の`PositionScanner`(内部、非公開)で並走させ各ノードの位置区間を復元する。`nlohmann::json_sax`のコールバックには位置情報が一切渡されないと実機ソース読解+スタンドアロンprobeの両方で確認した上でこの設計に至った(SAXベースの単純な設計は成立しない)。
+- 木構築は明示スタック(`openValue()`/`closeContainer()`/`consumeNextChild()`の3関数+`buildTree()`のwhile-loop)。`.clang-tidy`の`misc-no-recursion`対応(`buildOutlineItems()`/`findBreadcrumbPath()`/`buildFoldRegions()`と同じ既存規約)。
+- リーフ値(String/Number/Boolean/Null)は全種別で生ソーステキストをそのまま`text`へ格納する(再シリアライズしない)。数値は`"1.50"`のような表記の精度損失を回避するため、文字列はJSON仕様上エスケープされていない制御文字を含み得ないため将来のツリーUIの「1ノード=1行」表示が埋め込み改行を心配せずに済むため — 異なる理由から同じ結論(生ソースのまま)に至った。
+- オブジェクトメンバの位置区間は「キーの開き引用符から値の終端まで」(roadmapのUIモックアップが1行=1メンバーを想定しているため)。配列要素・ルート値は値自身の区間のみ。
+- 中央`Mode`enum(roadmap原案の`src/core/mode.h`)は導入していない — WI-14(ログモード)が`EditorSession`の機能ごと`std::optional<T>`方式(中央enumなし)で実装済みの前例に従う。
+- XMLは本サブWIのスコープ外(`pugixml`等の採否は未決定、別ADRが必要)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15a)」参照。
+
 ---
 
 ## 12. CSV モード 詳細

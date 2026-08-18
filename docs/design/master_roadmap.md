@@ -285,7 +285,8 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
-| 10.2/10.3 | CSV / JSON-XML tree | 未着手 | §10.2, §10.3 |
+| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🚧 **着手 (WI-15a: JSONヘッドレス基盤完了、2026-08-18。XML/UI/整形/バリデーション/XPath/JSONPathは未着手)** | §10.3 |
+| 10.2 | CSV モード | 未着手 | §10.2 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
 | 12 | 総合品質保証 + 正式出荷 | 未着手 | §12 |
@@ -2219,6 +2220,17 @@ JSON / XML の階層をツリーで見つつ、テキストとしても編集で
 #### 影響ファイル
 - **新規:** `src/tree/{json_parser.cpp, xml_parser.cpp, tree_model.cpp, xpath.cpp, jsonpath.cpp, formatter.cpp}`、`src/ui/tree_view_pane.{h,cpp}`、`tests/unit/tree_*_test.cpp`
 - **変更:** `src/app/main.cpp` (JSON/XML モード検出)、`src/core/mode.h` (Mode::JsonTree / Mode::XmlTree)
+
+#### 実装後の確定事項 (WI-15a、JSON ツリーモデル ヘッドレス基盤、2026-08-18)
+
+WI-15a で JSON 側の最初のサブ WI(ヘッドレス基盤)に着手した。上記の原案スケッチと以下の点で異なる決定をした:
+
+- **`simdjson` 検討は不要と判明、ADR-013 で既に採用済みの nlohmann/json を転用した。** `nlohmann::ordered_json`(同一ヘッダ内に既存)がキー順保持済みのDOMを提供し、位置情報は`nlohmann::json_sax`のコールバックに一切渡らない(実機ソース読解+スタンドアロンprobeで確認)ため、`ordered_json::parse()`による構文検証+DOM構築と、同じ検証済みテキストを独自の`PositionScanner`で並走させる位置復元、の二段構成を採用した。新規外部ライブラリ・新規ADRは不要だった。
+- **`src/tree/`ではなく`src/jsontree/`という名前にした。** XML側が別ライブラリ選定(ADR待ち)で分離スコープになったため、モジュール名もJSON専用であることを明示。`neomifes::logmode`と同型の構成(`include/neomifes/jsontree/`、`src/`、独立STATIC ライブラリ)。
+- **`src/core/mode.h`(`Mode::JsonTree`/`Mode::XmlTree`)は導入しなかった。** WI-14(ログモード)が`EditorSession`の機能ごと`std::optional<T>`方式(中央enumなし)で実装済みの前例に従う。
+- **XMLは本サブWIのスコープから完全に除外した。** `pugixml`等の採否は未決定でADRが必要。
+- **`巨大JSON対応(SAX解析+部分ツリー展開)`/`整形`/`バリデーション`/`XPath`/`JSONPath`/`ツリーUI(左右分割ペイン)`/`折り畳み統合`は全て後続サブWIへ。** 本サブWIは正しさ(構造/キー順序/位置精度/不正入力の黒板消し)を固めることのみに集中した(WI-14aが`LogModel::build()`をまず素朴実装にしてからWI-14bでストリーミング化した順序と同じ判断)。
+- 詳細は`build_plan.md` WI-15aセクション参照。
 
 ---
 
