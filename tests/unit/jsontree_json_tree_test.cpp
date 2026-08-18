@@ -2,12 +2,14 @@
 
 #include <string>
 
+#include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/jsontree/json_tree.h"
 
 namespace {
 
 using neomifes::document::Document;
+using neomifes::document::TextRange;
 using neomifes::jsontree::JsonNode;
 using neomifes::jsontree::JsonNodeKind;
 using neomifes::jsontree::parseJsonTree;
@@ -213,6 +215,51 @@ TEST(JsonTreeTest, EmptyDocumentReturnsNullopt) {
 TEST(JsonTreeTest, WhitespaceOnlyDocumentReturnsNullopt) {
     const Document doc = makeDoc(u"   \n\t  ");
     EXPECT_FALSE(parseJsonTree(doc).has_value());
+}
+
+// --- BufferSnapshot overload (WI-15b) --------------------------------------
+
+TEST(JsonTreeTest, ParseJsonTreeFromBufferSnapshotMatchesDocumentOverload) {
+    // The Document-taking parseJsonTree() is a one-line delegation to the
+    // BufferSnapshot-taking one (WI-15b) - confirm both entry points produce
+    // identical trees for the same document.
+    const Document doc = makeDoc(u"{\"a\":1,\"b\":[true,null,\"x\"]}");
+    const auto     viaDocument = parseJsonTree(doc);
+    const auto     viaSnapshot = parseJsonTree(*doc.snapshot());
+    ASSERT_TRUE(viaDocument.has_value());
+    ASSERT_TRUE(viaSnapshot.has_value());
+    EXPECT_EQ(*viaDocument, *viaSnapshot);
+}
+
+TEST(JsonTreeTest, ParseJsonTreeAcrossMultiplePiecesMatchesSinglePieceResult) {
+    // Forces the document below to span multiple pieces (not just the one
+    // insertText() call every other test in this file uses via makeDoc()) -
+    // parseJsonTree() concatenates snapshot->pieces() into one buffer before
+    // parsing, so this is a regression guard against that concatenation
+    // silently going wrong at a piece boundary. Mirrors
+    // LogModelTest.LineContentSpanningMultiplePiecesMatchesCorrectly
+    // (logmode_log_model_test.cpp).
+    const std::u16string text = u"{\"name\":\"Alice\",\"age\":30}";
+    Document              doc;
+    doc.insertText(0, text);
+    constexpr std::uint64_t kSplitPos = 12;  // inside "Alice"
+    doc.insertText(kSplitPos, u"XXXX");
+    doc.eraseRange(TextRange{.start = kSplitPos, .end = kSplitPos + 4});
+
+    // Precondition check: confirm this test actually exercises the
+    // multi-piece path rather than silently degrading to a single piece.
+    ASSERT_GT(doc.snapshot()->pieces().size(), 1U);
+
+    const auto tree = parseJsonTree(doc);
+    ASSERT_TRUE(tree.has_value());
+    EXPECT_EQ(tree->kind, JsonNodeKind::Object);
+    ASSERT_EQ(tree->children.size(), 2U);
+    ASSERT_TRUE(tree->children[0].key.has_value());
+    EXPECT_EQ(*tree->children[0].key, u"name");
+    EXPECT_EQ(tree->children[0].text, u"\"Alice\"");
+    ASSERT_TRUE(tree->children[1].key.has_value());
+    EXPECT_EQ(*tree->children[1].key, u"age");
+    EXPECT_EQ(tree->children[1].text, u"30");
 }
 
 }  // namespace

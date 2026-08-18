@@ -289,11 +289,10 @@ void closeContainer(const PendingContainer& top, ParseState& state) {
 
 }  // namespace
 
-std::optional<JsonNode> parseJsonTree(const document::Document& doc) {
-    const auto     snapshot = doc.snapshot();
+std::optional<JsonNode> parseJsonTree(const document::BufferSnapshot& snapshot) {
     std::u16string buffer;
-    for (const auto& piece : snapshot->pieces()) {
-        buffer.append(snapshot->pieceView(piece));
+    for (const auto& piece : snapshot.pieces()) {
+        buffer.append(snapshot.pieceView(piece));
     }
 
     const util::Utf8Conversion conv   = util::toUtf8WithOffsets(buffer);
@@ -303,6 +302,10 @@ std::optional<JsonNode> parseJsonTree(const document::Document& doc) {
     }
 
     return buildTree(parsed, buffer, conv);
+}
+
+std::optional<JsonNode> parseJsonTree(const document::Document& doc) {
+    return parseJsonTree(*doc.snapshot());
 }
 
 }  // namespace neomifes::jsontree

@@ -28,6 +28,7 @@
 
 namespace neomifes::document {
 class Document;
+class BufferSnapshot;
 }  // namespace neomifes::document
 
 namespace neomifes::jsontree {
@@ -80,13 +81,27 @@ struct JsonNode {
     friend bool operator==(const JsonNode&, const JsonNode&) = default;
 };
 
-// Parses doc's full text as JSON and returns its structure rooted at the
-// document's single top-level value (an object, array, or - per RFC 8259 -
-// a bare scalar). Returns std::nullopt for anything that is not
+// Parses snapshot's full text as JSON and returns its structure rooted at
+// the document's single top-level value (an object, array, or - per RFC
+// 8259 - a bare scalar). Returns std::nullopt for anything that is not
 // well-formed JSON, including an empty or whitespace-only document - never
 // throws (matches log_pattern_file.cpp/format_detection.cpp's established
 // fail-gracefully convention: callers never need to distinguish "empty",
 // "malformed", or "not JSON at all", they all collapse to nullopt).
+//
+// This is the primary entry point (WI-15b) - takes a BufferSnapshot rather
+// than a Document so a background thread (jsontree::JsonTreeWorker) can call
+// it safely without touching the UI-thread-owned Document. Not a streaming
+// optimization the way LogModel::build()'s BufferSnapshot overload is -
+// nlohmann::ordered_json::parse() requires the whole document in one
+// contiguous buffer regardless, so this overload has the same O(document
+// length) shape the Document overload below always had. It exists purely so
+// a caller already holding a snapshot (taken once on the UI thread) never
+// needs a live Document reference to invoke it.
+[[nodiscard]] std::optional<JsonNode> parseJsonTree(const document::BufferSnapshot& snapshot);
+
+// Convenience overload for UI-thread callers that only have a Document at
+// hand - snapshots it and delegates to the BufferSnapshot overload above.
 [[nodiscard]] std::optional<JsonNode> parseJsonTree(const document::Document& doc);
 
 }  // namespace neomifes::jsontree
