@@ -175,6 +175,36 @@ set_tests_properties(jsontree_json_tree_worker PROPERTIES
     TIMEOUT 30
 )
 
+# csvmode_csv_model_worker_test - exercises CsvModelWorker's real background
+# std::thread + PostMessageW completion handoff end-to-end (WI-16b), modeled
+# directly on jsontree_json_tree_worker_test above.
+add_executable(neomifes_csvmode_csv_model_worker_test
+    csvmode_csv_model_worker_test.cpp
+)
+
+target_link_libraries(neomifes_csvmode_csv_model_worker_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::csvmode
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_csvmode_csv_model_worker_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    csvmode_csv_model_worker
+    COMMAND neomifes_csvmode_csv_model_worker_test
+)
+
+set_tests_properties(csvmode_csv_model_worker PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # platform_clipboard_test - exercises the real OS clipboard (Phase 4b6c),
 # which the plain unit-test binary avoids entirely.
 add_executable(neomifes_platform_clipboard_test
