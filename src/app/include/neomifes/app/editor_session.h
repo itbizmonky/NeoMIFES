@@ -40,6 +40,7 @@
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/text_pos.h"
 #include "neomifes/encoding/encoding.h"
+#include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/log_model.h"
 #include "neomifes/logmode/log_pattern.h"
 #include "neomifes/search/search_service.h"
@@ -48,6 +49,10 @@
 namespace neomifes::logmode {
 class LogIndexWorker;
 }  // namespace neomifes::logmode
+
+namespace neomifes::jsontree {
+class JsonTreeWorker;
+}  // namespace neomifes::jsontree
 
 namespace neomifes::app {
 
@@ -198,6 +203,47 @@ public:
         m_logLevelFilterMask = logmode::kAllLogLevelsVisible;
     }
 
+    // WI-15b: per-tab JSON-tree state. Always constructed, conditionally
+    // populated - same "always there, empty until a feature turns it on"
+    // pattern as m_logModel above. No WI-15c-scoped "disable" method exists
+    // yet (mirrors WI-14b's own scoping: logModel()'s disableLogMode()
+    // counterpart wasn't added until WI-14c shipped alongside the command
+    // that calls it - see build_plan.md's WI-15b section for why this WI
+    // deliberately stops short of that).
+    //
+    // Unlike logModel(), std::nullopt here is NOT reserved for "never
+    // indexed" - it also covers "indexed, but the document wasn't valid
+    // JSON" (parseJsonTree()'s own std::nullopt contract). jsonTree() alone
+    // cannot distinguish those two cases; jsonTreeIndexInFlight() combined
+    // with "has a JSON-tree indexing request ever been issued for this
+    // session" (a WI-15c UI concern, not tracked here) is what a caller
+    // would need to tell them apart.
+    [[nodiscard]] const std::optional<jsontree::JsonNode>& jsonTree() const noexcept { return m_jsonTree; }
+    [[nodiscard]] bool jsonTreeIndexInFlight() const noexcept { return m_jsonTreeIndexInFlight; }
+
+    // Fires an async JsonTreeWorker request for this session's current
+    // document snapshot, using `this` as the opaque sessionToken (see
+    // json_tree_worker.h - never dereferenced by the worker, only round-
+    // tripped back via kMsgJsonTreeReady's wParam so the receiver can find
+    // this exact EditorSession again). Sets jsonTreeIndexInFlight()
+    // immediately; jsonTree() is populated later by applyJsonTreeResult()
+    // once the worker's response arrives - see that method's own comment on
+    // why a std::nullopt response is a normal, expected outcome here (unlike
+    // beginLogIndexing()'s LogPatternRule, there is no per-request
+    // configuration to pass).
+    void beginJsonTreeIndexing(jsontree::JsonTreeWorker& worker);
+
+    // Called by the kMsgJsonTreeReady receiver once it has matched a
+    // response's sessionToken back to this EditorSession. `result` is
+    // std::nullopt whenever the document wasn't valid JSON - JsonTreeWorker
+    // (unlike LogIndexWorker) always posts a response, precisely so this
+    // method is reachable and jsonTreeIndexInFlight() never gets stuck at
+    // true.
+    void applyJsonTreeResult(std::optional<jsontree::JsonNode> result) noexcept {
+        m_jsonTree              = std::move(result);
+        m_jsonTreeIndexInFlight = false;
+    }
+
     // Always derived from path()/isUntitled() - see this file's header
     // comment on why this is not cached.
     [[nodiscard]] std::optional<syntax::Language> language() const noexcept;
@@ -273,6 +319,8 @@ private:
     std::optional<logmode::LogPatternRule> m_logPatternRule;
     bool                                   m_logIndexInFlight = false;
     std::uint8_t                           m_logLevelFilterMask = logmode::kAllLogLevelsVisible;
+    std::optional<jsontree::JsonNode>      m_jsonTree;
+    bool                                   m_jsonTreeIndexInFlight = false;
 };
 
 }  // namespace neomifes::app

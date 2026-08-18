@@ -49,6 +49,11 @@ target_link_libraries(neomifes_app_input
         # signature (logModel()/logPatternRule()/beginLogIndexing()) - same
         # reasoning as neomifes::search/neomifes::syntax above.
         neomifes::logmode
+        # editor_session.h (WI-15b) exposes jsontree::JsonNode/
+        # jsontree::JsonTreeWorker in its public signature
+        # (jsonTree()/beginJsonTreeIndexing()) - same reasoning as
+        # neomifes::logmode immediately above.
+        neomifes::jsontree
     PRIVATE
         neomifes::compile_options
         neomifes::util

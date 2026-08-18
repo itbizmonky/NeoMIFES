@@ -7,13 +7,19 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <utility>
+
 #include "neomifes/app/editor_session.h"
+#include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/log_model.h"
 #include "neomifes/logmode/log_pattern.h"
 
 namespace {
 
 using neomifes::app::EditorSession;
+using neomifes::jsontree::JsonNode;
+using neomifes::jsontree::JsonNodeKind;
 using neomifes::logmode::kAllLogLevelsVisible;
 using neomifes::logmode::LogLevel;
 using neomifes::logmode::logLevelFilterBit;
@@ -67,6 +73,50 @@ TEST(EditorSessionLogModeStateTest, DisableLogModeClearsModelAndResetsFilterMask
     EXPECT_FALSE(session.logModel().has_value());
     EXPECT_FALSE(session.logIndexInFlight());
     EXPECT_EQ(session.logLevelFilterMask(), kAllLogLevelsVisible);
+}
+
+// WI-15b: EditorSession's per-tab JSON-tree state (jsonTree()/
+// jsonTreeIndexInFlight()/applyJsonTreeResult()). Headless -
+// beginJsonTreeIndexing() requires a real JsonTreeWorker (background thread
+// + HWND), so its round trip is exercised by the integration test
+// (tests/integration/jsontree_json_tree_worker_test.cpp) instead of here -
+// same split as EditorSessionLogModeStateTest above.
+TEST(EditorSessionJsonTreeStateTest, InitiallyHasNoJsonTreeAndIsNotInFlight) {
+    const EditorSession session;
+    EXPECT_FALSE(session.jsonTree().has_value());
+    EXPECT_FALSE(session.jsonTreeIndexInFlight());
+}
+
+TEST(EditorSessionJsonTreeStateTest, ApplyJsonTreeResultPopulatesJsonTreeAndClearsInFlight) {
+    EditorSession session;
+
+    JsonNode node;
+    node.kind = JsonNodeKind::Object;
+    session.applyJsonTreeResult(std::move(node));
+
+    const auto& tree = session.jsonTree();
+    ASSERT_TRUE(tree.has_value());
+    EXPECT_EQ(tree->kind, JsonNodeKind::Object);
+    EXPECT_FALSE(session.jsonTreeIndexInFlight());
+}
+
+// json_tree_worker.h's design departure from LogIndexWorker (see that
+// header's own comment): a failed parse must still reach
+// applyJsonTreeResult() as std::nullopt rather than being dropped, so
+// jsonTreeIndexInFlight() cannot get stuck at true. This pins down
+// EditorSession's half of that contract.
+TEST(EditorSessionJsonTreeStateTest, ApplyJsonTreeResultWithNulloptClearsInFlightLeavingTreeEmpty) {
+    EditorSession session;
+
+    JsonNode node;
+    node.kind = JsonNodeKind::Object;
+    session.applyJsonTreeResult(std::move(node));
+    ASSERT_TRUE(session.jsonTree().has_value());
+
+    session.applyJsonTreeResult(std::nullopt);
+
+    EXPECT_FALSE(session.jsonTree().has_value());
+    EXPECT_FALSE(session.jsonTreeIndexInFlight());
 }
 
 }  // namespace

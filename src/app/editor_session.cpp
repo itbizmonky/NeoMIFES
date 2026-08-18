@@ -5,6 +5,7 @@
 
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/syntax_language.h"
+#include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 
 namespace neomifes::app {
@@ -59,6 +60,11 @@ void EditorSession::beginLogIndexing(logmode::LogIndexWorker& worker, const logm
     worker.requestIndex(m_document.snapshot(), rule, assumedYear, /*sessionToken=*/this);
     m_logPatternRule   = rule;
     m_logIndexInFlight = true;
+}
+
+void EditorSession::beginJsonTreeIndexing(jsontree::JsonTreeWorker& worker) {
+    worker.requestIndex(m_document.snapshot(), /*sessionToken=*/this);
+    m_jsonTreeIndexInFlight = true;
 }
 
 void EditorSession::resetToBlank() {
