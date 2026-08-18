@@ -124,6 +124,7 @@ using neomifes::core::RecentFiles;
 using neomifes::core::SearchHistory;
 using neomifes::core::Settings;
 using neomifes::document::Document;
+using neomifes::jsontree::JsonTreeWorker;
 using neomifes::logmode::LogIndexWorker;
 using neomifes::platform::currentProcessMemory;
 using neomifes::platform::KernelHandle;
@@ -587,6 +588,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // wireNormalMode() at all - same "harmless unused" treatment as
     // menuHandles above) rather than branching on `args.mode` here too.
     std::optional<LogIndexWorker> logIndexWorker;
+    // WI-15b: same construction-timing reasoning as logIndexWorker above -
+    // JsonTreeWorker's constructor also requires a real HWND and starts a
+    // background std::thread immediately.
+    std::optional<JsonTreeWorker> jsonTreeWorker;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -660,7 +665,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
-                       logPatternsStartup.logPatternsDir);
+                       logPatternsStartup.logPatternsDir, jsonTreeWorker);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

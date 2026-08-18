@@ -85,6 +85,8 @@ using neomifes::core::Viewport;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::TextRange;
+using neomifes::jsontree::kMsgJsonTreeReady;
+using neomifes::jsontree::JsonTreeWorker;
 using neomifes::logmode::builtInLogPatterns;
 using neomifes::logmode::computeGroupedLogLevels;
 using neomifes::logmode::detectLogPatternRule;
@@ -2907,14 +2909,38 @@ void applyLogIndexReadyMessage(Workspace& workspace, RenderPipeline& renderPipel
     }
 }
 
+// WI-15b: JsonTreeWorker's background-thread indexing completion signal
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgJsonTreeReady branch) -
+// mirrors applyLogIndexReadyMessage() above at its WI-14b-era shape
+// (RenderPipeline/HWND/InvalidateRect deliberately absent - no UI consumes
+// jsonTree() yet, WI-15c). `wParam` is the opaque sessionToken
+// requestIndex() was given back - see that function's own comment for why
+// pointer-VALUE comparison against &workspace.sessionAt(i) is safe even if
+// the issuing tab has since closed. `lParam` is always non-null (unlike
+// LogIndexWorker, JsonTreeWorker posts even a std::nullopt result - see
+// json_tree_worker.h's header comment) and owns a heap-allocated
+// std::optional<JsonNode>* that must be reconstructed into a unique_ptr
+// immediately to avoid leaking it.
+void applyJsonTreeReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+    const std::unique_ptr<std::optional<neomifes::jsontree::JsonNode>> result(
+        reinterpret_cast<std::optional<neomifes::jsontree::JsonNode>*>(lParam));
+    const auto* const token = reinterpret_cast<const void*>(wParam);
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
+            workspace.sessionAt(i).applyJsonTreeResult(std::move(*result));
+            break;
+        }
+    }
+}
+
 // MainWindowConfig::onAppMessage's body (WM_APP+N messages MainWindow
 // forwards unexamined - neomifes::ui never learns what
-// kMsgSyntaxTokensReady/kMsgLogIndexReady mean, see that field's own doc
-// comment; this file is the layer that already depends on render:: and
-// logmode:: so it's the only place that can safely compare against the
-// constants and reconstruct each payload's real type). Extracted out of
-// wireNormalMode() into its own function (WI-14b) purely to keep
-// wireNormalMode() under the cognitive-complexity threshold - the two
+// kMsgSyntaxTokensReady/kMsgLogIndexReady/kMsgJsonTreeReady mean, see that
+// field's own doc comment; this file is the layer that already depends on
+// render::/logmode::/jsontree:: so it's the only place that can safely
+// compare against the constants and reconstruct each payload's real type).
+// Extracted out of wireNormalMode() into its own function (WI-14b) purely to
+// keep wireNormalMode() under the cognitive-complexity threshold - the
 // message branches below were previously inline in wireNormalMode()'s own
 // cfg.onAppMessage lambda.
 void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND hwnd, UINT msg, WPARAM wParam,
@@ -2928,6 +2954,10 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND
     }
     if (msg == neomifes::logmode::kMsgLogIndexReady) {
         applyLogIndexReadyMessage(workspace, renderPipeline, hwnd, wParam, lParam);
+        return;
+    }
+    if (msg == kMsgJsonTreeReady) {
+        applyJsonTreeReadyMessage(workspace, wParam, lParam);
     }
 }
 
@@ -3077,7 +3107,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     MenuBarHandles menuHandles, AutosaveContext& autosave,
                     std::optional<logmode::LogIndexWorker>& logIndexWorker,
                     std::vector<logmode::LogPatternRule>& userLogPatterns,
-                    const std::optional<std::filesystem::path>& logPatternsDir) {
+                    const std::optional<std::filesystem::path>& logPatternsDir,
+                    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -3098,7 +3129,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
-                          &userLogPatterns, logPatternsDir](HWND hwnd) {
+                          &userLogPatterns, logPatternsDir, &jsonTreeWorker](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -3111,6 +3142,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // initialization (same timing findBar.create(hwnd, ...)/
         // outlinePane's CreateWindowExW below already rely on).
         logIndexWorker.emplace(hwnd);
+        // WI-15b: same reasoning as logIndexWorker.emplace() above -
+        // JsonTreeWorker's constructor also requires a real HWND and starts
+        // its own background thread immediately.
+        jsonTreeWorker.emplace(hwnd);
         // Resolved once here for this lambda's own synchronous body below -
         // safe (nothing can switch tabs before the window's first deferred
         // init has even run). The nested paint handler lambda just below

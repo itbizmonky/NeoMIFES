@@ -34,6 +34,7 @@
 #include "neomifes/core/recent_files.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
+#include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 #include "neomifes/logmode/log_pattern.h"
 #include "neomifes/platform/handle_guard.h"
@@ -200,6 +201,16 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // buildCommandRegistry() (this file's own .cpp) - see
 // appendLogModeCommands()'s comment for how these two feed the
 // "logmode.enable.*"/"Log: Reload Patterns" commands.
+//
+// WI-15b: takes std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+// EMPTY at the time this function runs - same construction-timing reasoning
+// as logIndexWorker above (JsonTreeWorker's constructor also requires a real
+// HWND and starts a background std::thread immediately). cfg.onDeferredInit
+// below emplace()s it once the real hwnd is known. No command/UI calls
+// jsonTreeWorker->requestIndex() yet (WI-15c) - this WI only wires the
+// construction plus cfg.onAppMessage's kMsgJsonTreeReady receiving/routing
+// branch (see this file's .cpp body), proven correct by
+// tests/integration/jsontree_json_tree_worker_test.cpp.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -212,6 +223,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     MenuBarHandles menuHandles, AutosaveContext& autosave,
                     std::optional<logmode::LogIndexWorker>& logIndexWorker,
                     std::vector<logmode::LogPatternRule>& userLogPatterns,
-                    const std::optional<std::filesystem::path>& logPatternsDir);
+                    const std::optional<std::filesystem::path>& logPatternsDir,
+                    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker);
 
 }  // namespace neomifes::app
