@@ -3305,9 +3305,9 @@ public:
 - 最終ゲート(ubsan/clang-cl)で、`nlohmann::ordered_json::parse()`自体(再帰下降パーサ)が病的に深いネストでスタックオーバーフローしうることを発見、`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`としてissue化した。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15a/WI-15b)」参照。
 
-### 11.5 `neomifes::csvmode` リファレンス (WI-16a実装、Phase 10.2 着手)
+### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜b実装、Phase 10.2 着手)
 
-`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。非同期ワーカー+`EditorSession`配線・グリッドUI・列固定・フィルタ・ソート・式列・セル編集・区切り文字以外の自動検出は未実装(WI-16b以降へ)。
+`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI・列固定・フィルタ・ソート・式列・セル編集・区切り文字以外の自動検出は未実装(WI-16c以降へ)。
 
 ```cpp
 // neomifes/csvmode/csv_model.h (WI-16a)
@@ -3369,11 +3369,41 @@ inline constexpr std::array<char16_t, 4> kCsvDelimiterCandidates = {u',', u'\t',
 - `detectCsvDelimiter()`は`logmode::detectLogPatternRule()`のサンプリング構造(既定100行)を土台にしつつ、スコアリング基準を変更: 「出現の有無」ではなく「行ごとの出現回数の最頻値(mode)への一致度合い」で評価する(カンマ等の候補文字は通常の文章にも現れるため、単純な出現有無では区別できない)。出現回数0の行はヒストグラムから完全に除外する(そうしないと常に出現しない区切り文字が「全行0で一致」として不当に高スコアを得る)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16a完了)」参照。
 
+```cpp
+// neomifes/csvmode/csv_model_worker.h (WI-16b)
+inline constexpr UINT kMsgCsvIndexReady = WM_APP + 5;
+
+struct PendingCsvIndexRequest {
+    std::shared_ptr<const document::BufferSnapshot> snapshot;
+    CsvParseOptions                                   options;
+    const void*                                       sessionToken = nullptr;
+};
+
+class CsvModelWorker {
+public:
+    explicit CsvModelWorker(HWND targetHwnd);
+    ~CsvModelWorker();
+    // move/copy削除、logmode::LogIndexWorkerと同型
+    void requestIndex(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                      CsvParseOptions options, const void* sessionToken) noexcept;
+    // ...
+};
+```
+
+**設計上の要点 (WI-16b、非同期化+EditorSession配線):**
+- `CsvModelWorker`は`JsonTreeWorker`(WI-15b)ではなく`logmode::LogIndexWorker`を直接のテンプレートに採用した — 判断理由は2点。①`CsvModel::build()`は`CsvParseOptions{delimiter, hasHeader}`という呼び出し側設定を要する(`parseJsonTree()`は設定パラメータを取らない)。②唯一の失敗契約`CsvParseError::InvalidDelimiter`は`delimiter`が`\r`/`\n`/`"`という**呼び出し側の設定ミス**であり、`LogPatternError::InvalidRegex`と同じ性質(組込・自動検出由来のdelimiterでは到達不能)。JSONの`std::nullopt`(「JSON以外のファイルを開いた」という日常的な正常系)とは根本的に異なるため、`JsonTreeWorker`の「失敗でも必ず投函する」設計ではなく`LogIndexWorker`の「失敗リクエストは投函せず握りつぶす」設計を踏襲した。
+- WI-16a時点で`CsvModel::build()`の`BufferSnapshot`/`Document`両オーバーロードが既に揃っていたため、`parseJsonTree()`がWI-15bで追加したような「非同期化の前提となるオーバーロード追加ステップ」は本WIには不要だった。
+- `FIFO std::deque`を採用(`SyntaxWorker`型の「最新のみ保持」は不採用) — 複数タブがそれぞれ独立した結果を必要とするため、`LogIndexWorker`/`JsonTreeWorker`と同じ理由。
+- `EditorSession`へ`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点を追加(`jsonTree()`系と同型)。`csvModel()`の`std::nullopt`は「未インデックス」のみを表す — `CsvModelWorker`が失敗結果を投函しないため、`jsonTree()`の「インデックス済みだがコンテンツが無効」という第2の意味を持たない。
+- `normal_mode_wiring.cpp`の`applyCsvIndexReadyMessage()`/`handleAppMessage()`拡張は、`RenderPipeline`/`HWND`/`InvalidateRect`を持たない`applyJsonTreeReadyMessage()`の形をそのまま踏襲(UIが無いため再描画の必要が無い)。
+- 最終ゲート(Debug/Release/ubsan)で`CsvModelWorker`のスレッド関連コード(`std::thread`/`std::mutex`/`std::condition_variable`/`PostMessageW`経由のポインタ受け渡し)を特に注意して検証、UB検出0件を確認。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16b完了)」参照。
+
 ---
 
 ## 12. CSV モード 詳細
 
-> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(非同期ワーカー・グリッドUI・列固定・フィルタ・ソート・式列・セル編集)の設計メモ。
+> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(グリッドUI・列固定・フィルタ・ソート・式列・セル編集)の設計メモ。
 
 ### 12.1 データ表現
 - 論理: Piece Table + 行スキーマ

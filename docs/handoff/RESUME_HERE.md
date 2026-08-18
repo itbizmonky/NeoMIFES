@@ -171,7 +171,8 @@
 | **10.3a** | **JSON ツリーモデル ヘッドレス基盤** (`neomifes::jsontree`、`JsonNode`/`parseJsonTree()`、XML/UI/整形/バリデーション/XPath/JSONPathは未着手) | ✅ **完了 (WI-15a、2026-08-18、§3.85参照)** |
 | **10.3b** | **JSON ツリー 非同期インデックス化 + `EditorSession`配線** (`JsonTreeWorker`、UIなし、呼び出し元コマンドは未追加) | ✅ **完了 (WI-15b、2026-08-18、§3.86参照)** |
 | **10.2a** | **CSV モード ヘッドレス解析モデル** (`neomifes::csvmode`、`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`、非同期ワーカー/グリッドUIは未着手) | ✅ **完了 (WI-16a、2026-08-19、§3.87参照)** |
-| 10.2/10.3残り → 11 → 9 → 12 | CSV(非同期化+グリッドUI)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
+| **10.2b** | **CSV モード 非同期ワーカー + `EditorSession`配線** (`CsvModelWorker`、UIなし、呼び出し元コマンドは未追加) | ✅ **完了 (WI-16b、2026-08-19、§3.88参照)** |
+| 10.2/10.3残り → 11 → 9 → 12 | CSV(グリッドUI)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2510,6 +2511,25 @@ WI-15b完了・pushはまだの状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`ab7dd5e`/`c8fd842`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIでヘッドレス解析モデルのみ完了 — 非同期ワーカー+`EditorSession`配線・グリッドUI・列固定・フィルタ・ソート・式列・セル編集・ヘッダ自動判定は全て後続サブWI(WI-16b以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
 
+### 3.88 WI-16b (CSV モード 非同期ワーカー + EditorSession配線、UIなし) 完了記録 (2026-08-19)
+
+WI-16a完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。Phase 10.2(CSV)とPhase 10.3(JSON/XML Tree)がいずれもヘッドレス基盤のみ完了した状態で並行して止まっていたため、AskUserQuestionで確認し「WI-16b: CSVモード続き」が選ばれた。WI-14a→WI-14b、WI-15a→WI-15bと同じ「ヘッドレスモデル→非同期ワーカー+EditorSession配線(UIなし)」の順序をCSV側でも踏襲する。
+
+**着手前調査(直接ファイル読解、Explore/Plan agent不使用):** WI-16a時点で`CsvModel::build()`の`BufferSnapshot`/`Document`両オーバーロードが既に揃っていることを`csv_model.h`で確認 — WI-15b Step1(`parseJsonTree()`へのBufferSnapshotオーバーロード追加)に相当するステップが不要と判明。`LogIndexWorker`(`log_index_worker.h`)と`JsonTreeWorker`(`json_tree_worker.h`)を読み比べ、リクエスト構造(設定を伴うか)と失敗結果の扱い(投函するか握りつぶすか)の2軸で設計判断を行った。`EditorSession`のjsonTree()系4点(`editor_session.h`223-245行目)、`main.cpp`/`normal_mode_wiring.cpp`の配線パターンも直接読解して確認済み。この段階の調査量・確信度が高かったため、Plan Modeでの計画立案も自ら行い(Plan agent委任なし)、ExitPlanModeでユーザー承認を得た。
+
+**設計判断の核心: `JsonTreeWorker`ではなく`LogIndexWorker`型を採用した。** 理由は2点。①`LogIndexWorker::requestIndex()`は`snapshot`+呼び出し側設定(`LogPatternRule`/`assumedYear`)を持つのに対し`JsonTreeWorker::requestIndex()`は`snapshot`のみ — CSVは`CsvParseOptions{delimiter, hasHeader}`という設定を要するため前者型。②失敗結果の扱い: `LogIndexWorker`は`LogPatternError::InvalidRegex`(呼び出し側の設定ミス、組込パターン全てに対して到達不能)を握りつぶす一方、`JsonTreeWorker`は`parseJsonTree()`のnullopt(JSON以外のファイルという日常的な正常系)を必ず投函する。`CsvParseError::InvalidDelimiter`はWI-16aの契約上「呼び出し側の設定ミス」であり前者と同じ性質のため、失敗リクエストを投函しない設計を採用した。
+
+**実施内容(3コミット、WI-14b/WI-15bの4コミットより1つ少ない):**
+1. `CsvModelWorker`実装(`LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`、`kMsgCsvIndexReady = WM_APP + 5`)+ 統合テスト4件(`jsontree_json_tree_worker_test.cpp`をテンプレートに、うち1件は「不正delimiterでは決してメッセージが届かない」という逆方向テスト)+ CMake配線 (`a8af2b7`)
+2. `EditorSession`へ`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点配線 + 単体テスト2件、`disableCsvMode()`はWI-16cへ意図的に先送り (`0457fda`)
+3. `main.cpp`/`normal_mode_wiring.h/.cpp`配線(`CsvModelWorker`構築+`kMsgCsvIndexReady`受信ルーティング、呼び出し元コマンドは追加せず) (`aa15488`)
+
+**中間検証で1回、見せかけのビルドエラーに遭遇した。** Step1のDebugビルド検証をバックグラウンドで実行しつつStep2(`editor_session.h`への変更)を並行編集していたところ、検証エージェントのビルドが編集途中の非一貫な状態(`editor_session.h`が`csv_model.h`をincludeし始めていたが`src/app/CMakeLists.txt`への`neomifes::csvmode`依存追加がまだ済んでいない状態)を捕捉し、C1083(ヘッダが見つからない)を報告した。ファイル自体は実在しており、原因は「同一ディレクトリで進行中の編集とバックグラウンドビルドが競合した」ことによる一時的な不整合と特定、Step2完了後に改めて実行したクリーンな検証では再現しなかった。教訓: バックグラウンド検証エージェントを実行中は、検証対象と同じファイル群への並行編集を避けるべき(今回はStep3以降、検証と編集を時間的に分離して回避した)。
+
+**最終ゲート:** Debug/Release/ubsan全1356件green(UBSan実行時エラー検出0件、`CsvModelWorker`の`std::thread`/`std::mutex`/`std::condition_variable`/`PostMessageW`経由ポインタ受け渡しを特に注意して確認)、clang-tidy新規警告0(`src/`側4ファイル`csv_model_worker.cpp`/`editor_session.cpp`/`normal_mode_wiring.cpp`/`main.cpp`)。`tests/`側の指摘(`HiddenWindow`スキャフォールドの`special-member-functions`等、`app_editor_session_test.cpp`の`bugprone-unchecked-optional-access`)は全て既存の許容済みパターンと確認済み(前者は`jsontree_json_tree_worker_test.cpp`他と文字単位で同一のコピー、後者はPhase 5c3/5c4以来の既知の誤検知)。実アプリでの視覚確認は対象外(ヘッドレス+スレッド配線のみの変更、UIに一切触れない)。
+
+コミット済み(`a8af2b7`/`0457fda`/`aa15488`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIで非同期ワーカー+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し) — グリッドUI・列固定・フィルタ・ソート・式列・セル編集は全て後続サブWI(WI-16c以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2559,20 +2579,21 @@ WI-15b完了・pushはまだの状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.87 (WI-16a CSVモード ヘッドレス解析モデル
-完了記録)を読んで現状を把握せよ。
+RESUME_HERE.md §3.88 (WI-16b CSVモード 非同期ワーカー+
+EditorSession配線 完了記録)を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
 (2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a(ヘッドレス
 基盤)→WI-15b(非同期インデックス化+EditorSession配線、UIなし)
-まで進行中(2026-08-18)。続けてユーザーの選択でPhase 10.2(CSV
-モード)へ着手し、WI-16a(neomifes::csvmode、CsvModel/CsvCell/
-csvCellValue()/detectCsvDelimiter()、ヘッドレスのみ)が完了した
-(2026-08-19)。Debug/Release/ubsan全1362件green、clang-tidy新規
-警告0を確認済み。
+まで進行中(2026-08-18)。Phase 10.2(CSVモード)はWI-16a(ヘッドレス
+解析モデル、2026-08-19)→WI-16b(CsvModelWorker非同期ワーカー+
+EditorSession配線、UIなし)まで進行中(2026-08-19)。WI-16bは
+LogIndexWorker型(失敗リクエストは投函せず握りつぶす)を採用 -
+JsonTreeWorker型ではない、理由はWI-16b完了記録参照。Debug/Release/
+ubsan全1356件green、clang-tidy新規警告0を確認済み。
 
-**WI-15bの最終ゲートで発見した既知の制約(WI-16aとは無関係、再掲):**
+**WI-15bの最終ゲートで発見した既知の制約(WI-16a/bとは無関係、再掲):**
 `nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を
 設定するAPI無し)が病的に深いネストでスタックオーバーフローしうると
 判明、docs/issues/json_tree_worker_deep_nesting_stack_overflow.md
@@ -2583,10 +2604,11 @@ csvCellValue()/detectCsvDelimiter()、ヘッドレスのみ)が完了した
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
 (WI-15/16/17)を2026-08-18にWI-16/17/18へ繰り下げ、CSV側のWI-16a新設
 で衝突したため2026-08-19にさらにWI-17/18/19へ繰り下げた
-(build_plan.md §5「WI-17〜19」節)。
+(build_plan.md §5「WI-17〜19」節)。WI-16bはこの番号割当に影響しない
+(既存のWI-16の続き番号)。
 
-次はPhase 10.2の続き(WI-16b以降: 非同期ワーカー+EditorSession配線・
-グリッドUI・列固定・フィルタ・ソート・式列)、またはPhase 10.3の続き
+次はPhase 10.2の続き(WI-16c以降: グリッドUI・列固定・フィルタ・
+ソート・式列・セル編集)、またはPhase 10.3の続き
 (WI-15c: ツリーUI・XML・折り畳み統合・整形・バリデーション・
 XPath/JSONPath)、またはユーザー指定の次項目。着手前にbuild_plan.md
 §5とmaster_roadmap.md §10.2(または§10.3)を読み、本書§5と同じ形式で

@@ -286,7 +286,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
 | 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🚧 **着手 (WI-15a: JSONヘッドレス基盤、WI-15b: 非同期インデックス化+EditorSession配線 完了、2026-08-18。XML/UI/整形/バリデーション/XPath/JSONPathは未着手)** | §10.3 |
-| 10.2 | CSV モード | 🚧 **着手 (WI-16a: CSVヘッドレス解析モデル 完了、2026-08-19。非同期ワーカー/EditorSession配線/グリッドUI/フィルタ・ソート/式列は未着手)** | §10.2 |
+| 10.2 | CSV モード | 🚧 **着手 (WI-16a: CSVヘッドレス解析モデル、WI-16b: 非同期ワーカー+EditorSession配線 完了、2026-08-19。グリッドUI/列固定/フィルタ・ソート/式列/セル編集は未着手)** | §10.2 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
 | 12 | 総合品質保証 + 正式出荷 | 未着手 | §12 |
@@ -2193,7 +2193,17 @@ class CsvModel {
 
 **列固定・セル単位クリック編集・TSV対応の実体・区切り文字自動判定・式列(v2.0)・グリッドUI(`WC_LISTVIEW`等)・`Mode::Csv`検出は全て本WIのスコープ外。** 区切り文字自動判定`detectCsvDelimiter()`のみ本WIで先行実装した(`,`/`\t`/`;`/`|`の4候補、`logmode::detectLogPatternRule()`のサンプリング構造を土台に「行ごとの出現回数の最頻値への一致度合い」でスコアリング)。ヘッダ自動判定は要件定義書・本節いずれにも記述がなく、`CsvParseOptions.hasHeader`は常に呼び出し側指定のまま(既定値`true`)とした。
 
-詳細は`build_plan.md` WI-16aセクション参照。次はWI-16b以降(非同期ワーカー+EditorSession配線、`LogIndexWorker`/`JsonTreeWorker`と同型)。
+詳細は`build_plan.md` WI-16aセクション参照。
+
+#### 実装後の確定事項/変更点 (2026-08-19、WI-16b完了 — 非同期ワーカー+EditorSession配線のみ)
+
+**新規`CsvModelWorker`(`neomifes::logmode::LogIndexWorker`を直接のテンプレート)を実装した。** `JsonTreeWorker`(WI-15b)ではなく`LogIndexWorker`型の設計を採用 — 理由は2点: ①`CsvModel::build()`が`CsvParseOptions{delimiter, hasHeader}`という呼び出し側設定を要する(`JsonTreeWorker`のリクエストは`snapshot`のみ)、②唯一の失敗契約`CsvParseError::InvalidDelimiter`が`LogPatternError::InvalidRegex`と同じ「呼び出し側の設定ミス」であり、`JsonTreeWorker`が扱う「コンテンツ依存の日常的な失敗」(nullopt)とは性質が異なる。そのため失敗リクエストは`LogIndexWorker`同様に投函せず握りつぶす設計にした(統合テストで直接証明)。
+
+**WI-16a時点で`CsvModel::build()`の`BufferSnapshot`/`Document`両オーバーロードが既に揃っていたため、WI-14b/WI-15bが必要とした「非同期化の前提となるオーバーロード追加ステップ」が本WIには不要だった。** これにより本WIは3コミット(WI-14b/WI-15bの4コミットより1つ少ない)で完結した。
+
+`EditorSession`へ`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点を追加(`jsonTree()`系と同型)。`disableCsvMode()`相当・呼び出し元コマンド・グリッドUIは全て本WIのスコープ外(WI-16c以降)。
+
+詳細は`build_plan.md` WI-16bセクション参照。次はWI-16c以降(グリッドUI・列固定・フィルタ・ソート・式列・セル編集)。
 
 ### 10.3 JSON / XML Tree モード (要件定義書 §10)
 

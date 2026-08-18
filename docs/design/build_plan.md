@@ -133,7 +133,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) まで進行中、残りは切り直しながら継続する。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) まで進行中、残り(非同期ワーカー+EditorSession配線・グリッドUI)は切り直しながら継続する。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) まで進行中、残りは切り直しながら継続する。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) まで進行中、残り(グリッドUI)は切り直しながら継続する。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -142,8 +142,9 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-15a** JSON ツリーモデル ヘッドレス基盤 (Phase 10.3 最初のサブ WI、XML/UI は非スコープ) → コミット: `9334f0c`/`1f21780`
 - [x] **WI-15b** JSON ツリー 非同期インデックス化 + EditorSession配線 (UIなし) → コミット: `1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`
 - [x] **WI-16a** CSV モード ヘッドレス解析モデル (Phase 10.2 最初のサブ WI、非同期ワーカー/グリッドUIは非スコープ) → コミット: `ab7dd5e`/`c8fd842`
+- [x] **WI-16b** CSV モード 非同期ワーカー + EditorSession配線 (UIなし) → コミット: `a8af2b7`/`0457fda`/`aa15488`
 - [ ] **WI-15c以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath)
-- [ ] **WI-16b以降** Phase 10.2 の残り (非同期ワーカー+EditorSession配線・グリッドUI) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [ ] **WI-16c以降** Phase 10.2 の残り (グリッドUI・列固定・フィルタ・ソート・式列・セル編集) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-17** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-18** Phase 9 — AI プラグイン
 - [ ] **WI-19** Phase 12 — 総合品質保証・正式出荷
@@ -1263,9 +1264,51 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
+## WI-16b — CSV モード 非同期ワーカー + EditorSession配線 (UIなし)
+
+**目的:** WI-16a(CSVモード ヘッドレス解析モデル)完了後、ユーザーに「次のPhase」の意味をAskUserQuestionで確認したところ、Phase 10.2(CSV)とPhase 10.3(JSON/XML Tree)がいずれもヘッドレス基盤のみ完了した状態で並行して止まっている中、「WI-16b: CSVモード続き」が選ばれた。WI-14a→WI-14b、WI-15a→WI-15bと同じ「ヘッドレスモデル→非同期ワーカー+EditorSession配線(UIなし)」の順序をCSV側でも踏襲する。
+
+**前提:** WI-16a 完了・コミット済み (2026-08-19)
+
+**参照:** `src/logmode/include/neomifes/logmode/log_index_worker.h`(直接のテンプレート)、`src/app/include/neomifes/app/editor_session.h`(jsonTree()系4点、直接のテンプレート)
+
+### 着手前調査で確定した設計方針
+
+- WI-16a時点で`CsvModel::build()`は`BufferSnapshot`/`Document`の両オーバーロードを既に実装済みと確認 — WI-15b Step1(`parseJsonTree()`へのBufferSnapshotオーバーロード追加)に相当するステップが本WIには不要、非同期ワーカー本体から直接着手できた。
+- `LogIndexWorker::requestIndex()`(`snapshot`+呼び出し側設定`LogPatternRule`/`assumedYear`)と`JsonTreeWorker::requestIndex()`(`snapshot`のみ)の構造差を比較し、CSVは`CsvParseOptions{delimiter, hasHeader}`という呼び出し側設定を要するため**LogIndexWorker型**を採用。
+- 失敗結果の扱いも比較: `LogIndexWorker`は`LogPatternError::InvalidRegex`(呼び出し側の設定ミス、組込パターン全てに対して到達不能)を`continue`で握りつぶす。`JsonTreeWorker`は`parseJsonTree()`のnullopt(JSON以外のファイルという日常的な正常系)を必ず投函する。`CsvParseError::InvalidDelimiter`はWI-16aの契約上「呼び出し側の設定ミス」であり`LogPatternError::InvalidRegex`と同じ性質 — **LogIndexWorker型(失敗リクエストは投函せず握りつぶす)を採用**。
+
+### 実施内容 (3コミット)
+
+1. `CsvModelWorker`実装(`neomifes::logmode::LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`、`kMsgCsvIndexReady = WM_APP + 5`、失敗リクエストは投函しない設計)+ 統合テスト4件(`jsontree_json_tree_worker_test.cpp`を直接のテンプレート、うち1件はLogIndexWorker型の設計を裏付ける「不正delimiterでは決してメッセージが届かない」逆方向テスト)+ CMake配線 (`a8af2b7`)
+2. `EditorSession`へ`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点配線 + 単体テスト2件(`disableCsvMode()`はWI-16cへ意図的に先送り) (`0457fda`)
+3. `main.cpp`/`normal_mode_wiring.h/.cpp`配線(`CsvModelWorker`構築 + `kMsgCsvIndexReady`受信ルーティング、呼び出し元コマンドは追加せず)+ 最終ゲート + ドキュメント同期 (`aa15488`)
+
+### DoD
+
+- [x] `CsvModelWorker`(`neomifes::csvmode`、FIFO、`requestIndex(snapshot, options, sessionToken)`)
+- [x] 失敗リクエスト(`CsvParseError::InvalidDelimiter`)は`LogIndexWorker`と同じ理由でメッセージを投函しない設計 — 統合テストで直接証明
+- [x] `EditorSession`に`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点(`disableCsvMode()`は意図的に含めない)
+- [x] `main.cpp`/`normal_mode_wiring.cpp`に配線済み、ただし呼び出し元(コマンド)は意図的に追加しない
+- [x] 複数タブの結果が両方届くこと(FIFO、最新のみ保持ではないこと)を統合テストで証明
+- [x] Debug/Release/ubsan全1356件green、clang-tidy新規警告0(`src/`側4ファイル)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**WI-16aで両オーバーロードが既に揃っていたため、本WIはWI-14b/WI-15bより1ステップ少ない3コミットで完結した。** WI-14b/WI-15bはいずれも「非同期化の前提となるBufferSnapshotオーバーロード追加」を含む4コミット構成だったが、CsvModelはWI-16a時点でスレッド安全な`BufferSnapshot`版を最初から実装していたため(WI-16aの設計方針そのもの)、この差分が後続WIのコミット数として直接的に表れた。
+
+**最終ゲート(ubsan)で`CsvModelWorker`のスレッド関連コード(`std::thread`/`std::mutex`/`std::condition_variable`/`PostMessageW`経由のポインタ受け渡し)を特に注意して検証したが、UB検出は0件だった。** `LogIndexWorker`/`JsonTreeWorker`と全く同型の設計(FIFO・単一ワーカースレッド・`unique_ptr`による所有権譲渡)を踏襲した結果であり、新規のスレッド安全性リスクは導入していない。
+
+**clang-tidyの`tests/`側指摘(`app_editor_session_test.cpp`の`bugprone-unchecked-optional-access`等)は全て既存の許容済みパターンと確認した。** `ASSERT_TRUE(x.has_value())`直後の`x->field`参照をclang-tidyが追跡できない誤検知は、Phase 5c3/5c4以来繰り返し確認済みの既知パターン。
+
+コミット済み(`a8af2b7`/`0457fda`/`aa15488`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIで非同期ワーカー+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し) — グリッドUI・列固定・フィルタ・ソート・式列・セル編集は全て後続サブWI(WI-16c以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目。
+
+---
+
 ## WI-17 〜 WI-19 — Phase 11 / 9 / 12
 
-**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a(ヘッドレス基盤)着手済み・残り未完了、Phase 10.2 (CSV) は WI-16a(ヘッドレス解析モデル)着手済み・残り未完了。
+**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a〜b(ヘッドレス基盤+非同期化)着手済み・残り未完了、Phase 10.2 (CSV) は WI-16a〜b(ヘッドレス解析モデル+非同期化)着手済み・残り未完了。
 
 着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
 

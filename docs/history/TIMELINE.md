@@ -3121,4 +3121,27 @@ WI-15b完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`ab7dd5e`/`c8fd842`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIでヘッドレス解析モデルのみ完了 — 非同期ワーカー+`EditorSession`配線・グリッドUI・列固定・フィルタ・ソート・式列・セル編集・ヘッダ自動判定は全て後続サブWI(WI-16b以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目。
 
+## Session 99 (2026-08-19): WI-16b(CSVモード 非同期ワーカー+EditorSession配線、UIなし)実装完了
+
+WI-16a完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。Phase 10.2(CSV)とPhase 10.3(JSON/XML Tree)がいずれもヘッドレス基盤のみ完了した状態で並行して止まっていたため、AskUserQuestionで確認し**「WI-16b: CSVモード続き」**が選ばれた。WI-14a→WI-14b、WI-15a→WI-15bと同じ「ヘッドレスモデル→非同期ワーカー+EditorSession配線(UIなし)」の順序をCSV側でも踏襲する。
+
+**着手前調査は直接ファイル読解のみで完結させた(Explore/Plan agent不使用)。** `csv_model.h`を読み、WI-16a時点で`CsvModel::build()`の`BufferSnapshot`/`Document`両オーバーロードが既に揃っていることを確認 — WI-15b Step1(`parseJsonTree()`へのBufferSnapshotオーバーロード追加)に相当するステップが不要と判明した。`logmode::LogIndexWorker`(`log_index_worker.h`/`.cpp`)と`jsontree::JsonTreeWorker`(`json_tree_worker.h`/`.cpp`)を読み比べ、リクエスト構造(設定を伴うか)と失敗結果の扱い(投函するか握りつぶすか)の2軸で設計判断を行った。`EditorSession`のjsonTree()系4点、`main.cpp`/`normal_mode_wiring.cpp`の配線パターンも直接読解で確認済み。調査の確信度が高かったため、Plan Modeでの計画立案も自ら行い(Plan agent委任なし)、ExitPlanModeでユーザー承認を得た。
+
+**設計判断の核心: `JsonTreeWorker`ではなく`LogIndexWorker`型を採用した。** 理由は2点。①`LogIndexWorker::requestIndex()`は`snapshot`+呼び出し側設定(`LogPatternRule`/`assumedYear`)を持つのに対し`JsonTreeWorker::requestIndex()`は`snapshot`のみ — CSVは`CsvParseOptions{delimiter, hasHeader}`という設定を要するため前者型を採用(`PendingCsvIndexRequest{snapshot, options, sessionToken}`)。②失敗結果の扱い: `LogIndexWorker`は`LogPatternError::InvalidRegex`(呼び出し側の設定ミス、組込パターン全てに対して到達不能、WI-14aのテストで保証)を`continue`で握りつぶす一方、`JsonTreeWorker`は`parseJsonTree()`のnullopt(「JSON以外のファイルを開いた」という日常的な正常系)を必ず投函する。`CsvParseError::InvalidDelimiter`はWI-16aの契約上「呼び出し側の設定ミス」であり前者と同じ性質(組込既定値`,`または`detectCsvDelimiter()`の4候補いずれかしか渡らない、本WI時点で呼び出し元コマンド自体が存在しないため実質到達不能)のため、失敗リクエストを投函しない設計を採用した。
+
+**実施内容(3コミット):**
+1. `CsvModelWorker`実装(`LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`、`kMsgCsvIndexReady = WM_APP + 5`)+ 統合テスト4件(`jsontree_json_tree_worker_test.cpp`を直接のテンプレート、うち`RequestIndexWithInvalidDelimiterNeverDeliversAMessage`はLogIndexWorker型の設計を裏付ける「不正delimiterでは決してメッセージが届かない」というJsonTreeとは逆方向のテスト)+ CMake配線(`src/csvmode/CMakeLists.txt`、`tests/integration/CMakeLists.txt`) (`a8af2b7`)
+2. `EditorSession`へ`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点配線(`jsonTree()`系と同型)+ 単体テスト2件、`disableCsvMode()`はWI-14b/WI-15bと同じ切り分け理由(呼び出し元コマンドの無いWIには対応する「無効化」コマンドも追加しない)でWI-16cへ意図的に先送り (`0457fda`)
+3. `main.cpp`/`normal_mode_wiring.h/.cpp`配線(`std::optional<CsvModelWorker> csvModelWorker`宣言、`cfg.onDeferredInit`内`.emplace(hwnd)`、新規`applyCsvIndexReadyMessage()`+`handleAppMessage()`への`kMsgCsvIndexReady`分岐追加)、呼び出し元コマンドは追加せず (`aa15488`)
+
+**WI-16aで両オーバーロードが既に揃っていたため、本WIはWI-14b/WI-15bより1ステップ少ない3コミットで完結した。** WI-14b/WI-15bはいずれも「非同期化の前提となるBufferSnapshotオーバーロード追加」を含む4コミット構成だったが、CsvModelはWI-16a時点でスレッド安全な`BufferSnapshot`版を最初から実装していたため、この設計判断の差分が後続WIのコミット数として直接的に表れた実例。
+
+**中間検証で1回、見せかけのビルドエラーに遭遇した。** Step1のDebugビルド検証をバックグラウンドで実行しつつStep2(`editor_session.h`への変更)を並行して編集していたところ、検証エージェントのビルドが編集途中の非一貫な状態(`editor_session.h`が`csv_model.h`をincludeし始めていたが`src/app/CMakeLists.txt`への`neomifes::csvmode`依存追加がまだ済んでいない状態)を捕捉し、C1083(ヘッダが見つからない)エラーを報告した。ファイル自体は実在しており、`ls`で直接確認して存在を確定させた上で、原因を「同一ディレクトリで進行中の編集とバックグラウンドビルドが競合した」ことによる一時的な不整合と特定した。Step2完了後に改めて実行したクリーンな検証(Step1〜3を一括で対象)では再現せず、1356/1356件全green。**教訓: バックグラウンド検証エージェントの実行中は、検証対象と同じファイル群への並行編集を避けるべき — 今回はStep3以降、検証と編集を時間的に分離することで回避した。**
+
+**最終ゲート:** Debug/Release/ubsan全1356件green(UBSan実行時エラー検出0件、`CsvModelWorker`の`std::thread`/`std::mutex`/`std::condition_variable`/`PostMessageW`経由ポインタ受け渡しを特に注意して確認)、clang-tidy新規警告0(`src/`側4ファイル`csv_model_worker.cpp`/`editor_session.cpp`/`normal_mode_wiring.cpp`/`main.cpp`、`src/.clang-tidy`の`WarningsAsErrors: '*'`込み)。`tests/`側の指摘(`csvmode_csv_model_worker_test.cpp`の`HiddenWindow`スキャフォールドに対する`special-member-functions`等4件、`app_editor_session_test.cpp`の`bugprone-unchecked-optional-access`1件)は全て既存の許容済みパターンと確認済み — 前者は`jsontree_json_tree_worker_test.cpp`他複数ファイルの`HiddenWindow`実装と文字単位で同一のコピーパターン、後者は`ASSERT_TRUE(x.has_value())`直後の`x->field`参照をclang-tidyが追跡できないPhase 5c3/5c4以来の既知の誤検知。実アプリでの視覚確認は対象外(ヘッドレス+スレッド配線のみの変更、UIに一切触れない)。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-16b」セクション)、`master_roadmap.md`(§10.2に実装後の確定事項追記、フェーズ表のPhase 10.2行を更新)、`detailed_design.md`(§11.5へ`CsvModelWorker`のリファレンス+WI-16b設計要点を追加、§12冒頭の実装状況注記を更新)、`RESUME_HERE.md`(§1状態表+新規§3.88完了記録+§6推奨プロンプト更新)。
+
+コミット済み(`a8af2b7`/`0457fda`/`aa15488`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIで非同期ワーカー+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し) — グリッドUI・列固定・フィルタ・ソート・式列・セル編集は全て後続サブWI(WI-16c以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
