@@ -1,5 +1,6 @@
 add_library(neomifes_csvmode STATIC
     src/csv_model.cpp
+    src/csv_delimiter_detection.cpp
 )
 add_library(neomifes::csvmode ALIAS neomifes_csvmode)
 

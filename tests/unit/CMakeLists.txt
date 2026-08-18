@@ -88,6 +88,7 @@ add_executable(neomifes_unit_tests
     logmode_log_pattern_file_test.cpp
     jsontree_json_tree_test.cpp
     csvmode_csv_model_test.cpp
+    csvmode_csv_delimiter_detection_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
