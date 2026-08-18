@@ -34,6 +34,10 @@ add_subdirectory(search)
 # neomifes::document (Document/LineNumber) and links re2::re2 privately,
 # same shape as neomifes_search above.
 add_subdirectory(logmode)
+# neomifes_jsontree (WI-15a, Phase 10.3 headless core) depends on
+# neomifes::document (TextPos) and links nlohmann_json::nlohmann_json +
+# neomifes::encoding privately, same shape as neomifes_logmode above.
+add_subdirectory(jsontree)
 add_subdirectory(render)
 add_subdirectory(ui)
 add_subdirectory(app)
