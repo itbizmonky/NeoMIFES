@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-16 (WI-14a完了、Phase 10.1 v2.0拡張候補issueを新規起票)
+**最終更新:** 2026-08-18 (WI-15b最終ゲート、`parseJsonTree()`深いネストのスタックオーバーフローissueを新規起票)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -21,6 +21,7 @@
 |---|---|---|
 | [検索が CRLF 行末を考慮しない](search_crlf_line_ending.md) | 正規表現の `$`/`^` が `\r` を行内容として扱う | 未定 (Phase 12 前) |
 | [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
+| [`parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる](json_tree_worker_deep_nesting_stack_overflow.md) | `nlohmann::ordered_json::parse()`自体が再帰下降パーサで深度上限を設定できず、十分深いネストでプロセスごとクラッシュしうる (WI-15b最終ゲートのubsan検証で発見) | 未定 (WI-15c、UI配線時に再評価) |
 
 ## P2 — 凍結 / 再評価待ち
 

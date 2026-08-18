@@ -145,6 +145,36 @@ set_tests_properties(logmode_log_index_worker PROPERTIES
     TIMEOUT 30
 )
 
+# jsontree_json_tree_worker_test - exercises JsonTreeWorker's real background
+# std::thread + PostMessageW completion handoff end-to-end (WI-15b), modeled
+# directly on logmode_log_index_worker_test above.
+add_executable(neomifes_jsontree_json_tree_worker_test
+    jsontree_json_tree_worker_test.cpp
+)
+
+target_link_libraries(neomifes_jsontree_json_tree_worker_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::jsontree
+        GTest::gtest
+        GTest::gtest_main
+)
+
+set_target_properties(neomifes_jsontree_json_tree_worker_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    jsontree_json_tree_worker
+    COMMAND neomifes_jsontree_json_tree_worker_test
+)
+
+set_tests_properties(jsontree_json_tree_worker PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # platform_clipboard_test - exercises the real OS clipboard (Phase 4b6c),
 # which the plain unit-test binary avoids entirely.
 add_executable(neomifes_platform_clipboard_test
