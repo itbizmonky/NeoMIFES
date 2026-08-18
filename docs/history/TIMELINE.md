@@ -3081,4 +3081,22 @@ WI-14dの保留コミット一式をユーザーの「pushせよ」指示でpush
 
 コミット済み(`9334f0c`/`1f21780`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで基盤(ヘッドレスJSON構造ツリー)のみ完了 — ツリーUI・XML・折り畳み統合・整形・バリデーション・XPath/JSONPath・`EditorSession`配線は全て後続サブWIへ。
 
+## Session 97 (2026-08-18): WI-15b(JSONツリー 非同期インデックス化+EditorSession配線、UIなし)実装完了
+
+WI-15a完了・push未実施の状態で、ユーザーから「継続せよ」と指示された。WI-14がログモードをWI-14a(ヘッドレス)→WI-14b(非同期化+`EditorSession`配線、UIなし)→WI-14c(UI)の順で進めた前例をJSON側でも踏襲し、WI-15bとしてWI-14b相当の非同期化に着手した。
+
+**着手前調査(Explore agent 1件+Plan agent 1件、Plan Mode)。** `ui::OutlinePane`/`ui::OutlineItem`(`WC_TREEVIEW`のオーバーレイ方式、`targetPos`は`document::TextPos`と同じ`uint64_t`)は将来のUIサブWIが再利用できる見込みと確認したが、本WI自体はUI非スコープのためメモに留めた。`render::RenderPipeline`に一般的な複数ペイン分割の仕組みが存在しないことも確認(ガター/ミニマップは単一描画パイプライン内の固定オフセット帯に過ぎない)。Plan agentが`json_tree.cpp`(WI-15a実装)を実際に読み、`parseJsonTree(const Document&)`の実装本体が`doc.snapshot()`の1行以外は既に`BufferSnapshot`だけで完結していると発見し、BufferSnapshotオーバーロード追加が「複雑度改善」ではなく「純粋なスレッド安全性リファクタ」であると確定させた(`LogModel::build()`のBufferSnapshot化=O(lines×pieces)→O(document length)とは性質が異なる)。`git show`でWI-14bの元コミットを復元し、当時の`applyLogIndexReadyMessage()`が`RenderPipeline`/`HWND`を一切持たない単純な形だったことも確認、本WIはこの形を踏襲する設計とした。
+
+**実施内容(4コミット)。** ①`parseJsonTree(const BufferSnapshot&)`オーバーロード新設、`Document`版は1行委譲に変更(`1d9156c`)。②`JsonTreeWorker`実装(`logmode::LogIndexWorker`を直接のテンプレートに、複数タブがそれぞれ独立した結果を必要とするためFIFO `std::deque`を採用、`kMsgJsonTreeReady = WM_APP + 4`)+統合テスト5件(`9b8075a`)。③`EditorSession`へ`jsonTree()`/`jsonTreeIndexInFlight()`/`beginJsonTreeIndexing()`/`applyJsonTreeResult()`の4点配線+単体テスト3件(`83fcadb`)。④`main.cpp`/`normal_mode_wiring.h/.cpp`配線(`JsonTreeWorker`構築+`kMsgJsonTreeReady`受信ルーティング)(`7bd4dee`)。**`clearJsonTree()`(`disableLogMode()`相当)と、`beginJsonTreeIndexing()`を呼ぶコマンド/UIは、WI-14b/WI-14cの実際の切り分け(`disableLogMode()`はWI-14cで「Log: Disable」コマンドとセットで追加)に倣い、意図的にWI-15cへ先送りした。**
+
+**`JsonTreeWorker`は`LogIndexWorker`と異なる意図的な設計判断を1点含む。** `LogIndexWorker::workerLoop()`は`LogModel::build()`失敗時に`continue`で結果を握りつぶす(組込パターンでは到達不能な稀なエラーパスのため許容)。JSONでは「JSON以外のファイルに対して呼ばれた」「壊れたJSON」がむしろ日常的な正常系であり、握りつぶすと`jsonTreeIndexInFlight()`が永久にtrueのまま固定される。`workerLoop()`は成功/失敗を問わず必ず結果(`std::optional<JsonNode>`をヒープ確保)をpostするよう設計した。
+
+**中間検証で1件のビルドエラーを発見・即修正した。** `tests/unit/jsontree_json_tree_test.cpp`が`#include "neomifes/document/buffer_snapshot.h"`を欠いており(`document.h`は`BufferSnapshot`の前方宣言のみ)、`doc.snapshot()->pieces()`が不完全型エラーでコンパイル失敗していた。1行追加で解消、再検証でDebug 1329件全green確認。
+
+**最終ゲート(ubsan/clang-cl)で、深さ2000のネストJSONを与える統合テスト(当初「安全側の保険」として追加した`RequestIndexOnDeeplyNestedJsonDoesNotCrashWorkerThread`)が実際にSTATUS_STACK_OVERFLOW(0xC00000FD)でクラッシュすることを発見した。** 原因を切り分けたところ、`buildTree()`自体(WI-15a、明示スタックによる反復実装)は無関係で、`nlohmann::ordered_json::parse()`自体が再帰下降パーサでありネスト1階層につきC++呼び出しスタックを1段消費するためと判明。MSVC Debug/Release構成では同じ深さでもクラッシュしなかったが、これは安全性の証明にはならない(スタック消費量はビルド設定・最適化レベルに強く依存し、clang-cl+UBSanの計装ビルドで消費量が大きくなった)。テストの深さを2000から50へ引き下げ、根本原因(nlohmann/jsonには解析深度の上限を設定する公式APIが存在しない)を`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`(P1)として起票した。対応(SAXベースの事前深度チェック等)は、実際にこの経路へ到達するコマンドが追加されるWI-15c以降へ先送りした。再検証でDebug/Release/ubsan全1329件green・クラッシュなしを確認。clang-tidy(変更対象5ファイル)は新規警告0、`wireNormalMode()`のcognitive-complexity(過去WI-14b/WI-14cで複数回閾値超過した実績がある関数)も今回は閾値内。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-15b」セクション)、`master_roadmap.md`(§10.3に実装後の確定事項追記、フェーズ表のPhase 10.3行を更新)、`detailed_design.md`(§11.4へ`JsonTreeWorker`のリファレンス+WI-15b設計要点を追加)、`RESUME_HERE.md`(§1状態表+新規§3.86完了記録+§6推奨プロンプト更新)、`docs/issues/README.md`(新規issue追加)。
+
+コミット済み(`1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで非同期インデックス化+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し)。次はPhase 10.3の続き(ツリーUI等、WI-15c以降)、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

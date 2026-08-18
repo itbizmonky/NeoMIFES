@@ -169,7 +169,8 @@
 | **10.1c** | **UI モード MVP 🎉** (色分け/フィルタ/ERROR抽出/WARNING抽出/時系列ジャンプ、要件定義書§8完結) | ✅ **完了 (WI-14c、2026-08-17、§3.83参照)** |
 | **10.1d** | **複数行グルーピング + ユーザー編集可能パターンファイル 🎉** (Phase 10.1 完結) | ✅ **完了 (WI-14d、2026-08-18、§3.84参照)。🎉 Phase 10.1 完結** |
 | **10.3a** | **JSON ツリーモデル ヘッドレス基盤** (`neomifes::jsontree`、`JsonNode`/`parseJsonTree()`、XML/UI/整形/バリデーション/XPath/JSONPathは未着手) | ✅ **完了 (WI-15a、2026-08-18、§3.85参照)** |
-| 10.2/10.3残り → 11 → 9 → 12 | CSV/JSON-XML Tree続き → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-16/17/18へ繰り下げ) |
+| **10.3b** | **JSON ツリー 非同期インデックス化 + `EditorSession`配線** (`JsonTreeWorker`、UIなし、呼び出し元コマンドは未追加) | ✅ **完了 (WI-15b、2026-08-18、§3.86参照)** |
+| 10.2/10.3残り → 11 → 9 → 12 | CSV/JSON-XML Tree UI続き → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-16/17/18へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2468,6 +2469,26 @@ CI green確認・push完了後、ユーザーから「CI完了したつぎにす
 
 コミット済み(`9334f0c`/`1f21780`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで基盤(ヘッドレスJSON構造ツリー)のみ完了 — ツリーUI・XML・折り畳み統合・整形・バリデーション・XPath/JSONPath・`EditorSession`配線は全て後続サブWIへ。次はPhase 10.3の続き、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
 
+### 3.86 WI-15b (JSON ツリー 非同期インデックス化 + EditorSession配線、UIなし) 完了記録 (2026-08-18)
+
+WI-15a完了・pushはまだの状態で、ユーザーから「継続せよ」と指示された。WI-14がログモードをWI-14a(ヘッドレス)→WI-14b(非同期化+EditorSession配線、UIなし)→WI-14c(UI)の順で進めた前例をJSON側でも踏襲し、WI-15bとしてWI-14b相当の非同期化に着手した。
+
+**着手前調査(Explore agent 1件 + Plan agent 1件、Plan Mode):** `ui::OutlinePane`/`ui::OutlineItem`は`WC_TREEVIEW`のオーバーレイ方式で`targetPos`が`document::TextPos`と同じ`uint64_t`型と確認(将来のUIサブWIが再利用できる見込み、本WIはUI非スコープのためメモのみ)。`render::RenderPipeline`に一般的な複数ペイン分割の仕組みが無いことも確認。Plan agentが`json_tree.cpp`(WI-15a実装)を実際に読み、`parseJsonTree(const Document&)`の実装本体が`doc.snapshot()`の1行以外は既に`BufferSnapshot`だけで完結していると判明(BufferSnapshotオーバーロード追加は複雑度改善ではなく純粋なスレッド安全性リファクタと確定)。`git show`でWI-14bの元コミットを復元し、当時の`applyLogIndexReadyMessage()`が`RenderPipeline`/`HWND`を持たない単純な形だったことも確認、本WIはこの形を踏襲する設計とした。
+
+**実施内容(4コミット):**
+1. `parseJsonTree(const BufferSnapshot&)`オーバーロード新設、`Document`版は1行委譲に変更 + 単体テスト2件 (`1d9156c`)
+2. `JsonTreeWorker`実装(`LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`、`kMsgJsonTreeReady = WM_APP + 4`)+ 統合テスト5件 (`9b8075a`)
+3. `EditorSession`へ`jsonTree()`/`jsonTreeIndexInFlight()`/`beginJsonTreeIndexing()`/`applyJsonTreeResult()`の4点配線 + 単体テスト3件、`clearJsonTree()`はWI-15cへ意図的に先送り (`83fcadb`)
+4. `main.cpp`/`normal_mode_wiring.h/.cpp`配線(`JsonTreeWorker`構築+`kMsgJsonTreeReady`受信ルーティング、呼び出し元コマンドは追加せず) (`7bd4dee`)
+
+**中間検証で1件のビルドエラーを発見・修正した。** `tests/unit/jsontree_json_tree_test.cpp`に`#include "neomifes/document/buffer_snapshot.h"`が漏れており、`doc.snapshot()->pieces()`が不完全型エラーでコンパイル失敗していた(`document.h`は`BufferSnapshot`の前方宣言のみを持つ)。1行追加で解消、再検証でDebug 1329件全green確認。
+
+**最終ゲート(ubsan/clang-cl)で、深さ2000のネストJSONを与える統合テスト(`RequestIndexOnDeeplyNestedJsonDoesNotCrashWorkerThread`、当初「安全側の保険」として追加)が実際にSTATUS_STACK_OVERFLOW(0xC00000FD)でクラッシュすることを発見した。** 原因を切り分けたところ、`buildTree()`自体(WI-15a、明示スタックによる反復実装)は無関係で、`nlohmann::ordered_json::parse()`自体が再帰下降パーサでありネスト1階層につきC++呼び出しスタックを1段消費するためと判明。MSVC Debug/Release構成では同じ深さでもクラッシュしなかったが、これは安全性の証明にはならない(スタック消費量はビルド設定・最適化レベルに強く依存する — clang-cl+UBSanの計装ビルドで消費量が大きくなった)。テストの深さを2000から50へ引き下げ、根本原因を`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`(P1)として起票した。nlohmann/jsonには解析深度の上限を設定する公式APIが存在しないため、対応(SAXベースの事前深度チェック等)はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送りした。再検証でDebug/Release/ubsan全1329件green・クラッシュなしを確認。
+
+**最終ゲート(clang-tidy):** 変更対象の5ファイル(`json_tree.cpp`/`json_tree_worker.cpp`/`editor_session.cpp`/`normal_mode_wiring.cpp`/`main.cpp`)で新規警告0件。`wireNormalMode()`のcognitive-complexity(過去WI-14b/WI-14cで複数回閾値超過した実績がある関数)も今回は閾値内と確認。
+
+コミット済み(`1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで非同期インデックス化+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し) — ツリーUI・XML・折り畳み統合・整形・バリデーション・XPath/JSONPathは全て後続サブWI(WI-15c以降)へ。次はPhase 10.3の続き、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2517,25 +2538,33 @@ CI green確認・push完了後、ユーザーから「CI完了したつぎにす
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.85 (WI-15a JSONツリーモデル ヘッドレス基盤 完了記録)
-を読んで現状を把握せよ。
+RESUME_HERE.md §3.86 (WI-15b JSONツリー 非同期インデックス化 +
+EditorSession配線 完了記録)を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
 (2026-08-18)。続けてPhase 10.3(JSON/XML Treeモード)へ着手し、
-WI-15a(neomifes::jsontree、JsonNode/parseJsonTree()、ヘッドレス、
-XML/UI/整形/バリデーション/XPath/JSONPathは未着手)が完了した
-(2026-08-18)。Debug/Release/ubsan全1323件green、clang-tidy新規警告0
-を確認済み。
+WI-15a(neomifes::jsontree、JsonNode/parseJsonTree()、ヘッドレス)に
+続けてWI-15b(JsonTreeWorker非同期化+EditorSession配線、UIなし)が
+完了した(2026-08-18)。Debug/Release/ubsan全1329件green、clang-tidy
+新規警告0を確認済み。
+
+**WI-15bの最終ゲートで発見した既知の制約:** `nlohmann::ordered_json::
+parse()`自体(再帰下降パーサ、深度上限を設定するAPI無し)が病的に
+深いネストでスタックオーバーフローしうると判明、
+docs/issues/json_tree_worker_deep_nesting_stack_overflow.md(P1)へ
+起票済み。対応はWI-15c以降(実際にこの経路へ到達するコマンドが
+追加されるタイミング)へ先送り。
 
 **WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
 (WI-15/16/17)をWI-16/17/18へ繰り下げた(build_plan.md §5「WI-16〜18」節)。
 
 次はPhase 10.3の続き(ツリーUI・XML・折り畳み統合・整形・バリデーション・
-XPath/JSONPath・EditorSession配線)、またはPhase 10.2(CSVモード)、
-またはユーザー指定の次項目。着手前にbuild_plan.md §5とmaster_roadmap.md
-§10.3(または§10.2)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
+XPath/JSONPath — beginJsonTreeIndexing()を呼ぶコマンドを実際に追加する
+WI-15c)、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目。
+着手前にbuild_plan.md §5とmaster_roadmap.md §10.3(または§10.2)を読み、
+本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

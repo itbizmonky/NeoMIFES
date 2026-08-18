@@ -133,14 +133,15 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) から着手、残りは切り直しながら継続する。CSV (§10.2) は未着手、着手時に同様に切り直す。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) まで進行中、残りは切り直しながら継続する。CSV (§10.2) は未着手、着手時に同様に切り直す。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
 - [x] **WI-14c** UI モード MVP 🎉 (色分け/フィルタ/時系列ジャンプ、Phase 10.1 の MVP 達成) → コミット: `e92ddfb`/`84f5bf9`/`0f5af55`/`8250f3d`/`d41f52b`/`4d30233`
 - [x] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル 🎉 (Phase 10.1 完結) → コミット: `2c16e79`/`9673824`
 - [x] **WI-15a** JSON ツリーモデル ヘッドレス基盤 (Phase 10.3 最初のサブ WI、XML/UI は非スコープ) → コミット: `9334f0c`/`1f21780`
-- [ ] **WI-15b以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath) + Phase 10.2 (CSV モード) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-15b** JSON ツリー 非同期インデックス化 + EditorSession配線 (UIなし) → コミット: `1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`
+- [ ] **WI-15c以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath) + Phase 10.2 (CSV モード) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-16** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-17** Phase 9 — AI プラグイン
 - [ ] **WI-18** Phase 12 — 総合品質保証・正式出荷
@@ -1171,6 +1172,48 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 **Explore agent 1件による着手前調査 + Plan agent 1件による設計立案を経てPlan Modeでユーザー承認を得てから実装した。** Plan agentは読み取り専用エージェントとして起動されていたため、設計の核心(nlohmann `json_sax`に位置情報が渡らないこと)は実機コンパイル・実行ではなく実機ソースの静的読解で確認し、「実装セッションの最初のステップとして実際にprobeを実行し裏付けること」を計画自体に明記した。承認後、実装開始直後に実際にprobeを実行し3点(キー順序/非throw契約/SAX位置情報なし)を実証してから本実装に着手した。
 
 **WI番号がroadmap原案の割当(Phase 11=WI-15)と衝突したため、Phase 11/9/12の割当をWI-16/17/18へ繰り下げた** (本書§5冒頭の「WI-16〜WI-18」節参照)。roadmap原案はPhase 10全体を「WI-14」1本と見込んでいたが、Phase 10.1だけでWI-14a〜dの4サブWIを要し、Phase 10.3もWI-15aから始まる複数サブWIに分かれる見通しとなったため。
+
+---
+
+## WI-15b — JSON ツリー 非同期インデックス化 + EditorSession配線 (UIなし)
+
+**目的:** WI-15a(JSONツリーモデル ヘッドレス基盤)完了後、ユーザーの「継続せよ」指示を受けPhase 10.3の続きに着手。WI-14bがログモードの非同期ワーカー+`EditorSession`配線をUIなしで先に固めてからWI-14cでUIを繋いだ順序を、JSONツリー側でも踏襲する。
+
+**前提:** WI-15a 完了・コミット済み (2026-08-18)
+
+**参照:** `master_roadmap.md` §10.3、WI-15a セクション(本書上記)、`src/logmode/include/neomifes/logmode/log_index_worker.h`(直接のテンプレート)
+
+### 着手前調査で確定した設計方針
+
+- `ui::OutlinePane`/`ui::OutlineItem`は`WC_TREEVIEW`のオーバーレイ方式(真の左右分割ペインではない)で、`targetPos`は`document::TextPos`と同じ`uint64_t`型。将来のUIサブWIが新規ウィジェットを作らずこれを再利用できる見込みだが、本WIはUIを一切扱わないため設計メモに留めた
+- `render::RenderPipeline`に一般的な複数ペイン分割の仕組みは無く、ガター/ミニマップは単一描画パイプライン内の固定オフセット帯に過ぎないと確認(真の左右分割ペインを将来作る場合の設計上の制約として記録)
+- `document::Document::snapshot()`は`std::shared_ptr<const document::BufferSnapshot>`を返す。`json_tree.cpp`の既存実装(WI-15a)を読んだ結果、`parseJsonTree(const Document&)`の実装本体は`doc.snapshot()`の1行以外、既に完全に`BufferSnapshot`だけで完結していた — `LogModel::build()`のBufferSnapshot化(O(lines×pieces)→O(document length)の複雑度改善)とは性質が異なり、JSONは`nlohmann`が全文一括読込を要求するため複雑度クラスは変わらない、純粋なスレッド安全性リファクタと判明
+- `LogIndexWorker`が`std::deque`のFIFO(上書きしない)を採用している理由は「複数タブがそれぞれ独立した結果を必要とするため」であり、`SyntaxWorker`の「最新のみ保持」方式が安全な理由は「そもそも`sessionToken`の概念を持たず単一のRenderPipelineにしか結果を返さない設計だから」と確認 — JsonTreeWorkerもFIFOを採用
+- WI-14bの元コミット(`git show`で復元)を確認した結果、WI-14b時点の`applyLogIndexReadyMessage()`は`RenderPipeline`/`HWND`/`InvalidateRect`を一切持たない単純な形だった(WI-14cが追加)。本WIもこのWI-14b時点の単純な形を踏襲
+
+### 実施内容 (4コミット)
+
+1. `parseJsonTree(const document::BufferSnapshot&)`オーバーロード新設、既存`Document`版は1行委譲に変更 + 単体テスト2件追加 (`1d9156c`)
+2. `JsonTreeWorker`実装(`LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`、`kMsgJsonTreeReady = WM_APP + 4`)+ 統合テスト5件 (`9b8075a`)
+3. `EditorSession`へ`jsonTree()`/`jsonTreeIndexInFlight()`/`beginJsonTreeIndexing()`/`applyJsonTreeResult()`の4点配線 + 単体テスト3件 (`83fcadb`)
+4. `main.cpp`/`normal_mode_wiring.h/.cpp`配線(`JsonTreeWorker`構築 + `kMsgJsonTreeReady`受信ルーティング、呼び出し元コマンドは追加せず) (`7bd4dee`)
+
+### DoD
+
+- [x] `parseJsonTree(const BufferSnapshot&)`が既存Document版と同じ結果を返す(回帰テストで保証)
+- [x] `JsonTreeWorker`がFIFOで複数タブを取りこぼさない(統合テストで保証)
+- [x] 不正JSON入力でも`kMsgJsonTreeReady`が必ず届き`jsonTreeIndexInFlight()`が固定されない(統合テスト+単体テストで保証)
+- [x] `EditorSession`にjsonTree()/jsonTreeIndexInFlight()/beginJsonTreeIndexing()/applyJsonTreeResult()の4点(clearJsonTree()は意図的に含めない、WI-15cへ先送り)
+- [x] `main.cpp`/`normal_mode_wiring.cpp`に配線済み、ただし呼び出し元(コマンド)は意図的に追加しない
+- [x] Debug/Release/ubsan全1329件green、clang-tidy新規警告0
+
+### 実装後の確定事項
+
+**`clearJsonTree()`(ログモードの`disableLogMode()`相当)はWI-15bに含めなかった。** WI-14bの元コミットを確認した結果、`disableLogMode()`はWI-14cで「Log: Disable」コマンドとセットで追加されたものであり、呼び出し元の無いWI-14b時点には存在しなかった。WI-15bも呼び出し元(コマンド)を一切追加しないため、同じ理由で`clearJsonTree()`をWI-15cへ先送りした。
+
+**JsonTreeWorkerは`LogIndexWorker`と異なり、`std::nullopt`結果でも必ず結果をpostする設計にした。** `LogIndexWorker::workerLoop()`は`LogModel::build()`失敗時に`continue`で結果を握りつぶす(組込パターンでは到達不能な稀なエラーパスのため許容)。JSONツリーでは「JSON以外のファイルに対して呼ばれた」「壊れたJSON」がむしろ日常的な正常系であり、ここで握りつぶすと`jsonTreeIndexInFlight()`が永久に`true`のまま固定されてしまう。`workerLoop()`は`parseJsonTree()`の結果(`std::optional<JsonNode>`、常に例外なく返る)を`std::make_unique<std::optional<JsonNode>>`でヒープ確保し、成功/失敗を問わず必ず`PostMessageW`するよう設計した。
+
+**最終ゲート(ubsan/clang-cl構成)で、深さ2000のネストJSONを与える統合テストが実際にSTATUS_STACK_OVERFLOWでクラッシュすることを発見した。** 原因は`neomifes::jsontree::buildTree()`自体(WI-15a、明示スタックによる反復実装)ではなく、`nlohmann::ordered_json::parse()`自体が再帰下降パーサでありネスト1階層につきC++呼び出しスタックを1段消費するため。MSVC Debug/Release構成では同じ深さでもクラッシュしなかったが、これは安全性の証明にはならない(スタック消費量はビルド設定・最適化レベルに強く依存する)。テストの深さを2000から50へ引き下げ、根本原因を`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`としてissue化した(P1)。**nlohmann/jsonには解析深度の上限を設定する公式APIが存在しないため**、対応(SAXベースの事前深度チェック等)はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送りした。
 
 ---
 

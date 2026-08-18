@@ -285,7 +285,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
-| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🚧 **着手 (WI-15a: JSONヘッドレス基盤完了、2026-08-18。XML/UI/整形/バリデーション/XPath/JSONPathは未着手)** | §10.3 |
+| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🚧 **着手 (WI-15a: JSONヘッドレス基盤、WI-15b: 非同期インデックス化+EditorSession配線 完了、2026-08-18。XML/UI/整形/バリデーション/XPath/JSONPathは未着手)** | §10.3 |
 | 10.2 | CSV モード | 未着手 | §10.2 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
@@ -2231,6 +2231,17 @@ WI-15a で JSON 側の最初のサブ WI(ヘッドレス基盤)に着手した�
 - **XMLは本サブWIのスコープから完全に除外した。** `pugixml`等の採否は未決定でADRが必要。
 - **`巨大JSON対応(SAX解析+部分ツリー展開)`/`整形`/`バリデーション`/`XPath`/`JSONPath`/`ツリーUI(左右分割ペイン)`/`折り畳み統合`は全て後続サブWIへ。** 本サブWIは正しさ(構造/キー順序/位置精度/不正入力の黒板消し)を固めることのみに集中した(WI-14aが`LogModel::build()`をまず素朴実装にしてからWI-14bでストリーミング化した順序と同じ判断)。
 - 詳細は`build_plan.md` WI-15aセクション参照。
+
+#### 実装後の確定事項 (WI-15b、JSON ツリー 非同期インデックス化 + EditorSession配線、2026-08-18)
+
+WI-15bでWI-14bに相当する非同期化を実施した(ヘッドレスモデル→非同期ワーカー+EditorSession配線→UIという順序をJSON側でも踏襲)。UIは本サブWIでも一切追加していない(WI-15cへ)。
+
+- **`JsonTreeWorker`は`logmode::LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`を採用した。** 複数タブがそれぞれ独立した結果を必要とするため(`SyntaxWorker`の「最新のみ保持」方式が安全な理由は単一の`RenderPipeline`にしか結果を返さない設計だからで、JSONツリーには当てはまらない)。
+- **`parseJsonTree()`に`BufferSnapshot`オーバーロードを追加したのは、複雑度改善ではなく純粋なスレッド安全性リファクタと判明した。** `LogModel::build()`のBufferSnapshot化(WI-14b、O(lines×pieces)→O(document length))とは性質が異なる — JSONは`nlohmann`が全文一括読込を要求するため、複雑度クラスは元から変わらない。
+- **`JsonTreeWorker`は`LogIndexWorker`と異なり、不正JSON(nulloptの解析結果)でも必ず結果をpostする。** `LogIndexWorker`は失敗結果を`continue`で握りつぶす設計だが(組込パターンでは到達不能な稀なエラーパスのため許容)、JSONでは「JSON以外のファイルに対して呼ばれた」がむしろ日常的な正常系であり、握りつぶすと`EditorSession::jsonTreeIndexInFlight()`が永久にtrueのまま固定される。
+- **`EditorSession::clearJsonTree()`(`disableLogMode()`相当)は本サブWIに含めなかった。** `disableLogMode()`はWI-14cで「Log: Disable」コマンドとセットで追加されたものであり、呼び出し元(コマンド)を追加しないWI-15bには同じ理由で不要と判断した。
+- **最終ゲート(ubsan/clang-cl構成)で、`nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を設定するAPI無し)が病的に深いネストでスタックオーバーフローしうることを発見した。** `docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`(P1)としてissue化、対応はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送り。
+- 詳細は`build_plan.md` WI-15bセクション参照。
 
 ---
 

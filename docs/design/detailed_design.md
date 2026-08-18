@@ -3255,12 +3255,12 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
-### 11.4 `neomifes::jsontree` リファレンス (WI-15a実装、Phase 10.3 着手)
+### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜b実装、Phase 10.3 着手)
 
-`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。UI/XML/折り畳み統合/整形/バリデーション/XPath/JSONPathは未実装(WI-15a後続サブWIへ)。
+`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。UI/XML/折り畳み統合/整形/バリデーション/XPath/JSONPathは未実装(WI-15c以降へ)。
 
 ```cpp
-// neomifes/jsontree/json_tree.h (WI-15a)
+// neomifes/jsontree/json_tree.h (WI-15a、WI-15bでBufferSnapshotオーバーロード追加)
 enum class JsonNodeKind : std::uint8_t { Object, Array, String, Number, Boolean, Null };
 
 struct JsonNode {
@@ -3272,8 +3272,21 @@ struct JsonNode {
     std::vector<JsonNode> children;       // Object/Arrayのみ非空、ソース中の出現順
 };
 
-// docの全文書をJSONとして解析しツリーを返す。整形式でない場合(空文書含む)はnullopt、例外は投げない。
+// バックグラウンドスレッドから安全に呼べる主エントリポイント (WI-15b)。
+[[nodiscard]] std::optional<JsonNode> parseJsonTree(const document::BufferSnapshot& snapshot);
+// UIスレッド向けの利便オーバーロード。snapshot()を取って上記へ1行委譲するのみ。
 [[nodiscard]] std::optional<JsonNode> parseJsonTree(const document::Document& doc);
+
+// neomifes/jsontree/json_tree_worker.h (WI-15b)
+inline constexpr UINT kMsgJsonTreeReady = WM_APP + 4;
+
+class JsonTreeWorker {
+public:
+    explicit JsonTreeWorker(HWND targetHwnd);
+    void requestIndex(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                      const void* sessionToken) noexcept;
+    // ... (move/copy削除、logmode::LogIndexWorkerと同型)
+};
 ```
 
 **設計上の要点 (WI-15a):**
@@ -3283,7 +3296,14 @@ struct JsonNode {
 - オブジェクトメンバの位置区間は「キーの開き引用符から値の終端まで」(roadmapのUIモックアップが1行=1メンバーを想定しているため)。配列要素・ルート値は値自身の区間のみ。
 - 中央`Mode`enum(roadmap原案の`src/core/mode.h`)は導入していない — WI-14(ログモード)が`EditorSession`の機能ごと`std::optional<T>`方式(中央enumなし)で実装済みの前例に従う。
 - XMLは本サブWIのスコープ外(`pugixml`等の採否は未決定、別ADRが必要)。
-- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15a)」参照。
+
+**設計上の要点 (WI-15b、非同期化+EditorSession配線):**
+- `JsonTreeWorker`は`logmode::LogIndexWorker`を直接のテンプレートに、FIFO `std::deque`で複数タブの結果を取りこぼさない。`SyntaxWorker`型の「最新のみ保持」方式は単一の`RenderPipeline`にしか結果を返さない設計だからこそ安全であり、複数タブが独立した結果を必要とするJSONツリーには当てはまらない。
+- **`LogIndexWorker`との意図的な差分:** 解析失敗(`parseJsonTree()`がnulloptを返す)でも`JsonTreeWorker`は必ず結果をpostする。`LogIndexWorker`は失敗結果を`continue`で握りつぶすが(組込パターンでは到達不能な稀なエラーパスのため許容)、JSON以外のファイルや壊れたJSONは日常的な正常系であり、握りつぶすと`EditorSession::jsonTreeIndexInFlight()`が永久にtrueのまま固定されてしまう。
+- `EditorSession`へ`jsonTree()`/`jsonTreeIndexInFlight()`/`beginJsonTreeIndexing()`/`applyJsonTreeResult()`の4点を追加。`disableLogMode()`相当の`clearJsonTree()`はWI-14b/14cの実際の切り分け(呼び出し元コマンドとセットで追加)に倣い、本サブWIには含めていない。
+- `normal_mode_wiring.cpp`の`applyJsonTreeReadyMessage()`/`handleAppMessage()`拡張は、`RenderPipeline`/`HWND`/`InvalidateRect`を持たないWI-14b時点の`applyLogIndexReadyMessage()`の形を踏襲(UIが無いため再描画の必要が無い)。
+- 最終ゲート(ubsan/clang-cl)で、`nlohmann::ordered_json::parse()`自体(再帰下降パーサ)が病的に深いネストでスタックオーバーフローしうることを発見、`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`としてissue化した。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15a/WI-15b)」参照。
 
 ---
 
