@@ -170,7 +170,8 @@
 | **10.1d** | **複数行グルーピング + ユーザー編集可能パターンファイル 🎉** (Phase 10.1 完結) | ✅ **完了 (WI-14d、2026-08-18、§3.84参照)。🎉 Phase 10.1 完結** |
 | **10.3a** | **JSON ツリーモデル ヘッドレス基盤** (`neomifes::jsontree`、`JsonNode`/`parseJsonTree()`、XML/UI/整形/バリデーション/XPath/JSONPathは未着手) | ✅ **完了 (WI-15a、2026-08-18、§3.85参照)** |
 | **10.3b** | **JSON ツリー 非同期インデックス化 + `EditorSession`配線** (`JsonTreeWorker`、UIなし、呼び出し元コマンドは未追加) | ✅ **完了 (WI-15b、2026-08-18、§3.86参照)** |
-| 10.2/10.3残り → 11 → 9 → 12 | CSV/JSON-XML Tree UI続き → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-16/17/18へ繰り下げ) |
+| **10.2a** | **CSV モード ヘッドレス解析モデル** (`neomifes::csvmode`、`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`、非同期ワーカー/グリッドUIは未着手) | ✅ **完了 (WI-16a、2026-08-19、§3.87参照)** |
+| 10.2/10.3残り → 11 → 9 → 12 | CSV(非同期化+グリッドUI)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2489,6 +2490,26 @@ WI-15a完了・pushはまだの状態で、ユーザーから「継続せよ」�
 
 コミット済み(`1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで非同期インデックス化+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し) — ツリーUI・XML・折り畳み統合・整形・バリデーション・XPath/JSONPathは全て後続サブWI(WI-15c以降)へ。次はPhase 10.3の続き、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
 
+### 3.87 WI-16a (CSV モード ヘッドレス解析モデル、Phase 10.2 着手) 完了記録 (2026-08-19)
+
+WI-15b完了・pushはまだの状態で、ユーザーから「次のPhaseに進め」と指示された。「WI-15c(JSON/XML TreeのUI続き)」と「Phase 10.2(CSVモード)」のどちらを指すか曖昧だったためAskUserQuestionで確認し、**「Phase 10.2: CSVモード」**が選ばれた。
+
+**着手前調査(Explore agent 1件):** 既存CSV関連コードは実装・言及ともに皆無と確認。`logmode::LogModel::build()`が`std::expected<LogModel, LogPatternError>`を返すこと(実機確認、`std::optional`ではない)と`LogLine`の「テキストを複製しない」設計を確認、これが`CsvModel`/`CsvCell`の直接のテンプレートになった。`document::LineIndex`が`\n`のみを行境界として認識することも確認。`WC_LISTVIEW`等のグリッドコントロール前例は皆無と確認(将来のUIサブWIの課題)。
+
+**設計(Plan agent 1件 + Plan Mode):** WI-14a/WI-15aと同型の「まずヘッドレスモデルのみ、UIなし」構成。`CsvCell{startPos, endPos}`(位置のみ保持)+CSR方式コンテナ(平坦`vector<CsvCell>`+行オフセット、roadmap原案のネストvectorは不採用)+単一forループの4状態機械(`FieldStart`/`Unquoted`/`Quoted`/`QuoteInQuoted`)。ExitPlanModeでユーザー承認を得た。
+
+**実装フェーズで承認済みプランに1点設計を追加した。** `CsvCell`に`quoted`フラグを追加(当初案には無かった) — `csvCellValue()`が「このフィールドは本当に引用符付きだったか」を生テキストの先頭/末尾文字から事後推論すると、`"abc"def"ghi"`(閉じ引用符直後にゴミ文字が続きUnquotedへ寛容フォールバックした結果、たまたま末尾も`"`になる)のような入力で誤判定し内容を静かに欠落させることを実装直前の手計算トレースで発見、パーサ終端時点の状態(`QuoteInQuoted`)を直接記録する設計に変更して解消した。
+
+**実施内容(2コミット、実装スタイルの精度向上):** 新規`src/csvmode/`モジュール(`neomifes::logmode`/`neomifes::jsontree`と同型)に`CsvCell`/`CsvParseOptions`/`CsvModel`/`csvCellValue()`実装+単体テスト15件(`ab7dd5e`)、`detectCsvDelimiter()`実装(`detectLogPatternRule()`のサンプリング構造を土台に「出現回数の最頻値への一致度合い」でスコアリング)+単体テスト9件(`c8fd842`)。既存の実装済みWI(WI-14b「フォーマット自動検出」コミット等)を確認した結果、「実装+その単体テスト+CMake配線を1コミットにまとめる」が実際の確立済み慣行と判明し、承認済みプランの4コミット分割案(モデル/テスト/検出/テスト+ドキュメント)からこちらへ変更した。
+
+**最終ゲートで検出したclang-tidy指摘2件を修正した。** `csvCellValue()`の`const std::u16string raw`から`const`を除去(`performance-no-automatic-move`、`return raw;`がムーブできるように)、`consistencyScore()`内の`std::find_if`を`std::ranges::find_if`へ置換(`modernize-use-ranges`)。**WI-15a(cognitive-complexity+参照メンバで2ラウンド)やWI-15b(STATUS_STACK_OVERFLOW)と比べて明らかに少なく、状態ハンドラ関数を最初から分割し値保持の`CsvBuilder`(参照束縛ではなく)を採用した proactive な設計判断が功を奏した。**
+
+**最終ゲート:** Debug/Release/ubsan全1362件green、clang-tidy新規警告0(`misc-no-recursion`/`cppcoreguidelines-avoid-const-or-ref-data-members`/`cognitive-complexity`いずれも該当なしを確認)。実アプリでの視覚確認は対象外(ヘッドレス変更、UIに一切触れない)。
+
+**WI番号をさらに1つ繰り下げた。** WI-15a着手時に確定した「WI-16〜WI-18 = Phase 11/9/12」の割当に、CSV側のWI-16aが新設されたため衝突。Phase 11/9/12を1つずつ繰り下げてWI-17/18/19とした(`build_plan.md` §5「WI-17〜WI-19」節参照)。ついでに、この繰り下げ作業中に発見した2箇所の陳腐化した参照(WI-06/WI-13完了時点で書かれた「Phase 12 (WI-17)」という記述、WI-15a着手時の繰り下げ2026-08-18が未反映のまま残っていた)も本セッションで訂正した。
+
+コミット済み(`ab7dd5e`/`c8fd842`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIでヘッドレス解析モデルのみ完了 — 非同期ワーカー+`EditorSession`配線・グリッドUI・列固定・フィルタ・ソート・式列・セル編集・ヘッダ自動判定は全て後続サブWI(WI-16b以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目 — `build_plan.md` §5参照。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2538,33 +2559,38 @@ WI-15a完了・pushはまだの状態で、ユーザーから「継続せよ」�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.86 (WI-15b JSONツリー 非同期インデックス化 +
-EditorSession配線 完了記録)を読んで現状を把握せよ。
+RESUME_HERE.md §3.87 (WI-16a CSVモード ヘッドレス解析モデル
+完了記録)を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
-(2026-08-18)。続けてPhase 10.3(JSON/XML Treeモード)へ着手し、
-WI-15a(neomifes::jsontree、JsonNode/parseJsonTree()、ヘッドレス)に
-続けてWI-15b(JsonTreeWorker非同期化+EditorSession配線、UIなし)が
-完了した(2026-08-18)。Debug/Release/ubsan全1329件green、clang-tidy
-新規警告0を確認済み。
+(2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a(ヘッドレス
+基盤)→WI-15b(非同期インデックス化+EditorSession配線、UIなし)
+まで進行中(2026-08-18)。続けてユーザーの選択でPhase 10.2(CSV
+モード)へ着手し、WI-16a(neomifes::csvmode、CsvModel/CsvCell/
+csvCellValue()/detectCsvDelimiter()、ヘッドレスのみ)が完了した
+(2026-08-19)。Debug/Release/ubsan全1362件green、clang-tidy新規
+警告0を確認済み。
 
-**WI-15bの最終ゲートで発見した既知の制約:** `nlohmann::ordered_json::
-parse()`自体(再帰下降パーサ、深度上限を設定するAPI無し)が病的に
-深いネストでスタックオーバーフローしうると判明、
-docs/issues/json_tree_worker_deep_nesting_stack_overflow.md(P1)へ
-起票済み。対応はWI-15c以降(実際にこの経路へ到達するコマンドが
-追加されるタイミング)へ先送り。
+**WI-15bの最終ゲートで発見した既知の制約(WI-16aとは無関係、再掲):**
+`nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を
+設定するAPI無し)が病的に深いネストでスタックオーバーフローしうると
+判明、docs/issues/json_tree_worker_deep_nesting_stack_overflow.md
+(P1)へ起票済み。対応はWI-15c以降(実際にこの経路へ到達するコマンド
+が追加されるタイミング)へ先送り。
 
 **WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
-(WI-15/16/17)をWI-16/17/18へ繰り下げた(build_plan.md §5「WI-16〜18」節)。
+(WI-15/16/17)を2026-08-18にWI-16/17/18へ繰り下げ、CSV側のWI-16a新設
+で衝突したため2026-08-19にさらにWI-17/18/19へ繰り下げた
+(build_plan.md §5「WI-17〜19」節)。
 
-次はPhase 10.3の続き(ツリーUI・XML・折り畳み統合・整形・バリデーション・
-XPath/JSONPath — beginJsonTreeIndexing()を呼ぶコマンドを実際に追加する
-WI-15c)、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目。
-着手前にbuild_plan.md §5とmaster_roadmap.md §10.3(または§10.2)を読み、
-本書§5と同じ形式でサブWIへ切り直すこと。
+次はPhase 10.2の続き(WI-16b以降: 非同期ワーカー+EditorSession配線・
+グリッドUI・列固定・フィルタ・ソート・式列)、またはPhase 10.3の続き
+(WI-15c: ツリーUI・XML・折り畳み統合・整形・バリデーション・
+XPath/JSONPath)、またはユーザー指定の次項目。着手前にbuild_plan.md
+§5とmaster_roadmap.md §10.2(または§10.3)を読み、本書§5と同じ形式で
+サブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

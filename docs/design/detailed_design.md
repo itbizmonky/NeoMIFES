@@ -3305,9 +3305,75 @@ public:
 - 最終ゲート(ubsan/clang-cl)で、`nlohmann::ordered_json::parse()`自体(再帰下降パーサ)が病的に深いネストでスタックオーバーフローしうることを発見、`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`としてissue化した。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15a/WI-15b)」参照。
 
+### 11.5 `neomifes::csvmode` リファレンス (WI-16a実装、Phase 10.2 着手)
+
+`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。非同期ワーカー+`EditorSession`配線・グリッドUI・列固定・フィルタ・ソート・式列・セル編集・区切り文字以外の自動検出は未実装(WI-16b以降へ)。
+
+```cpp
+// neomifes/csvmode/csv_model.h (WI-16a)
+struct CsvCell {
+    document::TextPos startPos = 0;  // inclusive、引用符付きなら開き引用符から
+    document::TextPos endPos   = 0;  // exclusive、引用符付きなら閉じ引用符まで
+    bool quoted = false;              // finalizeField()呼び出し時点でQuoteInQuoted状態だったか(パーサの実測値、生テキストからの事後推論ではない)
+};
+
+struct CsvParseOptions {
+    char16_t delimiter = u',';
+    bool     hasHeader  = true;  // 自動判定はしない、常に呼び出し側指定
+};
+
+enum class CsvParseError : std::uint8_t { InvalidDelimiter };  // delimiterが\r/\n/"のいずれか
+
+class CsvModel {
+public:
+    [[nodiscard]] static std::expected<CsvModel, CsvParseError> build(
+        const document::BufferSnapshot& snapshot, const CsvParseOptions& options = {});
+    [[nodiscard]] static std::expected<CsvModel, CsvParseError> build(
+        const document::Document& doc, const CsvParseOptions& options = {});
+
+    [[nodiscard]] std::size_t rowCount() const noexcept;
+    [[nodiscard]] std::span<const CsvCell> row(std::size_t rowIndex) const noexcept;
+    [[nodiscard]] bool hasHeader() const noexcept;
+    [[nodiscard]] std::span<const CsvCell> headerRow() const noexcept;
+    [[nodiscard]] std::size_t dataRowCount() const noexcept;
+    [[nodiscard]] std::span<const CsvCell> dataRow(std::size_t dataRowIndex) const noexcept;
+    [[nodiscard]] std::size_t maxColumnCount() const noexcept;
+
+private:
+    // CSR方式: 平坦なvector<CsvCell> + 行オフセット(size == rowCount()+1)。
+    // 1000万行規模で行ごとの個別ヒープ確保を避けるため、roadmap原案の
+    // vector<vector<uint32_t>>ネスト形は不採用。
+    std::vector<CsvCell>       m_cells;
+    std::vector<std::uint32_t> m_rowOffsets;
+    bool        m_hasHeader      = false;
+    std::size_t m_maxColumnCount = 0;
+};
+
+// 引用符除去+""→"アンエスケープ済みの値を都度計算する(CsvCellはテキストを保持しない)。
+[[nodiscard]] std::u16string csvCellValue(const document::BufferSnapshot& snapshot, const CsvCell& cell);
+[[nodiscard]] std::u16string csvCellValue(const document::Document& doc, const CsvCell& cell);
+
+// neomifes/csvmode/csv_delimiter_detection.h (WI-16a)
+inline constexpr std::array<char16_t, 4> kCsvDelimiterCandidates = {u',', u'\t', u';', u'|'};
+[[nodiscard]] std::optional<char16_t> detectCsvDelimiter(
+    const document::Document& doc, std::size_t sampleLines = 100,
+    std::span<const char16_t> candidates = kCsvDelimiterCandidates);
+```
+
+**設計上の要点 (WI-16a):**
+- `CsvCell`はテキストを複製せず位置のみ保持する(`LogLine`の「テキストを複製しない」方針を踏襲、`JsonNode`の生テキスト保持方針とは意図的に異なる判断 — CSVには数値精度損失のような保持理由が無く、逆に引用符付きフィールドは改行を含みうるため生保持は将来のUI側に毎回アンエスケープを強いる)。
+- パーサは単一forループの4状態機械(`FieldStart`/`Unquoted`/`Quoted`/`QuoteInQuoted`)。行/フィールド境界は`Quoted`状態以外でのみ評価されるため、引用符付きフィールドに埋め込まれた改行(1レコードが複数`Document`行にまたがるケース)も状態遷移だけで特別扱いなく正しく処理される。CRLF判定は真の先読みではなく`crPending`という1個の保留状態のみで解決する。
+- `CsvCell::quoted`はパーサの終端時状態(`finalizeField()`呼び出し時に`QuoteInQuoted`だったか)を直接記録する。生テキストの先頭/末尾文字(`raw.front()=='"' && raw.back()=='"'`)からの事後推論は、`"abc"def"ghi"`(閉じ引用符直後にゴミ文字が続きUnquotedへ寛容フォールバックした結果、たまたま末尾も`"`になる)のような入力で誤判定し`csvCellValue()`が内容を静かに欠落させるため不採用。
+- 構文的に緩い入力は寛容に吸収しエラーにしない: 閉じていない引用符でのEOF到達、閉じ引用符直後のゴミ文字、行ごとに異なる列数(ragged rows)、空文書/末尾改行。唯一の失敗契約は呼び出し側の設定ミス(`delimiter`が`\r`/`\n`/`"`)のみ。
+- `CsvBuilder`(内部実装)は`cells`/`rowOffsets`を参照ではなく値で保持する。`JsonTree`の`ParseState`(参照束縛構造体、WI-15a)が必要とした`cppcoreguidelines-avoid-const-or-ref-data-members`のNOLINT抑制を、`CsvBuilder`が`build()`1回の呼び出しの間だけ存在し完了時に`std::move()`で結果へ譲渡する設計にすることで最初から回避した。
+- `detectCsvDelimiter()`は`logmode::detectLogPatternRule()`のサンプリング構造(既定100行)を土台にしつつ、スコアリング基準を変更: 「出現の有無」ではなく「行ごとの出現回数の最頻値(mode)への一致度合い」で評価する(カンマ等の候補文字は通常の文章にも現れるため、単純な出現有無では区別できない)。出現回数0の行はヒストグラムから完全に除外する(そうしないと常に出現しない区切り文字が「全行0で一致」として不当に高スコアを得る)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16a完了)」参照。
+
 ---
 
 ## 12. CSV モード 詳細
+
+> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(非同期ワーカー・グリッドUI・列固定・フィルタ・ソート・式列・セル編集)の設計メモ。
 
 ### 12.1 データ表現
 - 論理: Piece Table + 行スキーマ

@@ -133,7 +133,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) まで進行中、残りは切り直しながら継続する。CSV (§10.2) は未着手、着手時に同様に切り直す。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) まで進行中、残りは切り直しながら継続する。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) まで進行中、残り(非同期ワーカー+EditorSession配線・グリッドUI)は切り直しながら継続する。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -141,10 +141,12 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-14d** 複数行エントリのグルーピング + ユーザー編集可能パターンファイル 🎉 (Phase 10.1 完結) → コミット: `2c16e79`/`9673824`
 - [x] **WI-15a** JSON ツリーモデル ヘッドレス基盤 (Phase 10.3 最初のサブ WI、XML/UI は非スコープ) → コミット: `9334f0c`/`1f21780`
 - [x] **WI-15b** JSON ツリー 非同期インデックス化 + EditorSession配線 (UIなし) → コミット: `1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`
-- [ ] **WI-15c以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath) + Phase 10.2 (CSV モード) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
-- [ ] **WI-16** Phase 11 — Git 統合 / LSP / マクロ
-- [ ] **WI-17** Phase 9 — AI プラグイン
-- [ ] **WI-18** Phase 12 — 総合品質保証・正式出荷
+- [x] **WI-16a** CSV モード ヘッドレス解析モデル (Phase 10.2 最初のサブ WI、非同期ワーカー/グリッドUIは非スコープ) → コミット: `ab7dd5e`/`c8fd842`
+- [ ] **WI-15c以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath)
+- [ ] **WI-16b以降** Phase 10.2 の残り (非同期ワーカー+EditorSession配線・グリッドUI) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [ ] **WI-17** Phase 11 — Git 統合 / LSP / マクロ
+- [ ] **WI-18** Phase 9 — AI プラグイン
+- [ ] **WI-19** Phase 12 — 総合品質保証・正式出荷
   - 🎉 **M5 達成: 正式出荷**
 
 ---
@@ -623,7 +625,7 @@ public:
 - [x] 🔴 **実機で MS-IME による手動確認を完了している。** ユーザーが実機で「にほんご」等を入力し、未確定文字列の下線表示・候補ウィンドウ追従・1 Undo ステップでの確定・Escape によるキャンセルを確認、「問題無いように見える」との報告を受けた (2026-08-12)。**スクリーンショットは本セッションでは取得していない** — DoD原文が求めていた記録は口頭確認で代替した。今後より厳密な記録が必要になった場合は追加で取得する
 - [x] Debug / Release / ubsan 全 green、clang-tidy 新規警告 0
 
-**中国語 / 韓国語 IME の確認は Phase 12 (WI-17) へ。** 本 WI は日本語のみ。
+**中国語 / 韓国語 IME の確認は Phase 12 (WI-19) へ。** 本 WI は日本語のみ。(WI 番号は WI-15a/WI-16a 着手時の繰り下げを反映した現在値 — 本行執筆時点の WI-17 という表記は 2026-08-18/2026-08-19 のリナンバリングで陳腐化していたため訂正)
 
 ### 実装後の確定事項 (2026-08-12 完了)
 
@@ -942,7 +944,7 @@ constexpr D2D1_COLOR_F kKeywordColor   = { 86.0F / 255.0F, 156.0F / 255.0F, 214.
 
 §6 の全項目にチェックが入ること。
 
-- [x] 🎉 **M4 達成 (2026-08-16): MVP 出荷判定完了**。§6 の14項目中12項目にチェックが入り、技術的に検証可能な項目(ファイル操作/IME/タブ/設定/横スクロール/起動時間/60fpsスクロール/10GBファイル/ASan・UBSan/8時間ソーク/Portable Zip/ユーザーマニュアル)は全てgreen。残る2項目(本物のAuthenticode証明書取得・日常的ドッグフーディング)はコードの正しさとは独立した出荷判断であり、着手前から`docs/issues/authenticode_certificate_not_acquired.md`等でユーザーの最終判断に委ねる設計だった。この2項目を未達のまま残すことをユーザーへ明示し、AskUserQuestionで確認の上、🎉M4を正式達成として記録する承認を得た(2026-08-16)。実際の一般公開・正式出荷はWI-17(Phase 12、総合品質保証)の範囲。
+- [x] 🎉 **M4 達成 (2026-08-16): MVP 出荷判定完了**。§6 の14項目中12項目にチェックが入り、技術的に検証可能な項目(ファイル操作/IME/タブ/設定/横スクロール/起動時間/60fpsスクロール/10GBファイル/ASan・UBSan/8時間ソーク/Portable Zip/ユーザーマニュアル)は全てgreen。残る2項目(本物のAuthenticode証明書取得・日常的ドッグフーディング)はコードの正しさとは独立した出荷判断であり、着手前から`docs/issues/authenticode_certificate_not_acquired.md`等でユーザーの最終判断に委ねる設計だった。この2項目を未達のまま残すことをユーザーへ明示し、AskUserQuestionで確認の上、🎉M4を正式達成として記録する承認を得た(2026-08-16)。実際の一般公開・正式出荷はWI-19(Phase 12、総合品質保証。WI番号はWI-15a/WI-16a着手時の繰り下げ後の現在値)の範囲。
 
 ---
 
@@ -1217,19 +1219,63 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
-## WI-16 〜 WI-18 — Phase 11 / 9 / 12
+## WI-16a — CSV モード ヘッドレス解析モデル
 
-**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a(ヘッドレス基盤)着手済み・残り未完了、Phase 10.2 (CSV) は未着手。
+**目的:** WI-15b(JSONツリー 非同期インデックス化+EditorSession配線)完了後、ユーザーに「次のPhase」の意味をAskUserQuestionで確認したところ「Phase 10.2: CSVモード」(JSON/XML TreeのUI続き=WI-15cではなく)が選ばれた。JSON/XML Treeモードのヘッドレス基盤+非同期化(WI-15a/b)はここで一旦区切り、CSVモード(要件定義書§9、master_roadmap.md §10.2)へ新規着手。WI-14a/WI-15aと同型の「まずヘッドレスモデルのみ、UIなし」の最初のサブWI。
+
+**前提:** WI-15b 完了・コミット済み (2026-08-18)
+
+**参照:** `master_roadmap.md` §10.2、`src/logmode/include/neomifes/logmode/log_model.h`(直接のテンプレート)、`src/document/src/line_index.cpp`(ピース単位walkの直接のテンプレート)
+
+### 着手前調査で確定した設計方針
+
+- 既存CSV関連コードは実装・言及ともに皆無(grep確認済み)
+- `neomifes::logmode::LogModel::build()`は`std::expected<LogModel, LogPatternError>`を返す(実機確認済み、`std::optional`ではない)、`LogLine`は「テキストを複製しない、位置/メタデータのみ保持」設計 — この2点が`CsvModel::build()`/`CsvCell`の直接のテンプレート
+- `document::LineIndex`は`\n`のみを行境界として認識する(単独`\r`は非対応) — CSVの行終端規約もこれに合わせる
+- `logmode_log_model_test.cpp`で確認済みの規約(末尾`\n`は暗黙の空行を1行追加、空文書は1行)をCSVの行数にもそのまま流用
+- `WC_LISTVIEW`等のグリッドコントロール前例は皆無(将来のUIサブWIの課題、今回は無関係)
+- 拡張子/内容ベースのCSVモード自動起動判定は今回のスコープ外
+
+### 実施内容 (2コミット)
+
+1. `src/csvmode/`モジュール新設(`neomifes::logmode`/`neomifes::jsontree`と同型)、`CsvCell`(位置のみ保持、テキスト非保持)/`CsvParseOptions`/`CsvModel`/`csvCellValue()`実装 — 単一forループの4状態機械(`FieldStart`/`Unquoted`/`Quoted`/`QuoteInQuoted`)、CSR方式コンテナ(平坦`vector<CsvCell>`+行オフセット、roadmap原案のネストvectorは不採用)、`CsvCell::quoted`フラグをパーサ終端時状態から直接記録(生テキスト先頭/末尾からの事後推論は誤判定するため不採用) + 単体テスト15件(構造/引用符処理/位置/寛容な構文吸収/デコード/ピース境界/失敗契約) (`ab7dd5e`)
+2. `detectCsvDelimiter()`実装(`detectLogPatternRule()`のサンプリング構造を土台に、「出現の有無」ではなく「行ごとの出現回数の最頻値への一致度合い」でスコアリング) + 単体テスト9件、最終ゲート(Release/ubsan/clang-tidy)で検出した2件(`performance-no-automatic-move`/`modernize-use-ranges`)を修正 (`c8fd842`)
+
+### DoD
+
+- [x] `CsvCell`(公開ヘッダ、`document::TextPos`のみ依存、テキスト非保持)
+- [x] `CsvModel::build(...) -> std::expected<CsvModel, CsvParseError>`(Document/BufferSnapshot両オーバーロード)
+- [x] パーサが明示スタック・再帰を使わない単一forループ(`misc-no-recursion`新規警告0)
+- [x] 引用符内改行で1レコードが複数Document行にまたがるケースが正しく解析される(位置情報含む)
+- [x] 構文的に緩い入力(閉じていない引用符/ragged rows等)がエラーにならず寛容に吸収される
+- [x] `detectCsvDelimiter()`が4候補(,/タブ/;/|)を正しく判定
+- [x] ピース境界をまたぐ入力で単一ピースと同じ結果
+- [x] Debug/Release/ubsan全1362件green、clang-tidy新規警告0
+- [x] `build_plan.md`にWI-16a節追加+WI-17〜19リナンバリング
+
+### 実装後の確定事項
+
+**`CsvCell::quoted`フラグは承認済みプランの当初案には無く、実装着手直後の設計検討で追加した。** 当初案の`CsvCell{startPos, endPos}`のみでは、`csvCellValue()`が「このフィールドは本当に引用符付きだったか」を生テキストの先頭/末尾文字(`raw.front()=='"' && raw.back()=='"'`)から事後推論する必要があったが、`"abc"def"ghi"`(閉じ引用符の直後にゴミ文字が続きUnquotedへ寛容フォールバックした結果、たまたま末尾も`"`になる)のような入力でこの推論が破綻し、デコード処理が内容を静かに欠落させることを手計算のトレースで発見した。パーサ自身が終端時点の状態(`QuoteInQuoted`)を`bool quoted`として直接記録する設計に変更し、この曖昧さを排除した。
+
+**`CsvBuilder`は内部vectorを参照ではなく値で保持する設計にした。** JsonTreeの`ParseState`(WI-15a)は参照束縛構造体だったため`cppcoreguidelines-avoid-const-or-ref-data-members`のNOLINT抑制が必要になったが、`CsvBuilder`は`build()`1回の呼び出しの間だけ存在し完了時に`std::move()`で結果へ譲渡するだけなので、最初から値保持にすることでこのclang-tidy指摘を未然に回避した(最終ゲートで実際に指摘0件を確認)。
+
+**最終ゲートで検出したclang-tidy指摘は2件のみで、いずれも機械的な修正だった。** `csvCellValue()`の`const std::u16string raw`から`const`を除去(`performance-no-automatic-move`)、`consistencyScore()`内の`std::find_if`を`std::ranges::find_if`へ置換(`modernize-use-ranges`)。WI-15a(cognitive-complexity+参照メンバで2ラウンド)やWI-15b(STATUS_STACK_OVERFLOW)と比べて明らかに少なく、状態ハンドラ関数を最初から分割し値保持の`CsvBuilder`を採用した設計判断が功を奏した。
+
+---
+
+## WI-17 〜 WI-19 — Phase 11 / 9 / 12
+
+**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a(ヘッドレス基盤)着手済み・残り未完了、Phase 10.2 (CSV) は WI-16a(ヘッドレス解析モデル)着手済み・残り未完了。
 
 着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
 
-**WI 番号の注記 (2026-08-18):** roadmap原案は Phase 10 全体を「WI-14」1本に見込んでいたが、実際には Phase 10.1 だけで WI-14a〜d の4サブ WI を要し、Phase 10.3 も WI-15a から始まる複数サブ WI に分かれる見通しとなったため、Phase 11/9/12 の当初の割当番号 (WI-15/16/17) を1つずつ繰り下げて WI-16/17/18 とした。
+**WI 番号の注記 (2026-08-18、2026-08-19追記):** roadmap原案は Phase 10 全体を「WI-14」1本に見込んでいたが、実際には Phase 10.1 だけで WI-14a〜d の4サブ WI を要し、Phase 10.3 も WI-15a から始まる複数サブ WI に分かれる見通しとなったため、Phase 11/9/12 の当初の割当番号 (WI-15/16/17) を1つずつ繰り下げて WI-16/17/18 とした(2026-08-18)。さらに Phase 10.2 (CSV) 着手時に WI-16a が新設されたことで、もう1つずつ繰り下げて WI-17/18/19 とした(2026-08-19)。
 
 | WI | 内容 | roadmap 章 | 目安 |
 |---|---|---|---|
-| WI-16 | Phase 11 — Git 統合 / LSP / マクロ | §11 | 3 領域 × 各 3〜6 サブ WI |
-| WI-17 | Phase 9 — AI プラグイン | §9 | 4〜6 サブ WI |
-| WI-18 | Phase 12 — 総合品質保証・正式出荷 | §12 | §12.3 の 22 項目 |
+| WI-17 | Phase 11 — Git 統合 / LSP / マクロ | §11 | 3 領域 × 各 3〜6 サブ WI |
+| WI-18 | Phase 9 — AI プラグイン | §9 | 4〜6 サブ WI |
+| WI-19 | Phase 12 — 総合品質保証・正式出荷 | §12 | §12.3 の 22 項目 |
 
 **順序の根拠:**
 - **Phase 9 (AI) が最後** — CLAUDE.md が「エディタ本体は AI 無しでも 100% 動作しなければならない」と定めており、本体完成後に載せるのが筋。加えて外部 API 依存で陳腐化が速い

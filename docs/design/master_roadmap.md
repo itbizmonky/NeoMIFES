@@ -286,7 +286,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
 | 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🚧 **着手 (WI-15a: JSONヘッドレス基盤、WI-15b: 非同期インデックス化+EditorSession配線 完了、2026-08-18。XML/UI/整形/バリデーション/XPath/JSONPathは未着手)** | §10.3 |
-| 10.2 | CSV モード | 未着手 | §10.2 |
+| 10.2 | CSV モード | 🚧 **着手 (WI-16a: CSVヘッドレス解析モデル 完了、2026-08-19。非同期ワーカー/EditorSession配線/グリッドUI/フィルタ・ソート/式列は未着手)** | §10.2 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
 | 12 | 総合品質保証 + 正式出荷 | 未着手 | §12 |
@@ -2182,6 +2182,18 @@ class CsvModel {
 #### 影響ファイル
 - **新規:** `src/csvmode/{csv_model.cpp, csv_parser.cpp, csv_filter.cpp, csv_sorter.cpp, csv_expression.cpp (v2.0)}`、`src/ui/csv_grid_view.{h,cpp}`、`tests/unit/csvmode_*_test.cpp`
 - **変更:** `src/app/main.cpp` (CSV モード検出)、`src/core/mode.h` (Mode::Csv)
+
+#### 実装後の確定事項/変更点 (2026-08-19、WI-16a完了 — ヘッドレス解析モデルのみ)
+
+**`CsvModel`のデータ構造は上記スケッチから大きく逸脱した設計にした。** `logmode::LogModel`/`jsontree::JsonNode`(いずれもroadmap原案には存在しない先行実装)を実機で確認した上での判断:
+- `document::Document* m_doc`は保持しない(`LogModel`が`attach()`を採用しなかったのと同じ理由 — 呼び出しごとに`Document&`/`BufferSnapshot&`を明示的に渡す設計に統一)
+- `std::vector<std::vector<std::uint32_t>> m_columnOffsets`のネストvectorは不採用。平坦な`std::vector<CsvCell>` + 行オフセット`std::vector<std::uint32_t>`のCSR方式にした — 1000万行規模で行ごとの個別ヒープ確保を避けるため
+- `std::vector<std::u16string> m_headers`は保持しない。`CsvCell`はテキストを複製せず位置(`startPos`/`endPos`)のみ保持する設計(`LogLine`の「テキストを複製しない」方針を踏襲)にしたため、ヘッダ行も他の行と同じ`CsvCell`表現で`headerRow()`から参照する
+- `std::vector<std::size_t> m_visibleRows`(フィルタ後の順序)は本WIのスコープ外(フィルタ機能自体が未実装のため)
+
+**列固定・セル単位クリック編集・TSV対応の実体・区切り文字自動判定・式列(v2.0)・グリッドUI(`WC_LISTVIEW`等)・`Mode::Csv`検出は全て本WIのスコープ外。** 区切り文字自動判定`detectCsvDelimiter()`のみ本WIで先行実装した(`,`/`\t`/`;`/`|`の4候補、`logmode::detectLogPatternRule()`のサンプリング構造を土台に「行ごとの出現回数の最頻値への一致度合い」でスコアリング)。ヘッダ自動判定は要件定義書・本節いずれにも記述がなく、`CsvParseOptions.hasHeader`は常に呼び出し側指定のまま(既定値`true`)とした。
+
+詳細は`build_plan.md` WI-16aセクション参照。次はWI-16b以降(非同期ワーカー+EditorSession配線、`LogIndexWorker`/`JsonTreeWorker`と同型)。
 
 ### 10.3 JSON / XML Tree モード (要件定義書 §10)
 

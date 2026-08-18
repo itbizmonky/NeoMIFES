@@ -3099,4 +3099,26 @@ WI-15a完了・push未実施の状態で、ユーザーから「継続せよ」�
 
 コミット済み(`1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`)、pushはユーザーの明示指示待ち。Phase 10.3は本サブWIで非同期インデックス化+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し)。次はPhase 10.3の続き(ツリーUI等、WI-15c以降)、またはPhase 10.2(CSVモード)、またはユーザー指定の次項目。
 
+## Session 98 (2026-08-19): WI-16a(CSVモード ヘッドレス解析モデル、Phase 10.2着手)実装完了
+
+WI-15b完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。「WI-15c(JSON/XML TreeのUI続き)」と「Phase 10.2(CSVモード)」のどちらを指すか曖昧だったためAskUserQuestionで確認し、**「Phase 10.2: CSVモード」**が選ばれた — JSON/XML Treeモードのヘッドレス基盤+非同期化(WI-15a/b)はここで一旦区切り、CSVモード(要件定義書§9、master_roadmap.md §10.2)へ新規着手した。
+
+**着手前調査(Explore agent 1件):** 既存CSV関連コードは実装・言及ともに皆無と確認(grep)。`neomifes::logmode::LogModel::build()`が`std::expected<LogModel, LogPatternError>`を返すこと(直接ソースを読んで実機確認、`std::optional`ではない)と、`LogLine`が「テキストを複製しない、位置/メタデータのみ保持」設計であることを確認 — この2点が`CsvModel::build()`/`CsvCell`の直接のテンプレートになった。`document::LineIndex`が`\n`のみを行境界として認識する(単独`\r`は非対応)ことも確認し、CSVの行終端規約もこれに合わせた。`logmode_log_model_test.cpp`で確認済みの規約(末尾`\n`は暗黙の空行を1行追加、空文書は1行)もCSVの行数へそのまま流用した。`WC_LISTVIEW`等のグリッドコントロール前例はコードベースに皆無と確認(将来のUIサブWIの課題)。
+
+**設計(Plan agent 1件、Plan Mode):** WI-14a/WI-15aと同型の「まずヘッドレスモデルのみ、UIなし」構成を採用。`CsvCell{startPos, endPos}`(テキスト非保持)+CSR方式コンテナ(平坦`vector<CsvCell>`+行オフセット`vector<uint32_t>`、roadmap原案の`vector<vector<uint32_t>>`ネスト形は1000万行規模での行ごとの個別ヒープ確保を避けるため不採用)+単一forループの4状態機械(`FieldStart`/`Unquoted`/`Quoted`/`QuoteInQuoted`)。RFC4180の「引用符付きフィールドの埋め込み改行で1レコードが複数Document行にまたがる」課題は、`Quoted`状態が改行を含め全文字を素通しするだけで解決される設計にした(特別扱い不要)。唯一の失敗契約は呼び出し側の設定ミス(`delimiter`が`\r`/`\n`/`"`)のみで`std::expected<CsvModel, CsvParseError>`の失敗側として表現。ExitPlanModeでユーザー承認を得た。
+
+**実装フェーズで承認済みプランに1点設計を追加した。** `CsvCell`に`quoted`フラグを追加(当初の承認済みプランには無かった)。`csvCellValue()`が「このフィールドは本当に引用符付きだったか」を生テキストの先頭/末尾文字(`raw.front()=='"' && raw.back()=='"'`)から事後推論する設計だと、`"abc"def"ghi"`(閉じ引用符直後にゴミ文字が続きUnquotedへ寛容フォールバックした結果、たまたま末尾も`"`になる)のような入力で誤判定し、デコード処理が内容を静かに欠落させることを実装直前の手計算トレースで発見した。パーサ自身が終端時点の状態(`finalizeField()`呼び出し時に`QuoteInQuoted`だったか)を`bool quoted`として直接記録する設計に変更し、この曖昧さを排除した。
+
+**実施内容(2コミット):** ①新規`src/csvmode/`モジュール(`neomifes::logmode`/`neomifes::jsontree`と同型、PUBLIC=`neomifes::document`のみ)に`CsvCell`/`CsvParseOptions`/`CsvModel`/`csvCellValue()`実装+単体テスト15件(構造/引用符処理/位置/寛容な構文吸収/デコード/ピース境界/失敗契約)(`ab7dd5e`)。②`detectCsvDelimiter()`実装(`logmode::detectLogPatternRule()`のサンプリング構造を土台に、スコアリング基準を「出現の有無」から「行ごとの出現回数の最頻値(mode)への一致度合い」へ変更 — カンマ等の候補文字は通常の文章にも現れるため単純な出現有無では区別できない。出現回数0の行はヒストグラムから完全除外し、常に出現しない区切り文字が不当に高スコアを得ることを防止)+単体テスト9件(`c8fd842`)。**既存の確立済みコミット慣行(WI-14b「フォーマット自動検出」等)を確認した結果、「実装+その単体テスト+CMake配線を1コミットにまとめる」が実際の慣行と判明し、承認済みプランに書いていた4コミット分割案(モデル本体/モデルテスト/検出本体/検出テスト+ドキュメント)から2コミット構成へ変更した。**
+
+**最終ゲートで検出したclang-tidy指摘は2件のみで、いずれも機械的な修正だった。** `csvCellValue()`の`const std::u16string raw`から`const`を除去(`performance-no-automatic-move`、`return raw;`がムーブできるように)、`consistencyScore()`内の`std::find_if`を`std::ranges::find_if`へ置換(`modernize-use-ranges`)。**WI-15a(cognitive-complexity+参照メンバで2ラウンド)やWI-15b(STATUS_STACK_OVERFLOW)と比べて明らかに少なく、状態ハンドラ関数(`handleFieldStart()`等4関数)を最初から分割し、`CsvBuilder`(内部実装)がJsonTreeの`ParseState`のような参照束縛構造体ではなく`cells`/`rowOffsets`を値で保持する設計にしたことが功を奏した** — `CsvBuilder`は`build()`1回の呼び出しの間だけ存在し完了時に`std::move()`で結果へ譲渡するだけなので、最初から値保持にすることで`cppcoreguidelines-avoid-const-or-ref-data-members`のNOLINT抑制が最初から不要になった(最終ゲートで実際に指摘0件を確認)。
+
+**最終ゲート:** Debug/Release/ubsan全1362件green(clang-tidy修正2件の再検証を含む)、clang-tidy新規警告0(`misc-no-recursion`/`cppcoreguidelines-avoid-const-or-ref-data-members`/`cognitive-complexity`いずれも該当なしを確認)。実アプリでの視覚確認は対象外(ヘッドレス変更、UIに一切触れない)。
+
+**WI番号をさらに1つ繰り下げた。** WI-15a着手時(2026-08-18)に確定した「WI-16〜WI-18 = Phase 11/9/12」の割当に、CSV側のWI-16a新設が衝突したため、Phase 11/9/12を1つずつ繰り下げてWI-17/18/19とした(`build_plan.md` §5「WI-17〜19」節)。このリナンバリング作業中に、WI-06(2026-08-12執筆)・WI-13(2026-08-16執筆)の完了記録内に残っていた2箇所の陳腐化した参照(いずれも「Phase 12 (WI-17)」という表記で、2026-08-18のWI-15a着手時リナンバリングが未反映のまま残っていた)も発見・訂正した — CLAUDE.md §11の「ドキュメントの一部だけを更新し関連する他の節への反映を忘れる」という既知パターンの再発例。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-16a」セクション、「WI-16〜WI-18」→「WI-17〜WI-19」へ改番+上記2箇所の陳腐化した参照を訂正)、`master_roadmap.md`(§10.2に実装後の確定事項追記、フェーズ表のPhase 10.2行を🚧着手済みへ更新)、`detailed_design.md`(§11.5を新設し`CsvModel`/`csvCellValue()`/`detectCsvDelimiter()`のリファレンス+WI-16a設計要点を追加、§12冒頭に実装状況の注記を追加)、`RESUME_HERE.md`(§1状態表+新規§3.87完了記録+§6推奨プロンプト更新)。
+
+コミット済み(`ab7dd5e`/`c8fd842`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIでヘッドレス解析モデルのみ完了 — 非同期ワーカー+`EditorSession`配線・グリッドUI・列固定・フィルタ・ソート・式列・セル編集・ヘッダ自動判定は全て後続サブWI(WI-16b以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
