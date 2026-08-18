@@ -5,6 +5,7 @@
 
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/syntax_language.h"
+#include "neomifes/csvmode/csv_model_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 
@@ -65,6 +66,11 @@ void EditorSession::beginLogIndexing(logmode::LogIndexWorker& worker, const logm
 void EditorSession::beginJsonTreeIndexing(jsontree::JsonTreeWorker& worker) {
     worker.requestIndex(m_document.snapshot(), /*sessionToken=*/this);
     m_jsonTreeIndexInFlight = true;
+}
+
+void EditorSession::beginCsvIndexing(csvmode::CsvModelWorker& worker, const csvmode::CsvParseOptions& options) {
+    worker.requestIndex(m_document.snapshot(), options, /*sessionToken=*/this);
+    m_csvIndexInFlight = true;
 }
 
 void EditorSession::resetToBlank() {

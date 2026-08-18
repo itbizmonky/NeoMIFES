@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "neomifes/app/editor_session.h"
+#include "neomifes/csvmode/csv_model.h"
 #include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/log_model.h"
 #include "neomifes/logmode/log_pattern.h"
@@ -18,6 +19,7 @@
 namespace {
 
 using neomifes::app::EditorSession;
+using neomifes::csvmode::CsvModel;
 using neomifes::jsontree::JsonNode;
 using neomifes::jsontree::JsonNodeKind;
 using neomifes::logmode::kAllLogLevelsVisible;
@@ -117,6 +119,32 @@ TEST(EditorSessionJsonTreeStateTest, ApplyJsonTreeResultWithNulloptClearsInFligh
 
     EXPECT_FALSE(session.jsonTree().has_value());
     EXPECT_FALSE(session.jsonTreeIndexInFlight());
+}
+
+// WI-16b: EditorSession's per-tab CSV-model state (csvModel()/
+// csvIndexInFlight()/applyCsvIndexResult()). Headless -
+// beginCsvIndexing() requires a real CsvModelWorker (background thread +
+// HWND), so its round trip is exercised by the integration test
+// (tests/integration/csvmode_csv_model_worker_test.cpp) instead of here -
+// same split as EditorSessionLogModeStateTest/EditorSessionJsonTreeStateTest
+// above.
+TEST(EditorSessionCsvModelStateTest, InitiallyHasNoCsvModelAndIsNotInFlight) {
+    const EditorSession session;
+    EXPECT_FALSE(session.csvModel().has_value());
+    EXPECT_FALSE(session.csvIndexInFlight());
+}
+
+TEST(EditorSessionCsvModelStateTest, ApplyCsvIndexResultPopulatesCsvModelAndClearsInFlight) {
+    EditorSession session;
+
+    auto built = CsvModel::build(session.document());
+    ASSERT_TRUE(built.has_value());
+    session.applyCsvIndexResult(std::move(*built));
+
+    const auto& model = session.csvModel();
+    ASSERT_TRUE(model.has_value());
+    EXPECT_EQ(model->rowCount(), 1U);  // a blank EditorSession's document is empty
+    EXPECT_FALSE(session.csvIndexInFlight());
 }
 
 }  // namespace

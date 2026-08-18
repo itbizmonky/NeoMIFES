@@ -54,6 +54,11 @@ target_link_libraries(neomifes_app_input
         # (jsonTree()/beginJsonTreeIndexing()) - same reasoning as
         # neomifes::logmode immediately above.
         neomifes::jsontree
+        # editor_session.h (WI-16b) exposes csvmode::CsvModel/
+        # csvmode::CsvModelWorker in its public signature
+        # (csvModel()/beginCsvIndexing()) - same reasoning as
+        # neomifes::jsontree immediately above.
+        neomifes::csvmode
     PRIVATE
         neomifes::compile_options
         neomifes::util

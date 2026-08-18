@@ -36,6 +36,7 @@
 #include "neomifes/core/folding_model.h"
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
+#include "neomifes/csvmode/csv_model.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/text_pos.h"
@@ -53,6 +54,10 @@ class LogIndexWorker;
 namespace neomifes::jsontree {
 class JsonTreeWorker;
 }  // namespace neomifes::jsontree
+
+namespace neomifes::csvmode {
+class CsvModelWorker;
+}  // namespace neomifes::csvmode
 
 namespace neomifes::app {
 
@@ -244,6 +249,41 @@ public:
         m_jsonTreeIndexInFlight = false;
     }
 
+    // WI-16b: per-tab CSV-model state. Always constructed, conditionally
+    // populated - same "always there, empty until a feature turns it on"
+    // pattern as m_logModel/m_jsonTree above. No "disable" method exists yet
+    // (mirrors WI-14b/WI-15b's own scoping: the counterpart wasn't added
+    // until the sub-WI that ships the command calling it).
+    //
+    // Unlike jsonTree(), std::nullopt here IS reserved for "never indexed"
+    // only - csv_model.h's own contract is that CsvModel::build() fails
+    // solely on a caller configuration mistake (an invalid delimiter), never
+    // on document content, and CsvModelWorker (unlike JsonTreeWorker) drops
+    // that failure rather than posting it (see csv_model_worker.h). So
+    // csvModel() reaching a populated state is the only way it becomes
+    // non-nullopt.
+    [[nodiscard]] const std::optional<csvmode::CsvModel>& csvModel() const noexcept { return m_csvModel; }
+    [[nodiscard]] bool csvIndexInFlight() const noexcept { return m_csvIndexInFlight; }
+
+    // Fires an async CsvModelWorker request for this session's current
+    // document snapshot, using `this` as the opaque sessionToken (see
+    // csv_model_worker.h - never dereferenced by the worker, only round-
+    // tripped back via kMsgCsvIndexReady's wParam so the receiver can find
+    // this exact EditorSession again). Sets csvIndexInFlight() immediately;
+    // csvModel() is populated later by applyCsvIndexResult() once the
+    // worker's response arrives.
+    void beginCsvIndexing(csvmode::CsvModelWorker& worker, const csvmode::CsvParseOptions& options);
+
+    // Called by the kMsgCsvIndexReady receiver once it has matched a
+    // response's sessionToken back to this EditorSession. Unlike
+    // applyJsonTreeResult(), CsvModelWorker never posts a failure (see this
+    // class's csvModel() comment), so `result` here is always a
+    // successfully-built CsvModel.
+    void applyCsvIndexResult(csvmode::CsvModel result) noexcept {
+        m_csvModel         = std::move(result);
+        m_csvIndexInFlight = false;
+    }
+
     // Always derived from path()/isUntitled() - see this file's header
     // comment on why this is not cached.
     [[nodiscard]] std::optional<syntax::Language> language() const noexcept;
@@ -321,6 +361,8 @@ private:
     std::uint8_t                           m_logLevelFilterMask = logmode::kAllLogLevelsVisible;
     std::optional<jsontree::JsonNode>      m_jsonTree;
     bool                                   m_jsonTreeIndexInFlight = false;
+    std::optional<csvmode::CsvModel>       m_csvModel;
+    bool                                   m_csvIndexInFlight = false;
 };
 
 }  // namespace neomifes::app
