@@ -82,6 +82,8 @@ using neomifes::core::ReplaceRangeCommand;
 using neomifes::core::SearchHistory;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
+using neomifes::csvmode::CsvModelWorker;
+using neomifes::csvmode::kMsgCsvIndexReady;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::TextRange;
@@ -2933,12 +2935,36 @@ void applyJsonTreeReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lPara
     }
 }
 
+// WI-16b: CsvModelWorker's background-thread indexing completion signal
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgCsvIndexReady branch) -
+// mirrors applyJsonTreeReadyMessage() above (RenderPipeline/HWND/
+// InvalidateRect deliberately absent - no UI consumes csvModel() yet,
+// WI-16c). `wParam` is the opaque sessionToken requestIndex() was given
+// back - see applyLogIndexReadyMessage()'s own comment for why pointer-
+// VALUE comparison against &workspace.sessionAt(i) is safe even if the
+// issuing tab has since closed. `lParam` owns a heap-allocated CsvModel*
+// that must be reconstructed into a unique_ptr immediately to avoid leaking
+// it - always non-null here, since CsvModelWorker (unlike JsonTreeWorker)
+// never posts on failure (see csv_model_worker.h's header comment).
+void applyCsvIndexReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+    const std::unique_ptr<neomifes::csvmode::CsvModel> result(
+        reinterpret_cast<neomifes::csvmode::CsvModel*>(lParam));
+    const auto* const token = reinterpret_cast<const void*>(wParam);
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
+            workspace.sessionAt(i).applyCsvIndexResult(std::move(*result));
+            break;
+        }
+    }
+}
+
 // MainWindowConfig::onAppMessage's body (WM_APP+N messages MainWindow
 // forwards unexamined - neomifes::ui never learns what
-// kMsgSyntaxTokensReady/kMsgLogIndexReady/kMsgJsonTreeReady mean, see that
-// field's own doc comment; this file is the layer that already depends on
-// render::/logmode::/jsontree:: so it's the only place that can safely
-// compare against the constants and reconstruct each payload's real type).
+// kMsgSyntaxTokensReady/kMsgLogIndexReady/kMsgJsonTreeReady/kMsgCsvIndexReady
+// mean, see that field's own doc comment; this file is the layer that
+// already depends on render::/logmode::/jsontree::/csvmode:: so it's the
+// only place that can safely compare against the constants and reconstruct
+// each payload's real type).
 // Extracted out of wireNormalMode() into its own function (WI-14b) purely to
 // keep wireNormalMode() under the cognitive-complexity threshold - the
 // message branches below were previously inline in wireNormalMode()'s own
@@ -2958,6 +2984,10 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND
     }
     if (msg == kMsgJsonTreeReady) {
         applyJsonTreeReadyMessage(workspace, wParam, lParam);
+        return;
+    }
+    if (msg == kMsgCsvIndexReady) {
+        applyCsvIndexReadyMessage(workspace, wParam, lParam);
     }
 }
 
@@ -3108,7 +3138,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::optional<logmode::LogIndexWorker>& logIndexWorker,
                     std::vector<logmode::LogPatternRule>& userLogPatterns,
                     const std::optional<std::filesystem::path>& logPatternsDir,
-                    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker) {
+                    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                    std::optional<csvmode::CsvModelWorker>& csvModelWorker) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -3129,7 +3160,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
-                          &userLogPatterns, logPatternsDir, &jsonTreeWorker](HWND hwnd) {
+                          &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -3146,6 +3177,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // JsonTreeWorker's constructor also requires a real HWND and starts
         // its own background thread immediately.
         jsonTreeWorker.emplace(hwnd);
+        // WI-16b: same reasoning as jsonTreeWorker.emplace() above -
+        // CsvModelWorker's constructor also requires a real HWND and starts
+        // its own background thread immediately.
+        csvModelWorker.emplace(hwnd);
         // Resolved once here for this lambda's own synchronous body below -
         // safe (nothing can switch tabs before the window's first deferred
         // init has even run). The nested paint handler lambda just below

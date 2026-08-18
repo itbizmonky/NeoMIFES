@@ -34,6 +34,7 @@
 #include "neomifes/core/recent_files.h"
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
+#include "neomifes/csvmode/csv_model_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 #include "neomifes/logmode/log_pattern.h"
@@ -211,6 +212,14 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // construction plus cfg.onAppMessage's kMsgJsonTreeReady receiving/routing
 // branch (see this file's .cpp body), proven correct by
 // tests/integration/jsontree_json_tree_worker_test.cpp.
+//
+// WI-16b: takes std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+// EMPTY at the time this function runs - same construction-timing reasoning
+// as jsonTreeWorker above. cfg.onDeferredInit below emplace()s it once the
+// real hwnd is known. No command/UI calls csvModelWorker->requestIndex() yet
+// (WI-16c) - this WI only wires the construction plus cfg.onAppMessage's
+// kMsgCsvIndexReady receiving/routing branch (see this file's .cpp body),
+// proven correct by tests/integration/csvmode_csv_model_worker_test.cpp.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -224,6 +233,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     std::optional<logmode::LogIndexWorker>& logIndexWorker,
                     std::vector<logmode::LogPatternRule>& userLogPatterns,
                     const std::optional<std::filesystem::path>& logPatternsDir,
-                    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker);
+                    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                    std::optional<csvmode::CsvModelWorker>& csvModelWorker);
 
 }  // namespace neomifes::app
