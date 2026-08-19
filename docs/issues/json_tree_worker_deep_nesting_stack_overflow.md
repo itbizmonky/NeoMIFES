@@ -1,9 +1,10 @@
-# Issue: `parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる (P1 — 未対応)
+# Issue: `parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる (P1 — 解消済み)
 
 - **起票日:** 2026-08-18 (WI-15b、JSON構造ツリー 非同期インデックス化)
+- **解消日:** 2026-08-19 (WI-15c、JSON/XML Tree モード ツリーUI実装、コミット1)
 - **対象:** `neomifes::jsontree::parseJsonTree()`(`src/jsontree/src/json_tree.cpp`)、およびそれを呼ぶ`JsonTreeWorker`(`src/jsontree/src/json_tree_worker.cpp`)
 - **優先度:** P1 (ファイルを開く/コマンドを実行するだけでプロセス全体がクラッシュしうる)
-- **対応 Phase:** 未定 (WI-15c以降、JSONツリーの実UI配線時に再評価)
+- **対応 Phase:** WI-15c
 - **親文書:** WI-15b (`build_plan.md` §5)
 
 ## 事実
@@ -30,10 +31,18 @@ MSVC Debug/Release構成では深さ2000でもクラッシュしなかったが�
 
 いずれもWI-15bのスコープ外(非同期ワーカー配線のみが本WIの責務)であり、着手はWI-15c(UI配線、実際にユーザーがJSONツリー機能を使い始めるタイミング)以降に先送りする。
 
+## 対応内容 (WI-15c、選択肢1を採用)
+
+選択肢1(SAXベースの事前深度チェック)を採用した。`json_tree.cpp`に`DepthLimitSax`(`nlohmann::json_sax`の最小実装、`start_object()`/`start_array()`のみで深度をカウントし`kMaxJsonNestingDepth`超過時に`false`を返す)を追加し、`parseJsonTree()`が`nlohmann::ordered_json::parse()`を呼ぶ**前**に`exceedsMaxNestingDepth()`で弾くようにした。
+
+- **閾値:** `kMaxJsonNestingDepth = 200`。「事実」節に記録した「ubsan/clang-cl構成で深さ2000にてクラッシュ実証済み」という唯一の実測値から10倍の安全マージンを取った(それ以上の精密な閾値探索は行っていない — 「クラッシュしない安全な値」を確保することが目的であり、「許容できる最大深度」を最適化する要件ではないため)。
+- **技術的前提の検証:** 「SAXコールバックが`false`を返せば、`nlohmann`が実際にその階層より深く再帰する前に解析を中断する」という前提を、実装前にスタンドアロンprobeで実機検証した(`nlohmann::ordered_json::sax_parse()`に深さ50000の入力を閾値200のガードで通し、クラッシュせず正しく打ち切られることを確認)。あわせて`nlohmann/detail/input/parser.hpp`のソースを直接確認し、トークンストリームを歩く`parser::sax_parse_internal()`自体は明示的な`std::vector<bool> states`スタックを使う反復実装であり(クラス冒頭のdocコメント「recursive descent parser」はこの内部実装の実態とは一致しない、古い記述と判断)、実際に再帰するのはDOM構築(`json_sax_dom_parser`)とその破棄(`basic_json`のデストラクタ)側であることを確認した。事前深度チェックはDOMを一切構築しないため、この再帰経路そのものに到達しない。
+- **テスト:** `tests/unit/jsontree_json_tree_test.cpp`に`NestingAtGuardThresholdStillParses`(深さ200は成功)・`NestingPastGuardThresholdReturnsNulloptNotCrash`(深さ201は`std::nullopt`)を追加。`tests/integration/jsontree_json_tree_worker_test.cpp`の既存テストを`RequestIndexOnDeeplyNestedJsonReturnsNulloptNotCrash`に改名し、深さ500(閾値超・旧クラッシュ実測値2000未満)でワーカースレッドがクラッシュせず`std::nullopt`を返すことをアサートするよう強化。
+
 ## 完了条件
 
-- [ ] 上記いずれかの対応方針を選択し実装した
-- [ ] 深いネストのJSONファイルに対してクラッシュせず(グレースフルな失敗として)処理できることを統合テストで確認した
+- [x] 上記いずれかの対応方針を選択し実装した — 選択肢1(SAXベースの事前深度チェック)
+- [x] 深いネストのJSONファイルに対してクラッシュせず(グレースフルな失敗として)処理できることを統合テストで確認した
 
 ## 再検証コマンド
 

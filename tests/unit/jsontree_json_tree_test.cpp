@@ -97,6 +97,33 @@ TEST(JsonTreeTest, BareScalarRootIsSupported) {
     EXPECT_TRUE(tree->children.empty());
 }
 
+// --- Nesting depth guard (WI-15c, docs/issues/json_tree_worker_deep_nesting_stack_overflow.md) ---
+
+TEST(JsonTreeTest, NestingAtGuardThresholdStillParses) {
+    // json_tree.cpp's kMaxJsonNestingDepth is 200 - depth exactly at the
+    // limit must still succeed (the guard is `depth <= max`, not `< max`).
+    constexpr int  kDepth = 200;
+    std::u16string text(static_cast<std::size_t>(kDepth), u'[');
+    text.append(static_cast<std::size_t>(kDepth), u']');
+    const Document doc  = makeDoc(text);
+    const auto     tree = parseJsonTree(doc);
+    ASSERT_TRUE(tree.has_value());
+}
+
+TEST(JsonTreeTest, NestingPastGuardThresholdReturnsNulloptNotCrash) {
+    // One level past kMaxJsonNestingDepth must be rejected before
+    // nlohmann::ordered_json::parse() ever builds a DOM this deep - see
+    // jsontree_json_tree_worker_test.cpp's
+    // RequestIndexOnDeeplyNestedJsonReturnsNulloptNotCrash for the
+    // background-thread-stack-sized reproduction of the original P1 crash.
+    constexpr int  kDepth = 201;
+    std::u16string text(static_cast<std::size_t>(kDepth), u'[');
+    text.append(static_cast<std::size_t>(kDepth), u']');
+    const Document doc  = makeDoc(text);
+    const auto     tree = parseJsonTree(doc);
+    EXPECT_FALSE(tree.has_value());
+}
+
 // --- Key order preservation ----------------------------------------------
 
 TEST(JsonTreeTest, ObjectKeysKeepSourceOrderNotAlphabetical) {

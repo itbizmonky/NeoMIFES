@@ -17,6 +17,70 @@ namespace neomifes::jsontree {
 
 namespace {
 
+// nlohmann::ordered_json::parse() builds a DOM whose construction AND
+// eventual destruction both recurse one C++ stack frame per nesting level
+// (its own token-stream walk, parser::sax_parse_internal(), is iterative -
+// verified by reading nlohmann/detail/input/parser.hpp directly - but
+// json_sax_dom_parser's tree building and basic_json's destructor are not).
+// docs/issues/json_tree_worker_deep_nesting_stack_overflow.md recorded a
+// real STATUS_STACK_OVERFLOW at depth 2000 under the ubsan/clang-cl build
+// (whose instrumentation uses far more stack per frame than MSVC
+// Debug/Release, which survived the same input - build config, not just
+// nesting depth, determines the actual crash point). 200 gives a 10x margin
+// below the one crash depth we have real measurements for. Rejecting before
+// nlohmann::ordered_json::parse() ever runs means neither the construction
+// nor the destruction recursion is reached at all for anything over this.
+constexpr int kMaxJsonNestingDepth = 200;
+
+// Pre-parse pass that only tracks container nesting depth, so it can reject
+// pathologically deep input BEFORE nlohmann::ordered_json::parse() builds
+// (and eventually destroys) a DOM tree deep enough to overflow the stack -
+// see kMaxJsonNestingDepth's comment. Verified via a standalone probe
+// (depth 50000 through this handler, well past the 2000 that crashed real
+// DOM construction, does not crash - json_sax_dom_parser's own recursion is
+// never reached because this handler never builds a DOM) before being wired
+// in here, per CLAUDE.md rule 3.
+class DepthLimitSax : public nlohmann::json_sax<nlohmann::ordered_json> {
+public:
+    bool null() override { return true; }
+    bool boolean(bool /*val*/) override { return true; }
+    bool number_integer(number_integer_t /*val*/) override { return true; }
+    bool number_unsigned(number_unsigned_t /*val*/) override { return true; }
+    bool number_float(number_float_t /*val*/, const string_t& /*s*/) override { return true; }
+    bool string(string_t& /*val*/) override { return true; }
+    bool binary(binary_t& /*val*/) override { return true; }
+    bool key(string_t& /*val*/) override { return true; }
+
+    bool start_object(std::size_t /*elements*/) override { return ++m_depth <= kMaxJsonNestingDepth; }
+    bool end_object() override {
+        --m_depth;
+        return true;
+    }
+    bool start_array(std::size_t /*elements*/) override { return ++m_depth <= kMaxJsonNestingDepth; }
+    bool end_array() override {
+        --m_depth;
+        return true;
+    }
+
+    bool parse_error(std::size_t /*position*/, const std::string& /*lastToken*/,
+                      const nlohmann::detail::exception& /*ex*/) override {
+        return false;
+    }
+
+private:
+    int m_depth = 0;
+};
+
+// True if `utf8` either fails to parse or nests containers deeper than
+// kMaxJsonNestingDepth allows - both collapse to the same std::nullopt
+// contract in parseJsonTree(), so this doesn't need to distinguish "not
+// JSON" from "too deep" any more than parseJsonTree() already treats
+// malformed input and non-JSON input alike.
+[[nodiscard]] bool exceedsMaxNestingDepth(std::string_view utf8) {
+    DepthLimitSax handler;
+    return !nlohmann::ordered_json::sax_parse(utf8, &handler);
+}
+
 [[nodiscard]] bool isJsonWhitespace(char c) noexcept {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
@@ -295,8 +359,12 @@ std::optional<JsonNode> parseJsonTree(const document::BufferSnapshot& snapshot) 
         buffer.append(snapshot.pieceView(piece));
     }
 
-    const util::Utf8Conversion conv   = util::toUtf8WithOffsets(buffer);
-    const auto                 parsed = nlohmann::ordered_json::parse(conv.utf8, nullptr, /*allow_exceptions=*/false);
+    const util::Utf8Conversion conv = util::toUtf8WithOffsets(buffer);
+    if (exceedsMaxNestingDepth(conv.utf8)) {
+        return std::nullopt;
+    }
+
+    const auto parsed = nlohmann::ordered_json::parse(conv.utf8, nullptr, /*allow_exceptions=*/false);
     if (parsed.is_discarded()) {
         return std::nullopt;
     }

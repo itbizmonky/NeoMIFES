@@ -179,23 +179,26 @@ TEST(JsonTreeWorkerTest, RequestIndexOnInvalidJsonStillDeliversNulloptResult) {
 // Safety-net for the worker thread's stack: nlohmann::ordered_json::parse()
 // runs on JsonTreeWorker's own std::thread (default stack size), not the
 // UI thread. buildTree() (this module's OWN tree-build pass, WI-15a) is
-// guaranteed iterative, but nlohmann's own DOM-building pass is a recursive-
-// descent parser with no depth-limiting option - WI-15b's final gate
+// guaranteed iterative, but nlohmann's own DOM-building pass recurses one
+// C++ stack frame per nesting level in both construction and destruction,
+// with no depth-limiting option of its own - WI-15b's final gate
 // (ubsan/clang-cl) actually reproduced a genuine STATUS_STACK_OVERFLOW at
-// kDepth=2000 (MSVC Debug/Release survived it, but that is NOT proof of
+// kDepth=2000 (MSVC Debug/Release survived it, but that was NOT proof of
 // safety - stack consumption per nesting level varies with build/
-// optimization settings, and a sufficiently deep document could overflow
-// any of them). See docs/issues/json_tree_worker_deep_nesting_stack_overflow.md
-// for the full analysis and deferred fix options - out of scope for WI-15b
-// itself (no command reaches this code path yet). kDepth here is kept low
-// enough to pass reliably across all three build configurations; this test
-// therefore only proves buildTree()'s own iterative safety, NOT that
-// nlohmann::ordered_json::parse() is safe against arbitrary nesting depth.
-TEST(JsonTreeWorkerTest, RequestIndexOnDeeplyNestedJsonDoesNotCrashWorkerThread) {
+// optimization settings). WI-15c (docs/issues/
+// json_tree_worker_deep_nesting_stack_overflow.md) closed this by adding a
+// SAX-based pre-parse depth check (json_tree.cpp's kMaxJsonNestingDepth,
+// 200) that rejects anything deeper BEFORE nlohmann::ordered_json::parse()
+// ever runs, so this test now pins down the actual contract - std::nullopt,
+// not a crash - rather than merely "didn't crash or hang". kDepth is kept
+// well below 2000 (the one depth with a confirmed real crash under ubsan)
+// so this test does not itself risk reproducing that crash if the guard
+// were ever accidentally removed.
+TEST(JsonTreeWorkerTest, RequestIndexOnDeeplyNestedJsonReturnsNulloptNotCrash) {
     HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
 
-    constexpr int  kDepth = 50;
+    constexpr int  kDepth = 500;  // > kMaxJsonNestingDepth (200), < the 2000 that crashed unguarded parse()
     std::u16string text(static_cast<std::size_t>(kDepth), u'[');
     text.append(static_cast<std::size_t>(kDepth), u']');
     Document doc;
@@ -209,9 +212,7 @@ TEST(JsonTreeWorkerTest, RequestIndexOnDeeplyNestedJsonDoesNotCrashWorkerThread)
     ASSERT_EQ(results.size(), 1U) << "worker thread must survive deeply nested input";
     EXPECT_EQ(results[0].sessionToken, &token);
     ASSERT_NE(results[0].tree, nullptr);
-    // Either outcome (parsed successfully or nlohmann itself rejected the
-    // depth) is acceptable - the only thing this test pins down is that the
-    // worker thread neither crashes nor hangs.
+    EXPECT_FALSE(results[0].tree->has_value()) << "depth guard must reject input past kMaxJsonNestingDepth";
 }
 
 }  // namespace
