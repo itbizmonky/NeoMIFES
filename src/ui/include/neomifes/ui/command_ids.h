@@ -42,6 +42,10 @@ enum class CommandId : std::uint16_t {
     GrepShow,
     CommandPaletteShow,
     OutlineToggle,
+    // Phase 10.3, WI-15c: toggles ui::JsonTreePane, the JSON/XML structure
+    // tree panel - same "toggle a right-docked panel" shape as
+    // OutlineToggle, declared immediately after it for that reason.
+    JsonTreeToggle,
     GotoLineShow,
     BookmarkToggle,
     BookmarkNext,

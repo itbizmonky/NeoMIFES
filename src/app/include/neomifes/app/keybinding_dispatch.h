@@ -11,7 +11,7 @@
 //     is consulted ONCE whenever keybindings.json is loaded/reloaded/a
 //     preset is switched (command_dispatch.h's buildAcceleratorTable()
 //     wraps it in CreateAcceleratorTableW) - never per-keystroke.
-//   - The other 18 commands: routed through normal_mode_wiring.cpp's
+//   - The other 19 commands: routed through normal_mode_wiring.cpp's
 //     existing handle*Key() functions, each now calling chordMatches()
 //     instead of a hardcoded `if (ctrlDown && vkCode == 'X')` literal
 //     comparison. chordMatches() is called PER KEYSTROKE (it's inside the
@@ -23,7 +23,7 @@
 // This split exists because TranslateAcceleratorW intercepts a matching
 // WM_KEYDOWN BEFORE Win32's normal focus-based delivery reaches whichever
 // widget (FindBar/GrepBar/CommandPalette/GotoLineBar, all native WC_EDIT
-// controls) actually has keyboard focus - promoting the other 18 commands
+// controls) actually has keyboard focus - promoting the other 19 commands
 // into the real accelerator table would silently break in-focus editing in
 // those widgets (see command_dispatch.cpp's own comment for the concrete
 // conflict WI-07 found). WI-10 does not revisit that constraint - which
@@ -59,7 +59,7 @@ inline constexpr std::array<ui::CommandId, 16> kAcceleratorEligibleCommands{
 
 // Maps each chord (in parseKeyChord()/keyChordToString()'s canonical string
 // form, so "ctrl+s" and "Ctrl+S" collide to the same entry) to whichever
-// CommandId claims it, across ALL 34 remappable commands - not just the 16
+// CommandId claims it, across ALL 35 remappable commands - not just the 16
 // HACCEL-eligible ones, since a user could bind an HACCEL-eligible command
 // and a manual-chain command to the identical chord. Deterministic
 // last-registered-wins, iterating ui::kAllRemappableCommandIds in its FIXED
@@ -78,7 +78,7 @@ inline constexpr std::array<ui::CommandId, 16> kAcceleratorEligibleCommands{
     const core::KeyBindings& keyBindings);
 
 // Per-keystroke check used by normal_mode_wiring.cpp's handle*Key()
-// functions (the 18 commands NOT in kAcceleratorEligibleCommands): true iff
+// functions (the 19 commands NOT in kAcceleratorEligibleCommands): true iff
 // (ctrlDown, shiftDown, altDown, vkCode) matches one of commandId's
 // configured chords. Deliberately does NOT re-run resolveKeyBindingConflicts()
 // - a plain membership test is correct here (not merely a shortcut) because:

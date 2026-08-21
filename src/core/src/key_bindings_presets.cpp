@@ -27,6 +27,7 @@ std::map<std::u16string, std::vector<std::u16string>> neomifesStandardBindings()
         {u"command.paletteShow", {u"Ctrl+Shift+P"}},
         {u"search.grep.show", {u"Ctrl+Shift+F"}},
         {u"view.outline.toggle", {u"Ctrl+Shift+O"}},
+        {u"view.jsonTree.toggle", {u"Ctrl+Shift+J"}},
         {u"goto.line.show", {u"Ctrl+G"}},
         {u"bookmark.toggle", {u"Ctrl+F2"}},
         {u"bookmark.next", {u"F2"}},
@@ -67,7 +68,8 @@ std::map<std::u16string, std::vector<std::u16string>> sakuraBindings() {
         {u"tab.previous", {u"Ctrl+Shift+Tab"}},
         // Deliberately unbound (no confirmed Sakura default): tab.close,
         // tab.switch1-9, command.paletteShow (no palette concept in Sakura),
-        // edit.toggleOverwriteMode.
+        // edit.toggleOverwriteMode, view.jsonTree.toggle (WI-15c - no JSON
+        // tree feature in Sakura).
     };
 }
 
@@ -92,7 +94,8 @@ std::map<std::u16string, std::vector<std::u16string>> hidemaruBindings() {
         // completion, not find-next), search.grep.show (Hidemaru's own
         // Grep command has no fixed default key at all), command.paletteShow
         // (no palette concept), bookmark.toggle/next/previous, tab.close,
-        // tab.next, tab.previous, tab.switch1-9, edit.toggleOverwriteMode.
+        // tab.next, tab.previous, tab.switch1-9, edit.toggleOverwriteMode,
+        // view.jsonTree.toggle (WI-15c - no JSON tree feature in Hidemaru).
     };
 }
 
@@ -132,6 +135,9 @@ std::map<std::u16string, std::vector<std::u16string>> vscodeBindings() {
         {u"tab.switch9", {u"Ctrl+9"}},
         // Deliberately unbound: VS Code has no built-in bookmark feature or
         // insert/overtype toggle by default (both are extension territory).
+        // view.jsonTree.toggle (WI-15c) is also unbound - VS Code's own
+        // Outline view covers JSON structure but has no dedicated default
+        // shortcut of its own to point at.
     };
 }
 

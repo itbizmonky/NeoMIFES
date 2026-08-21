@@ -28,25 +28,25 @@
 
 namespace neomifes::ui {
 
-// Every CommandId enumerator that IS remappable per WI-10's scope: all 35
+// Every CommandId enumerator that IS remappable per WI-10's scope: all 36
 // non-None enumerators except About (menu-only, no keyboard path by
 // design). Declaration order matches command_ids.h exactly - consumers that
 // need a deterministic tie-break order (see
 // app::resolveKeyBindingConflicts()) rely on THIS being enum-declaration
 // order, not an arbitrary one.
-inline constexpr std::array<CommandId, 34> kAllRemappableCommandIds{
+inline constexpr std::array<CommandId, 35> kAllRemappableCommandIds{
     CommandId::FindShow,          CommandId::FindReplace,     CommandId::FindNext,
     CommandId::FindPrevious,      CommandId::GrepShow,        CommandId::CommandPaletteShow,
-    CommandId::OutlineToggle,     CommandId::GotoLineShow,    CommandId::BookmarkToggle,
-    CommandId::BookmarkNext,      CommandId::BookmarkPrevious, CommandId::TagJump,
-    CommandId::Save,              CommandId::SaveAs,          CommandId::Open,
-    CommandId::New,               CommandId::TabNext,         CommandId::TabPrevious,
-    CommandId::TabClose,          CommandId::TabSwitch1,      CommandId::TabSwitch2,
-    CommandId::TabSwitch3,        CommandId::TabSwitch4,      CommandId::TabSwitch5,
-    CommandId::TabSwitch6,        CommandId::TabSwitch7,      CommandId::TabSwitch8,
-    CommandId::TabSwitch9,        CommandId::Copy,            CommandId::Cut,
-    CommandId::Paste,             CommandId::Undo,            CommandId::Redo,
-    CommandId::ToggleOverwriteMode,
+    CommandId::OutlineToggle,     CommandId::JsonTreeToggle,  CommandId::GotoLineShow,
+    CommandId::BookmarkToggle,    CommandId::BookmarkNext,    CommandId::BookmarkPrevious,
+    CommandId::TagJump,           CommandId::Save,            CommandId::SaveAs,
+    CommandId::Open,              CommandId::New,             CommandId::TabNext,
+    CommandId::TabPrevious,       CommandId::TabClose,        CommandId::TabSwitch1,
+    CommandId::TabSwitch2,        CommandId::TabSwitch3,      CommandId::TabSwitch4,
+    CommandId::TabSwitch5,        CommandId::TabSwitch6,      CommandId::TabSwitch7,
+    CommandId::TabSwitch8,        CommandId::TabSwitch9,      CommandId::Copy,
+    CommandId::Cut,               CommandId::Paste,           CommandId::Undo,
+    CommandId::Redo,              CommandId::ToggleOverwriteMode,
 };
 
 // nullptr-equivalent (empty string_view) for CommandId::None and
@@ -84,6 +84,7 @@ inline constexpr std::array<CommandId, 34> kAllRemappableCommandIds{
         case CommandId::GrepShow: return u"search.grep.show";
         case CommandId::CommandPaletteShow: return u"command.paletteShow";
         case CommandId::OutlineToggle: return u"view.outline.toggle";
+        case CommandId::JsonTreeToggle: return u"view.jsonTree.toggle";
         case CommandId::GotoLineShow: return u"goto.line.show";
         case CommandId::BookmarkToggle: return u"bookmark.toggle";
         case CommandId::BookmarkNext: return u"bookmark.next";
