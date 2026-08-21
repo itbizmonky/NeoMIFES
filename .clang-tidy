@@ -1,6 +1,25 @@
 ---
 # NeoMIFES clang-tidy configuration
 # Aligned with CLAUDE.md sec.4 (coding conventions).
+#
+# WI-15c: -portability-template-virtual-member-function (in the exclusion
+# list below) is disabled project-wide. Deriving a class from
+# nlohmann::json_sax<T> (json_tree.cpp's DepthLimitSax) is the library's own
+# sanctioned SAX-consumer pattern (nlohmann's own internal
+# json_sax_dom_parser<T> does the same) - there is no alternative structure
+# that avoids instantiating this third-party template's virtual functions,
+# so the check has no actionable fix here. Its underlying concern (different
+# compilers might instantiate a class template's virtual functions
+# differently) also does not apply to this project in practice - NeoMIFES
+# targets exactly two compilers (MSVC v143 per ADR-005, clang-cl for the
+# ubsan preset), both already exercised in the required 3-configuration
+# verification gate. A NOLINT comment cannot suppress this check's
+# warnings (its primary diagnostic location is inside the third-party
+# header, not the derivation site in our own code - confirmed by testing
+# before disabling the check outright). NOTE: this comment must stay OUTSIDE
+# the `Checks: >` folded block scalar below - `#` is not a YAML comment
+# marker inside a folded scalar, it becomes literal text in the value (this
+# exact mistake was made and caught during WI-15c's own verification).
 Checks: >
   bugprone-*,
   cert-*,
@@ -31,6 +50,7 @@ Checks: >
   -misc-non-private-member-variables-in-classes,
   -modernize-use-trailing-return-type,
   -performance-no-int-to-ptr,
+  -portability-template-virtual-member-function,
   -readability-identifier-length,
   -readability-implicit-bool-conversion,
   -readability-magic-numbers,

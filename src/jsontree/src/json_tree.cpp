@@ -39,7 +39,12 @@ constexpr int kMaxJsonNestingDepth = 200;
 // (depth 50000 through this handler, well past the 2000 that crashed real
 // DOM construction, does not crash - json_sax_dom_parser's own recursion is
 // never reached because this handler never builds a DOM) before being wired
-// in here, per CLAUDE.md rule 3.
+// in here, per CLAUDE.md rule 3. Deriving from nlohmann::json_sax<T> here
+// triggers clang-tidy's portability-template-virtual-member-function on
+// every one of the base template's pure virtuals; that check is disabled
+// project-wide in .clang-tidy (see the comment there) because a NOLINT
+// comment cannot suppress it - its primary diagnostic location is inside
+// the third-party header, not this derivation site.
 class DepthLimitSax : public nlohmann::json_sax<nlohmann::ordered_json> {
 public:
     bool null() override { return true; }

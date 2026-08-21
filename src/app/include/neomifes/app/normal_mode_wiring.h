@@ -46,6 +46,7 @@
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
+#include "neomifes/ui/json_tree_pane.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
 #include "neomifes/ui/status_bar.h"
@@ -220,6 +221,23 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // (WI-16c) - this WI only wires the construction plus cfg.onAppMessage's
 // kMsgCsvIndexReady receiving/routing branch (see this file's .cpp body),
 // proven correct by tests/integration/csvmode_csv_model_worker_test.cpp.
+//
+// WI-15c: takes ui::JsonTreePane& jsonTreePane (created/positioned in
+// cfg.onDeferredInit, same "create then prime the first onParentResized()
+// call" shape createAndPositionOutlinePane() already established - see that
+// function's own comment) and const void*& jsonTreePanePendingSessionToken.
+// The latter is NOT EditorSession state (unlike jsonTree()/
+// jsonTreeIndexInFlight(), WI-15b) - jsonTreePane is a single Workspace-wide
+// widget, so "which session's still-in-flight async result should
+// auto-populate the pane once it lands" is UI-layer state, same
+// wWinMain-local placement as freeCursorModeEnabled/isDraggingMinimap above.
+// Compared by pointer VALUE only against each kMsgJsonTreeReady message's
+// wParam (never dereferenced) - same safety argument as
+// applyLogIndexReadyMessage()'s own sessionToken comparison. Cleared to
+// nullptr both when the pane is explicitly hidden (toggle-off or Escape) and
+// once a matching result has been consumed - see refreshJsonTreePane()/
+// handleJsonTreeKey()'s own .cpp comments for why an unclearred stale token
+// would let the pane silently reappear after the user closed it.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -234,6 +252,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     std::vector<logmode::LogPatternRule>& userLogPatterns,
                     const std::optional<std::filesystem::path>& logPatternsDir,
                     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
-                    std::optional<csvmode::CsvModelWorker>& csvModelWorker);
+                    std::optional<csvmode::CsvModelWorker>& csvModelWorker, ui::JsonTreePane& jsonTreePane,
+                    const void*& jsonTreePanePendingSessionToken);
 
 }  // namespace neomifes::app

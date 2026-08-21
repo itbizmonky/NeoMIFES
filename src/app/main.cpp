@@ -89,6 +89,7 @@
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
+#include "neomifes/ui/json_tree_pane.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
 #include "neomifes/ui/status_bar.h"
@@ -136,6 +137,7 @@ using neomifes::ui::CommandPalette;
 using neomifes::ui::FindBar;
 using neomifes::ui::GotoLineBar;
 using neomifes::ui::GrepBar;
+using neomifes::ui::JsonTreePane;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
@@ -504,6 +506,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // see outline_pane.h's class comment for how it differs from the
     // overlays above (WM_NOTIFY routing, stays open after a jump).
     OutlinePane outlinePane;
+    // JSON/XML structure tree panel (Ctrl+Shift+J, WI-15c) - a single
+    // WC_TREEVIEW, same shape as outlinePane above (see json_tree_pane.h's
+    // class comment for why it is an independent class, not a refactor of
+    // OutlinePane).
+    JsonTreePane jsonTreePane;
     // Tab strip (WI-05 step 2) - a single WC_TABCONTROL, always visible
     // (unlike outlinePane above), docked full-width along the top edge. See
     // tab_bar.h's class comment.
@@ -580,6 +587,15 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // normal_mode_wiring.cpp's handleKeyDownEvent()/handleCharEvent()
     // comments for what this gates).
     bool imeComposing = false;
+    // WI-15c: which EditorSession's still-in-flight async JSON-tree index
+    // request should auto-populate jsonTreePane once it lands - UI-layer
+    // state (jsonTreePane is one Workspace-wide widget, not per-session), so
+    // it stays a wWinMain local here for the same reason freeCursorModeEnabled
+    // above does, not an EditorSession member. Never dereferenced - compared
+    // only by pointer VALUE against each async result's sessionToken, see
+    // normal_mode_wiring.h's own comment on wireNormalMode()'s matching
+    // parameter for the full safety argument.
+    const void* jsonTreePanePendingSessionToken = nullptr;
     // WI-14b: empty until wireNormalMode()'s onDeferredInit lambda
     // emplace()s it with a real HWND - LogIndexWorker's constructor
     // requires one and starts a background std::thread immediately, so
@@ -670,7 +686,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
-                       logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker);
+                       logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker, jsonTreePane,
+                       jsonTreePanePendingSessionToken);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

@@ -23,6 +23,8 @@
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
+#include "neomifes/app/json_fold_bridge.h"
+#include "neomifes/app/json_tree_bridge.h"
 #include "neomifes/app/key_chord.h"
 #include "neomifes/app/keybinding_dispatch.h"
 #include "neomifes/app/menu_bar.h"
@@ -121,6 +123,8 @@ using neomifes::ui::GotoLineBar;
 using neomifes::ui::GotoLineBarConfig;
 using neomifes::ui::GrepBar;
 using neomifes::ui::GrepBarConfig;
+using neomifes::ui::JsonTreePane;
+using neomifes::ui::JsonTreePaneConfig;
 using neomifes::ui::MainWindow;
 using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
@@ -414,6 +418,66 @@ bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Edi
     } else {
         refreshOutlinePane(session, outlinePane);
         syncFoldingState(hwnd, renderPipeline, session.folding());
+    }
+    return true;
+}
+
+// Shows/refreshes JsonTreePane for session's current document (WI-15c) -
+// same role as refreshOutlinePane() above, split across a sync/async branch
+// because JsonTreeWorker's parse is backgrounded (WI-15b) while
+// extractCurrentOutline() above is not. If session.jsonTree() already holds
+// a cached result (a previous toggle-on already indexed this exact document
+// state - there is no invalidation-on-edit, same "stale until next refresh"
+// limitation refreshOutlinePane()'s own comment documents), it is shown
+// immediately and no indexing request is made. Otherwise the pane is shown
+// EMPTY right away (never left at its previous tab's stale content) and a
+// background request is kicked off if one isn't already in flight;
+// `jsonTreePanePendingSessionToken` is set to `&session` whenever indexing
+// ends up in flight (whether started just now or already running from an
+// earlier toggle) so applyJsonTreeReadyMessage() below knows to auto-
+// populate the pane once that specific result lands - see this file's
+// normal_mode_wiring.h comment on why that token lives outside EditorSession.
+void refreshJsonTreePane(HWND hwnd, EditorSession& session, JsonTreePane& jsonTreePane,
+                         std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, RenderPipeline& renderPipeline,
+                         const void*& jsonTreePanePendingSessionToken) {
+    if (session.jsonTree().has_value()) {
+        jsonTreePanePendingSessionToken = nullptr;
+        const auto& tree                = *session.jsonTree();
+        jsonTreePane.showWith({neomifes::app::buildJsonTreeItems(tree)});
+        session.folding().setFoldableRegions(neomifes::app::buildJsonFoldRegions(tree, session.document()));
+        syncFoldingState(hwnd, renderPipeline, session.folding());
+        return;
+    }
+
+    jsonTreePane.showWith({});
+    if (!session.jsonTreeIndexInFlight() && jsonTreeWorker) {
+        session.beginJsonTreeIndexing(*jsonTreeWorker);
+    }
+    if (session.jsonTreeIndexInFlight()) {
+        jsonTreePanePendingSessionToken = &session;
+    }
+}
+
+// Ctrl+Shift+J while the document editing area has focus (WI-15c) - same
+// toggle shape as handleOutlineKey() above (see that function's own comment
+// for why this TOGGLES rather than only ever showing). Clears
+// jsonTreePanePendingSessionToken on the hide branch - without this, a
+// kMsgJsonTreeReady result that arrives AFTER the user has already closed
+// the pane would still match the stale token and silently pop the pane back
+// open (see normal_mode_wiring.h's own comment on this hazard).
+bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
+                       JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                       RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings,
+                       const void*& jsonTreePanePendingSessionToken) {
+    if (!chordMatches(keyBindings, CommandId::JsonTreeToggle, ctrlDown, shiftDown, false, vkCode)) {
+        return false;
+    }
+    if (jsonTreePane.isVisible()) {
+        jsonTreePane.hide();
+        jsonTreePanePendingSessionToken = nullptr;
+    } else {
+        refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
+                            jsonTreePanePendingSessionToken);
     }
     return true;
 }
@@ -1220,9 +1284,11 @@ void dispatchMoveLineCommand(bool moveDown, HWND hwnd, RenderPipeline& renderPip
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
-                        bool freeCursorModeEnabled, bool imeComposing, const core::KeyBindings& keyBindings,
-                        core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
-                        const core::Settings& settings, AutosaveContext& autosave) {
+                        JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                        const void*& jsonTreePanePendingSessionToken, bool freeCursorModeEnabled,
+                        bool imeComposing, const core::KeyBindings& keyBindings, core::RecentFiles& recentFiles,
+                        const MenuBarHandles& menuHandles, const core::Settings& settings,
+                        AutosaveContext& autosave) {
     // WI-06: checked before EVERYTHING else in this dispatch chain (even
     // handleFreeCursorRightArrow()) - while an IME is actively composing,
     // Windows still delivers WM_KEYDOWN for some keys (arrows, Enter, Escape
@@ -1256,6 +1322,10 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
         return;
     }
     if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, renderPipeline, keyBindings)) {
+        return;
+    }
+    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, jsonTreeWorker, renderPipeline,
+                          keyBindings, jsonTreePanePendingSessionToken)) {
         return;
     }
     if (handleGotoLineKey(vkCode, shiftDown, ctrlDown, gotoLineBar, keyBindings)) {
@@ -2256,6 +2326,36 @@ void createAndPositionOutlinePane(HWND hwnd, HINSTANCE hInstance, Workspace& wor
                                 static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
+// Same "create then prime the first position/size explicitly" shape as
+// createAndPositionOutlinePane() above (WI-15c) - see that function's own
+// comment for why the explicit onParentResized() call below is required.
+// config.onItemSelected reuses jumpToOutlinePosition() as-is: JsonTreePane
+// echoes back a targetPos into the SAME open document exactly the way
+// OutlinePane does, so no JSON-specific jump logic is needed.
+// config.onClosed clears jsonTreePanePendingSessionToken (Escape is one of
+// the two paths that must clear it - see handleJsonTreeKey()'s own comment
+// on the other, the hide-toggle branch).
+void createAndPositionJsonTreePane(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
+                                   RenderPipeline& renderPipeline, JsonTreePane& jsonTreePane,
+                                   const void*& jsonTreePanePendingSessionToken) {
+    JsonTreePaneConfig config{};
+    config.onItemSelected = [hwnd, &workspace, &renderPipeline](std::uint64_t targetPos) {
+        jumpToOutlinePosition(targetPos, hwnd, workspace.active(), renderPipeline);
+    };
+    config.onClosed = [hwnd, &jsonTreePanePendingSessionToken]() {
+        jsonTreePanePendingSessionToken = nullptr;
+        ::SetFocus(hwnd);
+    };
+    if (!jsonTreePane.create(hwnd, hInstance, config)) {
+        return;
+    }
+    RECT clientRect{};
+    ::GetClientRect(hwnd, &clientRect);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    jsonTreePane.onParentResized(static_cast<std::uint32_t>(clientRect.right),
+                                 static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
+}
+
 // WI-05: builds TabBar's item list from workspace's current session list.
 // Untitled sessions are numbered by their position among ONLY the
 // currently-untitled sessions (1-based) - so 2 simultaneously-open blank
@@ -2829,7 +2929,9 @@ void dispatchUndoRedoCommand(CommandId id, const CommandDispatchContext& ctx, Ed
 // keyboard chains).
 bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                FindBar& findBar, CommandPalette& commandPalette, GrepBar& grepBar,
-                               GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane) {
+                               GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane,
+                               JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                               const void*& jsonTreePanePendingSessionToken) {
     switch (id) {
         case CommandId::FindShow:
             findBar.show();
@@ -2859,6 +2961,17 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             } else {
                 refreshOutlinePane(session, outlinePane);
                 syncFoldingState(hwnd, renderPipeline, session.folding());
+            }
+            return true;
+        }
+        case CommandId::JsonTreeToggle: {
+            EditorSession& session = workspace.active();
+            if (jsonTreePane.isVisible()) {
+                jsonTreePane.hide();
+                jsonTreePanePendingSessionToken = nullptr;
+            } else {
+                refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
+                                   jsonTreePanePendingSessionToken);
             }
             return true;
         }
@@ -2912,26 +3025,53 @@ void applyLogIndexReadyMessage(Workspace& workspace, RenderPipeline& renderPipel
 }
 
 // WI-15b: JsonTreeWorker's background-thread indexing completion signal
-// receiver (wireNormalMode()'s cfg.onAppMessage kMsgJsonTreeReady branch) -
-// mirrors applyLogIndexReadyMessage() above at its WI-14b-era shape
-// (RenderPipeline/HWND/InvalidateRect deliberately absent - no UI consumes
-// jsonTree() yet, WI-15c). `wParam` is the opaque sessionToken
-// requestIndex() was given back - see that function's own comment for why
-// pointer-VALUE comparison against &workspace.sessionAt(i) is safe even if
-// the issuing tab has since closed. `lParam` is always non-null (unlike
-// LogIndexWorker, JsonTreeWorker posts even a std::nullopt result - see
-// json_tree_worker.h's header comment) and owns a heap-allocated
-// std::optional<JsonNode>* that must be reconstructed into a unique_ptr
-// immediately to avoid leaking it.
-void applyJsonTreeReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgJsonTreeReady branch).
+// `wParam` is the opaque sessionToken requestIndex() was given back - see
+// applyLogIndexReadyMessage()'s own comment for why pointer-VALUE comparison
+// against &workspace.sessionAt(i) is safe even if the issuing tab has since
+// closed. `lParam` is always non-null (unlike LogIndexWorker, JsonTreeWorker
+// posts even a std::nullopt result - see json_tree_worker.h's header
+// comment) and owns a heap-allocated std::optional<JsonNode>* that must be
+// reconstructed into a unique_ptr immediately to avoid leaking it.
+// WI-15c: gained jsonTreePane/renderPipeline/hwnd/jsonTreePanePendingSessionToken
+// (previously just workspace/wParam/lParam, WI-15b - "no UI consumes
+// jsonTree() yet" no longer holds). The result is ALWAYS cached into its
+// owning EditorSession regardless of the token match below (same as
+// applyLogIndexReadyMessage()'s own tolerance for a since-closed tab) - the
+// pending-token check only gates whether THIS delivery should also push
+// visuals into jsonTreePane right now. Two conditions must both hold for
+// that: `token` must still equal `jsonTreePanePendingSessionToken` (this is
+// the specific toggle-on the pane is still waiting for - not a stale delivery
+// after the user already closed the pane, see handleJsonTreeKey()/
+// createAndPositionJsonTreePane()'s onClosed, both of which clear the token)
+// AND the result's session must still be the ACTIVE tab (the user may have
+// switched tabs while indexing was in flight - JsonTreePane, like
+// OutlinePane, only ever reflects the active tab, see refreshJsonTreePane()'s
+// own comment). The token is cleared unconditionally once matched, even if
+// the second condition fails - a sessionToken is only ever delivered once
+// per requestIndex() call, so there is nothing left to wait for either way.
+void applyJsonTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane, RenderPipeline& renderPipeline,
+                               HWND hwnd, const void*& jsonTreePanePendingSessionToken, WPARAM wParam,
+                               LPARAM lParam) {
     const std::unique_ptr<std::optional<neomifes::jsontree::JsonNode>> result(
         reinterpret_cast<std::optional<neomifes::jsontree::JsonNode>*>(lParam));
     const auto* const token = reinterpret_cast<const void*>(wParam);
     for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
-        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
-            workspace.sessionAt(i).applyJsonTreeResult(std::move(*result));
-            break;
+        if (static_cast<const void*>(&workspace.sessionAt(i)) != token) {
+            continue;
         }
+        EditorSession& session = workspace.sessionAt(i);
+        session.applyJsonTreeResult(std::move(*result));
+        if (token == jsonTreePanePendingSessionToken) {
+            jsonTreePanePendingSessionToken = nullptr;
+            if (i == workspace.activeIndex() && session.jsonTree().has_value()) {
+                const auto& tree = *session.jsonTree();
+                jsonTreePane.showWith({neomifes::app::buildJsonTreeItems(tree)});
+                session.folding().setFoldableRegions(neomifes::app::buildJsonFoldRegions(tree, session.document()));
+                syncFoldingState(hwnd, renderPipeline, session.folding());
+            }
+        }
+        break;
     }
 }
 
@@ -2969,7 +3109,8 @@ void applyCsvIndexReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lPara
 // keep wireNormalMode() under the cognitive-complexity threshold - the
 // message branches below were previously inline in wireNormalMode()'s own
 // cfg.onAppMessage lambda.
-void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND hwnd, UINT msg, WPARAM wParam,
+void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, JsonTreePane& jsonTreePane,
+                      const void*& jsonTreePanePendingSessionToken, HWND hwnd, UINT msg, WPARAM wParam,
                       LPARAM lParam) {
     if (msg == neomifes::render::kMsgSyntaxTokensReady) {
         const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
@@ -2983,7 +3124,8 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, HWND
         return;
     }
     if (msg == kMsgJsonTreeReady) {
-        applyJsonTreeReadyMessage(workspace, wParam, lParam);
+        applyJsonTreeReadyMessage(workspace, jsonTreePane, renderPipeline, hwnd, jsonTreePanePendingSessionToken,
+                                  wParam, lParam);
         return;
     }
     if (msg == kMsgCsvIndexReady) {
@@ -3139,7 +3281,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::vector<logmode::LogPatternRule>& userLogPatterns,
                     const std::optional<std::filesystem::path>& logPatternsDir,
                     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
-                    std::optional<csvmode::CsvModelWorker>& csvModelWorker) {
+                    std::optional<csvmode::CsvModelWorker>& csvModelWorker, JsonTreePane& jsonTreePane,
+                    const void*& jsonTreePanePendingSessionToken) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -3160,7 +3303,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
-                          &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker](HWND hwnd) {
+                          &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
+                          &jsonTreePanePendingSessionToken](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -3249,6 +3393,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
 
         // Same non-fatal treatment as findBar.create() above.
         createAndPositionOutlinePane(hwnd, hInstance, workspace, renderPipeline, outlinePane);
+        // WI-15c: same non-fatal treatment as createAndPositionOutlinePane()
+        // above.
+        createAndPositionJsonTreePane(hwnd, hInstance, workspace, renderPipeline, jsonTreePane,
+                                      jsonTreePanePendingSessionToken);
         // WI-05 step 2: same non-fatal treatment as findBar.create() above -
         // a tab strip that fails to create simply isn't available this
         // session (the editor still works, just without visible tabs).
@@ -3281,7 +3429,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         startAutoSaveTimerIfConfigured(window, settings);
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
-                    &tabBar, &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+                    &jsonTreePane, &tabBar, &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
@@ -3293,12 +3441,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         gotoLineBar.onParentResized(w, dpiScale);
         grepBar.onParentResized(w, dpiScale);
         outlinePane.onParentResized(w, h, dpiScale);
+        jsonTreePane.onParentResized(w, h, dpiScale);
         tabBar.onParentResized(w, dpiScale);
         statusBar.onParentResized(w, h, dpiScale);
     };
-    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &workspace,
-                     &renderPipeline, &recentFiles, menuHandles, &settings,
-                     &autosave](HWND hwnd, WPARAM wParam, LPARAM lParam) {
+    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &jsonTreePane,
+                     &jsonTreeWorker, &jsonTreePanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
+                     menuHandles, &settings, &autosave](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
@@ -3337,7 +3486,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // deliberately does NOT handle, see that function's own comment);
         // falls through to dispatchCommand() for everything else.
         if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, commandPalette,
-                                      grepBar, gotoLineBar, outlinePane)) {
+                                      grepBar, gotoLineBar, outlinePane, jsonTreePane, jsonTreeWorker,
+                                      jsonTreePanePendingSessionToken)) {
             return;
         }
         dispatchCommand(commandId, ctx);
@@ -3351,16 +3501,19 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // NMHDR::hwndFrom (see OutlinePane::handleNotify()/TabBar::handleNotify()'s
     // own comments for why neither TVN_SELCHANGEDW nor TCN_SELCHANGE require
     // a specific non-zero reply, so discarding one return value is safe).
-    cfg.onNotify = [&outlinePane, &tabBar, &statusBar](HWND, WPARAM wParam, LPARAM lParam) {
+    cfg.onNotify = [&outlinePane, &jsonTreePane, &tabBar, &statusBar](HWND, WPARAM wParam, LPARAM lParam) {
         outlinePane.handleNotify(wParam, lParam);
+        jsonTreePane.handleNotify(wParam, lParam);
         statusBar.handleNotify(wParam, lParam);
         return tabBar.handleNotify(wParam, lParam);
     };
     // Phase 7c/WI-14b: SyntaxWorker/LogIndexWorker background-thread
     // completion signals - see handleAppMessage()'s own doc comment above
     // for why the actual branching logic lives there, not in this lambda.
-    cfg.onAppMessage = [&renderPipeline, &workspace](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        handleAppMessage(renderPipeline, workspace, hwnd, msg, wParam, lParam);
+    cfg.onAppMessage = [&renderPipeline, &workspace, &jsonTreePane, &jsonTreePanePendingSessionToken](
+                           HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        handleAppMessage(renderPipeline, workspace, jsonTreePane, jsonTreePanePendingSessionToken, hwnd, msg, wParam,
+                         lParam);
     };
     // WI-02: WM_CLOSE veto - goes through confirmDiscardIfDirty() so an
     // unsaved edit is never silently discarded by closing the window. WI-05
@@ -3406,11 +3559,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &freeCursorModeEnabled, &imeComposing, &keyBindings, &recentFiles,
-                     menuHandles, &settings, &autosave](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &outlinePane, &jsonTreePane, &jsonTreeWorker, &jsonTreePanePendingSessionToken,
+                     &freeCursorModeEnabled, &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings,
+                     &autosave](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                          commandPalette, gotoLineBar, grepBar, outlinePane, freeCursorModeEnabled,
-                          imeComposing, keyBindings, recentFiles, menuHandles, settings, autosave);
+                          commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, jsonTreeWorker,
+                          jsonTreePanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,
+                          recentFiles, menuHandles, settings, autosave);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
         return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, workspace.active(), renderPipeline);
