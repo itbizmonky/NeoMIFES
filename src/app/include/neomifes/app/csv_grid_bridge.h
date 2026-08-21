@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "neomifes/csvmode/csv_model.h"
+#include "neomifes/csvmode/csv_row_order.h"
 #include "neomifes/document/document.h"
 #include "neomifes/util/wchar_cast.h"
 
@@ -30,8 +31,19 @@ namespace neomifes::app {
 // csvmode::csvCellValue(); a header row shorter than maxColumnCount()
 // (ragged) gets synthesized "Column N" labels for its missing trailing
 // columns, same fallback as the hasHeader()==false case.
-[[nodiscard]] inline std::vector<std::u16string> buildCsvGridColumnLabels(const csvmode::CsvModel&   model,
-                                                                            const document::Document& doc) {
+//
+// `sort` (WI-16e, defaulted so every pre-existing call site still compiles
+// unchanged) appends a " ▲"/" ▼" (▲/▼) suffix to sort.column's own
+// label when sort.direction != None - ui::CsvGridPane's WC_LISTVIEW header
+// carries no native sort-arrow wiring (see csv_grid_pane.h), so this plain
+// text suffix is the entire visual indicator for "which column, which
+// direction" a user currently has sorted. sort.column past columnCount is
+// silently ignored (same "out of range is a harmless no-op" convention this
+// header's own csvGridCellText() already established), not an error - a
+// stale CsvSortOptions surviving past a document swap onto a narrower CSV
+// is exactly the kind of caller-side staleness this should absorb quietly.
+[[nodiscard]] inline std::vector<std::u16string> buildCsvGridColumnLabels(
+    const csvmode::CsvModel& model, const document::Document& doc, const csvmode::CsvSortOptions& sort = {}) {
     const std::size_t columnCount = model.maxColumnCount();
     const auto         header      = model.hasHeader() ? model.headerRow() : std::span<const csvmode::CsvCell>{};
 
@@ -50,6 +62,10 @@ namespace neomifes::app {
             const std::u16string ordinal(util::fromWstringView(ordinalWide));
             labels.push_back(u"Column " + ordinal);
         }
+    }
+
+    if (sort.direction != csvmode::CsvSortDirection::None && sort.column < labels.size()) {
+        labels[sort.column] += (sort.direction == csvmode::CsvSortDirection::Ascending) ? u" ▲" : u" ▼";
     }
     return labels;
 }

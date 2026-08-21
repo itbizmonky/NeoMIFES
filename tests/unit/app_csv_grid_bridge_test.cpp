@@ -12,6 +12,8 @@ using neomifes::app::buildCsvGridColumnLabels;
 using neomifes::app::csvGridCellText;
 using neomifes::csvmode::CsvModel;
 using neomifes::csvmode::CsvParseOptions;
+using neomifes::csvmode::CsvSortDirection;
+using neomifes::csvmode::CsvSortOptions;
 using neomifes::document::Document;
 
 [[nodiscard]] Document makeDoc(std::u16string_view text) {
@@ -76,6 +78,58 @@ TEST(AppCsvGridBridgeTest, EmptyDocumentProducesOneEmptyColumnLabel) {
     const auto labels = buildCsvGridColumnLabels(*model, doc);
     ASSERT_EQ(labels.size(), 1U);
     EXPECT_EQ(labels[0], u"");
+}
+
+// --- buildCsvGridColumnLabels() sort-arrow suffix (WI-16e) ----------------
+
+TEST(AppCsvGridBridgeTest, AscendingSortAppendsUpArrowToSortedColumnOnly) {
+    const Document doc   = makeDoc(u"name,age\nAlice,30\n");
+    const auto     model = CsvModel::build(doc);
+    ASSERT_TRUE(model.has_value());
+
+    CsvSortOptions sort;
+    sort.column    = 1;
+    sort.direction = CsvSortDirection::Ascending;
+    const auto labels = buildCsvGridColumnLabels(*model, doc, sort);
+    ASSERT_EQ(labels.size(), 2U);
+    EXPECT_EQ(labels[0], u"name");
+    EXPECT_EQ(labels[1], u"age ▲");
+}
+
+TEST(AppCsvGridBridgeTest, DescendingSortAppendsDownArrow) {
+    const Document doc   = makeDoc(u"name,age\nAlice,30\n");
+    const auto     model = CsvModel::build(doc);
+    ASSERT_TRUE(model.has_value());
+
+    CsvSortOptions sort;
+    sort.column    = 0;
+    sort.direction = CsvSortDirection::Descending;
+    const auto labels = buildCsvGridColumnLabels(*model, doc, sort);
+    EXPECT_EQ(labels[0], u"name ▼");
+    EXPECT_EQ(labels[1], u"age");
+}
+
+TEST(AppCsvGridBridgeTest, NoneDirectionAppendsNoArrow) {
+    const Document doc   = makeDoc(u"name,age\nAlice,30\n");
+    const auto     model = CsvModel::build(doc);
+    ASSERT_TRUE(model.has_value());
+
+    const auto labels = buildCsvGridColumnLabels(*model, doc, CsvSortOptions{});
+    EXPECT_EQ(labels[0], u"name");
+    EXPECT_EQ(labels[1], u"age");
+}
+
+TEST(AppCsvGridBridgeTest, SortColumnBeyondLabelCountIsIgnoredWithoutCrashing) {
+    const Document doc   = makeDoc(u"name,age\nAlice,30\n");
+    const auto     model = CsvModel::build(doc);
+    ASSERT_TRUE(model.has_value());
+
+    CsvSortOptions sort;
+    sort.column    = 5;
+    sort.direction = CsvSortDirection::Ascending;
+    const auto labels = buildCsvGridColumnLabels(*model, doc, sort);
+    EXPECT_EQ(labels[0], u"name");
+    EXPECT_EQ(labels[1], u"age");
 }
 
 // --- csvGridCellText() -----------------------------------------------------

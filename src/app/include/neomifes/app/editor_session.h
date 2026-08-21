@@ -37,6 +37,7 @@
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/viewport.h"
 #include "neomifes/csvmode/csv_model.h"
+#include "neomifes/csvmode/csv_row_order.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/text_pos.h"
@@ -278,11 +279,38 @@ public:
     // response's sessionToken back to this EditorSession. Unlike
     // applyJsonTreeResult(), CsvModelWorker never posts a failure (see this
     // class's csvModel() comment), so `result` here is always a
-    // successfully-built CsvModel.
-    void applyCsvIndexResult(csvmode::CsvModel result) noexcept {
-        m_csvModel         = std::move(result);
-        m_csvIndexInFlight = false;
-    }
+    // successfully-built CsvModel. Defined in the .cpp (not inline like
+    // WI-16b left it) because it now also calls recomputeCsvRowOrder().
+    void applyCsvIndexResult(csvmode::CsvModel result) noexcept;
+
+    // WI-16e: this session's current CSV grid filter/sort configuration -
+    // always present (default-constructed = "no filter, unsorted"), one per
+    // tab, same "always there" shape as m_logLevelFilterMask above. A
+    // caller reopening CsvGridPane for this session (after a tab switch)
+    // reads these back to restore the tab's own filter text / sort-arrow
+    // column, rather than the pane silently keeping whatever the
+    // PREVIOUSLY active tab had shown.
+    [[nodiscard]] const csvmode::CsvFilterOptions& csvFilter() const noexcept { return m_csvFilter; }
+    [[nodiscard]] const csvmode::CsvSortOptions&   csvSort() const noexcept { return m_csvSort; }
+
+    // The filtered+sorted data-row-index order derived from
+    // csvModel()/csvFilter()/csvSort() - CsvGridPane's virtual-mode
+    // LVN_GETDISPINFOW fires this lookup once per VISIBLE CELL PER REPAINT,
+    // and computeCsvRowOrder() is O(csvModel()->dataRowCount()) (WI-16d
+    // benchmarked it at 569ms/1,214ms for a 1,000,000-row filter/sort), so
+    // recomputing it inside that callback would be catastrophic. This is
+    // therefore a CACHE: always kept in sync with the CURRENT
+    // csvFilter()/csvSort()/csvModel() by construction - setCsvFilter()/
+    // setCsvSort()/applyCsvIndexResult() are the only 3 ways any of those 3
+    // inputs can change, and all 3 recompute this in the same call, so
+    // there is no separate "dirty" flag to track. Empty until csvModel()
+    // is populated.
+    [[nodiscard]] const std::vector<std::size_t>& csvRowOrder() const noexcept { return m_csvRowOrder; }
+    // Replaces csvFilter() and recomputes csvRowOrder() before returning -
+    // a caller can never observe the two out of sync with each other.
+    void setCsvFilter(csvmode::CsvFilterOptions filter);
+    // Replaces csvSort() and recomputes csvRowOrder() before returning.
+    void setCsvSort(csvmode::CsvSortOptions sort);
 
     // Always derived from path()/isUntitled() - see this file's header
     // comment on why this is not cached.
@@ -363,6 +391,15 @@ private:
     bool                                   m_jsonTreeIndexInFlight = false;
     std::optional<csvmode::CsvModel>       m_csvModel;
     bool                                   m_csvIndexInFlight = false;
+    csvmode::CsvFilterOptions              m_csvFilter;
+    csvmode::CsvSortOptions                m_csvSort;
+    std::vector<std::size_t>               m_csvRowOrder;
+
+    // WI-16e: the single place that keeps m_csvRowOrder in sync with
+    // m_csvModel/m_csvFilter/m_csvSort - see csvRowOrder()'s own comment
+    // for why this recompute-on-every-input-change contract exists instead
+    // of a lazy/dirty-flag design.
+    void recomputeCsvRowOrder();
 };
 
 }  // namespace neomifes::app

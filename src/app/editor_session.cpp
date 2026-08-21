@@ -6,6 +6,7 @@
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/csvmode/csv_model_worker.h"
+#include "neomifes/csvmode/csv_row_order.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 
@@ -71,6 +72,28 @@ void EditorSession::beginJsonTreeIndexing(jsontree::JsonTreeWorker& worker) {
 void EditorSession::beginCsvIndexing(csvmode::CsvModelWorker& worker, const csvmode::CsvParseOptions& options) {
     worker.requestIndex(m_document.snapshot(), options, /*sessionToken=*/this);
     m_csvIndexInFlight = true;
+}
+
+void EditorSession::applyCsvIndexResult(csvmode::CsvModel result) noexcept {
+    m_csvModel         = std::move(result);
+    m_csvIndexInFlight = false;
+    recomputeCsvRowOrder();
+}
+
+void EditorSession::setCsvFilter(csvmode::CsvFilterOptions filter) {
+    m_csvFilter = std::move(filter);
+    recomputeCsvRowOrder();
+}
+
+void EditorSession::setCsvSort(csvmode::CsvSortOptions sort) {
+    m_csvSort = sort;
+    recomputeCsvRowOrder();
+}
+
+void EditorSession::recomputeCsvRowOrder() {
+    m_csvRowOrder = m_csvModel.has_value()
+                        ? csvmode::computeCsvRowOrder(*m_csvModel, m_document, m_csvFilter, m_csvSort)
+                        : std::vector<std::size_t>{};
 }
 
 void EditorSession::resetToBlank() {
