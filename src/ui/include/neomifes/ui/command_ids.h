@@ -46,6 +46,13 @@ enum class CommandId : std::uint16_t {
     // tree panel - same "toggle a right-docked panel" shape as
     // OutlineToggle, declared immediately after it for that reason.
     JsonTreeToggle,
+    // Phase 10.2, WI-16c: toggles ui::CsvGridPane, the CSV grid panel -
+    // declared immediately after JsonTreeToggle (the other Phase 10
+    // structural-view toggle) even though CsvGridPane's own placement
+    // (full client-area replacement, not a docked strip) differs from
+    // OutlineToggle/JsonTreeToggle's shared shape - see csv_grid_pane.h's
+    // own header comment for why.
+    CsvGridToggle,
     GotoLineShow,
     BookmarkToggle,
     BookmarkNext,

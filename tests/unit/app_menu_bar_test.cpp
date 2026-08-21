@@ -85,10 +85,11 @@ TEST(MenuBarTest, SearchMenuCoversFindReplaceAndGrep) {
     EXPECT_EQ(kSearchMenuItems[5].commandId, CommandId::GotoLineShow);
 }
 
-TEST(MenuBarTest, ViewMenuTogglesOutlineAndJsonTree) {
-    ASSERT_EQ(kViewMenuItems.size(), 2U);
+TEST(MenuBarTest, ViewMenuTogglesOutlineJsonTreeAndCsvGrid) {
+    ASSERT_EQ(kViewMenuItems.size(), 3U);
     EXPECT_EQ(kViewMenuItems[0].commandId, CommandId::OutlineToggle);
     EXPECT_EQ(kViewMenuItems[1].commandId, CommandId::JsonTreeToggle);
+    EXPECT_EQ(kViewMenuItems[2].commandId, CommandId::CsvGridToggle);
 }
 
 TEST(MenuBarTest, ToolsMenuShowsCommandPalette) {

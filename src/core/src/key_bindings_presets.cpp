@@ -28,6 +28,7 @@ std::map<std::u16string, std::vector<std::u16string>> neomifesStandardBindings()
         {u"search.grep.show", {u"Ctrl+Shift+F"}},
         {u"view.outline.toggle", {u"Ctrl+Shift+O"}},
         {u"view.jsonTree.toggle", {u"Ctrl+Shift+J"}},
+        {u"view.csvGrid.toggle", {u"Ctrl+Shift+G"}},
         {u"goto.line.show", {u"Ctrl+G"}},
         {u"bookmark.toggle", {u"Ctrl+F2"}},
         {u"bookmark.next", {u"F2"}},
@@ -69,7 +70,8 @@ std::map<std::u16string, std::vector<std::u16string>> sakuraBindings() {
         // Deliberately unbound (no confirmed Sakura default): tab.close,
         // tab.switch1-9, command.paletteShow (no palette concept in Sakura),
         // edit.toggleOverwriteMode, view.jsonTree.toggle (WI-15c - no JSON
-        // tree feature in Sakura).
+        // tree feature in Sakura), view.csvGrid.toggle (WI-16c - no CSV
+        // grid feature in Sakura).
     };
 }
 
@@ -95,7 +97,8 @@ std::map<std::u16string, std::vector<std::u16string>> hidemaruBindings() {
         // Grep command has no fixed default key at all), command.paletteShow
         // (no palette concept), bookmark.toggle/next/previous, tab.close,
         // tab.next, tab.previous, tab.switch1-9, edit.toggleOverwriteMode,
-        // view.jsonTree.toggle (WI-15c - no JSON tree feature in Hidemaru).
+        // view.jsonTree.toggle (WI-15c - no JSON tree feature in Hidemaru),
+        // view.csvGrid.toggle (WI-16c - no CSV grid feature in Hidemaru).
     };
 }
 
@@ -137,7 +140,9 @@ std::map<std::u16string, std::vector<std::u16string>> vscodeBindings() {
         // insert/overtype toggle by default (both are extension territory).
         // view.jsonTree.toggle (WI-15c) is also unbound - VS Code's own
         // Outline view covers JSON structure but has no dedicated default
-        // shortcut of its own to point at.
+        // shortcut of its own to point at. view.csvGrid.toggle (WI-16c) is
+        // likewise unbound - VS Code's CSV support is extension territory
+        // (e.g. "Rainbow CSV"), no built-in default shortcut exists.
     };
 }
 

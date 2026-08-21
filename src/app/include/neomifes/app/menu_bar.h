@@ -80,9 +80,10 @@ inline constexpr std::array<MenuItemSpec, 6> kSearchMenuItems = {{
     {ui::CommandId::GotoLineShow, L"指定行へ移動(&L)\tCtrl+G"},
 }};
 
-inline constexpr std::array<MenuItemSpec, 2> kViewMenuItems = {{
+inline constexpr std::array<MenuItemSpec, 3> kViewMenuItems = {{
     {ui::CommandId::OutlineToggle, L"アウトライン(&O)\tCtrl+Shift+O"},
     {ui::CommandId::JsonTreeToggle, L"JSON構造ツリー(&J)\tCtrl+Shift+J"},
+    {ui::CommandId::CsvGridToggle, L"CSVグリッド(&G)\tCtrl+Shift+G"},
 }};
 
 inline constexpr std::array<MenuItemSpec, 1> kToolsMenuItems = {{
