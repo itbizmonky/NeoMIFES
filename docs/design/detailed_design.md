@@ -3335,9 +3335,9 @@ public:
 - `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェックを`parseJsonTree()`に追加し、WI-15b発見のP1 issueを解消。技術的前提はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解で実装前に検証済み。副産物としてclang-tidyの`portability-template-virtual-member-function`(13件、NOLINT不可)を`.clang-tidy`のプロジェクト全体除外で解消。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15c)」参照。
 
-### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜c実装、Phase 10.2 グリッドUI MVP達成)
+### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜d実装、Phase 10.2 グリッドUI MVP達成+フィルタ・ソート計算基盤)
 
-`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16cで実装済み。列固定・フィルタ・ソート・式列・セル編集・区切り文字以外の自動検出は未実装(WI-16d以降へ)。
+`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16c、フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)はWI-16dで実装済み。EditorSession配線・フィルタ入力欄/列ヘッダクリックソートのUI・列固定・式列・セル編集は未実装(WI-16e以降へ)。
 
 ```cpp
 // neomifes/csvmode/csv_model.h (WI-16a)
@@ -3456,11 +3456,39 @@ public:
 - セルの活性化は`LVN_ITEMACTIVATE`(ダブルクリック/Enter)、ジャンプと同時にグリッド自体を閉じる(`OutlinePane`/`JsonTreePane`の「パネルは開いたまま」とは意図的に異なる)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16c完了)」参照。
 
+```cpp
+// neomifes/csvmode/csv_row_order.h (WI-16d)
+struct CsvFilterOptions {
+    std::u16string query;  // 空文字列 = フィルタなし
+};
+
+enum class CsvSortDirection : std::uint8_t { None, Ascending, Descending };
+
+struct CsvSortOptions {
+    std::size_t      column    = 0;   // direction==None なら無視
+    CsvSortDirection direction = CsvSortDirection::None;
+};
+
+// CsvModel::dataRow()向けのデータ行インデックス配列(フィルタ済み・ソート
+// 済み)を返す純粋関数。EditorSession配線・UIは持たない(WI-16e以降)。
+[[nodiscard]] std::vector<std::size_t> computeCsvRowOrder(
+    const CsvModel& model, const document::Document& doc,
+    const CsvFilterOptions& filter, const CsvSortOptions& sort);
+```
+
+**設計上の要点 (WI-16d、フィルタ・ソート ヘッドレス計算基盤):**
+- 要件定義書§9の「フィルタ」と「検索」を1機構(行内いずれかのセルへの部分一致・大文字小文字非区別)で統合した。roadmap原案の`[Filter: City == Tokyo]`(列指定の等価フィルタ)は1000万行規模のグリッドに列選択UIまで持たせる過剰実装と判断し非スコープにした(要望が出れば`CsvFilterOptions`を拡張する形で後から追加可能)。
+- 大文字小文字比較はASCIIのみの`std::towlower` per char16_t(`syntax_language.h`の`detectLanguage()`/`log_pattern_file.cpp`の`hasJsonExtension()`が既に確立した規約を踏襲)。
+- ソートは両辺が数値として解釈できる場合のみ数値比較、それ以外は`std::u16string`辞書式比較にフォールバックする(`"9"`が`"10"`より後に来る罠を回避)。数値判定は`goto_line_parser.h`が既に確立した「char16_t→char narrowing + `std::from_chars`」パターンを踏襲(`<charconv>`はu16stringを直接扱えないため)。バッファは`std::array<char, 32>`+`.at()`インデックス(生C配列+`operator[]`は`cppcoreguidelines-avoid-c-arrays`/`cppcoreguidelines-pro-bounds-constant-array-index`の両方に抵触することを実装時に確認)。
+- 性能目標(roadmap §10.2: フィルタ100万行≤1秒/ソート100万行≤3秒)をgoogle/benchmark(`tests/bench/csvmode_row_order_bench.cpp`、`logmode_index_bench.cpp`を直接のテンプレート)で実測し達成(フィルタ569ms/ソート1,214ms、Release構成)。同期呼び出しのまま100万行規模までは許容範囲と確認できたが、非同期化の要否はEditorSession配線を行うWI-16eの判断事項として残した。
+- `CsvModel`/`ui::CsvGridPane`/`EditorSession`は無変更。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16d完了)」参照。
+
 ---
 
 ## 12. CSV モード 詳細
 
-> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線+グリッドUI(`ui::CsvGridPane`、`Ctrl+Shift+G`)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(列固定・フィルタ・ソート・式列・セル編集)の設計メモ。
+> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線+グリッドUI(`ui::CsvGridPane`、`Ctrl+Shift+G`)+フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(EditorSession配線・UI・列固定・式列・セル編集)の設計メモ。
 
 ### 12.1 データ表現
 - 論理: Piece Table + 行スキーマ
@@ -3468,8 +3496,11 @@ public:
 - 編集は Command 化 (CSVUpdateCellCommand)
 
 ### 12.2 列固定/フィルタ/ソート
-- ソートは B+Tree のインデックスを作成 (原本は不変)
-- フィルタは Bitset で行可視性を管理
+
+> ⚠️ **フィルタ・ソートは以下の原案スケッチではなく`computeCsvRowOrder()`(WI-16d、§11.5参照)として実装済み。** B+TreeインデックスでもBitsetでもなく、フィルタ済み・ソート済みの`std::vector<std::size_t>`データ行インデックス配列を都度計算する設計にした(理由は§11.5のWI-16d節参照)。本節の以下2行は列固定(未実装、WI-16e以降)の文脈のみ有効な歴史的記録として残す。
+
+- ソートは B+Tree のインデックスを作成 (原本は不変) — ⚠️ 不採用、上記参照
+- フィルタは Bitset で行可視性を管理 — ⚠️ 不採用、上記参照
 
 ---
 

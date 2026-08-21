@@ -174,7 +174,8 @@
 | **10.2b** | **CSV モード 非同期ワーカー + `EditorSession`配線** (`CsvModelWorker`、UIなし、呼び出し元コマンドは未追加) | ✅ **完了 (WI-16b、2026-08-19、§3.88参照)** |
 | **10.3c** | **JSON/XML Tree モード ツリーUI実装 🎉** (`ui::JsonTreePane`、`Ctrl+Shift+J`、クリックジャンプ、折り畳み統合、深いネストのスタックオーバーフローP1解消) | ✅ **完了 (WI-15c、2026-08-19、§3.89参照)。🎉 Phase 10.3 ツリーUI MVP達成** |
 | **10.2c** | **CSV モード グリッドUI実装 🎉** (`ui::CsvGridPane`、`Ctrl+Shift+G`、仮想モードWC_LISTVIEW、セルダブルクリックジャンプ、タブ切替/文書スワップ時の自動非表示) | ✅ **完了 (WI-16c、2026-08-19、§3.90参照)。🎉 Phase 10.2 グリッドUI MVP達成** |
-| 10.2/10.3残り → 11 → 9 → 12 | CSV(グリッドUI)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
+| **10.2d** | **CSV フィルタ・ソート ヘッドレス計算基盤** (`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214ms実測、EditorSession配線/UIは未着手) | ✅ **完了 (WI-16d、2026-08-19、§3.91参照)** |
+| 10.2/10.3残り → 11 → 9 → 12 | CSV(EditorSession配線/UI/列固定/セル編集/式列)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2595,6 +2596,37 @@ WI-15c完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`3818eb4`/`2402c78`/`d2bbf44`/`530ba83`)、pushはユーザーの明示指示待ち。Phase 10.2はグリッドUIのMVP(表示・ジャンプ・タブ切替時の自動非表示)が完了 — 列固定・フィルタ・ソート・セル編集・式列は全て後続サブWI(WI-16d以降)へ。次はPhase 10.3の続き(WI-15d)、Phase 10.2の続き(WI-16d)、またはユーザー指定の次項目。
 
+### 3.91 WI-16d (CSV フィルタ・ソート ヘッドレス計算基盤) 完了記録 (2026-08-19)
+
+WI-16c完了・push済みの状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16d: CSVモードの続き / WI-15d: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「WI-16d: CSVモードの続き」**が選ばれた。
+
+要件定義書§9・master_roadmap.md §10.2が挙げる残りスコープ(列固定/フィルタ/ソート/検索/CSV編集)は性質の異なる5機能で1WIに収まらないと判断し、WI-14/WI-15/WI-16a〜cが確立した「ヘッドレス基盤→非同期化+EditorSession配線(UIなし)→UI」の3段階パターンをフィルタ・ソートにも適用、**本WIはそのヘッドレス計算基盤(`computeCsvRowOrder()`)のみに絞った。**
+
+**設計上の要点:**
+- 要件定義書§9の「フィルタ」と「検索」を1機構(行内いずれかのセルへの部分一致・大文字小文字非区別)で統合する設計判断をPlan Mode中に行った。roadmap原案の`[Filter: City == Tokyo]`(列指定の等価フィルタ)は1000万行規模のグリッドに列選択UIまで持たせる過剰実装と判断し非スコープにした。
+- 大文字小文字比較はASCIIのみの`std::towlower` per char16_t(`syntax_language.h`/`log_pattern_file.cpp`が既に確立した規約を踏襲)。
+- ソートは両辺が数値として解釈できる場合のみ数値比較、それ以外は辞書式比較にフォールバック("9"が"10"より後に来る罠を回避)。数値判定は`goto_line_parser.h`が既に確立した「char16_t→char narrowing + `std::from_chars`」パターンを踏襲。
+
+### 実施内容 (2コミット)
+
+1. `computeCsvRowOrder()`+単体テスト10件+ベンチマーク新設、Debug構成でctest 1387/1387 green確認 (`f7170fa`)
+2. clang-tidy起因の5件の修正+性能ベンチマーク実測+最終ゲート+ドキュメント同期
+
+**clang-tidyで5件検出・全て修正した(いずれも本リポジトリの`.clang-tidy`設定で`WarningsAsErrors`扱い)。** `readability-use-anyofallof`(手書きループ→`std::ranges::any_of()`)、`cppcoreguidelines-avoid-c-arrays`+`cppcoreguidelines-pro-bounds-constant-array-index`(`char buf[32]`→`std::array<char,32>`+`.at()`インデックス)、`misc-const-correctness`(range-for変数へ`const`付与)、`modernize-use-ranges`(`std::stable_sort`→`std::ranges::stable_sort`)。**副産物として、`goto_line_parser.h`の既存の生C配列パターン(`char lineBuf[20]`)は`.h`ファイルのため`HeaderFilterRegex`の対象外で今まで検出されていなかったことが判明した** — 同種のバッファを新規`.cpp`に書くと直接検出されることを確認できた。
+
+**性能検証: google/benchmark(`tests/bench/csvmode_row_order_bench.cpp`、`logmode_index_bench.cpp`を直接のテンプレート)でroadmap §10.2の性能目標を実測、両方達成した。**
+
+| ベンチマーク | 行数 | 実測時間 | roadmap目標 | 結果 |
+|---|---|---|---|---|
+| Filter_LargeDocument | 1,000,000 | 569ms | ≤1,000ms | 達成 |
+| Sort_LargeDocument | 1,000,000 | 1,214ms | ≤3,000ms | 達成 |
+
+同期呼び出しのままでも100万行規模までは実測で許容範囲と確認できたが、1000万行での外挿は未検証。非同期化の要否はEditorSession配線を行うWI-16eの設計判断として残した。
+
+**最終ゲート:** Debug/Release/ubsan全1387件green、clang-tidy新規警告0。`CsvModel`/`ui::CsvGridPane`/`normal_mode_wiring.cpp`/`EditorSession`は全て無変更のまま(本WIのスコープ通り)。ヘッドレス変更のため実アプリ視覚確認は対象外(WI-15a/16a/16bと同じ扱い)。
+
+コミット済み(`f7170fa`+本コミット)、pushはユーザーの明示指示待ち。Phase 10.2は列固定・フィルタ・ソート・検索・CSV編集のうちフィルタ・ソートのヘッドレス計算基盤まで完了 — EditorSession配線・UI(フィルタ入力欄・列ヘッダクリックソート)・列固定・セル編集・式列は全て後続サブWI(WI-16e以降)へ。次はWI-16e(EditorSession配線)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2644,8 +2676,8 @@ WI-15c完了・push未実施の状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.90 (WI-16c CSV グリッドUI実装 完了記録)を
-読んで現状を把握せよ。
+RESUME_HERE.md §3.91 (WI-16d CSV フィルタ・ソート ヘッドレス計算基盤
+完了記録)を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
@@ -2655,9 +2687,12 @@ UI MVPを達成(2026-08-19)。XML対応・整形・バリデーション・
 XPath/JSONPath・真の左右分割ペイン化はWI-15d以降へ。Phase 10.2
 (CSVモード)はWI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面
 置き換え表示・セルダブルクリックジャンプ)まで完了し🎉グリッドUI
-MVPを達成(2026-08-19)。列固定・フィルタ・ソート・セル編集・式列は
-WI-16d以降へ。Debug/Release/ubsan全1377件green、clang-tidy新規警告
-0を確認済み。
+MVPを達成、続けてWI-16d(フィルタ・ソートのヘッドレス計算基盤
+`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214msを実測し
+roadmap目標を達成)も完了した(いずれも2026-08-19)。EditorSession
+配線・フィルタ入力欄/列ヘッダクリックソートのUI・列固定・セル編集・
+式列はWI-16e以降へ。Debug/Release/ubsan全1387件green、clang-tidy
+新規警告0を確認済み。
 
 **WI-15b最終ゲートで発見したP1 issueはWI-15cで解消した。**
 `nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を
@@ -2694,11 +2729,12 @@ JsonTreeToggle/CsvGridToggle両方を登録済み。
 「WI-17〜19」節)。WI-15c/WI-16b/WI-16cはこの番号割当に影響しない
 (既存のWI-15/WI-16の続き番号)。
 
-次はPhase 10.2の続き(WI-16d以降: 列固定・フィルタ・ソート・式列・
-セル編集)、またはPhase 10.3の続き(WI-15d以降: XML対応・整形・
-バリデーション・XPath/JSONPath・真の左右分割ペイン化)、またはユーザー
-指定の次項目。着手前にbuild_plan.md §5とmaster_roadmap.md §10.2
-(または§10.3)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
+次はPhase 10.2の続き(WI-16e以降: EditorSession配線・フィルタ入力欄/
+列ヘッダクリックソートのUI・列固定・セル編集・式列)、またはPhase 10.3
+の続き(WI-15d以降: XML対応・整形・バリデーション・XPath/JSONPath・
+真の左右分割ペイン化)、またはユーザー指定の次項目。着手前に
+build_plan.md §5とmaster_roadmap.md §10.2(または§10.3)を読み、
+本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

@@ -3201,4 +3201,24 @@ WI-15c完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`3818eb4`/`2402c78`/`d2bbf44`/`530ba83`)、pushはユーザーの明示指示待ち。Phase 10.2はグリッドUIのMVP(表示・ジャンプ・タブ切替時の自動非表示)が完了 — 列固定・フィルタ・ソート・セル編集・式列は全て後続サブWI(WI-16d以降)へ。次はPhase 10.3の続き(WI-15d)、Phase 10.2の続き(WI-16d)、またはユーザー指定の次項目。
 
+## Session 102 (2026-08-19): WI-16d(CSV フィルタ・ソート ヘッドレス計算基盤)実装完了
+
+WI-16c完了・push済みの状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16d: CSVモードの続き / WI-15d: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「WI-16d: CSVモードの続き」**が選ばれた。
+
+要件定義書§9・master_roadmap.md §10.2が挙げる残りスコープ(列固定/フィルタ/ソート/検索/CSV編集)は性質の異なる5機能で1WIに収まらないと判断し、WI-14(ログ解析)/WI-15(JSON Tree)/WI-16a〜c(CSV基盤)が確立した「ヘッドレス基盤→非同期化+EditorSession配線(UIなし)→UI」の3段階パターンをフィルタ・ソートにも適用、**本WI(WI-16d)はそのヘッドレス計算基盤(`computeCsvRowOrder()`)のみに絞った。** 着手前調査は直接ファイル読解のみで行った(`csv_model.h`/`csv_model.cpp`/`csv_grid_pane.h`/`csv_grid_bridge.h`/`normal_mode_wiring.cpp`のCSV配線部分/`goto_line_parser.h`/`tests/bench/logmode_index_bench.cpp`を確認、Explore/Plan agentは不使用)、Plan Modeで計画を起こしExitPlanModeでユーザー承認を得た。
+
+**設計判断の核心1: 要件定義書§9の「フィルタ」と「検索」を1機構(行内いずれかのセルへの部分一致・大文字小文字非区別)で統合した。** roadmap原案の`[Filter: City == Tokyo]`(列指定の等価フィルタ)は1000万行規模のグリッドに列選択UIまで持たせる過剰実装と判断し、v1では非スコープにした(式列(v2.0)と同じ「今は作らない」判断、要望が出れば`CsvFilterOptions`を拡張する形で後から追加可能な設計にしてある)。大文字小文字比較はASCIIのみの`std::towlower` per char16_t(`syntax_language.h`の`detectLanguage()`/`log_pattern_file.cpp`の`hasJsonExtension()`が既に確立した規約をそのまま踏襲)。
+
+**設計判断の核心2: ソートは両辺が数値として解釈できる場合のみ数値比較、それ以外は`std::u16string`辞書式比較にフォールバックする設計にした。** 純粋な辞書式ソートだと`"9"`が`"10"`より後に来る罠があり、roadmapの`[Sort: Score desc]`モックアップが数値カラムを想定していることとも整合しない。数値判定は`goto_line_parser.h`が既に確立した「char16_t→char narrowing + `std::from_chars`」パターンをそのまま踏襲した(`<charconv>`はu16stringを直接扱えないため)。
+
+**性能検証: google/benchmark(`tests/bench/csvmode_row_order_bench.cpp`、`logmode_index_bench.cpp`を直接のテンプレート)でroadmap §10.2の性能目標を実測、両方達成した。** Filter_LargeDocument(1,000,000行): 569ms(目標≤1,000ms)。Sort_LargeDocument(1,000,000行): 1,214ms(目標≤3,000ms)。CLAUDE.md絶対ルール10(性能改善は必ずベンチマーク結果を根拠とする)に従い、実測値をそのまま完了記録に記載した。同期呼び出しのままでも100万行規模までは実測で許容範囲と確認できたが、1000万行での外挿は未検証であり、非同期化の要否はEditorSession配線を行うWI-16eの設計判断として残した — 本WI時点ではEditorSessionが存在しないため決め打ちしない判断。
+
+**最終ゲート1回目でclang-tidyから5件検出、全て修正した(いずれも本リポジトリの`.clang-tidy`設定で`WarningsAsErrors`扱い)。** ①`readability-use-anyofallof`(手書きのfor-in-loopを`std::ranges::any_of()`に置換)、②③`char buf[32]`が`cppcoreguidelines-avoid-c-arrays`+`cppcoreguidelines-pro-bounds-constant-array-index`の2件を同時に誘発 → `std::array<char, 32>`+ランタイムインデックスは`operator[]`ではなく`.at()`を使うことで両方解消、④`misc-const-correctness`(range-forの`dataRowIndex`に`const`付与)、⑤`modernize-use-ranges`(`std::stable_sort(x.begin(),x.end(),...)`→`std::ranges::stable_sort(x,...)`)。**副産物として、既存の`goto_line_parser.h`(char16_t→char narrowingの直接のテンプレート元)が全く同じ生C配列+ランタイムインデックスのパターンを持ちながらこれまで検出されていなかったことが判明した** — 原因はclang-tidyが既定でヘッダファイル自身の診断を(HeaderFilterRegexが一致しない限り)そのヘッダを直接コンパイルするTU以外では出力しないため。`goto_line_parser.h`はどの`.cpp`からも「インクルードされるだけ」で直接tidyされたことが無く、今回`csv_row_order.cpp`という新規`.cpp`に同じパターンを書いたことで初めて診断対象になった。この既存ギャップ自体への対応(`goto_line_parser.h`側の修正)は本WIのスコープ外、必要なら別途起票する。
+
+**最終ゲート:** Debug/Release/ubsan全1387件green、clang-tidy新規警告0。`CsvModel`/`ui::CsvGridPane`/`normal_mode_wiring.cpp`/`EditorSession`は全て無変更のまま(本WIのスコープ通り)。ヘッドレス変更のため実アプリ視覚確認は対象外(WI-15a/16a/16bと同じ扱い、完了記録に明記)。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-16d」セクション)、`master_roadmap.md`(§2フェーズ表+§10.2実装後の確定事項追記)、`detailed_design.md`(§11.5見出し更新+コード例拡張+§12.2に原案スケッチ不採用の訂正注記)、`RESUME_HERE.md`(§1状態表+新規§3.91+§6推奨プロンプト)、TIMELINE.md(Session 102)、メモリ(`project_neomifes_state.md`/`MEMORY.md`)。
+
+コミット済み(`f7170fa`+ドキュメント同期コミット)、pushはユーザーの明示指示待ち。Phase 10.2は列固定・フィルタ・ソート・検索・CSV編集のうちフィルタ・ソートのヘッドレス計算基盤まで完了 — EditorSession配線・UI(フィルタ入力欄・列ヘッダクリックソート)・列固定・セル編集・式列は全て後続サブWI(WI-16e以降)へ。次はWI-16e(EditorSession配線)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

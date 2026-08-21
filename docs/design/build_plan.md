@@ -133,7 +133,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) → WI-15c (ツリーUI MVP) まで進行、XML/整形/バリデーション/XPath/JSONPathは残り(WI-15d以降)。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) → WI-16c (グリッドUI MVP) まで進行、列固定/フィルタ/ソート/セル編集/式列は残り(WI-16d以降)。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) → WI-15c (ツリーUI MVP) まで進行、XML/整形/バリデーション/XPath/JSONPathは残り(WI-15d以降)。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) → WI-16c (グリッドUI MVP) → WI-16d (フィルタ・ソート ヘッドレス計算基盤) まで進行、EditorSession配線・UI・列固定・セル編集・式列は残り(WI-16e以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -145,8 +145,9 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-16b** CSV モード 非同期ワーカー + EditorSession配線 (UIなし) → コミット: `a8af2b7`/`0457fda`/`aa15488`
 - [x] **WI-15c** JSON/XML Tree モード ツリーUI実装 (`Ctrl+Shift+J`、クリックジャンプ、折り畳み統合、深いネストのスタックオーバーフローP1解消) → コミット: `6a7ca41`/`19927ef`/`76968ef`/`0ce9bac`/`05ae9e2`
 - [x] **WI-16c** CSV グリッドUI実装 (`Ctrl+Shift+G`、仮想モードWC_LISTVIEW、セルダブルクリックジャンプ、タブ切替/文書スワップ時の自動非表示) → コミット: `3818eb4`/`2402c78`/`d2bbf44`/`530ba83`
+- [x] **WI-16d** CSV フィルタ・ソート ヘッドレス計算基盤 (`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214ms実測、roadmap目標達成) → コミット: `f7170fa`
 - [ ] **WI-15d以降** Phase 10.3 の残り (XML対応・整形・バリデーション・XPath/JSONPath・真の左右分割ペイン化)
-- [ ] **WI-16d以降** Phase 10.2 の残り (列固定・フィルタ・ソート・式列・セル編集) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [ ] **WI-16e以降** Phase 10.2 の残り (EditorSession配線・フィルタ入力欄/列ヘッダクリックソートのUI・列固定・セル編集・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-17** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-18** Phase 9 — AI プラグイン
 - [ ] **WI-19** Phase 12 — 総合品質保証・正式出荷
@@ -1413,6 +1414,58 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 **手動確認シナリオ(実アプリ)を実施した。** `NeoMIFES.exe --open <テストCSV>`を起動し`GetWindowThreadProcessId()`でメインウィンドウを特定。**今回は`Ctrl+Shift+G`のキー入力合成(`SendInput`)自体が成功し**(WI-15cの`Ctrl+Shift+J`とは異なる結果)、グリッド表示への切替を確認。加えて`CommandId::CsvGridToggle`(id=40008、`command_ids.h`で実値確認)を`WM_COMMAND`で直接送信する経路でも往復トグルを確認、`EnumChildWindows`で`SysListView32`の矩形がタブバー下端〜ステータスバー上端に正確に一致(全クライアント領域表示の設計通り)、ヘッダ行・行番号列・データ行3件が正しく描画されることをスクリーンショットで確認した。`Ctrl+N`(新規タブ)でグリッドが自動的に閉じることも確認済み。**セルダブルクリックでのジャンプ+自動クローズは確認できなかった** — `SendMessage(WM_LBUTTONDOWN)`をSysListView32へ直接送信するとタイムアウトし(`SendMessageTimeout`3秒でも応答なし)、原因は特定できていない。ただし直後の`WM_NULL`には即座に応答があり(`Responding=True`)、グリッド表示自体も破損せず継続していたため、アプリ本体のデッドロックというより自動化ハーネス側の合成メッセージ手法の限界の可能性が高い(この環境の既知のWin32 GUI自動化制約と同種)。人手による実機確認が可能になり次第、このパスだけ改めて確認することを推奨する。
 
 コミット済み(`3818eb4`/`2402c78`/`d2bbf44`/`530ba83`)、pushはユーザーの明示指示待ち。Phase 10.2はグリッドUIのMVP(表示・ジャンプ・タブ切替時の自動非表示)が完了 — 列固定・フィルタ・ソート・セル編集・式列は全て後続サブWI(WI-16d以降)へ。次はPhase 10.3の続き(WI-15d)、Phase 10.2の続き(WI-16d)、またはユーザー指定の次項目。
+
+---
+
+## WI-16d — CSV フィルタ・ソート ヘッドレス計算基盤
+
+**目的:** WI-16c(グリッドUI MVP)完了後、ユーザーに「次のPhase」を確認したところ(WI-16d: CSVモードの続き vs WI-15d: JSON/XML Treeの続き vs Phase 11以降、の3択)、**「WI-16d: CSVモードの続き」**が選ばれた。要件定義書§9・master_roadmap.md §10.2が挙げる残りスコープ(列固定/フィルタ/ソート/検索/CSV編集)は性質の異なる5機能で1WIに収まらないため、WI-14/WI-15/WI-16a〜cが確立した「ヘッドレス基盤→非同期化+EditorSession配線(UIなし)→UI」の3段階パターンをフィルタ・ソートにも適用し、本WIはそのヘッドレス計算基盤のみとした。
+
+**前提:** WI-16c 完了・コミット済み (2026-08-19)
+
+**参照:** `src/csvmode/include/neomifes/csvmode/csv_model.h`(`CsvModel`/`CsvCell`/`csvCellValue()`)、`src/ui/include/neomifes/ui/goto_line_parser.h`(char16_t→char narrowing + `std::from_chars`の既存パターン)、`tests/bench/logmode_index_bench.cpp`(ベンチマークの直接のテンプレート)
+
+### 着手前調査・設計方針
+
+- **要件定義書§9の「フィルタ」と「検索」を1機構(部分一致・大文字小文字非区別)で統合する設計判断をした。** roadmapの`[Filter: City == Tokyo]`モックアップは列指定の等価フィルタを示すが、1000万行規模のCSVで列選択UI付きフィルタビルダーをMVPに含めるのは過剰実装と判断し、「行内のいずれかのセルに部分一致する文字列でフィルタする」単一機構で両要件を満たすことにした。列指定の厳密一致フィルタは要望が出るまで非スコープ(式列(v2.0)と同じ「今は作らない」判断)
+- 大文字小文字比較はASCIIのみの`std::towlower` per char16_t(`syntax_language.h`の`detectLanguage()`/`log_pattern_file.cpp`の`hasJsonExtension()`が既に確立した規約をそのまま踏襲、Unicode全体の照合は非スコープと明記)
+- ソートは両辺が数値として解釈できる場合のみ数値比較、それ以外は`std::u16string`辞書式比較にフォールバックする設計にした — 純粋な辞書式ソートだと`"9"`が`"10"`より後に来る罠があり、roadmapの`[Sort: Score desc]`モックアップが数値カラムを想定していることとも整合しない。数値判定は`goto_line_parser.h`が既に確立した「char16_t→char narrowing + `std::from_chars`」パターンをそのまま踏襲(`<charconv>`はu16stringを直接扱えないため)
+- 性能検証は`tests/bench/logmode_index_bench.cpp`(WI-14b)を直接のテンプレートにgoogle/benchmarkで新設。roadmap §10.2の性能目標(フィルタ≤1秒/ソート≤3秒、いずれも100万行)に対応するベンチマークを実装し実測(下記「実装後の確定事項」参照)
+- `EditorSession`配線・`CsvGridPane`のUI変更(フィルタ入力欄・列ヘッダクリックでのソート)は全て本WIのスコープ外(WI-16e以降、着手時に改めてサブWIへ切り直す)
+
+### 実施内容 (2コミット)
+
+1. `computeCsvRowOrder()`(フィルタ+ソート計算)+単体テスト10件+ベンチマーク新設、Debug構成でctest 1387/1387 green確認 (`f7170fa`)
+2. clang-tidy起因の5件の修正(下記)+性能ベンチマーク実測+最終ゲート(Debug/Release/ubsan)+ドキュメント同期
+
+### DoD
+
+- [x] `computeCsvRowOrder()`がフィルタ(部分一致・大文字小文字非区別)を正しく計算する(単体テスト)
+- [x] `computeCsvRowOrder()`がソート(数値優先・辞書式フォールバック・安定ソート)を正しく計算する(単体テスト)
+- [x] フィルタ+ソート複合が正しく動作する(単体テスト)
+- [x] ragged rows・範囲外`column`・空`CsvModel`でクラッシュしない
+- [x] 100万行相当のベンチマークを実測し、roadmap目標(フィルタ≤1秒/ソート≤3秒)との比較結果を記載(達成)
+- [x] `CsvModel`/`CsvGridPane`/`normal_mode_wiring.cpp`/`EditorSession`は無変更のまま
+- [x] Debug/Release/ubsan全1387件green、clang-tidy新規警告0
+- [x] ヘッドレス変更のため実アプリ視覚確認は対象外(WI-15a/16a/16bと同じ扱い)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**最初の実装は clang-tidy で5件検出され(いずれも本リポジトリの`.clang-tidy`設定で`WarningsAsErrors`扱い)、全て修正した。** ①`readability-use-anyofallof`(`rowMatchesFilter()`の手書きループ→`std::ranges::any_of()`)、②③`char buf[32]`が`cppcoreguidelines-avoid-c-arrays`+`cppcoreguidelines-pro-bounds-constant-array-index`の2件を誘発 → `std::array<char, 32>`+ランタイムインデックスは`operator[]`ではなく`.at()`を使うことで両方解消(`goto_line_parser.h`の既存の生C配列パターンは`.h`のため`HeaderFilterRegex`の対象外で今回まで未検出だったと判明 — 同種のバッファを新規`.cpp`に書くと直接検出されることを確認できたのは副産物)、④`misc-const-correctness`(range-forの`dataRowIndex`に`const`付与)、⑤`modernize-use-ranges`(`std::stable_sort(x.begin(),x.end(),...)`→`std::ranges::stable_sort(x,...)`)。
+
+**ベンチマーク実測値(Release構成、`neomifes_csvmode_bench.exe`、5イテレーション平均):**
+
+| ベンチマーク | 行数 | 実測時間 | roadmap目標 | 結果 |
+|---|---|---|---|---|
+| Filter_SmallDocument | 100,000 | 40.1ms | - | - |
+| **Filter_LargeDocument** | **1,000,000** | **569ms** | **≤1,000ms** | **達成** |
+| Sort_SmallDocument | 100,000 | 104ms | - | - |
+| **Sort_LargeDocument** | **1,000,000** | **1,214ms** | **≤3,000ms** | **達成** |
+
+両方ともroadmap §10.2の性能目標を実測で達成した(CLAUDE.md絶対ルール10)。同期的にUIスレッドで呼んでも1000万行規模まで許容範囲かは未検証(本WIのベンチは100万行までの実測であり、1000万行での外挿は行っていない) — 非同期化の要否はWI-16e(配線WI)着手時に、この実測値と実際の呼び出し頻度(フィルタ入力のたびに呼ぶか、Enter確定時のみ呼ぶか等のUI設計)を踏まえて判断する。
+
+コミット済み(`f7170fa`+本コミット)、pushはユーザーの明示指示待ち。次はWI-16e(EditorSession配線)またはWI-16f(UI: フィルタ入力欄+列ヘッダクリックソート)、あるいは列固定/セル編集/Phase 10.3の続き(WI-15d)、いずれもユーザー確認の上で着手する。
 
 ---
 

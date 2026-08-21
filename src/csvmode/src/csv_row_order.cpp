@@ -1,6 +1,7 @@
 #include "neomifes/csvmode/csv_row_order.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cwctype>
 #include <optional>
@@ -66,12 +67,9 @@ namespace {
     if (queryLower.empty()) {
         return true;
     }
-    for (const CsvCell& cell : model.dataRow(dataRowIndex)) {
-        if (asciiCaseInsensitiveContains(csvCellValue(doc, cell), queryLower)) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(model.dataRow(dataRowIndex), [&](const CsvCell& cell) {
+        return asciiCaseInsensitiveContains(csvCellValue(doc, cell), queryLower);
+    });
 }
 
 // Ragged row shorter than `column`, or `column` past a row's own cell
@@ -97,16 +95,16 @@ namespace {
     if (value.empty() || value.size() >= 32) {
         return std::nullopt;
     }
-    char buf[32];
+    std::array<char, 32> buf{};
     for (std::size_t i = 0; i < value.size(); ++i) {
         if (value[i] > u'\x7f') {
             return std::nullopt;
         }
-        buf[i] = static_cast<char>(value[i]);
+        buf.at(i) = static_cast<char>(value[i]);
     }
     double     result = 0.0;
-    const auto parsed  = std::from_chars(buf, buf + value.size(), result);
-    if (parsed.ec != std::errc{} || parsed.ptr != buf + value.size()) {
+    const auto parsed  = std::from_chars(buf.data(), buf.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != buf.data() + value.size()) {
         return std::nullopt;
     }
     return result;
@@ -148,12 +146,12 @@ std::vector<std::size_t> computeCsvRowOrder(const CsvModel& model, const documen
     // often would multiply csvCellValue()'s per-call cost for no reason.
     std::vector<std::pair<std::u16string, std::size_t>> keyed;
     keyed.reserve(order.size());
-    for (std::size_t dataRowIndex : order) {
+    for (const std::size_t dataRowIndex : order) {
         keyed.emplace_back(sortKeyText(model, doc, dataRowIndex, sort.column), dataRowIndex);
     }
 
     const bool ascending = sort.direction == CsvSortDirection::Ascending;
-    std::stable_sort(keyed.begin(), keyed.end(), [ascending](const auto& lhs, const auto& rhs) {
+    std::ranges::stable_sort(keyed, [ascending](const auto& lhs, const auto& rhs) {
         return ascending ? lessForSort(lhs.first, rhs.first) : lessForSort(rhs.first, lhs.first);
     });
 
