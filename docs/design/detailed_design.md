@@ -3335,9 +3335,9 @@ public:
 - `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェックを`parseJsonTree()`に追加し、WI-15b発見のP1 issueを解消。技術的前提はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解で実装前に検証済み。副産物としてclang-tidyの`portability-template-virtual-member-function`(13件、NOLINT不可)を`.clang-tidy`のプロジェクト全体除外で解消。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15c)」参照。
 
-### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜b実装、Phase 10.2 着手)
+### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜c実装、Phase 10.2 グリッドUI MVP達成)
 
-`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI・列固定・フィルタ・ソート・式列・セル編集・区切り文字以外の自動検出は未実装(WI-16c以降へ)。
+`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16cで実装済み。列固定・フィルタ・ソート・式列・セル編集・区切り文字以外の自動検出は未実装(WI-16d以降へ)。
 
 ```cpp
 // neomifes/csvmode/csv_model.h (WI-16a)
@@ -3418,6 +3418,26 @@ public:
                       CsvParseOptions options, const void* sessionToken) noexcept;
     // ...
 };
+
+// src/ui/include/neomifes/ui/csv_grid_pane.h (WI-16c、ui::JsonTreePaneのWin32配線の型を直接のテンプレート)
+class CsvGridPane {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const CsvGridPaneConfig& config);
+    // 実データはonGetCellTextコールバックで可視行のみ都度取得(仮想モード)。
+    void showWith(std::vector<std::u16string> columnLabels, std::size_t dataRowCount) noexcept;
+    void hide() noexcept;
+    // OutlinePane/JsonTreePaneの260dip右ストリップと異なりtop/bottomInsetDips
+    // (タブバー/ステータスバー高さ)を受け取り全クライアント幅に配置する。
+    void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight, float dpiScale,
+                         float topInsetDips, float bottomInsetDips) noexcept;
+    LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;  // LVN_GETDISPINFOW/LVN_ITEMACTIVATE
+};
+
+// src/app/include/neomifes/app/csv_grid_bridge.h (WI-16c)
+[[nodiscard]] std::vector<std::u16string> buildCsvGridColumnLabels(const csvmode::CsvModel& model,
+                                                                     const document::Document& doc);
+[[nodiscard]] std::u16string csvGridCellText(const csvmode::CsvModel& model, const document::Document& doc,
+                                              std::size_t rowIndex, std::size_t colIndex) noexcept;
 ```
 
 **設計上の要点 (WI-16b、非同期化+EditorSession配線):**
@@ -3429,11 +3449,18 @@ public:
 - 最終ゲート(Debug/Release/ubsan)で`CsvModelWorker`のスレッド関連コード(`std::thread`/`std::mutex`/`std::condition_variable`/`PostMessageW`経由のポインタ受け渡し)を特に注意して検証、UB検出0件を確認。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16b完了)」参照。
 
+**設計上の要点 (WI-16c、グリッドUI配線):**
+- `ui::CsvGridPane`は`WC_LISTVIEW`の`LVS_REPORT | LVS_OWNERDATA`(仮想モード)を採用 — 要件定義書の「1000万行CSV」規模を見据え、通常モード(全行を実データ保持)を最初から不採用。`LVM_SETITEMCOUNT(10,000,000)`が0msで受理されることを実装前のスタンドアロンprobeで実機検証済み。
+- 配置は`ui::OutlinePane`/`ui::JsonTreePane`(260dip右ドッキングストリップ)と異なり、タブバー下端〜ステータスバー上端の全クライアント幅(ユーザーへAskUserQuestionで確認済みの設計判断)。この配置ゆえ、タブ切替・文書スワップ時に自動的に閉じる新規ロジックが必須(`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`拡張)。
+- `CommandDispatchContext`構造体自体に`csvGridPane`/`csvGridPanePendingSessionToken`の2フィールドを追加 — 同構造体経由で`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`を呼ぶ5つの`dispatch*Command()`関数への個別パラメータ追加を避けるため。
+- セルの活性化は`LVN_ITEMACTIVATE`(ダブルクリック/Enter)、ジャンプと同時にグリッド自体を閉じる(`OutlinePane`/`JsonTreePane`の「パネルは開いたまま」とは意図的に異なる)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16c完了)」参照。
+
 ---
 
 ## 12. CSV モード 詳細
 
-> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(グリッドUI・列固定・フィルタ・ソート・式列・セル編集)の設計メモ。
+> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線+グリッドUI(`ui::CsvGridPane`、`Ctrl+Shift+G`)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(列固定・フィルタ・ソート・式列・セル編集)の設計メモ。
 
 ### 12.1 データ表現
 - 論理: Piece Table + 行スキーマ

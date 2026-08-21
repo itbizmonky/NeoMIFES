@@ -2203,7 +2203,20 @@ class CsvModel {
 
 `EditorSession`へ`csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`の4点を追加(`jsonTree()`系と同型)。`disableCsvMode()`相当・呼び出し元コマンド・グリッドUIは全て本WIのスコープ外(WI-16c以降)。
 
-詳細は`build_plan.md` WI-16bセクション参照。次はWI-16c以降(グリッドUI・列固定・フィルタ・ソート・式列・セル編集)。
+詳細は`build_plan.md` WI-16bセクション参照。
+
+#### 実装後の確定事項/変更点 (2026-08-19、WI-16c完了 — グリッドUI MVP)
+
+WI-16cで`EditorSession::csvModel()`系4点(WI-16b)を実際に消費する最初のUI/コマンドを実装した。`Ctrl+Shift+G`・表示メニュー・コマンドパレントの3経路からCSVグリッドをトグル表示できる。
+
+- **`ui::CsvGridPane`は`LVS_REPORT | LVS_OWNERDATA`(仮想モード)の`WC_LISTVIEW`を採用した。** roadmapの原案スケッチが想定する`WC_LISTVIEW`自体は変わらないが、要件定義書の「1000万行CSV」規模を見据え、通常モード(`LVM_INSERTITEM`で全行を実データ保持)ではなく仮想モードを最初から採用した — 実装前のスタンドアロンprobeで`LVM_SETITEMCOUNT(10,000,000)`が0msで受理され破綻しないことを実機確認済み。
+- **配置はroadmapのモックアップ通り「CSV Mode」的な全画面置き換えとした(ユーザーへAskUserQuestionで確認済み)。** `ui::OutlinePane`/`ui::JsonTreePane`(260dip右ドッキングストリップ)とは異なり、複数列を持つ表は狭い幅では実用にならないため。この配置ゆえ、タブ切替・文書スワップ時に自動的に閉じる新規ロジックが必須になった(OutlinePane/JsonTreePaneの「自動的に隠れない」既存ギャップをそのまま踏襲すると、全画面を覆うグリッドが別タブの中身を完全に隠し続けてしまうため)。
+- **`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`(タブ切替・文書スワップの集約点)を拡張し、`CommandDispatchContext`構造体自体に`csvGridPane`/`csvGridPanePendingSessionToken`の2フィールドを追加した。** この2関数を`CommandDispatchContext`経由で呼ぶ5つの`dispatch*Command()`関数への個別のパラメータ追加を避けるための設計判断。
+- **セルの活性化(ジャンプ)は`LVN_ITEMACTIVATE`(ダブルクリック/Enter)を使い、ジャンプと同時にグリッド自体を閉じる。** `OutlinePane`/`JsonTreePane`の「クリックでジャンプしてもパネルは開いたまま」とは意図的に異なる設計 — 全画面を覆うグリッドが開いたままだとジャンプ結果が見えないため。
+- **配線作業中にWI-15c(`CommandId::JsonTreeToggle`)のコマンドパレット登録漏れを発見・是正した。** 計画・完了報告は「3経路全てに登録」と明記していたが、実装時に漏れていた。詳細は`build_plan.md` WI-15c節のDoD訂正注記参照。
+- 列固定・フィルタ・ソート・セル編集・式列は全て本サブWIのスコープ外(WI-16d以降)。
+
+詳細は`build_plan.md` WI-16cセクション参照。次はWI-16d以降(列固定・フィルタ・ソート・式列・セル編集)。
 
 ### 10.3 JSON / XML Tree モード (要件定義書 §10)
 

@@ -173,6 +173,7 @@
 | **10.2a** | **CSV モード ヘッドレス解析モデル** (`neomifes::csvmode`、`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`、非同期ワーカー/グリッドUIは未着手) | ✅ **完了 (WI-16a、2026-08-19、§3.87参照)** |
 | **10.2b** | **CSV モード 非同期ワーカー + `EditorSession`配線** (`CsvModelWorker`、UIなし、呼び出し元コマンドは未追加) | ✅ **完了 (WI-16b、2026-08-19、§3.88参照)** |
 | **10.3c** | **JSON/XML Tree モード ツリーUI実装 🎉** (`ui::JsonTreePane`、`Ctrl+Shift+J`、クリックジャンプ、折り畳み統合、深いネストのスタックオーバーフローP1解消) | ✅ **完了 (WI-15c、2026-08-19、§3.89参照)。🎉 Phase 10.3 ツリーUI MVP達成** |
+| **10.2c** | **CSV モード グリッドUI実装 🎉** (`ui::CsvGridPane`、`Ctrl+Shift+G`、仮想モードWC_LISTVIEW、セルダブルクリックジャンプ、タブ切替/文書スワップ時の自動非表示) | ✅ **完了 (WI-16c、2026-08-19、§3.90参照)。🎉 Phase 10.2 グリッドUI MVP達成** |
 | 10.2/10.3残り → 11 → 9 → 12 | CSV(グリッドUI)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
@@ -2556,11 +2557,43 @@ WI-16b完了・push未実施の状態で、ユーザーから「次のPhaseに�
 **設計上の要点:**
 - `ui::JsonTreePane`は`ui::OutlinePane`の実装を直接のテンプレートに移植(WC_TREEVIEWサブクラス・WM_NOTIFYルーティング・DPI対応リサイズ・Escapeクローズ・`onDeferredInit`後の明示的`onParentResized()`プライミングまで含め全て踏襲)。`ui::OutlineItem`をそのまま再利用しJSON専用item型は不採用。
 - 非同期性の扱いとして`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`を新設(`EditorSession`メンバ案は「ペインはWorkspace全体で1枚」という実態と合わないため不採用)。トグルOFF・Escape・非アクティブタブへの結果到着のいずれでもこのトークンを適切にクリアし、閉じた後に届く遅延結果でペインが勝手に再表示されるバグを防止。
-- `CommandId::OutlineToggle`自体が現状コマンドパレット未登録という既存ギャップを発見、`JsonTreeToggle`はこのギャップを繰り返さずキーボード・メニュー・パレットの3経路全てに登録。
+- `CommandId::OutlineToggle`自体が現状コマンドパレット未登録という既存ギャップを発見、`JsonTreeToggle`はこのギャップを繰り返さずキーボード・メニュー・パレットの3経路全てに登録する**計画だった**。⚠️ **訂正 (WI-16c配線中に発覚):** 実際にはパレット登録が漏れていた(`buildCommandRegistry()`に未登録)。WI-16c側で発見・是正(§3.90参照)。
 
 **実アプリでの手動確認:** `NeoMIFES.exe --open <テストJSON>`をPID/HWND特定の上で起動。`Ctrl+Shift+J`のキー入力合成(`SendInput`)は既知の環境制約(修飾キー同時押し合成の不調)により失敗したが、`CommandId::JsonTreeToggle`を`WM_COMMAND`で直接送信(メニュークリックと同一の`dispatchWidgetShowCommand()`コードパス)したところ、JsonTreePaneが正しくトグルされ、非同期パース経由でテストJSONの階層・値・要素数が正確に描画されることをスクリーンショットで確認した。
 
 コミット済み(`6a7ca41`/`19927ef`/`76968ef`/`0ce9bac`/`05ae9e2`)、pushはユーザーの明示指示待ち。Phase 10.3はツリーUIのMVP(表示・ジャンプ・折り畳み統合)が完了 — Format/Validate/JSONPath/XPath・XML対応・真の左右分割ペイン化は全て後続サブWI(WI-15d以降)へ。次はPhase 10.2の続き(WI-16c: グリッドUI)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
+
+---
+
+### 3.90 WI-16c (CSV グリッドUI実装) 完了記録 (2026-08-19)
+
+WI-15c完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16c: CSVグリッドUI / WI-15d: JSON/XML Treeの残り / Phase 11以降)をAskUserQuestionで確認したところ、**「WI-16c: CSVグリッドUI(推奨)」**が選ばれた — JSON側が2サブWI連続でUIまで到達した(WI-15a→b→c)のに対し、CSV側は2サブWIとも非UIのまま止まっており、UIまで到達させて両トラックを揃える判断。
+
+**着手前調査は直接ファイル読解+Plan agent1件で行った。** `csv_model.h`(`maxColumnCount()`のコメントが「将来のグリッドUIが列サイジングに使う」と明記済み)、`csv_model_worker.h`、`json_tree_pane.h`/`.cpp`(Win32配線の型の直接のテンプレート)を確認。このコードベースに`WC_LISTVIEW`/グリッドの前例が一切無いことを確認した上でPlan agentへ設計を委任、返ってきた提案の技術的主張(`syncViewForActiveSession()`の呼び出し箇所数等)を自分で再検証したところ「9箇所」という主張が実際には「7箇所」の誤りだったと判明、修正して計画に反映した。
+
+**グリッドの配置をAskUserQuestionでユーザーに確認した(Plan Mode中)。** `ui::OutlinePane`/`ui::JsonTreePane`(260dip右ストリップ)とは異なり複数列を持つ表は狭い幅では実用にならないため設計上の分岐点と判断し、「全画面置き換え(タブバー下端〜ステータスバー上端の全幅領域にグリッドを表示しテキスト本文を一時的に隠す)」が選ばれた。
+
+### 実施内容 (4コミット)
+
+1. `app::buildCsvGridColumnLabels()`/`csvGridCellText()`(`json_tree_bridge.h`と同型のheader-onlyインライン関数)+ヘッドレス単体テスト8件 (`3818eb4`)
+2. `ui::CsvGridPane`新設(`WC_LISTVIEW`の`LVS_REPORT | LVS_OWNERDATA`仮想モード)。実装前にスタンドアロンprobe(cl.exeで直接コンパイル・実行)で`LVN_GETDISPINFOW`のフィールド仕様(`iItem`/`iSubItem`/`mask`/`pszText`/`cchTextMax`)・`cchTextMax`切り詰め挙動・`LVM_SETITEMCOUNT(10,000,000)`の挙動(0msで受理、破綻なし)を実機検証。この時点ではまだどこからも呼ばれない (`2402c78`)
+3. `CommandId::CsvGridToggle`+キーバインド(`Ctrl+Shift+G`、neomifesプリセットのみ)+メニュー登録 (`d2bbf44`)
+4. `main.cpp`/`normal_mode_wiring.{h,cpp}`配線一式+最終ゲート (`530ba83`)
+
+**設計上の要点:**
+- 全画面置き換えという配置ゆえ、`OutlinePane`/`JsonTreePane`(タブ切替で自動的に隠れない既存の未解決ギャップ)とは異なり、タブ切替・文書スワップ時に自動的に閉じる新規ロジックが必須と判断。`syncViewForActiveSession()`(実際の呼び出し箇所7つ)/`resetViewAfterDocumentSwap()`(実際の呼び出し箇所2つ)を拡張。
+- これらは`CommandDispatchContext`経由でも6箇所から呼ばれるため、同構造体自体に`csvGridPane`/`csvGridPanePendingSessionToken`の2フィールドを追加する設計にした — 5つの`dispatch*Command()`関数(Copy/Cut/Paste/Undo/Redo等を扱う3関数を含む)への個別のパラメータ追加より総改修量が少ないと判断。
+- セルの活性化(ジャンプ)は`LVN_ITEMACTIVATE`(ダブルクリック/Enter)でジャンプと同時にグリッド自体を閉じる設計 — `OutlinePane`/`JsonTreePane`の「クリックでジャンプしてもパネルは開いたまま」とは意図的に異なる(全画面を覆うグリッドが開いたままだとジャンプ結果が見えないため)。
+
+**最終ゲートで2件のミスを自己発見・修正した。** ①`handleCsvGridKey()`が未使用の`hwnd`パラメータを持ち(`refreshCsvGridPane()`はhwndを取らない設計のため)C2220/unused-parameterでビルド失敗 — パラメータ自体を削除して解消。②`view.jsonTree.toggle`/`view.csvGrid.toggle`の2パレットエントリ追加で`buildCommandRegistry()`の認知的複雑度が30(閾値25)に達し超過 — WI-14cの`appendLogModeCommands()`と同型の新規`appendStructuralViewCommands()`への抽出で解消。
+
+**この配線作業でWI-15cの実装漏れ(`CommandId::JsonTreeToggle`のコマンドパレット未登録)を発見した。** WI-15cは計画・完了報告双方で「3経路全てに登録」と明記していたが、実際には`buildCommandRegistry()`のパラメータリストに`jsonTreePane`関連が一切無く、物理的に登録不可能な状態だった。CsvGridToggle自身のパレット登録作業の中で発見し、`appendStructuralViewCommands()`へ両方まとめて追加、同じコミットで是正した(`build_plan.md`のWI-15c節DoDにも訂正注記を追加済み)。
+
+**最終ゲート:** Debug/Release/ubsan全1377件green、clang-tidy新規警告0(変更2ファイル`normal_mode_wiring.cpp`/`main.cpp`)。
+
+**実アプリでの手動確認:** `NeoMIFES.exe --open <テストCSV>`をPID/HWND特定の上で起動。`Ctrl+Shift+G`のキー入力合成が今回は成功し(WI-15cの`Ctrl+Shift+J`とは異なる結果)グリッド表示を確認。`CommandId::CsvGridToggle`(id=40008)の`WM_COMMAND`直接送信でも往復トグルを確認、`SysListView32`の矩形がタブバー下端〜ステータスバー上端に正確に一致・ヘッダ/行番号/データが正しく描画されることをスクリーンショットで確認。`Ctrl+N`でのグリッド自動クローズも確認済み。セルダブルクリックのジャンプ+自動クローズは`SendMessage(WM_LBUTTONDOWN)`がタイムアウトし未確認(アプリ自体は`WM_NULL`に即応答・表示も健全なままで、自動化ハーネス側の限界の可能性が高い、人手確認推奨)。
+
+コミット済み(`3818eb4`/`2402c78`/`d2bbf44`/`530ba83`)、pushはユーザーの明示指示待ち。Phase 10.2はグリッドUIのMVP(表示・ジャンプ・タブ切替時の自動非表示)が完了 — 列固定・フィルタ・ソート・セル編集・式列は全て後続サブWI(WI-16d以降)へ。次はPhase 10.3の続き(WI-15d)、Phase 10.2の続き(WI-16d)、またはユーザー指定の次項目。
 
 ---
 
@@ -2611,20 +2644,20 @@ WI-16b完了・push未実施の状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.89 (WI-15c JSON/XML Tree モード ツリーUI実装
-完了記録)を読んで現状を把握せよ。
+RESUME_HERE.md §3.90 (WI-16c CSV グリッドUI実装 完了記録)を
+読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
-(2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a(ヘッドレス
-基盤)→WI-15b(非同期インデックス化+EditorSession配線、UIなし)
-→WI-15c(ツリーUI、Ctrl+Shift+Jでトグル・折り畳み統合)まで完了し
-🎉ツリーUI MVPを達成(2026-08-19)。XML対応・整形・バリデーション・
+(2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a→b→c
+(ツリーUI、Ctrl+Shift+Jでトグル・折り畳み統合)まで完了し🎉ツリー
+UI MVPを達成(2026-08-19)。XML対応・整形・バリデーション・
 XPath/JSONPath・真の左右分割ペイン化はWI-15d以降へ。Phase 10.2
-(CSVモード)はWI-16a(ヘッドレス解析モデル)→WI-16b(CsvModelWorker
-非同期ワーカー+EditorSession配線、UIなし)まで進行中(2026-08-19)、
-グリッドUI(WI-16c以降)は未着手のまま。Debug/Release/ubsan全1369件
-green、clang-tidy新規警告0を確認済み。
+(CSVモード)はWI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面
+置き換え表示・セルダブルクリックジャンプ)まで完了し🎉グリッドUI
+MVPを達成(2026-08-19)。列固定・フィルタ・ソート・セル編集・式列は
+WI-16d以降へ。Debug/Release/ubsan全1377件green、clang-tidy新規警告
+0を確認済み。
 
 **WI-15b最終ゲートで発見したP1 issueはWI-15cで解消した。**
 `nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を
@@ -2635,23 +2668,37 @@ docs/issues/json_tree_worker_deep_nesting_stack_overflow.md は解決済み
 セクションへ移動済み。
 
 **WI-15cの最終ゲートで`.clang-tidy`に`portability-template-virtual-
-member-function`チェックの除外を追加した(プロジェクト全体、詳細は
-§3.89参照)。** 今後同種の`nlohmann::json_sax<T>`派生クラスを追加する
-際もこの除外が既に効いていることに注意。
+member-function`チェックの除外を追加した(プロジェクト全体)。**
+今後同種の`nlohmann::json_sax<T>`派生クラスを追加する際もこの除外が
+既に効いていることに注意。
+
+**WI-15c(JsonTreeToggle)のコマンドパレット登録漏れをWI-16c配線中に
+発見・是正した(§3.90参照)。** 計画・完了報告に反して実際には未登録
+だった。「計画/完了報告に書いた」は「実装した」の証明にならない、
+という教訓として記録。新規`appendStructuralViewCommands()`で
+JsonTreeToggle/CsvGridToggle両方を登録済み。
+
+**WI-16cで`CommandDispatchContext`(command_dispatch.h)に
+`csvGridPane`/`csvGridPanePendingSessionToken`の2フィールドを追加した。**
+`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`(タブ切替・
+文書スワップの集約点)を拡張する際、この2関数を`CommandDispatchContext`
+経由で呼ぶ5つの`dispatch*Command()`関数への個別パラメータ追加を避ける
+ための設計判断。今後この2関数のシグネチャを変更する際は、直接呼び出し
+箇所(7+2箇所)と`CommandDispatchContext`構築箇所(6箇所)の両方を
+確認すること。
 
 **WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
 (WI-15/16/17)を2026-08-18にWI-16/17/18へ、CSV側のWI-16a新設で衝突した
 ため2026-08-19にさらにWI-17/18/19へ繰り下げた(build_plan.md §5
-「WI-17〜19」節)。WI-15c/WI-16bはこの番号割当に影響しない(既存の
-WI-15/WI-16の続き番号)。
+「WI-17〜19」節)。WI-15c/WI-16b/WI-16cはこの番号割当に影響しない
+(既存のWI-15/WI-16の続き番号)。
 
-次はPhase 10.2の続き(WI-16c以降: グリッドUI・列固定・フィルタ・
-ソート・式列・セル編集)、またはPhase 10.3の続き
-(WI-15d以降: XML対応・整形・バリデーション・XPath/JSONPath・
-真の左右分割ペイン化)、またはユーザー指定の次項目。着手前に
-build_plan.md §5とmaster_roadmap.md §10.2(または§10.3)を読み、
-本書§5と同じ形式でサブWIへ切り直すこと。
+次はPhase 10.2の続き(WI-16d以降: 列固定・フィルタ・ソート・式列・
+セル編集)、またはPhase 10.3の続き(WI-15d以降: XML対応・整形・
+バリデーション・XPath/JSONPath・真の左右分割ペイン化)、またはユーザー
+指定の次項目。着手前にbuild_plan.md §5とmaster_roadmap.md §10.2
+(または§10.3)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

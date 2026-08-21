@@ -133,7 +133,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) → WI-15c (ツリーUI MVP) まで進行、XML/整形/バリデーション/XPath/JSONPathは残り(WI-15d以降)。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) まで進行中、残り(グリッドUI)は切り直しながら継続する。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) → WI-15c (ツリーUI MVP) まで進行、XML/整形/バリデーション/XPath/JSONPathは残り(WI-15d以降)。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) → WI-16c (グリッドUI MVP) まで進行、列固定/フィルタ/ソート/セル編集/式列は残り(WI-16d以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -144,8 +144,9 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-16a** CSV モード ヘッドレス解析モデル (Phase 10.2 最初のサブ WI、非同期ワーカー/グリッドUIは非スコープ) → コミット: `ab7dd5e`/`c8fd842`
 - [x] **WI-16b** CSV モード 非同期ワーカー + EditorSession配線 (UIなし) → コミット: `a8af2b7`/`0457fda`/`aa15488`
 - [x] **WI-15c** JSON/XML Tree モード ツリーUI実装 (`Ctrl+Shift+J`、クリックジャンプ、折り畳み統合、深いネストのスタックオーバーフローP1解消) → コミット: `6a7ca41`/`19927ef`/`76968ef`/`0ce9bac`/`05ae9e2`
+- [x] **WI-16c** CSV グリッドUI実装 (`Ctrl+Shift+G`、仮想モードWC_LISTVIEW、セルダブルクリックジャンプ、タブ切替/文書スワップ時の自動非表示) → コミット: `3818eb4`/`2402c78`/`d2bbf44`/`530ba83`
 - [ ] **WI-15d以降** Phase 10.3 の残り (XML対応・整形・バリデーション・XPath/JSONPath・真の左右分割ペイン化)
-- [ ] **WI-16c以降** Phase 10.2 の残り (グリッドUI・列固定・フィルタ・ソート・式列・セル編集) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [ ] **WI-16d以降** Phase 10.2 の残り (列固定・フィルタ・ソート・式列・セル編集) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-17** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-18** Phase 9 — AI プラグイン
 - [ ] **WI-19** Phase 12 — 総合品質保証・正式出荷
@@ -1320,7 +1321,7 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 - `ui::OutlinePane`の全機構(WC_TREEVIEW生成・lParamへの位置埋め込み・TVN_SELCHANGEDW処理・DPI対応リサイズ・Escapeクローズ)を`ui::JsonTreePane`が直接のテンプレートとして再利用できると確認。`ui::OutlineItem`(`name`/`targetPos`/`children`)はJSON専用の新規データ構造体を作らずそのまま再利用
 - `jsontree::JsonNode`の深さは`buildTree()`(WI-15a、明示スタック)と異なり任意深さ(JSON構造そのものが再帰的)なため、`outline_bridge.h`の`buildOutlineItems()`(再帰実装、`OutlineNode`は浅いネストのみのため許容)をそのまま真似できず、`buildJsonTreeItems()`は明示スタックによる反復実装が必須と判明
 - 非同期性の扱い: `refreshOutlinePane()`は同期処理だが`beginJsonTreeIndexing()`は非同期(WI-15b)。「トグルで表示要求」と「実際にペインへデータが入る」タイミングの分離をどう扱うか検討し、`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`(既存の`freeCursorModeEnabled`と同型)を採用 — `EditorSession`メンバ案は「ペインはWorkspace全体で1枚」という実態と合わないため不採用
-- `CommandId::OutlineToggle`自体が現状コマンドパレット未登録という既存ギャップを発見。本WIの`JsonTreeToggle`はこのギャップを繰り返さず、キーボード・メニュー・パレットの3経路全てに登録
+- `CommandId::OutlineToggle`自体が現状コマンドパレット未登録という既存ギャップを発見。本WIの`JsonTreeToggle`はこのギャップを繰り返さず、キーボード・メニュー・パレットの3経路全てに登録する**計画だった**(⚠️ 実際にはパレット登録の実装自体が漏れていた。WI-16c配線中に発覚・是正、詳細はDoD節の訂正注記参照)
 - `key_bindings_presets.cpp`の確立された規約(実在エディタで確認できない既定キーは推測せず意図的に空欄のまま残す)に従い、`Ctrl+Shift+J`は`neomifesStandardBindings()`のみに追加、秀丸/サクラ/VSCodeプリセットは意図的に未バインドのまま
 - WI-15b最終ゲートで発見済みのP1 issue(深いネストJSONでの`STATUS_STACK_OVERFLOW`)が「対応はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送り」と明記されており、本WIがまさにその経路を追加するため、本WIのスコープに含めた
 
@@ -1338,7 +1339,7 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 - [x] `docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`の完了条件更新(P1解消)
 - [x] `buildJsonTreeItems()`/`buildJsonFoldRegions()`が反復実装(`misc-no-recursion`新規警告0)
 - [x] `JsonTreePane`が`OutlinePane`と同型のWin32配線を持つ
-- [x] `CommandId::JsonTreeToggle`がキーボード(`Ctrl+Shift+J`)・メニュー・コマンドパレットの3経路全てから到達可能
+- [x] `CommandId::JsonTreeToggle`がキーボード(`Ctrl+Shift+J`)・メニュー・コマンドパレットの3経路全てから到達可能 — ⚠️ **訂正 (2026-08-19、WI-16c配線中に発覚):** 完了当時は実際にはパレット登録が漏れていた(`buildCommandRegistry()`に該当エントリが存在しなかった)。WI-16c側で`CsvGridToggle`のパレット登録作業のついでに発見・是正した(`appendStructuralViewCommands()`、コミット`530ba83`)。当時のチェックは誤りだったが記録として残し、訂正した経緯をここに明記する(CLAUDE.md §11)。
 - [x] トグルON: キャッシュがあれば同期即時表示、無ければ空パネル表示+`beginJsonTreeIndexing()`起動+`kMsgJsonTreeReady`到着時にアクティブタブの場合のみ自動反映
 - [x] トグルOFF/Escapeいずれでも、その後届く非同期結果でペインが勝手に再表示されない(設計レビューで確認、コード上でトークンクリアを実装)
 - [x] ツリー項目クリックでテキスト位置へジャンプ(`jumpToOutlinePosition()`再利用)
@@ -1361,9 +1362,63 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
+## WI-16c — CSV グリッドUI実装
+
+**目的:** WI-15c(JSON/XML Tree UI)完了後、ユーザーに「次のPhase」を確認したところ(WI-16c: CSVグリッドUI vs WI-15d: JSON/XML Treeの残り vs Phase 11以降、の3択)、**「WI-16c: CSVグリッドUI」**が選ばれた — JSON側が2サブWI連続でUIまで到達した(WI-15a→b→c)のに対し、CSV側は2サブWIとも非UIのまま止まっており、UIまで到達させて両トラックを揃える判断。`EditorSession::csvModel()`/`csvIndexInFlight()`/`beginCsvIndexing()`/`applyCsvIndexResult()`(WI-16b)を実際に消費する最初のコマンド/UIを実装した。
+
+**前提:** WI-15c 完了・コミット済み (2026-08-19)
+
+**参照:** `src/ui/include/neomifes/ui/json_tree_pane.h`/`.cpp`(Win32配線の型の直接のテンプレート)、`src/csvmode/include/neomifes/csvmode/csv_model.h`(`CsvModel`/`CsvCell`/`maxColumnCount()`)、`src/app/normal_mode_wiring.cpp`の`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`
+
+### 着手前調査・設計方針(AskUserQuestionでユーザー確認込み)
+
+- このコードベースに`WC_LISTVIEW`/グリッド/テーブルの前例が一切無いことを確認(grep確認済み)。Win32標準コントロールにスプレッドシート専用コントロールは存在せず、要件定義書の「1000万行CSV」規模を見据え`LVS_REPORT | LVS_OWNERDATA`(仮想モード、`LVM_SETITEMCOUNT`で行数だけ通知し可視行のみ`LVN_GETDISPINFOW`で都度取得)を採用。実装前にスタンドアロンprobeで`LVN_GETDISPINFOW`のフィールド仕様・`cchTextMax`切り詰め挙動・1000万行での`LVM_SETITEMCOUNT`挙動(実測0ms、破綻なし)を実機検証済み
+- **グリッドの配置をAskUserQuestionでユーザーに確認した。** `ui::OutlinePane`/`ui::JsonTreePane`(260dip幅の右ドッキングストリップ)とは異なり、複数列を持つ表は狭い幅では実用にならないため設計上の分岐点と判断し、「全画面置き換え(タブバー下端〜ステータスバー上端の全幅領域にグリッドを表示しテキスト本文を一時的に隠す)」が選ばれた
+- 全画面置き換えという配置ゆえ、`OutlinePane`/`JsonTreePane`(タブ切替で自動的に隠れない既存の未解決ギャップ)とは異なり、タブ切替・文書スワップ時に自動的に閉じる新規ロジックが必須と判断。`syncViewForActiveSession()`(実際の呼び出し箇所7つ)/`resetViewAfterDocumentSwap()`(実際の呼び出し箇所2つ)の両方を拡張。これらは`CommandDispatchContext`経由でも6箇所から呼ばれるため、同構造体自体に`csvGridPane`/`csvGridPanePendingSessionToken`の2フィールドを追加する設計にした — 5つの`dispatch*Command()`関数(Copy/Cut/Paste/Undo/Redo等を扱わない3関数を含む)へ個別にパラメータを追加するより総改修量が少ないと判断
+- セルの活性化(ジャンプ)は`OutlinePane`/`JsonTreePane`の「クリックでジャンプしてもパネルは開いたまま」とは異なり、`LVN_ITEMACTIVATE`(ダブルクリック/Enter)でジャンプと同時にグリッド自体を閉じる設計にした — 全画面を覆うグリッドが開いたままだとジャンプ結果が見えないため。単なる選択移動(矢印キー等)ではジャンプを起こさせないため`LVN_ITEMCHANGED`ではなく`LVN_ITEMACTIVATE`を使用
+- 列ヘッダは合成の「#」(行番号)列+`hasHeader()`があれば`headerRow()`をデコード、無ければ`"Column N"`を合成。`maxColumnCount()`(WI-16a時点で「将来のグリッドUIが列サイジングに使う」とコメント済み)をそのまま列数に採用
+- delimiter/hasHeaderの決定は、既にインデックス済みならそのまま使用(再検出しない)、未インデックスの場合のみ`detectCsvDelimiter()`(WI-16a既存)+既定`,`へのフォールバック。`hasHeader`はWI-16a確定の既定`true`固定のまま(切替UIは非スコープ)
+- `app::buildCsvGridColumnLabels()`/`csvGridCellText()`は`json_tree_bridge.h`/`outline_bridge.h`と同じheader-onlyインライン関数パターンを踏襲(新規`.cpp`は作らない)
+
+### 実施内容 (4コミット)
+
+1. `app::buildCsvGridColumnLabels()`/`csvGridCellText()`(header-only)+ヘッドレス単体テスト8件 (`3818eb4`)
+2. `ui::CsvGridPane`新設(`WC_LISTVIEW`仮想モード、子コントロールID`10001`、`ICC_LISTVIEW_CLASSES`追加)、この時点ではまだどこからも呼ばれない (`2402c78`)
+3. `CommandId::CsvGridToggle`を`JsonTreeToggle`直後に追加(`kAllRemappableCommandIds`35→36)、`neomifesStandardBindings()`へ`Ctrl+Shift+G`追加、`kViewMenuItems`2→3件。まだディスパッチ先なし (`d2bbf44`)
+4. `main.cpp`/`normal_mode_wiring.{h,cpp}`配線一式(`refreshCsvGridPane()`/`handleCsvGridKey()`/`createAndPositionCsvGridPane()`新設、`applyCsvIndexReadyMessage()`拡張、`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`拡張、`CommandDispatchContext`拡張、`dispatchWidgetShowCommand()`/`handleAppMessage()`/`handleKeyDownEvent()`/`wireNormalMode()`拡張)+最終ゲート。中間で2件のミス(未使用`hwnd`パラメータ、`buildCommandRegistry()`の認知的複雑度超過)を検出・修正、あわせてWI-15c`JsonTreeToggle`のパレット登録漏れも発見・是正 (`530ba83`)
+
+### DoD
+
+- [x] `ui::CsvGridPane`が仮想モードWC_LISTVIEWとして機能する(probeの結果を反映)
+- [x] `buildCsvGridColumnLabels()`/`csvGridCellText()`がヘッダあり/なし・ragged rows・範囲外アクセスを正しく処理(ヘッドレス単体テスト)
+- [x] `CommandId::CsvGridToggle`がキーボード(`Ctrl+Shift+G`)・メニュー・コマンドパレットの3経路全てから到達可能
+- [x] トグルON: キャッシュがあれば同期即時表示、無ければ空グリッド表示+delimiter自動判定+`beginCsvIndexing()`起動+`kMsgCsvIndexReady`到着時にアクティブタブの場合のみ自動反映
+- [x] トグルOFF/Escape/タブ切替/文書スワップのいずれでも、その後届く非同期結果でグリッドが勝手に再表示されない
+- [x] タブ切替・別文書オープンのいずれでも、開いていたCsvGridPaneが自動的に閉じてテキスト表示に戻る
+- [x] セルダブルクリック/Enterで該当`CsvCell::startPos`へジャンプし、グリッドが閉じる
+- [x] 列見出しが`hasHeader()`の有無に応じて正しく表示される
+- [x] `EditorSession`は無変更のまま
+- [x] Debug/Release/ubsan全1377件green、clang-tidy新規警告0
+- [x] 手動確認シナリオ(実アプリ、実際に操作して確認)を実施
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**`CommandDispatchContext`構造体への2フィールド追加は、当初の「関数シグネチャへ直接スレッディング」案と比較検討の上で採用した設計判断だった。** `syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`を直接呼ぶ関数は`openFileAndSyncView()`/`handleTagJumpKey()`/`jumpToGrepResult()`/`buildGrepBarConfig()`/`createAndPositionTabBar()`/`handleDropFilesEvent()`の6つに加え、`CommandDispatchContext`経由で`dispatchOpenCommand()`/`dispatchNewCommand()`/`dispatchRecentFileCommand()`/`dispatchTabSwitchCommand()`/`dispatchTabCloseCommand()`の5つがある。直接スレッディングだとこの5つ全てのシグネチャ変更+`dispatchCommand()`のswitch文改修が要るのに対し、構造体拡張なら「その5つは無改修のまま、`ctx`の構築元3関数(`handleClipboardOrUndoRedoKey()`/`handleOverwriteToggleKey()`/`showEditContextMenu()`、いずれもCopy/Cut/Paste/Undo/Redo等`csvGridPane`を実際には使わない)だけがパススルー用に2引数を追加で受け取る」で済み、総改修量が少ないと判断した。
+
+**この配線作業でWI-15cの実装漏れ(`CommandId::JsonTreeToggle`のコマンドパレット未登録)を発見した。** WI-15cは計画・完了報告双方で「キーボード・メニュー・パレットの3経路全てに登録」と明記していたが、実際には`buildCommandRegistry()`に該当エントリが存在しなかった(`buildCommandRegistry()`のパラメータリストにも`jsonTreePane`関連が一切無かったため物理的に登録不可能な状態だった)。CsvGridToggle自身のパレット登録作業の中で発見し、両方を新規`appendStructuralViewCommands()`(`appendLogModeCommands()`と同型の抽出)へまとめて追加、同じコミットで是正した。**教訓: 「計画に書いた」「完了報告に書いた」は「実装した」の証明にならない — 特にパレット登録のような、既存の動作確認テストが直接カバーしない類の項目は、後続WIで同じコードに触れる機会が無ければ長期間気づかれない可能性がある。**
+
+**最終ゲート1回目で2件のclang-tidy起因のビルドエラーを検出・修正した。** ①`handleCsvGridKey()`が未使用の`hwnd`パラメータを持ち`/WX`(MSVC)・`-Werror`(clang-cl)でビルド失敗 — `refreshCsvGridPane()`(CsvGridPaneには折り畳み統合が無いためhwnd不要)へは渡さない設計だったため、パラメータ自体を削除して解消。②`view.jsonTree.toggle`/`view.csvGrid.toggle`の2エントリ追加で`buildCommandRegistry()`の認知的複雑度が30(閾値25)に達し超過 — WI-14cの`appendLogModeCommands()`と同型の抽出(`appendStructuralViewCommands()`)で解消。
+
+**手動確認シナリオ(実アプリ)を実施した。** `NeoMIFES.exe --open <テストCSV>`を起動し`GetWindowThreadProcessId()`でメインウィンドウを特定。**今回は`Ctrl+Shift+G`のキー入力合成(`SendInput`)自体が成功し**(WI-15cの`Ctrl+Shift+J`とは異なる結果)、グリッド表示への切替を確認。加えて`CommandId::CsvGridToggle`(id=40008、`command_ids.h`で実値確認)を`WM_COMMAND`で直接送信する経路でも往復トグルを確認、`EnumChildWindows`で`SysListView32`の矩形がタブバー下端〜ステータスバー上端に正確に一致(全クライアント領域表示の設計通り)、ヘッダ行・行番号列・データ行3件が正しく描画されることをスクリーンショットで確認した。`Ctrl+N`(新規タブ)でグリッドが自動的に閉じることも確認済み。**セルダブルクリックでのジャンプ+自動クローズは確認できなかった** — `SendMessage(WM_LBUTTONDOWN)`をSysListView32へ直接送信するとタイムアウトし(`SendMessageTimeout`3秒でも応答なし)、原因は特定できていない。ただし直後の`WM_NULL`には即座に応答があり(`Responding=True`)、グリッド表示自体も破損せず継続していたため、アプリ本体のデッドロックというより自動化ハーネス側の合成メッセージ手法の限界の可能性が高い(この環境の既知のWin32 GUI自動化制約と同種)。人手による実機確認が可能になり次第、このパスだけ改めて確認することを推奨する。
+
+コミット済み(`3818eb4`/`2402c78`/`d2bbf44`/`530ba83`)、pushはユーザーの明示指示待ち。Phase 10.2はグリッドUIのMVP(表示・ジャンプ・タブ切替時の自動非表示)が完了 — 列固定・フィルタ・ソート・セル編集・式列は全て後続サブWI(WI-16d以降)へ。次はPhase 10.3の続き(WI-15d)、Phase 10.2の続き(WI-16d)、またはユーザー指定の次項目。
+
+---
+
 ## WI-17 〜 WI-19 — Phase 11 / 9 / 12
 
-**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a〜c(ヘッドレス基盤+非同期化+ツリーUI MVP)まで完了・XML/整形/バリデーション/XPath/JSONPathは未着手、Phase 10.2 (CSV) は WI-16a〜b(ヘッドレス解析モデル+非同期化)着手済み・グリッドUIは未着手。
+**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a〜c(ヘッドレス基盤+非同期化+ツリーUI MVP)まで完了・XML/整形/バリデーション/XPath/JSONPathは未着手、Phase 10.2 (CSV) は WI-16a〜c(ヘッドレス解析モデル+非同期化+グリッドUI MVP)まで完了・列固定/フィルタ/ソート/セル編集/式列は未着手。
 
 着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
 
