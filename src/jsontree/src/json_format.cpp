@@ -1,7 +1,9 @@
 #include "neomifes/jsontree/json_format.h"
 
+#include <array>
 #include <cstddef>
 #include <string_view>
+#include <vector>
 
 namespace neomifes::jsontree {
 
@@ -19,7 +21,8 @@ void appendIndent(std::u16string& out, int level, int indentWidth) {
 // VALUES never need this - their node.text is already raw, valid JSON
 // source text, quotes and escapes included).
 [[nodiscard]] std::u16string escapeJsonString(std::u16string_view decoded) {
-    constexpr char16_t kHexDigits[] = u"0123456789abcdef";
+    constexpr std::array<char16_t, 16> kHexDigits{u'0', u'1', u'2', u'3', u'4', u'5', u'6', u'7',
+                                                   u'8', u'9', u'a', u'b', u'c', u'd', u'e', u'f'};
 
     std::u16string out;
     out.reserve(decoded.size() + 2);
@@ -50,8 +53,8 @@ void appendIndent(std::u16string& out, int level, int indentWidth) {
             default:
                 if (ch < 0x20) {
                     out += u"\\u00";
-                    out.push_back(kHexDigits[(ch >> 4) & 0xF]);
-                    out.push_back(kHexDigits[ch & 0xF]);
+                    out.push_back(kHexDigits.at((ch >> 4) & 0xF));
+                    out.push_back(kHexDigits.at(ch & 0xF));
                 } else {
                     out.push_back(ch);
                 }
@@ -62,64 +65,99 @@ void appendIndent(std::u16string& out, int level, int indentWidth) {
     return out;
 }
 
-void formatValue(const JsonNode& node, std::u16string& out, int level, int indentWidth);
+[[nodiscard]] char16_t openDelimiter(JsonNodeKind kind) noexcept {
+    return kind == JsonNodeKind::Object ? u'{' : u'[';
+}
 
-// Object/Array share this shape: `openCh`/`closeCh` on their own, each
-// child on its own indented line, a trailing comma on every child but the
-// last. An Object child additionally gets its (re-escaped) key + ": "
-// prefix - an Array child does not (JsonNode::key is unset for Array
-// elements, per json_tree.h's own contract).
-void formatChildren(const JsonNode& node, std::u16string& out, int level, int indentWidth, char16_t openCh,
-                    char16_t closeCh) {
-    out.push_back(openCh);
-    if (node.children.empty()) {
-        out.push_back(closeCh);
-        return;
+[[nodiscard]] char16_t closeDelimiter(JsonNodeKind kind) noexcept {
+    return kind == JsonNodeKind::Object ? u'}' : u']';
+}
+
+// One Object/Array node currently being rendered: `node` points at it
+// (stable regardless of `stack`'s own reallocations - it is an address
+// into the JsonNode TREE the caller owns, never into `stack` itself, same
+// non-aliasing argument json_tree.cpp's own PendingContainer::node
+// comment makes), `childIndex` is the next child of `node` still to emit.
+struct PendingContainer {
+    const JsonNode* node;
+    std::size_t     childIndex = 0;
+    int              level;
+};
+
+}  // namespace
+
+// Iterative, not recursive (mirrors json_tree.cpp's own buildTree() -
+// same misc-no-recursion policy this project applies project-wide, not a
+// stack-safety necessity here specifically: every JsonNode this function
+// can be handed already came from parseJsonTree(), which caps nesting at
+// kMaxJsonNestingDepth=200 - see json_format.h's own comment on why 200
+// levels of recursion would in fact have been perfectly safe). Renders a
+// child immediately if it's a scalar (no stack frame needed) and pushes a
+// new PendingContainer only for a non-empty Object/Array child - an empty
+// one is closed inline the same way the initial root is.
+std::u16string formatJsonNode(const JsonNode& root, int indentWidth) {
+    if (root.kind != JsonNodeKind::Object && root.kind != JsonNodeKind::Array) {
+        return root.text;  // bare scalar root (RFC 8259 permits this) - nothing to indent
     }
-    for (std::size_t i = 0; i < node.children.size(); ++i) {
+
+    std::u16string out;
+    out.push_back(openDelimiter(root.kind));
+    if (root.children.empty()) {
+        out.push_back(closeDelimiter(root.kind));
+        return out;
+    }
+
+    std::vector<PendingContainer> stack;
+    stack.push_back(PendingContainer{.node = &root, .level = 0});
+
+    while (!stack.empty()) {
+        // Capture everything this iteration needs from `top` BEFORE any
+        // stack.push_back() below, which can reallocate `stack` and
+        // invalidate this reference - same hazard json_tree.cpp's own
+        // consumeNextChild() guards against for the identical reason.
+        PendingContainer& top           = stack.back();
+        const JsonNode&    containerNode = *top.node;
+        const int           level         = top.level;
+
+        if (top.childIndex >= containerNode.children.size()) {
+            out.push_back(u'\n');
+            appendIndent(out, level, indentWidth);
+            out.push_back(closeDelimiter(containerNode.kind));
+            stack.pop_back();
+            continue;
+        }
+
+        const std::size_t childIndex = top.childIndex;
+        ++top.childIndex;  // `top` must not be used below this line.
+
+        if (childIndex > 0) {
+            out.push_back(u',');
+        }
         out.push_back(u'\n');
         appendIndent(out, level + 1, indentWidth);
-        const JsonNode& child = node.children[i];
+
+        const JsonNode& child = containerNode.children[childIndex];
         if (child.key.has_value()) {
             out += escapeJsonString(*child.key);
             out += u": ";
         }
-        formatValue(child, out, level + 1, indentWidth);
-        if (i + 1 < node.children.size()) {
-            out.push_back(u',');
-        }
-    }
-    out.push_back(u'\n');
-    appendIndent(out, level, indentWidth);
-    out.push_back(closeCh);
-}
 
-void formatValue(const JsonNode& node, std::u16string& out, int level, int indentWidth) {
-    switch (node.kind) {
-        case JsonNodeKind::Object:
-            formatChildren(node, out, level, indentWidth, u'{', u'}');
-            break;
-        case JsonNodeKind::Array:
-            formatChildren(node, out, level, indentWidth, u'[', u']');
-            break;
-        case JsonNodeKind::String:
-        case JsonNodeKind::Number:
-        case JsonNodeKind::Boolean:
-        case JsonNodeKind::Null:
+        if (child.kind == JsonNodeKind::Object || child.kind == JsonNodeKind::Array) {
+            out.push_back(openDelimiter(child.kind));
+            if (child.children.empty()) {
+                out.push_back(closeDelimiter(child.kind));
+            } else {
+                stack.push_back(PendingContainer{.node = &child, .level = level + 1});
+            }
+        } else {
             // Raw source text, quotes/escapes already exactly as the
             // document itself spelled them (see json_tree.h's own
             // JsonNode::text comment) - emitted verbatim, never
             // re-serialized.
-            out += node.text;
-            break;
+            out += child.text;
+        }
     }
-}
 
-}  // namespace
-
-std::u16string formatJsonNode(const JsonNode& root, int indentWidth) {
-    std::u16string out;
-    formatValue(root, out, 0, indentWidth);
     return out;
 }
 

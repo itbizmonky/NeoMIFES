@@ -55,6 +55,8 @@
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/file_saver.h"
 #include "neomifes/encoding/encoding.h"
+#include "neomifes/jsontree/json_format.h"
+#include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/format_detection.h"
 #include "neomifes/logmode/log_grouping.h"
 #include "neomifes/logmode/log_navigation.h"
@@ -1250,6 +1252,49 @@ void dispatchMoveLineCommand(bool moveDown, HWND hwnd, RenderPipeline& renderPip
         moveDown ? "edit.moveLineDown" : "edit.moveLineUp", hwnd, renderPipeline, session);
 }
 
+// WI-15d ("JSON整形", command palette only - see this WI's plan for why no
+// CommandId/keybinding/menu entry, same "edit.duplicateLine" precedent
+// dispatchDuplicateLineCommand() above follows). Reparses the WHOLE
+// document (not session.jsonTree(), which may be stale or never populated -
+// this command works independent of whether ui::JsonTreePane has ever been
+// opened for this session, see the plan's own design note) and, if it's
+// valid JSON, replaces the entire document with formatJsonNode()'s output
+// as ONE undoable core::ReplaceRangeCommand - the first place in this
+// codebase core::ReplaceRangeCommand is used for a whole-document rewrite
+// rather than a targeted in-place edit.
+void dispatchJsonFormatCommand(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session) {
+    const auto tree = jsontree::parseJsonTree(session.document());
+    if (!tree.has_value()) {
+        showJsonFormatInvalidDialog(hwnd);
+        return;
+    }
+    const std::u16string formatted = jsontree::formatJsonNode(*tree);
+    const document::TextPos length = session.document().length();
+    const document::TextRange fullRange{.start = 0, .end = length};
+    const std::u16string current = session.document().snapshot()->extract(fullRange);
+    if (formatted == current) {
+        return;  // already formatted - no Undo step, no dirty-flag flip
+    }
+    session.dispatcher().dispatch(std::make_unique<core::ReplaceRangeCommand>(fullRange, formatted));
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
+// WI-15d ("JSON検証", command palette only, same reasoning as
+// dispatchJsonFormatCommand() above). Read-only - never edits the
+// document, only reports jsontree::validateJson()'s verdict and (on
+// failure) moves the cursor to the error's best-effort position via the
+// same jumpToOutlinePosition() every OTHER structural-jump feature in this
+// file already uses (OutlinePane/JsonTreePane/CsvGridPane).
+void dispatchJsonValidateCommand(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session) {
+    const auto error = jsontree::validateJson(session.document());
+    if (!error.has_value()) {
+        showJsonValidDialog(hwnd);
+        return;
+    }
+    jumpToOutlinePosition(error->position, hwnd, session, renderPipeline);
+    showJsonValidationErrorDialog(hwnd, error->message);
+}
+
 // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K. Deliberately hardcoded VK_* comparisons
 // - NOT routed through core::KeyBindings/chordMatches() like
 // Copy/Cut/Paste/Undo/Redo in handleClipboardOrUndoRedoKey() below - these 5
@@ -2105,6 +2150,22 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .commandId = CommandId::None,
         .action = [hwnd, &workspace, &renderPipeline]() {
             dispatchDeleteLineCommand(hwnd, renderPipeline, workspace.active());
+        }});
+    // WI-15d: "JSON整形"/"JSON検証" - palette-only, same CommandId::None
+    // shape as edit.selectAll/edit.duplicateLine/etc. above (see
+    // dispatchJsonFormatCommand()/dispatchJsonValidateCommand()'s own
+    // comments for why - no CommandId/keybinding/menu entry).
+    commands.push_back(CommandDescriptor{
+        .id = u"json.format", .title = u"JSON: Format Document", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchJsonFormatCommand(hwnd, renderPipeline, workspace.active());
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"json.validate", .title = u"JSON: Validate", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            dispatchJsonValidateCommand(hwnd, renderPipeline, workspace.active());
         }});
     commands.push_back(CommandDescriptor{
         .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",

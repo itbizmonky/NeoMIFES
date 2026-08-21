@@ -47,6 +47,27 @@ void showOpenErrorDialog(HWND owner, document::LoadError error);
 // failure modes).
 void showLogFormatNotDetectedDialog(HWND owner);
 
+// WI-15d: OK-only dialog for "JSON整形" (command palette, json.format) when
+// the current document isn't well-formed JSON (jsontree::parseJsonTree()
+// returned nullopt) - same shape as showLogFormatNotDetectedDialog() (a
+// single fixed message, no parameter).
+void showJsonFormatInvalidDialog(HWND owner);
+
+// WI-15d: OK-only success dialog for "JSON検証" (command palette,
+// json.validate) when jsontree::validateJson() returned nullopt.
+void showJsonValidDialog(HWND owner);
+
+// WI-15d: OK-only error dialog for "JSON検証" when jsontree::validateJson()
+// found a problem. `message` is the caller's own jsontree::JsonSyntaxError::
+// message text, shown verbatim - the one dialog in this file whose content
+// is dynamic, caller-supplied text rather than a fixed or enum-selected
+// string (this module deliberately still doesn't depend on
+// neomifes::jsontree itself - the caller decides what JsonSyntaxError means
+// and passes only the resulting text). The caller is responsible for moving
+// the cursor to the error position BEFORE calling this, if it wants to -
+// this function only shows the dialog.
+void showJsonValidationErrorDialog(HWND owner, std::u16string_view message);
+
 // WI-11: Restore/Discard prompt shown once per recoverable autosave found at
 // startup (app::scanForRecoverableAutoSaves()). Returns true if the user
 // chose to restore. `owner` may be nullptr - this runs at startup, BEFORE

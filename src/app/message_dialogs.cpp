@@ -5,6 +5,8 @@
 #include <array>
 #include <string>
 
+#include "neomifes/util/wchar_cast.h"
+
 namespace neomifes::app {
 
 namespace {
@@ -181,6 +183,40 @@ void showLogFormatNotDetectedDialog(HWND owner) {
         L"汎用 ISO-8601 + レベル行)のいずれにも十分な確信度で一致しませんでした。"
         L"コマンドパレットから特定の形式を直接選んで有効化することもできます。";
     config.dwCommonButtons = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showJsonFormatInvalidDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_ERROR_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"整形できません";
+    config.pszContent         = L"現在のドキュメントは有効なJSONではないため整形できません。";
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showJsonValidDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_INFORMATION_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"有効なJSONです";
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showJsonValidationErrorDialog(HWND owner, std::u16string_view message) {
+    const std::wstring content(neomifes::util::toWstringView(message));
+
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_ERROR_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"JSONの構文エラー";
+    config.pszContent         = content.c_str();
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
     ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
 }
 
