@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "neomifes/app/command_dispatch.h"
+#include "neomifes/app/csv_grid_bridge.h"
 #include "neomifes/app/document_open.h"
 #include "neomifes/app/editor_input.h"
 #include "neomifes/app/file_dialogs.h"
@@ -48,6 +49,7 @@
 #include "neomifes/core/selection_model.h"
 #include "neomifes/core/settings.h"
 #include "neomifes/core/viewport.h"
+#include "neomifes/csvmode/csv_delimiter_detection.h"
 #include "neomifes/document/buffer_snapshot.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
@@ -117,6 +119,8 @@ using neomifes::ui::CommandDescriptor;
 using neomifes::ui::CommandId;
 using neomifes::ui::CommandPalette;
 using neomifes::ui::CommandPaletteConfig;
+using neomifes::ui::CsvGridPane;
+using neomifes::ui::CsvGridPaneConfig;
 using neomifes::ui::FindBar;
 using neomifes::ui::FindBarConfig;
 using neomifes::ui::GotoLineBar;
@@ -482,6 +486,62 @@ bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
     return true;
 }
 
+// Shows/refreshes CsvGridPane for session's current document (WI-16c) - same
+// async-aware role refreshJsonTreePane() above plays for JsonTreePane. No
+// hwnd/RenderPipeline needed here (unlike refreshJsonTreePane()'s folding
+// sync) - CsvGridPane has no folding-gutter integration. If session.csvModel()
+// already holds a cached result, it is shown immediately and no indexing
+// request is made. Otherwise the pane is shown EMPTY right away and a
+// background request is kicked off (using detectCsvDelimiter()'s guess,
+// falling back to ',' - same "auto-detect once, then treat it as the
+// document's delimiter" contract every WI-16 CsvParseOptions call site
+// shares) if one isn't already in flight; csvGridPanePendingSessionToken is
+// set whenever indexing ends up in flight, same contract as
+// jsonTreePanePendingSessionToken.
+void refreshCsvGridPane(EditorSession& session, CsvGridPane& csvGridPane,
+                        std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+                        const void*& csvGridPanePendingSessionToken) {
+    if (session.csvModel().has_value()) {
+        csvGridPanePendingSessionToken = nullptr;
+        const auto& model               = *session.csvModel();
+        csvGridPane.showWith(neomifes::app::buildCsvGridColumnLabels(model, session.document()),
+                             model.dataRowCount());
+        return;
+    }
+
+    csvGridPane.showWith({}, 0);
+    if (!session.csvIndexInFlight() && csvModelWorker) {
+        const char16_t delimiter = csvmode::detectCsvDelimiter(session.document()).value_or(u',');
+        session.beginCsvIndexing(*csvModelWorker, csvmode::CsvParseOptions{.delimiter = delimiter, .hasHeader = true});
+    }
+    if (session.csvIndexInFlight()) {
+        csvGridPanePendingSessionToken = &session;
+    }
+}
+
+// Ctrl+Shift+G while the document editing area has focus (WI-16c) - same
+// toggle shape as handleJsonTreeKey() above (see handleOutlineKey()'s own
+// comment for why this TOGGLES rather than only ever showing). Clears
+// csvGridPanePendingSessionToken on the hide branch - same hazard
+// handleJsonTreeKey()'s own comment documents. Deliberately takes NO hwnd -
+// unlike refreshJsonTreePane() (folding sync needs it), refreshCsvGridPane()
+// has no use for one (CsvGridPane has no folding-gutter integration, see
+// its own header comment), so there is nothing here to pass it to.
+bool handleCsvGridKey(UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session, CsvGridPane& csvGridPane,
+                      std::optional<csvmode::CsvModelWorker>& csvModelWorker, const core::KeyBindings& keyBindings,
+                      const void*& csvGridPanePendingSessionToken) {
+    if (!chordMatches(keyBindings, CommandId::CsvGridToggle, ctrlDown, shiftDown, false, vkCode)) {
+        return false;
+    }
+    if (csvGridPane.isVisible()) {
+        csvGridPane.hide();
+        csvGridPanePendingSessionToken = nullptr;
+    } else {
+        refreshCsvGridPane(session, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken);
+    }
+    return true;
+}
+
 // OutlinePaneConfig::onItemSelected (Phase 7g) - unlike jumpToGotoTarget()/
 // openDocumentAt(), no line/column conversion is needed: the targetPos
 // OutlinePane echoes back is already a 0-based document::TextPos into the
@@ -580,8 +640,18 @@ bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
 // blank document) that skipping it caused during WI-02's design review.
 // WI-04: takes EditorSession& (folding/findReplaceState/language - 3
 // members, was FoldingModel&/FindReplaceState&/optional<path> separately).
-void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session,
-                                FindBar& findBar) {
+// WI-16c: hides CsvGridPane and clears its pending-session token - a
+// document swap (Ctrl+O/Ctrl+N/drag-drop) replaces the SAME EditorSession's
+// document with different content, so any grid the OLD content produced is
+// meaningless for the new one (and, being a full-client-area overlay, would
+// otherwise hide the newly loaded document entirely - unlike OutlinePane/
+// JsonTreePane's docked strips, which tolerate staying open across this same
+// event). Clearing the token here is the same hazard handleCsvGridKey()'s
+// own comment documents for the toggle-off path - without it, a
+// kMsgCsvIndexReady result for the OLD document's now-abandoned indexing
+// request could still resurrect the pane.
+void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session, FindBar& findBar,
+                                CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken) {
     auto& findReplaceState = session.findReplaceState();
     findReplaceState.currentMatches.clear();
     findReplaceState.currentMatchIndex = 0;
@@ -591,6 +661,8 @@ void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, Edito
     session.folding().setFoldableRegions({});
     syncFoldingState(hwnd, renderPipeline, session.folding());
     renderPipeline.setLanguage(session.language());
+    csvGridPane.hide();
+    csvGridPanePendingSessionToken = nullptr;
     ::SetFocus(hwnd);
 }
 
@@ -631,8 +703,13 @@ void pushLogVisualsForSession(RenderPipeline& renderPipeline, const EditorSessio
 // a brand new EditorSession's state (empty matches/folds/bookmarks) is
 // indistinguishable from "restore" in that case, so the same function
 // covers both without a separate code path.
-void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session,
-                              FindBar& findBar) {
+// WI-16c: hides CsvGridPane and clears its pending-session token on every
+// tab switch - see resetViewAfterDocumentSwap()'s own comment for why this
+// is required (not merely tolerated the way OutlinePane/JsonTreePane's own
+// stay-open-across-a-tab-switch gap already is) for a full-client-area
+// overlay.
+void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session, FindBar& findBar,
+                              CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken) {
     renderPipeline.setDocument(&session.document());
     renderPipeline.setLanguage(session.language());
     renderPipeline.setBookmarkedLines(std::vector<neomifes::document::LineNumber>(
@@ -648,6 +725,8 @@ void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorS
                           session.findReplaceState().currentMatches.size());
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     syncHorizontalScrollBar(hwnd, renderPipeline, session.viewport());
+    csvGridPane.hide();
+    csvGridPanePendingSessionToken = nullptr;
     ::SetFocus(hwnd);
 }
 
@@ -717,12 +796,13 @@ std::optional<LoadError> openFileAndSyncView(const std::filesystem::path& path,
                                              std::optional<std::uint64_t> targetColumn, HWND hwnd,
                                              EditorSession& session, RenderPipeline& renderPipeline,
                                              FindBar& findBar, core::RecentFiles& recentFiles,
-                                             const MenuBarHandles& menuHandles) {
+                                             const MenuBarHandles& menuHandles, CsvGridPane& csvGridPane,
+                                             const void*& csvGridPanePendingSessionToken) {
     auto error = session.openFile(path, targetLine, targetColumn);
     if (error) {
         return error;
     }
-    resetViewAfterDocumentSwap(hwnd, renderPipeline, session, findBar);
+    resetViewAfterDocumentSwap(hwnd, renderPipeline, session, findBar, csvGridPane, csvGridPanePendingSessionToken);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     recentFiles.record(path);
     refreshRecentFilesMenu(menuHandles, hwnd, recentFiles);
@@ -824,7 +904,8 @@ bool confirmDiscardIfDirty(HWND hwnd, EditorSession& session, const core::Settin
 // since chordMatches() needs the full modifier state.
 bool handleTagJumpKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
                       RenderPipeline& renderPipeline, FindBar& findBar, const core::KeyBindings& keyBindings,
-                      core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles) {
+                      core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles, CsvGridPane& csvGridPane,
+                      const void*& csvGridPanePendingSessionToken) {
     if (!chordMatches(keyBindings, CommandId::TagJump, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
@@ -848,7 +929,8 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Edi
     // stale/missing path - openFileAndSyncView() leaves everything untouched
     // on failure, same silent no-op as before this WI.
     (void)openFileAndSyncView(resolvedPath, reference->line - 1, targetColumn, hwnd, session,
-                              renderPipeline, findBar, recentFiles, menuHandles);
+                              renderPipeline, findBar, recentFiles, menuHandles, csvGridPane,
+                              csvGridPanePendingSessionToken);
     return true;
 }
 
@@ -1221,21 +1303,25 @@ void dispatchMoveLineCommand(bool moveDown, HWND hwnd, RenderPipeline& renderPip
                                                 Workspace& workspace, RenderPipeline& renderPipeline,
                                                 FindBar& findBar, const core::KeyBindings& keyBindings,
                                                 core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
-                                                const core::Settings& settings, AutosaveContext& autosave) {
+                                                const core::Settings& settings, AutosaveContext& autosave,
+                                                CsvGridPane& csvGridPane,
+                                                const void*& csvGridPanePendingSessionToken) {
     constexpr std::array<CommandId, 5> kCandidates{CommandId::Copy, CommandId::Cut, CommandId::Paste,
                                                     CommandId::Undo, CommandId::Redo};
     for (const CommandId candidate : kCandidates) {
         if (!chordMatches(keyBindings, candidate, ctrlDown, shiftDown, false, vkCode)) {
             continue;
         }
-        const CommandDispatchContext ctx{.hwnd           = hwnd,
-                                         .workspace      = workspace,
-                                         .renderPipeline = renderPipeline,
-                                         .findBar        = findBar,
-                                         .recentFiles    = recentFiles,
-                                         .menuHandles    = menuHandles,
-                                         .autosave       = autosave,
-                                         .settings       = settings};
+        const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                         .workspace                      = workspace,
+                                         .renderPipeline                 = renderPipeline,
+                                         .findBar                        = findBar,
+                                         .recentFiles                    = recentFiles,
+                                         .menuHandles                    = menuHandles,
+                                         .autosave                       = autosave,
+                                         .settings                       = settings,
+                                         .csvGridPane                    = csvGridPane,
+                                         .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken};
         dispatchCommand(candidate, ctx);
         return true;
     }
@@ -1253,18 +1339,22 @@ void dispatchMoveLineCommand(bool moveDown, HWND hwnd, RenderPipeline& renderPip
                                             Workspace& workspace, RenderPipeline& renderPipeline,
                                             FindBar& findBar, const core::KeyBindings& keyBindings,
                                             core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
-                                            const core::Settings& settings, AutosaveContext& autosave) {
+                                            const core::Settings& settings, AutosaveContext& autosave,
+                                            CsvGridPane& csvGridPane,
+                                            const void*& csvGridPanePendingSessionToken) {
     if (!chordMatches(keyBindings, CommandId::ToggleOverwriteMode, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
-    const CommandDispatchContext ctx{.hwnd           = hwnd,
-                                     .workspace      = workspace,
-                                     .renderPipeline = renderPipeline,
-                                     .findBar        = findBar,
-                                     .recentFiles    = recentFiles,
-                                     .menuHandles    = menuHandles,
-                                     .autosave       = autosave,
-                                     .settings       = settings};
+    const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                     .workspace                      = workspace,
+                                     .renderPipeline                 = renderPipeline,
+                                     .findBar                        = findBar,
+                                     .recentFiles                    = recentFiles,
+                                     .menuHandles                    = menuHandles,
+                                     .autosave                       = autosave,
+                                     .settings                       = settings,
+                                     .csvGridPane                    = csvGridPane,
+                                     .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken};
     dispatchCommand(CommandId::ToggleOverwriteMode, ctx);
     return true;
 }
@@ -1285,8 +1375,10 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
                         JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
-                        const void*& jsonTreePanePendingSessionToken, bool freeCursorModeEnabled,
-                        bool imeComposing, const core::KeyBindings& keyBindings, core::RecentFiles& recentFiles,
+                        const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
+                        std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+                        const void*& csvGridPanePendingSessionToken, bool freeCursorModeEnabled, bool imeComposing,
+                        const core::KeyBindings& keyBindings, core::RecentFiles& recentFiles,
                         const MenuBarHandles& menuHandles, const core::Settings& settings,
                         AutosaveContext& autosave) {
     // WI-06: checked before EVERYTHING else in this dispatch chain (even
@@ -1328,6 +1420,10 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
                           keyBindings, jsonTreePanePendingSessionToken)) {
         return;
     }
+    if (handleCsvGridKey(vkCode, shiftDown, ctrlDown, session, csvGridPane, csvModelWorker, keyBindings,
+                         csvGridPanePendingSessionToken)) {
+        return;
+    }
     if (handleGotoLineKey(vkCode, shiftDown, ctrlDown, gotoLineBar, keyBindings)) {
         return;
     }
@@ -1335,7 +1431,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
         return;
     }
     if (handleTagJumpKey(hwnd, vkCode, shiftDown, ctrlDown, session, renderPipeline, findBar, keyBindings,
-                         recentFiles, menuHandles)) {
+                         recentFiles, menuHandles, csvGridPane, csvGridPanePendingSessionToken)) {
         return;
     }
     // WI-07 step2: Save/Open/New/tab-switch/tab-close no longer appear in
@@ -1357,7 +1453,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     // under clang-tidy's threshold - the compound condition + CommandId
     // lookup would otherwise count directly against it.
     if (handleClipboardOrUndoRedoKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                                     keyBindings, recentFiles, menuHandles, settings, autosave)) {
+                                     keyBindings, recentFiles, menuHandles, settings, autosave, csvGridPane,
+                                     csvGridPanePendingSessionToken)) {
         return;
     }
     // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K - see handleLineEditKey()'s own
@@ -1365,8 +1462,9 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleLineEditKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline)) {
         return;
     }
-    if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                                 keyBindings, recentFiles, menuHandles, settings, autosave)) {
+    if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar, keyBindings,
+                                 recentFiles, menuHandles, settings, autosave, csvGridPane,
+                                 csvGridPanePendingSessionToken)) {
         return;
     }
     const bool changed =
@@ -1814,6 +1912,56 @@ void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, 
         }});
 }
 
+// WI-16c: registers view.jsonTree.toggle/view.csvGrid.toggle in the palette.
+// WI-15c's own plan claimed this for JsonTreeToggle but never actually added
+// it - a real gap discovered while adding CsvGridToggle's own entry,
+// corrected here (in the same commit as CsvGridToggle) rather than left for
+// a future session; see build_plan.md's WI-16c entry. Pulled out of
+// buildCommandRegistry() into its own function for the same
+// cognitive-complexity reason appendLogModeCommands() above was - adding
+// these 2 entries inline pushed buildCommandRegistry() to 30 (threshold 25).
+// Bodies duplicate handleJsonTreeKey()/handleCsvGridKey()'s own toggle logic
+// rather than calling those functions directly - they take vkCode/
+// shiftDown/ctrlDown for chordMatches(), which a palette invocation has none
+// of - matching the small-duplicated-toggle-body precedent this codebase
+// already established across handleXxxKey()/dispatchWidgetShowCommand()'s
+// own case bodies for the same commands.
+void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
+                                  RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings,
+                                  JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                                  const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
+                                  std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+                                  const void*& csvGridPanePendingSessionToken) {
+    commands.push_back(CommandDescriptor{
+        .id = u"view.jsonTree.toggle", .title = u"Toggle JSON Tree",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"view.jsonTree.toggle"),
+        .commandId = CommandId::JsonTreeToggle,
+        .action = [hwnd, &workspace, &jsonTreePane, &jsonTreeWorker, &renderPipeline,
+                  &jsonTreePanePendingSessionToken]() {
+            EditorSession& session = workspace.active();
+            if (jsonTreePane.isVisible()) {
+                jsonTreePane.hide();
+                jsonTreePanePendingSessionToken = nullptr;
+            } else {
+                refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
+                                   jsonTreePanePendingSessionToken);
+            }
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"view.csvGrid.toggle", .title = u"Toggle CSV Grid",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"view.csvGrid.toggle"),
+        .commandId = CommandId::CsvGridToggle,
+        .action = [&workspace, &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken]() {
+            EditorSession& session = workspace.active();
+            if (csvGridPane.isVisible()) {
+                csvGridPane.hide();
+                csvGridPanePendingSessionToken = nullptr;
+            } else {
+                refreshCsvGridPane(session, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken);
+            }
+        }});
+}
+
 std::vector<CommandDescriptor> buildCommandRegistry(
     HWND hwnd, FindBar& findBar, Workspace& workspace, RenderPipeline& renderPipeline, core::Settings& settings,
     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
@@ -1821,7 +1969,10 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     bool& freeCursorModeEnabled, CommandPalette& commandPalette, core::RecentFiles& recentFiles,
     const MenuBarHandles& menuHandles, AutosaveContext& autosave,
     std::optional<LogIndexWorker>& logIndexWorker, std::vector<LogPatternRule>& userLogPatterns,
-    const std::optional<std::filesystem::path>& logPatternsDir) {
+    const std::optional<std::filesystem::path>& logPatternsDir, JsonTreePane& jsonTreePane,
+    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, const void*& jsonTreePanePendingSessionToken,
+    CsvGridPane& csvGridPane, std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+    const void*& csvGridPanePendingSessionToken) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -1856,32 +2007,36 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         // body inline - the same case now also backs Ctrl+Z's own explicit
         // handleKeyDownEvent() check (Undo isn't accelerator-routed, see
         // command_dispatch.h's top comment).
-        .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave,
-                  &settings]() {
-            const CommandDispatchContext ctx{.hwnd           = hwnd,
-                                             .workspace      = workspace,
-                                             .renderPipeline = renderPipeline,
-                                             .findBar        = findBar,
-                                             .recentFiles    = recentFiles,
-                                             .menuHandles    = menuHandles,
-                                             .autosave       = autosave,
-                                             .settings       = settings};
+        .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave, &settings,
+                  &csvGridPane, &csvGridPanePendingSessionToken]() {
+            const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                             .workspace                      = workspace,
+                                             .renderPipeline                 = renderPipeline,
+                                             .findBar                        = findBar,
+                                             .recentFiles                    = recentFiles,
+                                             .menuHandles                    = menuHandles,
+                                             .autosave                       = autosave,
+                                             .settings                       = settings,
+                                             .csvGridPane                    = csvGridPane,
+                                             .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken};
             dispatchCommand(CommandId::Undo, ctx);
         }});
     commands.push_back(CommandDescriptor{
         .id = u"edit.redo", .title = u"Redo",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"edit.redo"),
         .commandId = CommandId::Redo,
-        .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave,
-                  &settings]() {
-            const CommandDispatchContext ctx{.hwnd           = hwnd,
-                                             .workspace      = workspace,
-                                             .renderPipeline = renderPipeline,
-                                             .findBar        = findBar,
-                                             .recentFiles    = recentFiles,
-                                             .menuHandles    = menuHandles,
-                                             .autosave       = autosave,
-                                             .settings       = settings};
+        .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave, &settings,
+                  &csvGridPane, &csvGridPanePendingSessionToken]() {
+            const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                             .workspace                      = workspace,
+                                             .renderPipeline                 = renderPipeline,
+                                             .findBar                        = findBar,
+                                             .recentFiles                    = recentFiles,
+                                             .menuHandles                    = menuHandles,
+                                             .autosave                       = autosave,
+                                             .settings                       = settings,
+                                             .csvGridPane                    = csvGridPane,
+                                             .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken};
             dispatchCommand(CommandId::Redo, ctx);
         }});
     commands.push_back(CommandDescriptor{
@@ -2065,7 +2220,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .commandId = CommandId::None,
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                   menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir]() {
+                   menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
+                   &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
+                   &csvGridPanePendingSessionToken]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2074,7 +2231,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker, userLogPatterns, logPatternsDir));
+                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
+                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2104,8 +2262,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .commandId       = CommandId::None,
             .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                       menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir,
-                       presetName = std::u16string(choice.name)]() {
+                       menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
+                       &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
+                       &csvGridPanePendingSessionToken, presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2114,7 +2273,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 commandPalette.setCommands(buildCommandRegistry(
                     hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
-                    menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir));
+                    menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
+                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2135,7 +2295,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .commandId = CommandId::None,
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
-                   menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir]() {
+                   menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
+                   &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
+                   &csvGridPanePendingSessionToken]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2143,9 +2305,17 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker, userLogPatterns, logPatternsDir));
+                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
+                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
+
+    // WI-16c: "view.jsonTree.toggle"/"view.csvGrid.toggle" - see
+    // appendStructuralViewCommands()'s own doc comment for why this block
+    // lives in its own function rather than inline here.
+    appendStructuralViewCommands(commands, hwnd, workspace, renderPipeline, keyBindings, jsonTreePane, jsonTreeWorker,
+                                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                                 csvGridPanePendingSessionToken);
 
     // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
     // appendLogModeCommands()'s own doc comment for why this block lives in
@@ -2238,7 +2408,8 @@ void runGrepQuery(std::u16string_view queryText, std::u16string_view folderText,
 // (document-independent, see runGrepQuery()'s comment).
 void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepState, EditorSession& session,
                       RenderPipeline& renderPipeline, FindBar& findBar, core::RecentFiles& recentFiles,
-                      const MenuBarHandles& menuHandles) {
+                      const MenuBarHandles& menuHandles, CsvGridPane& csvGridPane,
+                      const void*& csvGridPanePendingSessionToken) {
     if (resultIndex >= grepState.currentResults.size()) {
         return;
     }
@@ -2247,7 +2418,8 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepS
     // leaves everything untouched on failure, same silent no-op contract as
     // before this WI. No error-toast UI exists yet to surface this.
     (void)openFileAndSyncView(match.path, match.line, match.columnRange.start, hwnd, session,
-                              renderPipeline, findBar, recentFiles, menuHandles);
+                              renderPipeline, findBar, recentFiles, menuHandles, csvGridPane,
+                              csvGridPanePendingSessionToken);
 }
 
 // Builds the GrepBarConfig callbacks (Phase 5c3) - same extraction rationale
@@ -2261,7 +2433,8 @@ void jumpToGrepResult(std::size_t resultIndex, HWND hwnd, const GrepState& grepS
 GrepBarConfig buildGrepBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                  FindBar& findBar, GrepBar& grepBar, GrepState& grepState,
                                  SearchHistory& searchHistory, core::RecentFiles& recentFiles,
-                                 const MenuBarHandles& menuHandles) {
+                                 const MenuBarHandles& menuHandles, CsvGridPane& csvGridPane,
+                                 const void*& csvGridPanePendingSessionToken) {
     GrepBarConfig config{};
     config.onRunQuery = [&grepState, &grepBar, &searchHistory](std::u16string_view queryText,
                                                                 std::u16string_view folderText) {
@@ -2277,10 +2450,10 @@ GrepBarConfig buildGrepBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
             grepBar.setQueryText(*newer);
         }
     };
-    config.onResultActivated = [hwnd, &grepState, &workspace, &renderPipeline, &findBar, &recentFiles,
-                                menuHandles](std::size_t resultIndex) {
+    config.onResultActivated = [hwnd, &grepState, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles,
+                                &csvGridPane, &csvGridPanePendingSessionToken](std::size_t resultIndex) {
         jumpToGrepResult(resultIndex, hwnd, grepState, workspace.active(), renderPipeline, findBar, recentFiles,
-                         menuHandles);
+                         menuHandles, csvGridPane, csvGridPanePendingSessionToken);
     };
     config.onClosed = [hwnd, &grepBar]() {
         grepBar.hide();
@@ -2356,6 +2529,69 @@ void createAndPositionJsonTreePane(HWND hwnd, HINSTANCE hInstance, Workspace& wo
                                  static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
+// Same "create then prime the first position/size explicitly" shape as
+// createAndPositionJsonTreePane() above (WI-16c). config.onGetCellText/
+// onCellActivated resolve workspace.active() FRESH at invocation time (WI-05's
+// own stored-closure convention, see wireNormalMode()'s own header comment) -
+// this config is set once here but LVN_GETDISPINFOW/LVN_ITEMACTIVATE fire
+// long after, potentially many tab switches later (even though CsvGridPane
+// auto-hides on tab switch, see syncViewForActiveSession()'s own comment -
+// resolving fresh keeps this robust regardless of exact message ordering).
+// config.onCellActivated: colIndex==0 is CsvGridPane's own synthesized
+// row-number column (see csv_grid_pane.h's CsvGridPaneConfig::onCellActivated
+// comment for why this index space is NOT pre-shifted the way
+// onGetCellText's is) - jump to that row's own first cell instead of a real
+// CSV column. Reuses jumpToOutlinePosition() as-is (same "targetPos into the
+// SAME open document" contract JsonTreePane/OutlinePane already established)
+// and then hides the pane itself + clears the pending token - unlike
+// OutlinePane/JsonTreePane's onItemSelected, which leaves the pane open
+// (see those classes' own header comments), CsvGridPane covers the entire
+// client area, so a jump result is invisible until the pane closes.
+void createAndPositionCsvGridPane(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
+                                  RenderPipeline& renderPipeline, CsvGridPane& csvGridPane,
+                                  const void*& csvGridPanePendingSessionToken) {
+    CsvGridPaneConfig config{};
+    config.onGetCellText = [&workspace](std::size_t rowIndex, std::size_t colIndex) -> std::u16string {
+        const EditorSession& session = workspace.active();
+        if (!session.csvModel().has_value()) {
+            return u"";
+        }
+        return neomifes::app::csvGridCellText(*session.csvModel(), session.document(), rowIndex, colIndex);
+    };
+    config.onCellActivated = [hwnd, &workspace, &renderPipeline, &csvGridPane, &csvGridPanePendingSessionToken](
+                                 std::size_t rowIndex, std::size_t colIndex) {
+        EditorSession& session = workspace.active();
+        if (!session.csvModel().has_value()) {
+            return;
+        }
+        const auto& model = *session.csvModel();
+        if (rowIndex >= model.dataRowCount()) {
+            return;
+        }
+        const auto        row           = model.dataRow(rowIndex);
+        const std::size_t dataColIndex = colIndex == 0 ? 0 : colIndex - 1;
+        if (dataColIndex >= row.size()) {
+            return;
+        }
+        jumpToOutlinePosition(row[dataColIndex].startPos, hwnd, session, renderPipeline);
+        csvGridPane.hide();
+        csvGridPanePendingSessionToken = nullptr;
+    };
+    config.onClosed = [hwnd, &csvGridPanePendingSessionToken]() {
+        csvGridPanePendingSessionToken = nullptr;
+        ::SetFocus(hwnd);
+    };
+    if (!csvGridPane.create(hwnd, hInstance, config)) {
+        return;
+    }
+    RECT clientRect{};
+    ::GetClientRect(hwnd, &clientRect);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    csvGridPane.onParentResized(static_cast<std::uint32_t>(clientRect.right),
+                                static_cast<std::uint32_t>(clientRect.bottom), dpiScale, TabBar::heightDips(),
+                                StatusBar::heightDips());
+}
+
 // WI-05: builds TabBar's item list from workspace's current session list.
 // Untitled sessions are numbered by their position among ONLY the
 // currently-untitled sessions (1-based) - so 2 simultaneously-open blank
@@ -2409,12 +2645,15 @@ std::wstring buildWindowTitle(const EditorSession& session) {
 // (fired when the user clicks a different tab) activates that session and
 // restores its view via syncViewForActiveSession(), same as
 // dispatchCommand()'s TabNext/TabPrevious/TabSwitch* cases (WI-07 step2).
-void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
-                             RenderPipeline& renderPipeline, FindBar& findBar, TabBar& tabBar) {
+void createAndPositionTabBar(HWND hwnd, HINSTANCE hInstance, Workspace& workspace, RenderPipeline& renderPipeline,
+                             FindBar& findBar, TabBar& tabBar, CsvGridPane& csvGridPane,
+                             const void*& csvGridPanePendingSessionToken) {
     TabBarConfig config{};
-    config.onTabSelected = [hwnd, &workspace, &renderPipeline, &findBar](std::size_t index) {
+    config.onTabSelected = [hwnd, &workspace, &renderPipeline, &findBar, &csvGridPane,
+                            &csvGridPanePendingSessionToken](std::size_t index) {
         workspace.activate(index);
-        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
+        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
+                                 csvGridPanePendingSessionToken);
     };
     if (!tabBar.create(hwnd, hInstance, config)) {
         return;
@@ -2568,7 +2807,8 @@ void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, Workspace& works
 // this step.
 void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, RenderPipeline& renderPipeline,
                          FindBar& findBar, core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
-                         const core::Settings& settings, AutosaveContext& autosave) {
+                         const core::Settings& settings, AutosaveContext& autosave, CsvGridPane& csvGridPane,
+                         const void*& csvGridPanePendingSessionToken) {
     HMENU menu = ::CreatePopupMenu();
     if (menu == nullptr) {
         return;
@@ -2587,14 +2827,16 @@ void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, Render
     if (selected <= 0) {
         return;  // dismissed without a choice (Escape, click-away)
     }
-    const CommandDispatchContext ctx{.hwnd           = hwnd,
-                                     .workspace      = workspace,
-                                     .renderPipeline = renderPipeline,
-                                     .findBar        = findBar,
-                                     .recentFiles    = recentFiles,
-                                     .menuHandles    = menuHandles,
-                                     .autosave       = autosave,
-                                     .settings       = settings};
+    const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                     .workspace                      = workspace,
+                                     .renderPipeline                 = renderPipeline,
+                                     .findBar                        = findBar,
+                                     .recentFiles                    = recentFiles,
+                                     .menuHandles                    = menuHandles,
+                                     .autosave                       = autosave,
+                                     .settings                       = settings,
+                                     .csvGridPane                    = csvGridPane,
+                                     .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken};
     dispatchCommand(static_cast<CommandId>(selected), ctx);
 }
 
@@ -2631,7 +2873,8 @@ StatusBarParts buildStatusBarParts(const EditorSession& session) {
 // the currently-active tab's content.
 void handleDropFilesEvent(HWND hwnd, const std::vector<std::wstring>& paths, Workspace& workspace,
                           RenderPipeline& renderPipeline, FindBar& findBar, core::RecentFiles& recentFiles,
-                          const MenuBarHandles& menuHandles) {
+                          const MenuBarHandles& menuHandles, CsvGridPane& csvGridPane,
+                          const void*& csvGridPanePendingSessionToken) {
     if (paths.empty()) {
         return;
     }
@@ -2644,7 +2887,8 @@ void handleDropFilesEvent(HWND hwnd, const std::vector<std::wstring>& paths, Wor
         }
     }
     refreshRecentFilesMenu(menuHandles, hwnd, recentFiles);
-    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar);
+    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
+                             csvGridPanePendingSessionToken);
 }
 
 // WI-06: cfg.onImeStartComposition body. Captures the PRE-collapse primary
@@ -2807,12 +3051,14 @@ void dispatchOpenCommand(const CommandDispatchContext& ctx) {
     }
     ctx.recentFiles.record(*chosen);
     refreshRecentFilesMenu(ctx.menuHandles, ctx.hwnd, ctx.recentFiles);
-    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                            ctx.csvGridPanePendingSessionToken);
 }
 
 void dispatchNewCommand(const CommandDispatchContext& ctx) {
     static_cast<void>(ctx.workspace.openBlank());
-    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                            ctx.csvGridPanePendingSessionToken);
 }
 
 // WI-11: a "最近使ったファイル" submenu click. `index` is already resolved by
@@ -2835,7 +3081,8 @@ void dispatchRecentFileCommand(std::size_t index, const CommandDispatchContext& 
     }
     ctx.recentFiles.record(path);
     refreshRecentFilesMenu(ctx.menuHandles, ctx.hwnd, ctx.recentFiles);
-    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                            ctx.csvGridPanePendingSessionToken);
 }
 
 // Handles TabNext/TabPrevious/TabSwitch1..9 - `id` must be one of those (the
@@ -2852,7 +3099,8 @@ void dispatchTabSwitchCommand(CommandId id, const CommandDispatchContext& ctx) {
     }
     if (target && *target != ctx.workspace.activeIndex()) {
         ctx.workspace.activate(*target);
-        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                            ctx.csvGridPanePendingSessionToken);
     }
 }
 
@@ -2863,7 +3111,8 @@ void dispatchTabCloseCommand(const CommandDispatchContext& ctx, EditorSession& s
     }
     if (ctx.workspace.sessionCount() <= 1) {
         ctx.workspace.active().resetToBlank();
-        resetViewAfterDocumentSwap(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+        resetViewAfterDocumentSwap(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                               ctx.csvGridPanePendingSessionToken);
         syncRenderStateAndInvalidate(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active());
         return;
     }
@@ -2877,7 +3126,8 @@ void dispatchTabCloseCommand(const CommandDispatchContext& ctx, EditorSession& s
     }
     const std::size_t activeIndex = ctx.workspace.activeIndex();
     if (ctx.workspace.closeSession(activeIndex)) {
-        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar);
+        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                            ctx.csvGridPanePendingSessionToken);
     }
 }
 
@@ -2931,7 +3181,9 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
                                FindBar& findBar, CommandPalette& commandPalette, GrepBar& grepBar,
                                GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane,
                                JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
-                               const void*& jsonTreePanePendingSessionToken) {
+                               const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
+                               std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+                               const void*& csvGridPanePendingSessionToken) {
     switch (id) {
         case CommandId::FindShow:
             findBar.show();
@@ -2972,6 +3224,16 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             } else {
                 refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
                                    jsonTreePanePendingSessionToken);
+            }
+            return true;
+        }
+        case CommandId::CsvGridToggle: {
+            EditorSession& session = workspace.active();
+            if (csvGridPane.isVisible()) {
+                csvGridPane.hide();
+                csvGridPanePendingSessionToken = nullptr;
+            } else {
+                refreshCsvGridPane(session, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken);
             }
             return true;
         }
@@ -3076,25 +3338,46 @@ void applyJsonTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane,
 }
 
 // WI-16b: CsvModelWorker's background-thread indexing completion signal
-// receiver (wireNormalMode()'s cfg.onAppMessage kMsgCsvIndexReady branch) -
-// mirrors applyJsonTreeReadyMessage() above (RenderPipeline/HWND/
-// InvalidateRect deliberately absent - no UI consumes csvModel() yet,
-// WI-16c). `wParam` is the opaque sessionToken requestIndex() was given
-// back - see applyLogIndexReadyMessage()'s own comment for why pointer-
-// VALUE comparison against &workspace.sessionAt(i) is safe even if the
-// issuing tab has since closed. `lParam` owns a heap-allocated CsvModel*
-// that must be reconstructed into a unique_ptr immediately to avoid leaking
-// it - always non-null here, since CsvModelWorker (unlike JsonTreeWorker)
-// never posts on failure (see csv_model_worker.h's header comment).
-void applyCsvIndexReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgCsvIndexReady branch).
+// `wParam` is the opaque sessionToken requestIndex() was given back - see
+// applyLogIndexReadyMessage()'s own comment for why pointer-VALUE comparison
+// against &workspace.sessionAt(i) is safe even if the issuing tab has since
+// closed. `lParam` owns a heap-allocated CsvModel* that must be
+// reconstructed into a unique_ptr immediately to avoid leaking it - always
+// non-null here, since CsvModelWorker (unlike JsonTreeWorker) never posts on
+// failure (see csv_model_worker.h's header comment).
+// WI-16c: gained csvGridPane/csvGridPanePendingSessionToken (previously just
+// workspace/wParam/lParam, WI-16b - "no UI consumes csvModel() yet" no
+// longer holds). Same two-condition auto-populate contract
+// applyJsonTreeReadyMessage() established: `token` must still equal
+// csvGridPanePendingSessionToken (this specific toggle-on is still being
+// waited for - not a stale delivery after the pane already closed, or after
+// a tab switch/document swap, both of which clear the token via
+// syncViewForActiveSession()/resetViewAfterDocumentSwap()) AND the result's
+// session must still be the ACTIVE tab. The token is cleared unconditionally
+// once matched, even if the second condition fails - a sessionToken is only
+// ever delivered once per requestIndex() call. No folding-gutter integration
+// unlike applyJsonTreeReadyMessage() - CsvGridPane has none.
+void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
+                               const void*& csvGridPanePendingSessionToken, WPARAM wParam, LPARAM lParam) {
     const std::unique_ptr<neomifes::csvmode::CsvModel> result(
         reinterpret_cast<neomifes::csvmode::CsvModel*>(lParam));
     const auto* const token = reinterpret_cast<const void*>(wParam);
     for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
-        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
-            workspace.sessionAt(i).applyCsvIndexResult(std::move(*result));
-            break;
+        if (static_cast<const void*>(&workspace.sessionAt(i)) != token) {
+            continue;
         }
+        EditorSession& session = workspace.sessionAt(i);
+        session.applyCsvIndexResult(std::move(*result));
+        if (token == csvGridPanePendingSessionToken) {
+            csvGridPanePendingSessionToken = nullptr;
+            if (i == workspace.activeIndex() && session.csvModel().has_value()) {
+                const auto& model = *session.csvModel();
+                csvGridPane.showWith(neomifes::app::buildCsvGridColumnLabels(model, session.document()),
+                                     model.dataRowCount());
+            }
+        }
+        break;
     }
 }
 
@@ -3110,7 +3393,8 @@ void applyCsvIndexReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lPara
 // message branches below were previously inline in wireNormalMode()'s own
 // cfg.onAppMessage lambda.
 void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, JsonTreePane& jsonTreePane,
-                      const void*& jsonTreePanePendingSessionToken, HWND hwnd, UINT msg, WPARAM wParam,
+                      const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
+                      const void*& csvGridPanePendingSessionToken, HWND hwnd, UINT msg, WPARAM wParam,
                       LPARAM lParam) {
     if (msg == neomifes::render::kMsgSyntaxTokensReady) {
         const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
@@ -3129,7 +3413,7 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
         return;
     }
     if (msg == kMsgCsvIndexReady) {
-        applyCsvIndexReadyMessage(workspace, wParam, lParam);
+        applyCsvIndexReadyMessage(workspace, csvGridPane, csvGridPanePendingSessionToken, wParam, lParam);
     }
 }
 
@@ -3282,7 +3566,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     const std::optional<std::filesystem::path>& logPatternsDir,
                     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                     std::optional<csvmode::CsvModelWorker>& csvModelWorker, JsonTreePane& jsonTreePane,
-                    const void*& jsonTreePanePendingSessionToken) {
+                    const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
+                    const void*& csvGridPanePendingSessionToken) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -3304,7 +3589,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
-                          &jsonTreePanePendingSessionToken](HWND hwnd) {
+                          &jsonTreePanePendingSessionToken, &csvGridPane,
+                          &csvGridPanePendingSessionToken](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -3375,7 +3661,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
                                              keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
                                              commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
-                                             userLogPatterns, logPatternsDir);
+                                             userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
+                                             jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                                             csvGridPanePendingSessionToken);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -3388,7 +3676,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // Same non-fatal treatment as findBar.create() above.
         const GrepBarConfig grepBarConfig = buildGrepBarConfig(hwnd, workspace, renderPipeline, findBar,
                                                                grepBar, grepState, searchHistory, recentFiles,
-                                                               menuHandles);
+                                                               menuHandles, csvGridPane,
+                                                               csvGridPanePendingSessionToken);
         [[maybe_unused]] const bool grepBarCreated = grepBar.create(hwnd, hInstance, grepBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
@@ -3397,10 +3686,15 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // above.
         createAndPositionJsonTreePane(hwnd, hInstance, workspace, renderPipeline, jsonTreePane,
                                       jsonTreePanePendingSessionToken);
+        // WI-16c: same non-fatal treatment as createAndPositionOutlinePane()
+        // above.
+        createAndPositionCsvGridPane(hwnd, hInstance, workspace, renderPipeline, csvGridPane,
+                                     csvGridPanePendingSessionToken);
         // WI-05 step 2: same non-fatal treatment as findBar.create() above -
         // a tab strip that fails to create simply isn't available this
         // session (the editor still works, just without visible tabs).
-        createAndPositionTabBar(hwnd, hInstance, workspace, renderPipeline, findBar, tabBar);
+        createAndPositionTabBar(hwnd, hInstance, workspace, renderPipeline, findBar, tabBar, csvGridPane,
+                                csvGridPanePendingSessionToken);
         // WI-07 step4: same non-fatal treatment as findBar.create() above -
         // a status bar that fails to create simply isn't available this
         // session (the editor still works, just without a bottom status
@@ -3429,7 +3723,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         startAutoSaveTimerIfConfigured(window, settings);
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
-                    &jsonTreePane, &tabBar, &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+                    &jsonTreePane, &csvGridPane, &tabBar,
+                    &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
@@ -3442,12 +3737,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         grepBar.onParentResized(w, dpiScale);
         outlinePane.onParentResized(w, h, dpiScale);
         jsonTreePane.onParentResized(w, h, dpiScale);
+        csvGridPane.onParentResized(w, h, dpiScale, TabBar::heightDips(), StatusBar::heightDips());
         tabBar.onParentResized(w, dpiScale);
         statusBar.onParentResized(w, h, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &jsonTreePane,
-                     &jsonTreeWorker, &jsonTreePanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
-                     menuHandles, &settings, &autosave](HWND hwnd, WPARAM wParam, LPARAM lParam) {
+                     &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
+                     &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles, menuHandles,
+                     &settings, &autosave](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
@@ -3464,14 +3761,16 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // sits BELOW CommandId::FindShow's 40000+ range, so it must be
         // checked before the early-return threshold below would otherwise
         // discard it.
-        const CommandDispatchContext ctx{.hwnd           = hwnd,
-                                         .workspace      = workspace,
-                                         .renderPipeline = renderPipeline,
-                                         .findBar        = findBar,
-                                         .recentFiles    = recentFiles,
-                                         .menuHandles    = menuHandles,
-                                         .autosave       = autosave,
-                                         .settings       = settings};
+        const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                         .workspace                      = workspace,
+                                         .renderPipeline                 = renderPipeline,
+                                         .findBar                        = findBar,
+                                         .recentFiles                    = recentFiles,
+                                         .menuHandles                    = menuHandles,
+                                         .autosave                       = autosave,
+                                         .settings                       = settings,
+                                         .csvGridPane                    = csvGridPane,
+                                         .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken};
         if (rawId >= neomifes::app::kRecentFileIdBase &&
             rawId < neomifes::app::kRecentFileIdBase + neomifes::app::kMaxRecentFileMenuItems) {
             dispatchRecentFileCommand(static_cast<std::size_t>(rawId - neomifes::app::kRecentFileIdBase), ctx);
@@ -3487,7 +3786,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // falls through to dispatchCommand() for everything else.
         if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, commandPalette,
                                       grepBar, gotoLineBar, outlinePane, jsonTreePane, jsonTreeWorker,
-                                      jsonTreePanePendingSessionToken)) {
+                                      jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                                      csvGridPanePendingSessionToken)) {
             return;
         }
         dispatchCommand(commandId, ctx);
@@ -3501,19 +3801,21 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // NMHDR::hwndFrom (see OutlinePane::handleNotify()/TabBar::handleNotify()'s
     // own comments for why neither TVN_SELCHANGEDW nor TCN_SELCHANGE require
     // a specific non-zero reply, so discarding one return value is safe).
-    cfg.onNotify = [&outlinePane, &jsonTreePane, &tabBar, &statusBar](HWND, WPARAM wParam, LPARAM lParam) {
+    cfg.onNotify = [&outlinePane, &jsonTreePane, &csvGridPane, &tabBar,
+                    &statusBar](HWND, WPARAM wParam, LPARAM lParam) {
         outlinePane.handleNotify(wParam, lParam);
         jsonTreePane.handleNotify(wParam, lParam);
+        csvGridPane.handleNotify(wParam, lParam);
         statusBar.handleNotify(wParam, lParam);
         return tabBar.handleNotify(wParam, lParam);
     };
     // Phase 7c/WI-14b: SyntaxWorker/LogIndexWorker background-thread
     // completion signals - see handleAppMessage()'s own doc comment above
     // for why the actual branching logic lives there, not in this lambda.
-    cfg.onAppMessage = [&renderPipeline, &workspace, &jsonTreePane, &jsonTreePanePendingSessionToken](
-                           HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        handleAppMessage(renderPipeline, workspace, jsonTreePane, jsonTreePanePendingSessionToken, hwnd, msg, wParam,
-                         lParam);
+    cfg.onAppMessage = [&renderPipeline, &workspace, &jsonTreePane, &jsonTreePanePendingSessionToken, &csvGridPane,
+                        &csvGridPanePendingSessionToken](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        handleAppMessage(renderPipeline, workspace, jsonTreePane, jsonTreePanePendingSessionToken, csvGridPane,
+                         csvGridPanePendingSessionToken, hwnd, msg, wParam, lParam);
     };
     // WI-02: WM_CLOSE veto - goes through confirmDiscardIfDirty() so an
     // unsaved edit is never silently discarded by closing the window. WI-05
@@ -3533,9 +3835,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         }
         return true;
     };
-    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar, &recentFiles,
-                       menuHandles](HWND hwnd, const std::vector<std::wstring>& paths) {
-        handleDropFilesEvent(hwnd, paths, workspace, renderPipeline, findBar, recentFiles, menuHandles);
+    cfg.onDropFiles = [&workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &csvGridPane,
+                       &csvGridPanePendingSessionToken](HWND hwnd, const std::vector<std::wstring>& paths) {
+        handleDropFilesEvent(hwnd, paths, workspace, renderPipeline, findBar, recentFiles, menuHandles, csvGridPane,
+                             csvGridPanePendingSessionToken);
     };
     // WI-11: fired every startAutoSaveTimer() interval (kAutoSaveTimerId is
     // the only timer this window ever starts, so no id comparison is
@@ -3548,10 +3851,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // WI-07 step9: right-click context menu - see showEditContextMenu()'s
     // own comment above for why xScreen/yScreen pass straight through with
     // no additional coordinate handling here.
-    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &settings,
-                        &autosave](HWND hwnd, std::int32_t xScreen, std::int32_t yScreen) {
+    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &settings, &autosave,
+                        &csvGridPane, &csvGridPanePendingSessionToken](HWND hwnd, std::int32_t xScreen,
+                                                                       std::int32_t yScreen) {
         showEditContextMenu(hwnd, POINT{.x = xScreen, .y = yScreen}, workspace, renderPipeline, findBar,
-                            recentFiles, menuHandles, settings, autosave);
+                            recentFiles, menuHandles, settings, autosave, csvGridPane,
+                            csvGridPanePendingSessionToken);
     };
     // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
     // pulled into a standalone function rather than assigned inline here
@@ -3559,12 +3864,14 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &jsonTreePane, &jsonTreeWorker, &jsonTreePanePendingSessionToken,
-                     &freeCursorModeEnabled, &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings,
+                     &outlinePane, &jsonTreePane, &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
+                     &csvModelWorker, &csvGridPanePendingSessionToken, &freeCursorModeEnabled, &imeComposing,
+                     &keyBindings, &recentFiles, menuHandles, &settings,
                      &autosave](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                           commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, jsonTreeWorker,
-                          jsonTreePanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,
+                          jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                          csvGridPanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,
                           recentFiles, menuHandles, settings, autosave);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {

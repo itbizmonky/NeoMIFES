@@ -45,6 +45,7 @@
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/command_ids.h"
+#include "neomifes/ui/csv_grid_pane.h"
 #include "neomifes/ui/find_bar.h"
 
 namespace neomifes::app {
@@ -98,6 +99,26 @@ struct CommandDispatchContext {
     // WI-11: dispatchSaveCommand() reads settings.createBackupOnSave to pass
     // through to performSave()/document::saveFile()'s keepBackup parameter.
     const core::Settings& settings;
+    // WI-16c: dispatchOpenCommand()/dispatchNewCommand()/
+    // dispatchRecentFileCommand()/dispatchTabSwitchCommand()/
+    // dispatchTabCloseCommand() all call syncViewForActiveSession()/
+    // resetViewAfterDocumentSwap() (normal_mode_wiring.cpp), which now hide
+    // CsvGridPane on every tab switch/document swap (see those functions'
+    // own comments for why - CsvGridPane covers the full client area, unlike
+    // OutlinePane/JsonTreePane's docked strips, so a stale grid left open
+    // across a tab switch would hide the newly active tab's content
+    // entirely). Added here rather than as 2 more individual parameters on
+    // each of those 5 dispatch*Command() functions - none of them otherwise
+    // need CsvGridPane, they only plumb it through to the shared sync
+    // functions, so bundling it into the context every one of them already
+    // receives avoids 5 pointless signature changes for 3 command families
+    // (Copy/Cut/Paste/Undo/Redo/ToggleOverwriteMode) that never touch it at
+    // all - their own CommandDispatchContext construction sites
+    // (handleClipboardOrUndoRedoKey()/handleOverwriteToggleKey()/
+    // showEditContextMenu()/buildCommandRegistry()) simply plumb through
+    // whatever csvGridPane/token wireNormalMode() itself already has.
+    ui::CsvGridPane& csvGridPane;
+    const void*&     csvGridPanePendingSessionToken;
 };
 
 // Handles: Save, SaveAs, Open, New, TabNext, TabPrevious, TabClose,

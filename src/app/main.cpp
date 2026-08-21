@@ -86,6 +86,7 @@
 #include "neomifes/platform/process_metrics.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/command_palette.h"
+#include "neomifes/ui/csv_grid_pane.h"
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
@@ -134,6 +135,7 @@ using neomifes::platform::PerfClock;
 using neomifes::platform::resolveAppDataDir;
 using neomifes::render::RenderPipeline;
 using neomifes::ui::CommandPalette;
+using neomifes::ui::CsvGridPane;
 using neomifes::ui::FindBar;
 using neomifes::ui::GotoLineBar;
 using neomifes::ui::GrepBar;
@@ -511,6 +513,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // class comment for why it is an independent class, not a refactor of
     // OutlinePane).
     JsonTreePane jsonTreePane;
+    // CSV grid panel (Ctrl+Shift+G, WI-16c) - a single virtual-mode
+    // WC_LISTVIEW. Unlike outlinePane/jsonTreePane above (260dip right-docked
+    // strips), this replaces the entire client area between the tab strip
+    // and the status bar (see csv_grid_pane.h's class comment for why).
+    CsvGridPane csvGridPane;
     // Tab strip (WI-05 step 2) - a single WC_TABCONTROL, always visible
     // (unlike outlinePane above), docked full-width along the top edge. See
     // tab_bar.h's class comment.
@@ -596,6 +603,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // normal_mode_wiring.h's own comment on wireNormalMode()'s matching
     // parameter for the full safety argument.
     const void* jsonTreePanePendingSessionToken = nullptr;
+    // WI-16c: same jsonTreePanePendingSessionToken reasoning above, for
+    // csvGridPane - cleared on toggle-off/Escape AND on every tab switch/
+    // document swap (syncViewForActiveSession()/resetViewAfterDocumentSwap(),
+    // normal_mode_wiring.cpp), unlike jsonTreePanePendingSessionToken which
+    // only needs the first two - see csv_grid_pane.h's class comment for why
+    // csvGridPane's full-client-area placement requires the extra two clear
+    // sites.
+    const void* csvGridPanePendingSessionToken = nullptr;
     // WI-14b: empty until wireNormalMode()'s onDeferredInit lambda
     // emplace()s it with a real HWND - LogIndexWorker's constructor
     // requires one and starts a background std::thread immediately, so
@@ -687,7 +702,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
                        logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker, jsonTreePane,
-                       jsonTreePanePendingSessionToken);
+                       jsonTreePanePendingSessionToken, csvGridPane, csvGridPanePendingSessionToken);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

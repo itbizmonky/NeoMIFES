@@ -46,6 +46,7 @@
 #include "neomifes/ui/find_bar.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
+#include "neomifes/ui/csv_grid_pane.h"
 #include "neomifes/ui/json_tree_pane.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
@@ -238,6 +239,21 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // once a matching result has been consumed - see refreshJsonTreePane()/
 // handleJsonTreeKey()'s own .cpp comments for why an unclearred stale token
 // would let the pane silently reappear after the user closed it.
+//
+// WI-16c: takes ui::CsvGridPane& csvGridPane and
+// const void*& csvGridPanePendingSessionToken - same pending-token contract
+// jsonTreePanePendingSessionToken above establishes, with one addition:
+// unlike JsonTreePane/OutlinePane (260dip docked strips that coexist with
+// the document view), CsvGridPane replaces the ENTIRE client area, so it
+// must also be cleared/hidden on every tab switch and document swap (not
+// just toggle-off/Escape) - see syncViewForActiveSession()/
+// resetViewAfterDocumentSwap()'s own .cpp comments for why a stale
+// full-screen grid left open across those events is a materially worse bug
+// than JsonTreePane/OutlinePane's own already-accepted "doesn't auto-hide on
+// tab switch" gap. CommandDispatchContext (command_dispatch.h) also gained
+// these two fields, rather than threading them as 2 more parameters through
+// every dispatch*Command() function that calls those two sync functions -
+// see that struct's own field comment for the reasoning.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
@@ -253,6 +269,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     const std::optional<std::filesystem::path>& logPatternsDir,
                     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                     std::optional<csvmode::CsvModelWorker>& csvModelWorker, ui::JsonTreePane& jsonTreePane,
-                    const void*& jsonTreePanePendingSessionToken);
+                    const void*& jsonTreePanePendingSessionToken, ui::CsvGridPane& csvGridPane,
+                    const void*& csvGridPanePendingSessionToken);
 
 }  // namespace neomifes::app
