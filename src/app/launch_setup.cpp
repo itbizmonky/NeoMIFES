@@ -150,9 +150,11 @@ void initCommonControls() noexcept {
     // ICC_BAR_CLASSES added for ui::StatusBar's STATUSCLASSNAME (WI-07
     // step4) - same TabBar precedent above, applied preemptively rather
     // than waiting to rediscover the identical failure mode.
+    // ICC_LISTVIEW_CLASSES added for ui::CsvGridPane's WC_LISTVIEW (WI-16c) -
+    // same reasoning as ICC_TAB_CLASSES/ICC_BAR_CLASSES above.
     const INITCOMMONCONTROLSEX icc{.dwSize = sizeof(icc),
                                    .dwICC  = ICC_STANDARD_CLASSES | ICC_TREEVIEW_CLASSES | ICC_TAB_CLASSES |
-                                             ICC_BAR_CLASSES};
+                                             ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
     ::InitCommonControlsEx(&icc);
 }
 
