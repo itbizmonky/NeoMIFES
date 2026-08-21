@@ -114,3 +114,20 @@ target_link_libraries(neomifes_logmode_bench
 set_target_properties(neomifes_logmode_bench PROPERTIES
     FOLDER "tests"
 )
+
+add_executable(neomifes_csvmode_bench
+    csvmode_row_order_bench.cpp
+)
+
+target_link_libraries(neomifes_csvmode_bench
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::csvmode
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+set_target_properties(neomifes_csvmode_bench PROPERTIES
+    FOLDER "tests"
+)

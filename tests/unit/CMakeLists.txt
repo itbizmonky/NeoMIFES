@@ -91,6 +91,7 @@ add_executable(neomifes_unit_tests
     app_json_fold_bridge_test.cpp
     csvmode_csv_model_test.cpp
     csvmode_csv_delimiter_detection_test.cpp
+    csvmode_csv_row_order_test.cpp
     app_csv_grid_bridge_test.cpp
 )
 
