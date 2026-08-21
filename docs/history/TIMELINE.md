@@ -3221,4 +3221,26 @@ WI-16c完了・push済みの状態で、ユーザーから「次のPhaseに進�
 
 コミット済み(`f7170fa`+ドキュメント同期コミット)、pushはユーザーの明示指示待ち。Phase 10.2は列固定・フィルタ・ソート・検索・CSV編集のうちフィルタ・ソートのヘッドレス計算基盤まで完了 — EditorSession配線・UI(フィルタ入力欄・列ヘッダクリックソート)・列固定・セル編集・式列は全て後続サブWI(WI-16e以降)へ。次はWI-16e(EditorSession配線)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
 
+## Session 103 (2026-08-19): WI-16e(CSV フィルタ・ソート EditorSession配線+UI実装)実装完了
+
+WI-16d完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16e: CSVモードの続き / WI-15d: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「WI-16e: CSVモードの続き(推奨)」**が選ばれた。質問の選択肢自体が「EditorSession配線+UI配線(フィルタ入力欄・列ヘッダクリックソート)」を1つのWIとして提示しており、WI-16d完了記録が示唆した2分割案(配線とUIを別WIに分ける案)ではなく、両方を一括実装した。着手前調査は直接ファイル読解のみで行った(`editor_session.h`のCSV関連4点、`csv_grid_pane.h`/`.cpp`、`csv_grid_bridge.h`、`normal_mode_wiring.cpp`のCSV配線、`find_bar.h`/`.cpp`のWC_EDIT+150msデバウンス+IME合成ガードの確立済みパターンを確認)。Plan Modeで計画を起こしExitPlanModeでユーザー承認を得た。
+
+**設計判断の核心1: 行順序のキャッシュ場所を`EditorSession`にし、WI-16d完了記録が残した「非同期化の要否」を「同期のまま」と確定した。** `CsvGridPane`の仮想モード`LVN_GETDISPINFOW`は可視セル1つにつき再描画のたびに発火するため、そのコールバック内で毎回O(行数)の`computeCsvRowOrder()`(WI-16d実測: 100万行フィルタ569ms/ソート1,214ms)を呼ぶと破滅的に遅い。`EditorSession::csvRowOrder()`をキャッシュとして持たせ、`setCsvFilter()`/`setCsvSort()`/`applyCsvIndexResult()`のいずれかが呼ばれた直後に必ず再計算する設計にした(別途dirtyフラグは持たない)。フィルタ入力は150msデバウンス済み・ソートはクリックという離散イベントであり、いずれもWI-16dの実測値(100万行で1秒未満)であれば同期呼び出しでも許容範囲と判断した(1000万行規模での外挿は引き続き未検証、追加の非同期ワーカーは新設しなかった)。
+
+**設計判断の核心2: `ui::CsvGridPane`のフィルタ編集欄は`ui::FindBar`のWC_EDIT+150msデバウンス+IME合成ガードを直接のテンプレートにした。** 新規のUIタイミング規約を発明せず、既存の「テキスト入力が段階的な結果を駆動する」制御パターンをそのまま再利用。同一の`subclassProc`/`kSubclassId`でListViewとフィルタ編集欄の両方をsubclassし、`handleSubclassMessage()`内で`hwnd`により分岐(FindBarのfind/replace edit両方を同一subclassで扱う前例をそのまま踏襲)。列ヘッダの並び替え状態はネイティブの`Header_SetItem`+`HDF_SORTUP`ではなくテキスト追記(▲/▼)で表現し、`CsvGridPane`自体をcsvmode型非依存に保った(矢印描画は`app::buildCsvGridColumnLabels()`bridge層の責務)。
+
+**設計判断の核心3: `showWith()`(列削除・再挿入)と新規`setRowCount()`(行数のみ更新)を使い分けた。** フィルタ変更は行数のみ変わるため`setRowCount()`を使いユーザーのドラッグ列幅を保持、ソート変更は矢印ラベルが変わるため`showWith()`を使う。列ヘッダクリックのソートサイクルはAscending→Descending→解除の3段階、別の列をクリックした場合は即Ascendingへ、「#」(行番号)列クリックは常に解除。
+
+**実施内容(3コミット):** ①`EditorSession`へCSVフィルタ/ソート状態+行順序キャッシュ配線+`csv_grid_bridge.h`のソート矢印対応+単体テスト4件(`1556634`、Debug構成でctest 1391/1391 green確認)。②`ui::CsvGridPane`へフィルタ編集欄+列ヘッダクリックソート追加、まだどこからも呼ばれない状態(`70addd0`、Debug構成で既存呼び出し元の後方互換性確認)。③`main.cpp`/`normal_mode_wiring.cpp`配線一式+最終ゲート+実機ドッグフーディング+issue起票(`bf61a8a`)。
+
+**最終ゲート:** Debug/Release/ubsan全1391件green(新規テスト0件のため既存ベースラインのまま維持)、clang-tidy新規警告0(`normal_mode_wiring.cpp`は既知の認知的複雑度ホットスポットだが今回は新規抽出不要と確認)。
+
+**実機ドッグフーディングは大部分が実際の操作で確認できた、ただし1件の自動化ツール側のクラッシュ事故が発生した。** `Ctrl+Shift+G`の`SendInput`合成キーは今回不調だったため`WM_COMMAND`(id=40008、`command_ids.h`から再確認)で代替。フィルタ入力は`SendMessage(WM_CHAR)`を編集欄へ直接送信する方式に切り替えたところ確実に動作し、「tokyo」で6行→2行への絞り込み・クリアでの復元を確認。列ヘッダクリックのソートは、**ヘッダ部分の矩形取得に`HDM_GETITEMRECT`(ポインタペイロードを要するメッセージ)をクロスプロセスで直接`SendMessage`したところ対象プロセスがCOMCTL32.dll内でクラッシュした**(Windowsイベントログでアクセス違反を確認、対象PIDが一致 — WI-16eのコード自体の欠陥ではなく、ポインタ引数がプロセスをまたいで自動マーシャリングされないという既知のWin32 API誤用、ドッグフーディング手法側の問題)。プロセスを再起動し`LVM_GETCOLUMNWIDTH`(整数を直接返す安全なメッセージ)へ切り替えて座標を算出、ヘッダへの直接`WM_LBUTTONDOWN`/`WM_LBUTTONUP`(`SendMessageTimeout`)で3段階サイクル(昇順/降順/解除)・矢印表示・「#」列クリックでの解除まで全て実際の画面操作で確認した。セルのジャンプは、リスト部分への合成マウスクリックが選択状態を全く変えなかったため(`LVS_EX_FULLROWSELECT`未設定+仮想モード特有の事情、原因は未特定)、`WM_KEYDOWN(VK_HOME)`でのキーボード選択+`WM_KEYDOWN(VK_RETURN)`で代替し、フィルタ+ソート適用状態で正しい行(`csvRowOrder()`変換後の実データ行)へジャンプすることをステータスバーの行番号表示で確認した。ダブルクリック単体でのジャンプは同じ原因で未確認のまま。
+
+**副産物として、末尾改行のあるCSVファイルでグリッドの「#」列が実データ行数+1(暗黙の空行)を表示することを発見した。** これはWI-16aで既に確定・文書化済みの仕様(`csv_model.h`の`CsvModel::build()`ドキュメント: 末尾`\n`は`Document::lineCount()`と同じ規約で暗黙の空行を1つ増やす)がグリッドUIで初めて視覚的に露呈したものであり、WI-16eの実装ミスではないと判断した。テキストエディタとしての一貫性(Document全体で統一された規約)とグリッドUIでの視認性(表形式では余分な1行が目立つ)のトレードオフであり、`docs/issues/csv_grid_shows_trailing_implicit_empty_row.md`(P2)として起票、対応方針は未確定のまま次回以降へ持ち越した。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-16e」セクション)、`master_roadmap.md`(§2フェーズ表+§10.2実装後の確定事項追記)、`detailed_design.md`(§11.5見出し更新+コード例拡張)、`RESUME_HERE.md`(§1状態表+新規§3.92+§6推奨プロンプト)、`docs/issues/`(新規issue+README索引)、TIMELINE.md(Session 103)、メモリ(`project_neomifes_state.md`/`MEMORY.md`)。
+
+コミット済み(`1556634`/`70addd0`/`bf61a8a`)、pushはユーザーの明示指示待ち。Phase 10.2はフィルタ・ソートのUI/配線まで完了 — 列固定・セル単位クリック編集・式列・列指定の厳密一致フィルタは全て後続サブWI(WI-16f以降)へ。次はPhase 10.2の続き(列固定/セル編集)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

@@ -3335,9 +3335,9 @@ public:
 - `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェックを`parseJsonTree()`に追加し、WI-15b発見のP1 issueを解消。技術的前提はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解で実装前に検証済み。副産物としてclang-tidyの`portability-template-virtual-member-function`(13件、NOLINT不可)を`.clang-tidy`のプロジェクト全体除外で解消。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15c)」参照。
 
-### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜d実装、Phase 10.2 グリッドUI MVP達成+フィルタ・ソート計算基盤)
+### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜e実装、Phase 10.2 フィルタ・ソートUI達成)
 
-`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16c、フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)はWI-16dで実装済み。EditorSession配線・フィルタ入力欄/列ヘッダクリックソートのUI・列固定・式列・セル編集は未実装(WI-16e以降へ)。
+`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16c、フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)はWI-16d、EditorSession配線+フィルタ入力欄/列ヘッダクリックソートのUIはWI-16eで実装済み。列固定・式列・セル編集は未実装(WI-16f以降へ)。
 
 ```cpp
 // neomifes/csvmode/csv_model.h (WI-16a)
@@ -3484,11 +3484,47 @@ struct CsvSortOptions {
 - `CsvModel`/`ui::CsvGridPane`/`EditorSession`は無変更。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16d完了)」参照。
 
+```cpp
+// neomifes/app/include/neomifes/app/editor_session.h (WI-16e)
+[[nodiscard]] const csvmode::CsvFilterOptions& csvFilter() const noexcept;
+[[nodiscard]] const csvmode::CsvSortOptions&   csvSort() const noexcept;
+// csvModel()/csvFilter()/csvSort()から導出したキャッシュ - CsvGridPaneの
+// LVN_GETDISPINFOWが可視セル1つにつき再描画のたびに呼ぶため、O(行数)の
+// computeCsvRowOrder()をそこで直接呼ばないためのキャッシュ層。
+[[nodiscard]] const std::vector<std::size_t>& csvRowOrder() const noexcept;
+void setCsvFilter(csvmode::CsvFilterOptions filter);  // 設定+再計算を1呼び出しで
+void setCsvSort(csvmode::CsvSortOptions sort);          // 同上
+
+// neomifes/ui/include/neomifes/ui/csv_grid_pane.h (WI-16e追加分)
+struct CsvGridPaneConfig {
+    // ...(WI-16c分は§11.5前半参照)
+    std::function<void(std::u16string_view query)> onFilterQueryChanged;  // 150msデバウンス or Enter
+    std::function<void(std::size_t colIndex)>       onSortColumnClicked;  // LVN_COLUMNCLICK
+};
+class CsvGridPane {
+public:
+    // ...
+    void setRowCount(std::size_t dataRowCount) noexcept;      // showWith()の行数のみ版(列幅を保持)
+    void setFilterQueryText(std::u16string_view text) noexcept;  // EN_CHANGEを発火しない同期用
+    void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;   // EN_CHANGEルーティング
+};
+```
+
+**設計上の要点 (WI-16e、EditorSession配線+UI実装):**
+- 行順序のキャッシュ場所を`EditorSession`にし、WI-16d完了記録が残した「非同期化の要否」を「同期のまま」と確定した — `CsvGridPane`の仮想モード`LVN_GETDISPINFOW`は可視セル1つにつき再描画のたびに発火するため、そのコールバック内で毎回O(行数)の`computeCsvRowOrder()`(WI-16d実測: 100万行で最大1.2秒)を呼ぶのは論外。フィルタ入力は150msデバウンス済み・ソートはクリックという離散イベントであり、いずれもこの実測値であれば同期呼び出しでも許容範囲と判断した(1000万行規模での外挿は引き続き未検証)。
+- `ui::CsvGridPane`のフィルタ編集欄は`ui::FindBar`のWC_EDIT+150msデバウンス+IME合成ガードを直接のテンプレートにした。同一の`subclassProc`/`kSubclassId`でListViewとフィルタ編集欄の両方をsubclassし、`handleSubclassMessage()`内で`hwnd`により分岐(FindBarのfind/replace edit両方を同一subclassで扱う前例をそのまま踏襲)。
+- 列ヘッダの並び替え状態はネイティブの`Header_SetItem`+`HDF_SORTUP`ではなくテキスト追記(▲/▼、`app::buildCsvGridColumnLabels()`が担当)で表現 — `CsvGridPane`自体をcsvmode型非依存に保つため。
+- `showWith()`(列削除・再挿入)と`setRowCount()`(行数のみ)を使い分け: フィルタ変更は`setRowCount()`(列のドラッグ幅を保持)、ソート変更は矢印ラベルが変わるため`showWith()`。
+- 列ヘッダクリックのソートサイクルはAscending→Descending→解除の3段階、別列クリックは即Ascending、「#」列クリックは常に解除。
+- **実機ドッグフーディングで確認: `EditorSession::csvRowOrder()[displayRowIndex]`の変換が、フィルタ+ソート適用状態でのセルジャンプでも正しいドキュメント位置を指すこと。** `SendInput`合成マウスクリックがリスト選択状態を変えなかったためキーボード選択(`VK_HOME`+`VK_RETURN`)で代替確認。
+- 副産物として、末尾改行のあるCSVでグリッドの「#」列が実データ行数+1(暗黙の空行)を表示することを発見(WI-16aで既に文書化済みの仕様がグリッドUIで初めて視覚的に露呈したもの、WI-16eの実装ミスではない) - `docs/issues/csv_grid_shows_trailing_implicit_empty_row.md`(P2)として起票。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16e完了)」参照。
+
 ---
 
 ## 12. CSV モード 詳細
 
-> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線+グリッドUI(`ui::CsvGridPane`、`Ctrl+Shift+G`)+フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(EditorSession配線・UI・列固定・式列・セル編集)の設計メモ。
+> **実装状況 (2026-08-19):** ヘッドレス解析モデル(`CsvModel`/`CsvCell`/`csvCellValue()`/`detectCsvDelimiter()`)+非同期ワーカー(`CsvModelWorker`)+`EditorSession`配線+グリッドUI(`ui::CsvGridPane`、`Ctrl+Shift+G`)+フィルタ・ソート(`computeCsvRowOrder()`、フィルタ編集欄+列ヘッダクリックソート)は上記§11.5を参照。本節は以下、roadmap原案のスケッチのまま未実装で残っている範囲(列固定・式列・セル編集)の設計メモ。
 
 ### 12.1 データ表現
 - 論理: Piece Table + 行スキーマ
