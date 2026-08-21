@@ -501,11 +501,19 @@ bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
 void refreshCsvGridPane(EditorSession& session, CsvGridPane& csvGridPane,
                         std::optional<csvmode::CsvModelWorker>& csvModelWorker,
                         const void*& csvGridPanePendingSessionToken) {
+    // WI-16e: restores THIS session's own filter text before anything else -
+    // reopening the grid for a session whose csvFilter() differs from what a
+    // PREVIOUSLY active tab left typed in the (single, shared) filter edit
+    // must not show that other tab's leftover query. setFilterQueryText()
+    // does not fire onFilterQueryChanged (WM_SETTEXT's own contract), so
+    // this alone never triggers a spurious recompute.
+    csvGridPane.setFilterQueryText(session.csvFilter().query);
+
     if (session.csvModel().has_value()) {
         csvGridPanePendingSessionToken = nullptr;
         const auto& model               = *session.csvModel();
-        csvGridPane.showWith(neomifes::app::buildCsvGridColumnLabels(model, session.document()),
-                             model.dataRowCount());
+        csvGridPane.showWith(neomifes::app::buildCsvGridColumnLabels(model, session.document(), session.csvSort()),
+                             session.csvRowOrder().size());
         return;
     }
 
@@ -2547,35 +2555,84 @@ void createAndPositionJsonTreePane(HWND hwnd, HINSTANCE hInstance, Workspace& wo
 // OutlinePane/JsonTreePane's onItemSelected, which leaves the pane open
 // (see those classes' own header comments), CsvGridPane covers the entire
 // client area, so a jump result is invisible until the pane closes.
+// WI-16e: onGetCellText/onCellActivated now translate `rowIndex` through
+// session.csvRowOrder() before touching the CsvModel - see each lambda's own
+// inline comment.
 void createAndPositionCsvGridPane(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
                                   RenderPipeline& renderPipeline, CsvGridPane& csvGridPane,
                                   const void*& csvGridPanePendingSessionToken) {
     CsvGridPaneConfig config{};
+    // WI-16e: `rowIndex` from CsvGridPane is now a DISPLAY row index
+    // (0..session.csvRowOrder().size()-1, i.e. into the filtered/sorted
+    // view), not a raw CsvModel data-row index - session.csvRowOrder()[
+    // rowIndex] is the translation step both callbacks below need before
+    // touching csvGridCellText()/CsvModel::dataRow() (both of which still
+    // expect an actual data-row index, unchanged from WI-16c/WI-16d).
     config.onGetCellText = [&workspace](std::size_t rowIndex, std::size_t colIndex) -> std::u16string {
         const EditorSession& session = workspace.active();
-        if (!session.csvModel().has_value()) {
+        if (!session.csvModel().has_value() || rowIndex >= session.csvRowOrder().size()) {
             return u"";
         }
-        return neomifes::app::csvGridCellText(*session.csvModel(), session.document(), rowIndex, colIndex);
+        const std::size_t dataRowIndex = session.csvRowOrder()[rowIndex];
+        return neomifes::app::csvGridCellText(*session.csvModel(), session.document(), dataRowIndex, colIndex);
     };
     config.onCellActivated = [hwnd, &workspace, &renderPipeline, &csvGridPane, &csvGridPanePendingSessionToken](
                                  std::size_t rowIndex, std::size_t colIndex) {
         EditorSession& session = workspace.active();
-        if (!session.csvModel().has_value()) {
+        if (!session.csvModel().has_value() || rowIndex >= session.csvRowOrder().size()) {
             return;
         }
-        const auto& model = *session.csvModel();
-        if (rowIndex >= model.dataRowCount()) {
-            return;
-        }
-        const auto        row           = model.dataRow(rowIndex);
-        const std::size_t dataColIndex = colIndex == 0 ? 0 : colIndex - 1;
+        const auto&        model         = *session.csvModel();
+        const std::size_t  dataRowIndex  = session.csvRowOrder()[rowIndex];
+        const auto         row           = model.dataRow(dataRowIndex);
+        const std::size_t  dataColIndex  = colIndex == 0 ? 0 : colIndex - 1;
         if (dataColIndex >= row.size()) {
             return;
         }
         jumpToOutlinePosition(row[dataColIndex].startPos, hwnd, session, renderPipeline);
         csvGridPane.hide();
         csvGridPanePendingSessionToken = nullptr;
+    };
+    // WI-16e: 150ms-debounced (or Enter-immediate) filter text change - the
+    // row COUNT changes but columns/labels don't, so setRowCount() (not
+    // showWith()) preserves any column widths the user has drag-resized.
+    config.onFilterQueryChanged = [&workspace, &csvGridPane](std::u16string_view query) {
+        EditorSession& session = workspace.active();
+        if (!session.csvModel().has_value()) {
+            return;
+        }
+        csvmode::CsvFilterOptions filter;
+        filter.query = std::u16string(query);
+        session.setCsvFilter(std::move(filter));
+        csvGridPane.setRowCount(session.csvRowOrder().size());
+    };
+    // WI-16e: column header click - "#"(colIndex==0) resets to unsorted;
+    // a real CSV column cycles Ascending -> Descending -> unsorted on
+    // repeated clicks of the SAME column, or jumps straight to Ascending
+    // when a DIFFERENT column is clicked. showWith() (not setRowCount()) is
+    // required here because the sort-arrow suffix changes a column LABEL,
+    // not just the row count.
+    config.onSortColumnClicked = [&workspace, &csvGridPane](std::size_t colIndex) {
+        EditorSession& session = workspace.active();
+        if (!session.csvModel().has_value()) {
+            return;
+        }
+        csvmode::CsvSortOptions sort;  // colIndex==0: stays default (unsorted)
+        if (colIndex != 0) {
+            const std::size_t              dataCol = colIndex - 1;
+            const csvmode::CsvSortOptions& current  = session.csvSort();
+            if (current.column == dataCol && current.direction == csvmode::CsvSortDirection::Ascending) {
+                sort = csvmode::CsvSortOptions{.column = dataCol, .direction = csvmode::CsvSortDirection::Descending};
+            } else if (current.column != dataCol || current.direction != csvmode::CsvSortDirection::Descending) {
+                sort = csvmode::CsvSortOptions{.column = dataCol, .direction = csvmode::CsvSortDirection::Ascending};
+            }
+            // else: 3rd click on the same column - sort stays default
+            // (unsorted).
+        }
+        session.setCsvSort(sort);
+        const auto& model = *session.csvModel();
+        csvGridPane.showWith(neomifes::app::buildCsvGridColumnLabels(model, session.document(), session.csvSort()),
+                             session.csvRowOrder().size());
     };
     config.onClosed = [hwnd, &csvGridPanePendingSessionToken]() {
         csvGridPanePendingSessionToken = nullptr;
@@ -3358,6 +3415,11 @@ void applyJsonTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane,
 // once matched, even if the second condition fails - a sessionToken is only
 // ever delivered once per requestIndex() call. No folding-gutter integration
 // unlike applyJsonTreeReadyMessage() - CsvGridPane has none.
+// WI-16e: session.applyCsvIndexResult() itself now recomputes csvRowOrder()
+// (using whatever csvFilter()/csvSort() the session already holds - a user
+// CAN type into the filter edit while indexing is still in flight, since
+// refreshCsvGridPane() shows it right away), so the display update below
+// just reads session.csvRowOrder().size() rather than model.dataRowCount().
 void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
                                const void*& csvGridPanePendingSessionToken, WPARAM wParam, LPARAM lParam) {
     const std::unique_ptr<neomifes::csvmode::CsvModel> result(
@@ -3373,8 +3435,9 @@ void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
             csvGridPanePendingSessionToken = nullptr;
             if (i == workspace.activeIndex() && session.csvModel().has_value()) {
                 const auto& model = *session.csvModel();
-                csvGridPane.showWith(neomifes::app::buildCsvGridColumnLabels(model, session.document()),
-                                     model.dataRowCount());
+                csvGridPane.showWith(
+                    neomifes::app::buildCsvGridColumnLabels(model, session.document(), session.csvSort()),
+                    session.csvRowOrder().size());
             }
         }
         break;
@@ -3748,6 +3811,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
+        // WI-16e: EN_CHANGE from the filter edit routes here, same "child-
+        // control notification, not a CommandId" shape as the 3 calls above.
+        csvGridPane.handleCommand(wParam, lParam);
         // WI-07 step2/3: accelerator- or MENU-originated WM_COMMAND
         // (TranslateAcceleratorW/command_dispatch.h's buildAcceleratorTable(),
         // or a menu click on an item neomifes::app::buildMenuBar() built)
