@@ -3144,4 +3144,30 @@ WI-16a完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`a8af2b7`/`0457fda`/`aa15488`)、pushはユーザーの明示指示待ち。Phase 10.2は本サブWIで非同期ワーカー+`EditorSession`配線が完了、UIは一切追加していない(呼び出し元コマンド無し) — グリッドUI・列固定・フィルタ・ソート・式列・セル編集は全て後続サブWI(WI-16c以降)へ。次はPhase 10.2の続き、またはPhase 10.3の続き(WI-15c)、またはユーザー指定の次項目。
 
+## Session 100 (2026-08-19): WI-15c(JSON/XML Tree モード ツリーUI実装)実装完了
+
+WI-16b完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。Phase 10.2(CSVグリッドUI、WI-16c、前例ゼロ・高リスク)とPhase 10.3(JSON/XML Tree UI、WI-15c)のどちらに進むかをAskUserQuestionで確認したところ、**「WI-15c: JSON/XML Tree UI(推奨)」**が選ばれた — 既存の`ui::OutlinePane`(WC_TREEVIEWラッパー)を直接のテンプレートにできる見込みがあったため。
+
+**着手前調査はExplore agent1件+自身の直接ファイル読解の併用で行った。** `outline_pane.h`/`.cpp`(WC_TREEVIEW生成・lParamへの位置埋め込み・TVN_SELCHANGEDW処理・DPI対応リサイズ・Escapeクローズの全機構)、`outline_bridge.h`/`fold_bridge.h`(ブリッジ関数パターン)、`command_ids.h`/`command_id_name.h`(`kAllRemappableCommandIds`の宣言順依存)、`key_bindings_presets.cpp`(実在エディタで確認できない既定キーは推測しない規約)、`menu_bar.h`(`kViewMenuItems`現状1件)を確認。加えてWI-15b最終ゲートで発見済みのP1 issue(`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`)が「対応はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送り」と明記されていたため、本WIのスコープに含めることを決定した。セッション中に利用上限リセットによる中断が1回あったが、Explore agentの報告受領直後という区切りの良い地点だったため、そのまま研究を継続した。
+
+**Plan agentへ設計を委任し、6コミット構成の計画(SAX深度ガード+ブリッジ関数+JsonTreePane+コマンド登録+配線+ドキュメント同期)を作成、ExitPlanModeでユーザー承認を得た。** 実施時に配線コミットとドキュメント同期が1コミットにまとまり、実質5コミットで完結した。
+
+### 実施内容 (5コミット)
+
+1. **P1 issue解消。** `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装、`start_object()`/`start_array()`のみで深度をカウントし`kMaxJsonNestingDepth=200`超過時に`false`を返す)を`parseJsonTree()`に追加し、`nlohmann::ordered_json::parse()`を呼ぶ前に弾くよう変更。実装前にスタンドアロンprobe(MSVC `cl.exe`で直接コンパイル・実行、5ケース全て期待通り)で「SAXコールバックの`false`が実際に再帰前に解析を打ち切ること」を実機検証(深さ50000でもクラッシュせず正しく打ち切られることを確認)。あわせて`nlohmann/detail/input/parser.hpp`のソースを直接読み、トークンストリームを歩く`parser::sax_parse_internal()`自体は明示スタック(`std::vector<bool> states`)による反復実装であり(クラス冒頭のdocコメント「recursive descent parser」は内部実装の実態と不一致、古い記述と判断)、実際に再帰するのはDOM構築(`json_sax_dom_parser`)とその破棄(`basic_json`のデストラクタ)側と確認した。単体テスト2件(深さ200/201の境界)+統合テスト1件強化(旧テスト名`RequestIndexOnDeeplyNestedJsonDoesNotCrashWorkerThread`→`RequestIndexOnDeeplyNestedJsonReturnsNulloptNotCrash`に改名、深さ500でクラッシュせず`std::nullopt`を返すことをアサート)+issue完了条件更新 (`6a7ca41`)
+2. `app::buildJsonTreeItems()`(`jsontree::JsonNode`→`ui::OutlineItem`、明示スタック — `JsonNode`の深さは`kMaxJsonNestingDepth`ガードのみで制限され`syntax::OutlineNode`のような自然な浅さを持たないため、`buildOutlineItems()`の再帰実装をそのまま真似できないと判明)+`app::buildJsonFoldRegions()`(`fold_bridge.h`の`buildFoldRegions()`を直接のテンプレートにしたフラットリスト生成)+ヘッドレス単体テスト11件 (`19927ef`)
+3. `ui::JsonTreePane`新設(`ui::OutlinePane`の実装を直接のテンプレートに移植、子コントロールID`9001`、`ui::OutlineItem`をそのまま再利用しJSON専用item型は不採用)、この時点ではまだどこからも呼ばれない (`76968ef`)
+4. `CommandId::JsonTreeToggle`を`OutlineToggle`直後に追加(`kAllRemappableCommandIds`を宣言順を保って34→35に拡張)、`neomifesStandardBindings()`のみへ`Ctrl+Shift+J`追加(他3プリセットは意図的に未バインド)、`kViewMenuItems`1→2件、`CommandId::OutlineToggle`自体が現状パレット未登録という既存ギャップを繰り返さずコマンドパレットにも登録する設計とした。まだディスパッチ先なし (`0ce9bac`)
+5. `main.cpp`/`normal_mode_wiring.{h,cpp}`配線一式(`refreshJsonTreePane()`/`handleJsonTreeKey()`/`createAndPositionJsonTreePane()`新設、`applyJsonTreeReadyMessage()`拡張、`dispatchWidgetShowCommand()`/`handleAppMessage()`/`handleKeyDownEvent()`/`wireNormalMode()`拡張)+最終ゲート (`05ae9e2`)
+
+**設計判断の核心: 非同期性の扱いは`EditorSession`メンバではなく`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`を新設した。** ペインはWorkspace全体で1枚のみのため、「どのセッションの非同期結果を待ってペインへ自動反映すべきか」はUI層の関心事であり、既存の`freeCursorModeEnabled`/`isDraggingMinimap`と同じ配置とした。`applyJsonTreeReadyMessage()`は「トークンが一致」かつ「アクティブタブ」の両方が真の場合のみペインへ自動反映し、トグルOFF・Escape・非対象タブへの結果到着のいずれでもトークンをクリアすることで、閉じた後に届く遅延結果でペインが勝手に再表示されるバグを未然に防止した。
+
+**最終ゲートで2件の実装ミスを自己発見・修正した。** ①`wireNormalMode()`に`jsonTreePane`/`jsonTreePanePendingSessionToken`パラメータを追加した際、5箇所ある`cfg.on*`ラムダ(`onResize`/`onCommand`/`onNotify`/`onAppMessage`/`onKeyDown`/`onDeferredInit`)のうち`onDeferredInit`(実際に`createAndPositionJsonTreePane()`を呼ぶ場所)のキャプチャリスト更新を見落とし、MSVC/clang-cl両方でC3493/コンパイルエラーが3構成すべてで発生 — テストスイート自体(`neomifes_app_input`ライブラリのみが対象で`main.cpp`/`normal_mode_wiring.cpp`はexeにのみコンパイルされる既存の構成)は無関係のため1369件greenのまま推移し、ビルド失敗はNeoMIFES.exe本体のみに限定されていた。キャプチャリストへ2変数追加して再検証、解消。②`DepthLimitSax`が`nlohmann::json_sax<T>`(テンプレート)から派生することでclang-tidyの`portability-template-virtual-member-function`を13件(オーバーライドした純粋仮想関数の数だけ)引き起こした。一次診断位置がサードパーティヘッダ(`nlohmann/detail/input/json_sax.hpp`)側にあるためインラインの`NOLINTNEXTLINE`コメントでは抑制できないと実機確認し、`.clang-tidy`のプロジェクト全体除外リストへ`-portability-template-virtual-member-function`を追加(このプロジェクトが対象とする2コンパイラ=MSVC v143/clang-cl のいずれについても既に3構成の検証ゲートで実際にビルドしているため、チェックの前提=「コンパイラによる差異」という懸念自体が実質的に当てはまらないと判断)。この過程で`Checks: >`(YAMLのfolded block scalar)の内側に`#`コメントを置くと`#`がコメントマーカーとして機能せず文字列値へliteralに混入するというYAML構文ミスを一度作り込み、`--dump-config`での検証で自己発見、説明コメントをブロック外(ファイル冒頭)へ移動して解消した。
+
+**最終ゲート:** Debug/Release/ubsan全1369件green、clang-tidy新規警告0(変更5ファイル`json_tree.cpp`/`normal_mode_wiring.cpp`/`main.cpp`/`json_tree_pane.cpp`/`key_bindings_presets.cpp`+既存ファイル数個への副作用なしを確認)。**実アプリでの視覚確認も実施した。** `NeoMIFES.exe --open <テストJSON>`をPID/`GetWindowThreadProcessId()`でメインウィンドウ特定の上で起動し、`Ctrl+Shift+J`のキー入力合成(`SendInput`)を試みたが、この環境の既知の制約(修飾キー同時押し合成の不調)により受理されず失敗した(推測ではなく実測で確認)。代替として`CommandId::JsonTreeToggle`を`WM_COMMAND`で実プロセスへ直接送信(メニュークリックと全く同じ`dispatchWidgetShowCommand()`コードパス)したところ、`EnumChildWindows`で2つの`SysTreeView32`(OutlinePane用/JsonTreePane用、トグル前は両方非表示)のうちJsonTreePane側だけが可視化され、非同期パース(`JsonTreeWorker`→`kMsgJsonTreeReady`→`buildJsonTreeItems()`→`showWith()`)を経てテストJSONの階層(`{3}`/`values: [3]`/`1,2,3`/`nested: {2}`/`a: true`/`b: null`)がスクリーンショットで目視確認できる形で正確に描画された。「プロセスが生存していただけ」ではなく、機能そのものの正しい動作を実機で確認した。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-15c」セクション)、`master_roadmap.md`(§10.3に実装後の確定事項追記)、`detailed_design.md`(§11.4見出し更新+コード例拡張+WI-15c設計要点追加)、`docs/issues/README.md`(P1 issueを解決済みへ移動)、`RESUME_HERE.md`(§1状態表+新規§3.89完了記録+§6推奨プロンプト更新)。
+
+コミット済み(`6a7ca41`/`19927ef`/`76968ef`/`0ce9bac`/`05ae9e2`)、pushはユーザーの明示指示待ち。Phase 10.3はツリーUIのMVP(表示・ジャンプ・折り畳み統合)が完了 — Format/Validate/JSONPath/XPath・XML対応・真の左右分割ペイン化は全て後続サブWI(WI-15d以降)へ。次はPhase 10.2の続き(WI-16c: グリッドUI)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

@@ -3255,9 +3255,9 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
-### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜b実装、Phase 10.3 着手)
+### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜c実装、Phase 10.3 ツリーUI MVP達成)
 
-`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。UI/XML/折り畳み統合/整形/バリデーション/XPath/JSONPathは未実装(WI-15c以降へ)。
+`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15cで実装済み。XML/整形/バリデーション/XPath/JSONPath/真の左右分割ペイン化は未実装(WI-15d以降へ)。
 
 ```cpp
 // neomifes/jsontree/json_tree.h (WI-15a、WI-15bでBufferSnapshotオーバーロード追加)
@@ -3287,6 +3287,29 @@ public:
                       const void* sessionToken) noexcept;
     // ... (move/copy削除、logmode::LogIndexWorkerと同型)
 };
+
+// neomifes/jsontree/json_tree.cpp (WI-15c、内部/非公開)
+constexpr int kMaxJsonNestingDepth = 200;  // ubsanで実測したクラッシュ深度2000の10分の1
+
+class DepthLimitSax : public nlohmann::json_sax<nlohmann::ordered_json> {
+    // start_object()/start_array()のみで深度をカウントし、閾値超過時にfalseを
+    // 返してsax_parse()を中断させる。DOMは一切構築しない。
+};
+
+// src/ui/include/neomifes/ui/json_tree_pane.h (WI-15c、ui::OutlinePaneを直接のテンプレート)
+class JsonTreePane {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const JsonTreePaneConfig& config);
+    void showWith(std::vector<ui::OutlineItem> items) noexcept;  // OutlineItemをそのまま再利用
+    void hide() noexcept;
+    void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight, float dpiScale) noexcept;
+    LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;  // TVN_SELCHANGEDW
+};
+
+// src/app/include/neomifes/app/json_tree_bridge.h / json_fold_bridge.h (WI-15c)
+[[nodiscard]] ui::OutlineItem buildJsonTreeItems(const jsontree::JsonNode& root);
+[[nodiscard]] std::vector<core::FoldRegion> buildJsonFoldRegions(
+    const jsontree::JsonNode& root, const document::Document& document);
 ```
 
 **設計上の要点 (WI-15a):**
@@ -3304,6 +3327,13 @@ public:
 - `normal_mode_wiring.cpp`の`applyJsonTreeReadyMessage()`/`handleAppMessage()`拡張は、`RenderPipeline`/`HWND`/`InvalidateRect`を持たないWI-14b時点の`applyLogIndexReadyMessage()`の形を踏襲(UIが無いため再描画の必要が無い)。
 - 最終ゲート(ubsan/clang-cl)で、`nlohmann::ordered_json::parse()`自体(再帰下降パーサ)が病的に深いネストでスタックオーバーフローしうることを発見、`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`としてissue化した。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15a/WI-15b)」参照。
+
+**設計上の要点 (WI-15c、ツリーUI配線):**
+- `ui::JsonTreePane`は`ui::OutlinePane`を直接のテンプレートに新設(WC_TREEVIEWサブクラス・WM_NOTIFYルーティング・DPI対応リサイズ・Escapeクローズを全て移植)。`ui::OutlineItem`をそのまま再利用しJSON専用のitem型は導入していない。
+- `app::buildJsonTreeItems()`は`app::buildOutlineItems()`と異なり明示スタックによる反復実装(`jsontree::JsonNode`の深さは`kMaxJsonNestingDepth`ガードのみで制限される、`syntax::OutlineNode`のような自然な浅さを持たない)。`app::buildJsonFoldRegions()`は`app::buildFoldRegions()`と同型のフラットリスト生成(元から反復実装)。
+- 「表示保留」状態(非同期結果到着時にペインへ自動反映すべきか)は`EditorSession`メンバではなく`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`として実装 — ペインはWorkspace全体で1枚のみのため。
+- `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェックを`parseJsonTree()`に追加し、WI-15b発見のP1 issueを解消。技術的前提はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解で実装前に検証済み。副産物としてclang-tidyの`portability-template-virtual-member-function`(13件、NOLINT不可)を`.clang-tidy`のプロジェクト全体除外で解消。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15c)」参照。
 
 ### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜b実装、Phase 10.2 着手)
 

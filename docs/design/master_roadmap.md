@@ -2265,6 +2265,17 @@ WI-15bでWI-14bに相当する非同期化を実施した(ヘッドレスモデ�
 - **最終ゲート(ubsan/clang-cl構成)で、`nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を設定するAPI無し)が病的に深いネストでスタックオーバーフローしうることを発見した。** `docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`(P1)としてissue化、対応はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送り。
 - 詳細は`build_plan.md` WI-15bセクション参照。
 
+#### 実装後の確定事項 (WI-15c、JSON/XML Tree モード ツリーUI実装、2026-08-19)
+
+WI-15cで`EditorSession::jsonTree()`系4点(WI-15b)を実際に消費する最初のUI/コマンドを実装した。`Ctrl+Shift+J`・表示メニュー・コマンドパレントの3経路からJSON構造ツリーパネルをトグル表示できる。
+
+- **`ui::JsonTreePane`は`ui::OutlinePane`を直接のテンプレートに新設した(汎用化リファクタは不採用)。** `ui::OutlineItem`(`name`/`targetPos`/`children`)はJSON専用の新規データ構造体を作らずそのまま再利用 — 上記UI/UXモックアップの左ペインは「真の左右分割ペイン」を想定していたが、`OutlinePane`と同じ「右端オーバーレイ」方式のまま実装した(真の分割ペイン化はWI-15d以降へ)。
+- **`app::buildJsonTreeItems()`(ブリッジ関数)は`app::buildOutlineItems()`と異なり明示スタックによる反復実装が必須と判明した。** `syntax::OutlineNode`の深さはシンボル定義の入れ子(生AST深さより浅い)に留まるため再帰で許容されていたが、`jsontree::JsonNode`の深さはJSON構造そのもの(`json_tree.cpp`の`kMaxJsonNestingDepth`ガードのみが上限)であり、同じ再帰実装を踏襲すると新たな`misc-no-recursion`リスクを持ち込むことになる。
+- **非同期性の扱いとして、`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`を新設した(`EditorSession`メンバ案は不採用)。** ペインはWorkspace全体で1枚しかないため、「どのセッションの非同期結果を待ってペインへ自動反映すべきか」はUI層の関心事であり、`freeCursorModeEnabled`/`isDraggingMinimap`と同じ配置とした。トグルOFF・Escape・非対象タブへの結果到着のいずれでもこのトークンを適切にクリアし、閉じた後に届く遅延結果でペインが勝手に再表示されるバグを防止した。
+- **WI-15b最終ゲートで発見したP1 issue(`nlohmann::ordered_json::parse()`の深いネストによるスタックオーバーフロー)を本WIのコミット1として解消した。** `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェック(`kMaxJsonNestingDepth=200`)を`ordered_json::parse()`の前に追加。この設計の技術的前提(SAXコールバックの`false`が実際に再帰前に解析を打ち切ること)はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解の両方で実装前に検証した。副産物として、`DepthLimitSax`のクラス派生がclang-tidyの`portability-template-virtual-member-function`を13件引き起こすことが判明し(NOLINTでは一次診断位置がサードパーティヘッダのため抑制不可)、`.clang-tidy`でこのチェックをプロジェクト全体で除外した(このプロジェクトが対象とする2コンパイラ=MSVC v143/clang-cl のいずれについても既に3構成の検証ゲートで実際にビルドしているため、チェックの前提=「コンパイラによる差異」という懸念自体が実質的に当てはまらないと判断)。
+- **Format/Validate/JSONPath/XPath・XML対応・折り畳み状態の永続化・巨大JSON対応(プログレッシブ表示)は全て本サブWIのスコープ外(WI-15d以降)。** 折り畳み統合自体は行った(`buildJsonFoldRegions()`が`FoldingModel`へ統合、ガター折り畳みマーカーが機能する) — スコープ外なのはこれらより高度な機能群。
+- 詳細は`build_plan.md` WI-15cセクション参照。
+
 ---
 
 ## 11. Phase 11 — Git 統合 / LSP 完全実装 / マクロ (Lua + JS + 秀丸互換)

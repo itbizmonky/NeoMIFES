@@ -133,7 +133,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) まで進行中、残りは切り直しながら継続する。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) まで進行中、残り(グリッドUI)は切り直しながら継続する。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) → WI-15c (ツリーUI MVP) まで進行、XML/整形/バリデーション/XPath/JSONPathは残り(WI-15d以降)。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) まで進行中、残り(グリッドUI)は切り直しながら継続する。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -143,7 +143,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-15b** JSON ツリー 非同期インデックス化 + EditorSession配線 (UIなし) → コミット: `1d9156c`/`9b8075a`/`83fcadb`/`7bd4dee`
 - [x] **WI-16a** CSV モード ヘッドレス解析モデル (Phase 10.2 最初のサブ WI、非同期ワーカー/グリッドUIは非スコープ) → コミット: `ab7dd5e`/`c8fd842`
 - [x] **WI-16b** CSV モード 非同期ワーカー + EditorSession配線 (UIなし) → コミット: `a8af2b7`/`0457fda`/`aa15488`
-- [ ] **WI-15c以降** Phase 10.3 の残り (ツリーUI・折り畳み統合・整形・バリデーション・XPath/JSONPath)
+- [x] **WI-15c** JSON/XML Tree モード ツリーUI実装 (`Ctrl+Shift+J`、クリックジャンプ、折り畳み統合、深いネストのスタックオーバーフローP1解消) → コミット: `6a7ca41`/`19927ef`/`76968ef`/`0ce9bac`/`05ae9e2`
+- [ ] **WI-15d以降** Phase 10.3 の残り (XML対応・整形・バリデーション・XPath/JSONPath・真の左右分割ペイン化)
 - [ ] **WI-16c以降** Phase 10.2 の残り (グリッドUI・列固定・フィルタ・ソート・式列・セル編集) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-17** Phase 11 — Git 統合 / LSP / マクロ
 - [ ] **WI-18** Phase 9 — AI プラグイン
@@ -1306,9 +1307,63 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
+## WI-15c — JSON/XML Tree モード ツリーUI実装
+
+**目的:** WI-16b(CSVモード 非同期ワーカー+EditorSession配線)完了後、ユーザーに「次のPhase」の意味をAskUserQuestionで確認したところ、「WI-16c: CSVグリッドUI」(前例ゼロ、高リスク)ではなく「WI-15c: JSON/XML Tree UI(推奨)」が選ばれた — 既存の`ui::OutlinePane`を直接のテンプレートにできる見込みがあったため。`EditorSession::jsonTree()`/`jsonTreeIndexInFlight()`/`beginJsonTreeIndexing()`/`applyJsonTreeResult()`(WI-15b)を実際に消費する最初のコマンド/UIを実装した。
+
+**前提:** WI-16b 完了・コミット済み (2026-08-19)
+
+**参照:** `src/ui/include/neomifes/ui/outline_pane.h`/`src/ui/src/outline_pane.cpp`(直接のテンプレート)、`src/app/include/neomifes/app/outline_bridge.h`/`fold_bridge.h`(ブリッジ関数の直接のテンプレート)、`docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`(P1、本WIで解消)
+
+### 着手前調査で確定した設計方針
+
+- `ui::OutlinePane`の全機構(WC_TREEVIEW生成・lParamへの位置埋め込み・TVN_SELCHANGEDW処理・DPI対応リサイズ・Escapeクローズ)を`ui::JsonTreePane`が直接のテンプレートとして再利用できると確認。`ui::OutlineItem`(`name`/`targetPos`/`children`)はJSON専用の新規データ構造体を作らずそのまま再利用
+- `jsontree::JsonNode`の深さは`buildTree()`(WI-15a、明示スタック)と異なり任意深さ(JSON構造そのものが再帰的)なため、`outline_bridge.h`の`buildOutlineItems()`(再帰実装、`OutlineNode`は浅いネストのみのため許容)をそのまま真似できず、`buildJsonTreeItems()`は明示スタックによる反復実装が必須と判明
+- 非同期性の扱い: `refreshOutlinePane()`は同期処理だが`beginJsonTreeIndexing()`は非同期(WI-15b)。「トグルで表示要求」と「実際にペインへデータが入る」タイミングの分離をどう扱うか検討し、`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`(既存の`freeCursorModeEnabled`と同型)を採用 — `EditorSession`メンバ案は「ペインはWorkspace全体で1枚」という実態と合わないため不採用
+- `CommandId::OutlineToggle`自体が現状コマンドパレット未登録という既存ギャップを発見。本WIの`JsonTreeToggle`はこのギャップを繰り返さず、キーボード・メニュー・パレットの3経路全てに登録
+- `key_bindings_presets.cpp`の確立された規約(実在エディタで確認できない既定キーは推測せず意図的に空欄のまま残す)に従い、`Ctrl+Shift+J`は`neomifesStandardBindings()`のみに追加、秀丸/サクラ/VSCodeプリセットは意図的に未バインドのまま
+- WI-15b最終ゲートで発見済みのP1 issue(深いネストJSONでの`STATUS_STACK_OVERFLOW`)が「対応はWI-15c以降(実際にこの経路へ到達するコマンドが追加されるタイミング)へ先送り」と明記されており、本WIがまさにその経路を追加するため、本WIのスコープに含めた
+
+### 実施内容 (5コミット)
+
+1. `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装、`start_object()`/`start_array()`のみで深度をカウントし`kMaxJsonNestingDepth=200`超過時に`false`を返す)を`parseJsonTree()`に追加し、`nlohmann::ordered_json::parse()`を呼ぶ前に弾くよう変更。実装前にスタンドアロンprobeで「SAXコールバックの`false`が実際に再帰前に解析を打ち切ること」を実機検証(深さ50000でもクラッシュせず正しく打ち切られることを確認)、あわせて`nlohmann/detail/input/parser.hpp`のソースを直接確認し`parser::sax_parse_internal()`自体は明示スタックによる反復実装であること(実際に再帰するのはDOM構築とその破棄側)を確認。単体テスト2件(深さ200/201の境界)+統合テスト1件強化+issue完了条件更新 (`6a7ca41`)
+2. `app::buildJsonTreeItems()`(`jsontree::JsonNode`→`ui::OutlineItem`、明示スタック)+`app::buildJsonFoldRegions()`(`jsontree::JsonNode`→`core::FoldRegion`のフラットリスト、`fold_bridge.h`を直接のテンプレート)+ヘッドレス単体テスト11件 (`19927ef`)
+3. `ui::JsonTreePane`新設(`ui::OutlinePane`の実装を直接のテンプレートに移植、子コントロールID`9001`)、この時点ではまだどこからも呼ばれない (`76968ef`)
+4. `CommandId::JsonTreeToggle`を`OutlineToggle`直後に追加(`kAllRemappableCommandIds`34→35)、`neomifesStandardBindings()`へ`Ctrl+Shift+J`追加、`kViewMenuItems`1→2件。まだディスパッチ先なし (`0ce9bac`)
+5. `main.cpp`/`normal_mode_wiring.{h,cpp}`配線一式(`refreshJsonTreePane()`/`handleJsonTreeKey()`/`createAndPositionJsonTreePane()`新設、`applyJsonTreeReadyMessage()`拡張、`dispatchWidgetShowCommand()`/`buildCommandRegistry()`/`handleAppMessage()`/`handleKeyDownEvent()`/`wireNormalMode()`拡張)+最終ゲート。中間で`cfg.onDeferredInit`ラムダのキャプチャリスト漏れによるコンパイルエラーを発見・修正、続けて`DepthLimitSax`が引き起こす`portability-template-virtual-member-function`警告13件(サードパーティヘッダ側が一次診断位置のためNOLINT不可、`.clang-tidy`でのプロジェクト全体除外が必要と判明)を解消 (`05ae9e2`)
+
+### DoD
+
+- [x] `parseJsonTree()`がSAX事前深度チェックを持ち閾値超過時`std::nullopt`を返す(クラッシュしない)ことをprobeと統合テストの両方で証明
+- [x] `docs/issues/json_tree_worker_deep_nesting_stack_overflow.md`の完了条件更新(P1解消)
+- [x] `buildJsonTreeItems()`/`buildJsonFoldRegions()`が反復実装(`misc-no-recursion`新規警告0)
+- [x] `JsonTreePane`が`OutlinePane`と同型のWin32配線を持つ
+- [x] `CommandId::JsonTreeToggle`がキーボード(`Ctrl+Shift+J`)・メニュー・コマンドパレットの3経路全てから到達可能
+- [x] トグルON: キャッシュがあれば同期即時表示、無ければ空パネル表示+`beginJsonTreeIndexing()`起動+`kMsgJsonTreeReady`到着時にアクティブタブの場合のみ自動反映
+- [x] トグルOFF/Escapeいずれでも、その後届く非同期結果でペインが勝手に再表示されない(設計レビューで確認、コード上でトークンクリアを実装)
+- [x] ツリー項目クリックでテキスト位置へジャンプ(`jumpToOutlinePosition()`再利用)
+- [x] `buildJsonFoldRegions()`の結果が`session.folding()`へ統合されガター折り畳みマーカーが機能する
+- [x] `EditorSession`は無変更のまま
+- [x] Debug/Release/ubsan全1369件green、clang-tidy新規警告0(`.clang-tidy`への`-portability-template-virtual-member-function`追加含む)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**当初の計画(SAX深度ガード導入)は技術的前提の検証を経て確定した。** nlohmann自身のクラス冒頭docコメント「recursive descent parser」は内部実装の実態(`sax_parse_internal()`は`std::vector<bool> states`による明示スタックの反復実装)と一致しないと判明した。実際に再帰するのはDOM構築(`json_sax_dom_parser`)とその破棄(`basic_json`のデストラクタ)側であり、事前深度チェックはDOMを一切構築しないためこの再帰経路に到達しない。
+
+**`.clang-tidy`にYAML構文ミスを一度混入させ、検証ループで自己発見・修正した。** `Checks: >`はYAMLのfolded block scalarであり、この記法のブロック内では`#`がコメントマーカーとして機能せず文字列値へ literal に混入する。最初の修正試行で除外エントリの直前に長い説明コメントを`#`付きでブロック内に置いてしまい、`--dump-config`で確認したところ`-portability-template-virtual-member-function`という単独エントリが存在せず前後の文言と連結された無意味な文字列になっていたと再検証で判明。説明コメントをブロックの外側(ファイル冒頭)へ移動し、ブロック内は素のエントリのみに戻して解消した。
+
+**`cfg.onDeferredInit`ラムダのキャプチャリスト漏れという実装ミスを最終ゲートの1回目で発見・修正した。** `wireNormalMode()`のシグネチャに`jsonTreePane`/`jsonTreePanePendingSessionToken`を追加した際、5箇所ある`cfg.on*`ラムダのうち`onResize`/`onCommand`/`onNotify`/`onAppMessage`/`onKeyDown`の5つは正しくキャプチャリストを更新したが、最初に更新すべきだった`onDeferredInit`(実際に`createAndPositionJsonTreePane()`を呼ぶ場所)のキャプチャリスト更新を見落としていた。MSVC/clang-cl両方が同じ箇所でコンパイルエラーを報告し、テストスイート自体(`neomifes_app_input`ライブラリのみが対象)は無関係のため1369件green のまま推移していた — ビルド失敗はNeoMIFES.exe本体のみに限定されていたことが、最終ゲート検証エージェントの詳細な報告により明確になった。
+
+**手動確認シナリオ(実アプリ)を実施した。** `NeoMIFES.exe --open <テストJSON>`を起動し`GetWindowThreadProcessId()`でメインウィンドウを特定した上で、`Ctrl+Shift+J`のキー入力合成(`SendInput`)を試みたところ、この環境の既知の制約(修飾キー同時押し合成の不調)により受理されなかった(推測ではなく実測で確認)。代替として`CommandId::JsonTreeToggle`を`WM_COMMAND`で実プロセスへ直接送信した(メニュークリックと全く同じ`dispatchWidgetShowCommand()`コードパス)ところ、JsonTreePaneが正しくトグル表示され、非同期パース(`JsonTreeWorker`→`kMsgJsonTreeReady`→`buildJsonTreeItems()`)を経てテストJSONの階層・値・要素数(`{3}`/`values: [3]`/`nested: {2}`等)がスクリーンショットで目視確認できる形で正確に描画された。`EnumChildWindows`で`SysTreeView32`が2つ(OutlinePane用/JsonTreePane用)存在しトグル前は両方非表示であることも構造検証済み。
+
+コミット済み(`6a7ca41`/`19927ef`/`76968ef`/`0ce9bac`/`05ae9e2`)、pushはユーザーの明示指示待ち。Phase 10.3はツリーUIのMVP(表示・ジャンプ・折り畳み統合)が完了 — Format/Validate/JSONPath/XPath・XML対応・真の左右分割ペイン化は全て後続サブWI(WI-15d以降)へ。次はPhase 10.2の続き(WI-16c: グリッドUI)、Phase 10.3の続き(WI-15d: 整形/バリデーション等)、またはユーザー指定の次項目。
+
+---
+
 ## WI-17 〜 WI-19 — Phase 11 / 9 / 12
 
-**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a〜b(ヘッドレス基盤+非同期化)着手済み・残り未完了、Phase 10.2 (CSV) は WI-16a〜b(ヘッドレス解析モデル+非同期化)着手済み・残り未完了。
+**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a〜c(ヘッドレス基盤+非同期化+ツリーUI MVP)まで完了・XML/整形/バリデーション/XPath/JSONPathは未着手、Phase 10.2 (CSV) は WI-16a〜b(ヘッドレス解析モデル+非同期化)着手済み・グリッドUIは未着手。
 
 着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
 

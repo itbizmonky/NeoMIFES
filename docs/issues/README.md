@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-18 (WI-15b最終ゲート、`parseJsonTree()`深いネストのスタックオーバーフローissueを新規起票)
+**最終更新:** 2026-08-19 (WI-15c、`parseJsonTree()`深いネストのスタックオーバーフローissueを解消・解決済みへ移動)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -21,7 +21,6 @@
 |---|---|---|
 | [検索が CRLF 行末を考慮しない](search_crlf_line_ending.md) | 正規表現の `$`/`^` が `\r` を行内容として扱う | 未定 (Phase 12 前) |
 | [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
-| [`parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる](json_tree_worker_deep_nesting_stack_overflow.md) | `nlohmann::ordered_json::parse()`自体が再帰下降パーサで深度上限を設定できず、十分深いネストでプロセスごとクラッシュしうる (WI-15b最終ゲートのubsan検証で発見) | 未定 (WI-15c、UI配線時に再評価) |
 
 ## P2 — 凍結 / 再評価待ち
 
@@ -58,6 +57,7 @@
 | [メインエディタが IME を処理しない](no_ime_support_in_main_editor.md) | 🟢 WI-06 (2026-08-12)。実機MS-IME確認完了、下線付きインライン表示・候補ウィンドウ追従・1 Undoステップ確定を確認 |
 | [ネイティブオーバーレイウィジェットが画面上に一切描画されない](native_overlay_widgets_invisible.md) | 🟢 WI-07 ステップ0 (2026-08-12)。根本原因は `MainWindow::create()` の `WS_CLIPCHILDREN` 欠落。1行追加で解消、TabBarのスクリーンショットで実証 |
 | [アプリケーションシェルが未実装](no_application_shell.md) | 🟢 WI-01〜WI-07 (2026-08-13、🎉 M2「アプリケーションとして成立」達成)。ファイルUI/タブ/メニュー/ステータスバー/行番号/横スクロール/アイコンを全て実装、`main.cpp`は398行 |
+| [`parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる](json_tree_worker_deep_nesting_stack_overflow.md) | 🟢 WI-15c (2026-08-19)。`DepthLimitSax`によるSAX事前深度チェック(`kMaxJsonNestingDepth=200`)を追加、`nlohmann::ordered_json::parse()`を呼ぶ前に弾く設計に確定 |
 | [設定システムが存在しない](no_settings_system.md) | 🟢 WI-08 (2026-08-13)。`core::Settings`実装、`kTabWidth`二重定義解消(`SetIncrementalTabStop()`未着手ギャップも同時発見・解消)、フォント/タブ幅/行番号/ミニマップがsettings.json経由で再起動なしに反映されることを実機ドッグフーディングで確認 |
 
 ---
