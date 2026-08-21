@@ -1,6 +1,7 @@
 #include "neomifes/jsontree/json_tree.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -45,8 +46,22 @@ constexpr int kMaxJsonNestingDepth = 200;
 // project-wide in .clang-tidy (see the comment there) because a NOLINT
 // comment cannot suppress it - its primary diagnostic location is inside
 // the third-party header, not this derivation site.
+// WI-15d: also the sole place that captures WHY sax_parse() rejected input,
+// for validateJson()'s benefit - parseJsonTree() still only cares about
+// pass/fail (see runDepthLimitedPreParse()'s own comment), but discarding
+// the reason unconditionally, the way this class did before WI-15d, would
+// make a "JSON検証" command that can only ever say "invalid" impossible to
+// build without a second, differently-shaped parsing pass.
+// m_byteToUtf16 below is a reference member - same "lifetime strictly
+// nested within a single function call" justification this file's own
+// ParseState (defined further below) already established for its own
+// reference members, applied here for the same
+// cppcoreguidelines-avoid-const-or-ref-data-members check.
+// NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
 class DepthLimitSax : public nlohmann::json_sax<nlohmann::ordered_json> {
 public:
+    explicit DepthLimitSax(const std::vector<std::uint32_t>& byteToUtf16) : m_byteToUtf16(byteToUtf16) {}
+
     bool null() override { return true; }
     bool boolean(bool /*val*/) override { return true; }
     bool number_integer(number_integer_t /*val*/) override { return true; }
@@ -56,34 +71,89 @@ public:
     bool binary(binary_t& /*val*/) override { return true; }
     bool key(string_t& /*val*/) override { return true; }
 
-    bool start_object(std::size_t /*elements*/) override { return ++m_depth <= kMaxJsonNestingDepth; }
+    bool start_object(std::size_t /*elements*/) override { return checkDepth(); }
     bool end_object() override {
         --m_depth;
         return true;
     }
-    bool start_array(std::size_t /*elements*/) override { return ++m_depth <= kMaxJsonNestingDepth; }
+    bool start_array(std::size_t /*elements*/) override { return checkDepth(); }
     bool end_array() override {
         --m_depth;
         return true;
     }
 
-    bool parse_error(std::size_t /*position*/, const std::string& /*lastToken*/,
-                      const nlohmann::detail::exception& /*ex*/) override {
+    // `position` is nlohmann's own 1-indexed running character count
+    // (lexer::position_t::chars_read_total - verified directly against the
+    // vendored nlohmann/json v3.11.3 source, the SAME counter
+    // nlohmann::detail::parse_error::byte is built from), so it maps into
+    // this document's coordinate space through the identical
+    // byteToUtf16 table json_tree.cpp's own PositionScanner-driven
+    // buildTree() already relies on for every OTHER position in this file -
+    // no separate re-derivation.
+    bool parse_error(std::size_t position, const std::string& /*lastToken*/,
+                      const nlohmann::detail::exception& ex) override {
+        if (!m_error.has_value()) {
+            const std::size_t byteIndex = position == 0 ? 0 : position - 1;
+            const document::TextPos mappedPos = byteIndex < m_byteToUtf16.size()
+                                                    ? static_cast<document::TextPos>(m_byteToUtf16[byteIndex])
+                                                    : 0;
+            const auto decodedMessage = detail::fromUtf8(ex.what());
+            m_error = JsonSyntaxError{.position = mappedPos,
+                                      .message  = decodedMessage.value_or(u"JSONの構文が不正です")};
+        }
         return false;
     }
 
-private:
-    int m_depth = 0;
-};
+    // nullopt only when the walk completed successfully (sax_parse()
+    // returned true) - a caller that reaches for this after sax_parse()
+    // returned false is guaranteed a value, either from checkDepth()'s
+    // depth message or parse_error()'s syntax message above (every false
+    // return from any callback in this class sets it first).
+    [[nodiscard]] const std::optional<JsonSyntaxError>& error() const noexcept { return m_error; }
 
-// True if `utf8` either fails to parse or nests containers deeper than
-// kMaxJsonNestingDepth allows - both collapse to the same std::nullopt
-// contract in parseJsonTree(), so this doesn't need to distinguish "not
-// JSON" from "too deep" any more than parseJsonTree() already treats
-// malformed input and non-JSON input alike.
-[[nodiscard]] bool exceedsMaxNestingDepth(std::string_view utf8) {
-    DepthLimitSax handler;
-    return !nlohmann::ordered_json::sax_parse(utf8, &handler);
+private:
+    // See kMaxJsonNestingDepth's own comment for why 200. Unlike
+    // parse_error(), start_object()/start_array() are never handed a
+    // position argument by nlohmann - see JsonSyntaxError::position's own
+    // comment on why this specific rejection reason reports position 0.
+    [[nodiscard]] bool checkDepth() {
+        if (++m_depth > kMaxJsonNestingDepth) {
+            if (!m_error.has_value()) {
+                m_error = JsonSyntaxError{.position = 0, .message = u"JSONのネストが深すぎます(上限200階層)"};
+            }
+            return false;
+        }
+        return true;
+    }
+
+    int                                m_depth = 0;
+    const std::vector<std::uint32_t>& m_byteToUtf16;
+    std::optional<JsonSyntaxError>     m_error;
+};
+// NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
+
+// nullopt if `conv.utf8` is well-formed JSON within kMaxJsonNestingDepth -
+// both parseJsonTree() (which only cares about pass/fail, folding "not
+// JSON" and "too deep" into the same std::nullopt) and validateJson()
+// (which wants the full JsonSyntaxError) share this single pre-parse pass,
+// run BEFORE nlohmann::ordered_json::parse() ever builds (and eventually
+// destroys) a DOM tree deep enough to overflow the stack.
+[[nodiscard]] std::optional<JsonSyntaxError> runDepthLimitedPreParse(const util::Utf8Conversion& conv) {
+    DepthLimitSax handler(conv.byteToUtf16);
+    if (nlohmann::ordered_json::sax_parse(conv.utf8, &handler)) {
+        return std::nullopt;
+    }
+    return handler.error();
+}
+
+// Shared by parseJsonTree() and validateJson() - both need the document's
+// full UTF-16 text materialized once before UTF-8 conversion.
+[[nodiscard]] std::u16string bufferFromSnapshot(const document::BufferSnapshot& snapshot) {
+    std::u16string buffer;
+    for (const auto& piece : snapshot.pieces()) {
+        buffer.append(snapshot.pieceView(piece));
+    }
+    return buffer;
 }
 
 [[nodiscard]] bool isJsonWhitespace(char c) noexcept {
@@ -359,13 +429,10 @@ void closeContainer(const PendingContainer& top, ParseState& state) {
 }  // namespace
 
 std::optional<JsonNode> parseJsonTree(const document::BufferSnapshot& snapshot) {
-    std::u16string buffer;
-    for (const auto& piece : snapshot.pieces()) {
-        buffer.append(snapshot.pieceView(piece));
-    }
+    const std::u16string buffer = bufferFromSnapshot(snapshot);
 
     const util::Utf8Conversion conv = util::toUtf8WithOffsets(buffer);
-    if (exceedsMaxNestingDepth(conv.utf8)) {
+    if (runDepthLimitedPreParse(conv).has_value()) {
         return std::nullopt;
     }
 
@@ -375,6 +442,16 @@ std::optional<JsonNode> parseJsonTree(const document::BufferSnapshot& snapshot) 
     }
 
     return buildTree(parsed, buffer, conv);
+}
+
+std::optional<JsonSyntaxError> validateJson(const document::BufferSnapshot& snapshot) {
+    const std::u16string       buffer = bufferFromSnapshot(snapshot);
+    const util::Utf8Conversion conv   = util::toUtf8WithOffsets(buffer);
+    return runDepthLimitedPreParse(conv);
+}
+
+std::optional<JsonSyntaxError> validateJson(const document::Document& doc) {
+    return validateJson(*doc.snapshot());
 }
 
 std::optional<JsonNode> parseJsonTree(const document::Document& doc) {

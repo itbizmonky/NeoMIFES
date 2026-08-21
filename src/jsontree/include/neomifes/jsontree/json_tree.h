@@ -104,4 +104,33 @@ struct JsonNode {
 // hand - snapshots it and delegates to the BufferSnapshot overload above.
 [[nodiscard]] std::optional<JsonNode> parseJsonTree(const document::Document& doc);
 
+// WI-15d: a best-effort description of WHY validateJson() rejected a
+// document - parseJsonTree() deliberately never exposes this (its callers,
+// per its own doc comment above, never need to distinguish "empty",
+// "malformed", or "too deeply nested"), but a user-facing "JSON検証"
+// command does.
+struct JsonSyntaxError {
+    // For a genuine syntax error, the position nlohmann's own tokenizer had
+    // reached when it gave up (mapped into this document's UTF-16
+    // document::TextPos coordinate space). For the "nested too deeply"
+    // case, always 0 - the underlying nlohmann::json_sax callback that
+    // rejects overly-deep input (start_object()/start_array() returning
+    // false) is never handed a position argument, unlike parse_error()
+    // (see json_tree.cpp's DepthLimitSax), so a precise location for that
+    // specific rejection reason is not available without materially more
+    // machinery than a rare structural-limit message needs.
+    document::TextPos position = 0;
+    // Human-readable message (nlohmann's own parse_error text for a syntax
+    // error, decoded from UTF-8; a fixed message for "too deeply nested").
+    std::u16string message;
+};
+
+// std::nullopt = `snapshot`/`doc` IS well-formed JSON (within
+// kMaxJsonNestingDepth) - i.e. the same condition under which
+// parseJsonTree() above would have returned a value rather than nullopt.
+// Otherwise, a best-effort reason (see JsonSyntaxError's own comment).
+// Never throws (same fail-gracefully convention as parseJsonTree()).
+[[nodiscard]] std::optional<JsonSyntaxError> validateJson(const document::BufferSnapshot& snapshot);
+[[nodiscard]] std::optional<JsonSyntaxError> validateJson(const document::Document& doc);
+
 }  // namespace neomifes::jsontree
