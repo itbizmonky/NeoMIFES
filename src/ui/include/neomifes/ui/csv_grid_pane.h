@@ -1,10 +1,15 @@
 #pragma once
 
 // CsvGridPane - the CSV grid panel's WC_LISTVIEW child control (Phase 10.2,
-// WI-16c). Win32-mechanics-only, knows nothing about neomifes::csvmode - see
-// ui::OutlinePane's own class comment for why (the same "ui:: never depends
-// on the domain module that produces its data" principle this codebase
-// already established for OutlinePane/syntax:: and JsonTreePane/jsontree::).
+// WI-16c) plus a filter edit row above it (WI-16e). Win32-mechanics-only,
+// knows nothing about neomifes::csvmode - see ui::OutlinePane's own class
+// comment for why (the same "ui:: never depends on the domain module that
+// produces its data" principle this codebase already established for
+// OutlinePane/syntax:: and JsonTreePane/jsontree::). The filter edit's
+// WC_EDIT + 150ms-debounce + IME-composition-guard mechanics (WI-16e) are a
+// direct copy of ui::FindBar's own established pattern (find_bar.h/.cpp) -
+// this class does not invent a second UI-timing convention for the same
+// kind of "text input drives an incremental result" control.
 //
 // LVS_REPORT | LVS_OWNERDATA (virtual mode), NOT a normal WC_LISTVIEW that
 // holds every row as a real LVITEM - the requirements doc's own stated scale
@@ -39,6 +44,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "neomifes/platform/handle_guard.h"
@@ -60,9 +66,23 @@ struct CsvGridPaneConfig {
     // activated" is meaningful information the caller needs to distinguish
     // (jump to the row's own first cell) from "CSV column 0 was activated".
     std::function<void(std::size_t rowIndex, std::size_t colIndex)> onCellActivated;
-    // Escape. Caller restores focus to the document (same contract as
-    // OutlinePaneConfig::onClosed/JsonTreePaneConfig::onClosed).
+    // Escape (from either the ListView or the filter edit - see this
+    // header's own class comment). Caller restores focus to the document
+    // (same contract as OutlinePaneConfig::onClosed/JsonTreePaneConfig::
+    // onClosed).
     std::function<void()> onClosed;
+    // WI-16e: fires 150ms after the filter edit's text last changed (same
+    // UI-timing convention as ui::FindBarConfig::onQueryChanged - a burst of
+    // keystrokes restarts the timer, so this fires once per pause, not once
+    // per keystroke) OR immediately on Enter. The caller recomputes its own
+    // filtered row order and reflects it via setRowCount()/showWith().
+    std::function<void(std::u16string_view query)> onFilterQueryChanged;
+    // LVN_COLUMNCLICK. `colIndex` uses the SAME non-shifted space as
+    // onCellActivated's (0 == the "#" row-number column's header was
+    // clicked - the caller's own convention for "reset to unsorted", since
+    // that column has no real CSV data to sort by; 1..columnCount == a real
+    // CSV column).
+    std::function<void(std::size_t colIndex)> onSortColumnClicked;
 };
 
 class CsvGridPane {
@@ -87,35 +107,81 @@ public:
     // paints. Re-invoking while already visible refreshes in place (mirrors
     // OutlinePane::showWith()'s own contract).
     void showWith(std::vector<std::u16string> columnLabels, std::size_t dataRowCount) noexcept;
+    // WI-16e: updates ONLY the row count (LVM_SETITEMCOUNT) - unlike
+    // showWith(), does not delete/reinsert columns, so a user's drag-resized
+    // column widths survive. Call this instead of showWith() when only the
+    // FILTERED row count changed (columns/labels unchanged, e.g. the
+    // caller's onFilterQueryChanged handler); showWith() remains necessary
+    // whenever the column set or a label's own text changes (initial load,
+    // a sort-arrow indicator update).
+    void setRowCount(std::size_t dataRowCount) noexcept;
     void hide() noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
+
+    // Programmatically sets the filter edit's text WITHOUT firing
+    // onFilterQueryChanged (WM_SETTEXT's standard contract - it does not
+    // generate EN_CHANGE) - unlike ui::FindBar::setQueryText(), this is
+    // deliberately a silent sync, not a "re-run the filter" trigger. Used to
+    // restore a tab's own previously-set filter text when CsvGridPane is
+    // reopened for a DIFFERENT EditorSession than the one it last showed
+    // (the pane itself has no concept of "which session" - the caller is
+    // responsible for calling this every time it also calls showWith() for
+    // a session whose csvFilter() might differ from what's currently typed).
+    void setFilterQueryText(std::u16string_view text) noexcept;
 
     // topInsetDips/bottomInsetDips are the caller's own tab-strip/status-bar
     // heights (see this header's top comment) - already in DIPs, scaled by
     // dpiScale the same way parentWidth/parentHeight's derived pixel values
-    // are.
+    // are. WI-16e: the filter row (label+edit) reserves its own fixed-height
+    // strip immediately below topInsetDips - see kFilterRowHeightDips in the
+    // .cpp.
     void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight, float dpiScale,
                          float topInsetDips, float bottomInsetDips) noexcept;
 
     // Routes a WM_NOTIFY the owning MainWindow received (LVN_GETDISPINFOW/
-    // LVN_ITEMACTIVATE arrive here, not at the child itself - same routing
-    // OutlinePane/JsonTreePane already use for their own WM_NOTIFY codes,
-    // see MainWindowConfig::onNotify's doc comment). Call from
-    // MainWindowConfig::onNotify.
+    // LVN_ITEMACTIVATE/LVN_COLUMNCLICK arrive here, not at the child itself -
+    // same routing OutlinePane/JsonTreePane already use for their own
+    // WM_NOTIFY codes, see MainWindowConfig::onNotify's doc comment). Call
+    // from MainWindowConfig::onNotify.
     LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
+
+    // WI-16e: routes a WM_COMMAND the owning MainWindow received (EN_CHANGE
+    // from the filter edit arrives here, not at the child HWND itself - same
+    // routing ui::FindBar::handleCommand() already uses). Call from
+    // MainWindowConfig::onCommand.
+    void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
 
 private:
     static LRESULT CALLBACK subclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId,
                                          DWORD_PTR refData) noexcept;
     LRESULT handleSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
+    // Returns true if the key was handled (caller should return 0 rather
+    // than falling through to DefSubclassProc) - mirrors ui::FindBar::
+    // handleSubclassKeyDown()'s own return-value contract. `hwnd` is always
+    // m_hwndFilterEdit.get() here (the ListView's own VK_ESCAPE handling
+    // stays inline in handleSubclassMessage() - it has no VK_RETURN/IME
+    // concern of its own to share this function's shape with).
+    [[nodiscard]] bool handleFilterEditKeyDown(HWND hwnd, UINT vkCode) noexcept;
     void handleGetDispInfo(LPARAM lParam) noexcept;
     void handleItemActivate(LPARAM lParam) noexcept;
+    void handleColumnClick(LPARAM lParam) noexcept;
+    // Fires onFilterQueryChanged with the filter edit's current text - shared
+    // by the debounce WM_TIMER and VK_RETURN's "fire now" path (mirrors
+    // ui::FindBar::fireQueryChanged()).
+    void fireFilterQueryChanged() noexcept;
     void ensureFont(float dpiScale) noexcept;
 
     neomifes::platform::WindowHandle    m_hwndList;
+    neomifes::platform::WindowHandle    m_hwndFilterLabel;
+    neomifes::platform::WindowHandle    m_hwndFilterEdit;
     neomifes::platform::GdiObjectHandle m_font;
     CsvGridPaneConfig                   m_config;
     std::size_t                         m_columnCount = 0;  // real CSV columns only, excludes the "#" column
+    // Tracks WM_IME_STARTCOMPOSITION/WM_IME_ENDCOMPOSITION on the filter
+    // edit so Enter/Escape are left to the IME (confirm/cancel the
+    // composition) instead of being intercepted while converting Japanese/
+    // Chinese/Korean input - same guard ui::FindBar::m_composing provides.
+    bool m_composing = false;
 };
 
 }  // namespace neomifes::ui
