@@ -1,5 +1,6 @@
 add_library(neomifes_jsontree STATIC
     src/json_tree.cpp
+    src/json_format.cpp
     src/json_string_convert.cpp
     src/json_tree_worker.cpp
 )
