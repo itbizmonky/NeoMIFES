@@ -1,6 +1,7 @@
 add_library(neomifes_git STATIC
     src/git_init.cpp
     src/git_repository.cpp
+    src/git_diff_worker.cpp
 )
 add_library(neomifes::git ALIAS neomifes_git)
 

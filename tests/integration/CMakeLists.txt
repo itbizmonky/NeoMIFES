@@ -205,6 +205,48 @@ set_tests_properties(csvmode_csv_model_worker PROPERTIES
     TIMEOUT 30
 )
 
+# git_diff_worker_test - exercises GitDiffWorker's real background
+# std::thread + PostMessageW completion handoff end-to-end (WI-17b), modeled
+# directly on csvmode_csv_model_worker_test above. Builds its own real Git
+# repository fixtures directly against libgit2's index/commit APIs
+# (GitRepository itself has no write/commit API - out of scope, same as
+# tests/unit/git_repository_test.cpp), so this target needs <git2.h> visible
+# even though neomifes::git's own PUBLIC interface deliberately never
+# exposes it (see src/git/CMakeLists.txt's own comment).
+add_executable(neomifes_git_diff_worker_test
+    git_diff_worker_test.cpp
+)
+
+target_link_libraries(neomifes_git_diff_worker_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::git
+        libgit2package
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_include_directories(neomifes_git_diff_worker_test
+    PRIVATE
+        "${libgit2_SOURCE_DIR}/include"
+        "${libgit2_BINARY_DIR}/include"
+)
+
+set_target_properties(neomifes_git_diff_worker_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    git_diff_worker
+    COMMAND neomifes_git_diff_worker_test
+)
+
+set_tests_properties(git_diff_worker PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # platform_clipboard_test - exercises the real OS clipboard (Phase 4b6c),
 # which the plain unit-test binary avoids entirely.
 add_executable(neomifes_platform_clipboard_test

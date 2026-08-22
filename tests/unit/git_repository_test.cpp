@@ -134,6 +134,43 @@ TEST_F(GitRepositoryTest, DiffAgainstHeadDetectsAddedRegion) {
     fs::remove_all(dir);
 }
 
+// WI-17b: diffAgainstHead()'s primary entry point is now the BufferSnapshot
+// overload (the Document overload above merely delegates via *doc.snapshot()) -
+// this test calls it directly, the shape git::GitDiffWorker's background
+// thread actually uses (it never touches a live Document).
+TEST_F(GitRepositoryTest, DiffAgainstHeadBufferSnapshotOverloadDetectsAddedRegion) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc    = makeDoc(u"line1\nline2\nline3\n");
+    const auto      result = repo->diffAgainstHead(dir / "a.txt", *doc.snapshot());
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->size(), 1U);
+    EXPECT_EQ((*result)[0].kind, LineDiffKind::Added);
+
+    fs::remove_all(dir);
+}
+
+// Confirms the Document overload's delegation is exact, not just similarly-
+// shaped - both overloads must agree bit-for-bit on the same input.
+TEST_F(GitRepositoryTest, DiffAgainstHeadDocumentAndBufferSnapshotOverloadsAgree) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\nline3\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(u"line1\nCHANGED\nline3\n");
+    const auto viaDocument       = repo->diffAgainstHead(dir / "a.txt", doc);
+    const auto viaBufferSnapshot = repo->diffAgainstHead(dir / "a.txt", *doc.snapshot());
+    ASSERT_TRUE(viaDocument.has_value());
+    ASSERT_TRUE(viaBufferSnapshot.has_value());
+    EXPECT_EQ(*viaDocument, *viaBufferSnapshot);
+
+    fs::remove_all(dir);
+}
+
 TEST_F(GitRepositoryTest, DiffAgainstHeadDetectsModifiedRegion) {
     const fs::path dir = uniqueTempDir();
     makeRepoWithCommit(dir, "a.txt", "line1\nline2\nline3\n");

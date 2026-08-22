@@ -81,7 +81,7 @@ std::optional<GitRepository> GitRepository::discover(const std::filesystem::path
 }
 
 std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
-    const std::filesystem::path& absoluteFilePath, const document::Document& doc) const {
+    const std::filesystem::path& absoluteFilePath, const document::BufferSnapshot& snapshot) const {
     const char* workdir = ::git_repository_workdir(m_repo.get());
     if (workdir == nullptr) {
         return std::nullopt;  // bare repository - no working directory to compare against
@@ -120,8 +120,8 @@ std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
     // project introduces.
     auto* headBlob = reinterpret_cast<git_blob*>(headObj);
 
-    const document::TextPos    length      = doc.length();
-    const std::u16string        currentText = doc.snapshot()->extract(document::TextRange{.start = 0, .end = length});
+    const document::TextPos    length      = snapshot.length();
+    const std::u16string        currentText = snapshot.extract(document::TextRange{.start = 0, .end = length});
     const std::string           currentUtf8 = util::toUtf8WithOffsets(currentText).utf8;
 
     git_diff_options options;
@@ -153,6 +153,11 @@ std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
         return std::nullopt;
     }
     return regions;
+}
+
+std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
+    const std::filesystem::path& absoluteFilePath, const document::Document& doc) const {
+    return diffAgainstHead(absoluteFilePath, *doc.snapshot());
 }
 
 }  // namespace neomifes::git

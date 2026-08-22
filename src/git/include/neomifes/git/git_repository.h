@@ -30,6 +30,7 @@ struct git_repository;  // libgit2's own opaque handle type (git2/types.h) - nev
 
 namespace neomifes::document {
 class Document;
+class BufferSnapshot;
 }  // namespace neomifes::document
 
 namespace neomifes::git {
@@ -55,6 +56,8 @@ struct LineDiffRegion {
     document::LineNumber startLine = 0;
     document::LineNumber lineCount = 0;
     LineDiffKind          kind      = LineDiffKind::Added;
+
+    friend bool operator==(const LineDiffRegion&, const LineDiffRegion&) = default;
 };
 
 class GitRepository {
@@ -75,18 +78,31 @@ public:
     ~GitRepository();
 
     // Computes a line-level diff between HEAD's own blob for
-    // `absoluteFilePath` and `doc`'s CURRENT in-memory text (NOT whatever
-    // is currently on disk - `doc` may hold unsaved edits, and diffing
-    // against the live buffer rather than the file is the whole point of a
-    // "gutter shows your uncommitted changes as you type" feature).
+    // `absoluteFilePath` and `snapshot`'s CURRENT in-memory text (NOT
+    // whatever is currently on disk - the snapshot may hold unsaved edits,
+    // and diffing against the live buffer rather than the file is the whole
+    // point of a "gutter shows your uncommitted changes as you type"
+    // feature). This is the primary entry point (WI-17b) - takes a
+    // BufferSnapshot rather than a Document so a background thread
+    // (git::GitDiffWorker) can call it safely without touching the UI-
+    // thread-owned Document (document::Document is UI-thread-only per
+    // ADR-009; document::BufferSnapshot is not), the same reasoning
+    // jsontree::parseJsonTree()'s own BufferSnapshot overload documents.
     //
     // std::nullopt (not an empty vector) when: `absoluteFilePath` is
     // outside this repository's working directory, OR HEAD has no blob for
     // this path (an untracked/newly-added file, or a repository with no
     // commits yet) - callers should treat either case as "the whole file
     // is new, don't ask this class about it" rather than "no changes".
-    // An empty (non-null) vector means HEAD's blob and doc's current text
-    // are identical from libgit2's own diff algorithm's perspective.
+    // An empty (non-null) vector means HEAD's blob and the snapshot's
+    // current text are identical from libgit2's own diff algorithm's
+    // perspective.
+    [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
+        const std::filesystem::path& absoluteFilePath, const document::BufferSnapshot& snapshot) const;
+
+    // Convenience overload for UI-thread callers that only have a Document
+    // at hand - snapshots it and delegates to the BufferSnapshot overload
+    // above. Same shape as jsontree::parseJsonTree()'s Document overload.
     [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
         const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
 
