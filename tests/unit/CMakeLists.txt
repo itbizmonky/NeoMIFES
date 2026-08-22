@@ -89,6 +89,7 @@ add_executable(neomifes_unit_tests
     jsontree_json_tree_test.cpp
     jsontree_json_format_test.cpp
     jsontree_json_validate_test.cpp
+    jsontree_json_path_test.cpp
     app_json_tree_bridge_test.cpp
     app_json_fold_bridge_test.cpp
     csvmode_csv_model_test.cpp

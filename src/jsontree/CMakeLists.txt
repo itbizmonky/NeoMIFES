@@ -3,6 +3,7 @@ add_library(neomifes_jsontree STATIC
     src/json_format.cpp
     src/json_string_convert.cpp
     src/json_tree_worker.cpp
+    src/json_path.cpp
 )
 add_library(neomifes::jsontree ALIAS neomifes_jsontree)
 
