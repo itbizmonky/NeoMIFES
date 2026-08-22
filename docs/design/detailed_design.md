@@ -3255,9 +3255,9 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
-### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜c実装、Phase 10.3 ツリーUI MVP達成)
+### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜d実装、Phase 10.3 整形・バリデーション達成)
 
-`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15cで実装済み。XML/整形/バリデーション/XPath/JSONPath/真の左右分割ペイン化は未実装(WI-15d以降へ)。
+`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15c、整形(`json.format`)・バリデーション(`json.validate`、いずれもコマンドパレット限定)はWI-15dで実装済み。XML対応/XPath/JSONPath/真の左右分割ペイン化は未実装(WI-15e以降へ)。
 
 ```cpp
 // neomifes/jsontree/json_tree.h (WI-15a、WI-15bでBufferSnapshotオーバーロード追加)
@@ -3334,6 +3334,38 @@ public:
 - 「表示保留」状態(非同期結果到着時にペインへ自動反映すべきか)は`EditorSession`メンバではなく`main.cpp`ローカルの`const void* jsonTreePanePendingSessionToken`として実装 — ペインはWorkspace全体で1枚のみのため。
 - `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェックを`parseJsonTree()`に追加し、WI-15b発見のP1 issueを解消。技術的前提はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解で実装前に検証済み。副産物としてclang-tidyの`portability-template-virtual-member-function`(13件、NOLINT不可)を`.clang-tidy`のプロジェクト全体除外で解消。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15c)」参照。
+
+```cpp
+// neomifes/jsontree/json_format.h (WI-15d)
+// JsonNode自身の生テキストをそのまま出力(nlohmannのdump()のような
+// 再シリアライズはしない)。JsonNodeはparseJsonTree()経由なら常に
+// kMaxJsonNestingDepth(200)以内のため反復実装は必須ではないが、
+// .clang-tidyのmisc-no-recursionプロジェクト方針に合わせ明示スタック
+// (PendingContainer、json_tree.cppのbuildTree()と同型)で実装。
+[[nodiscard]] std::u16string formatJsonNode(const JsonNode& root, int indentWidth = 2);
+
+// neomifes/jsontree/json_tree.h (WI-15d追加分)
+struct JsonSyntaxError {
+    document::TextPos position = 0;  // 構文エラーは実位置、ネスト超過は常に0
+    std::u16string     message;       // nlohmannのwhat()由来(英語のまま)
+};
+[[nodiscard]] std::optional<JsonSyntaxError> validateJson(const document::BufferSnapshot& snapshot);
+[[nodiscard]] std::optional<JsonSyntaxError> validateJson(const document::Document& doc);
+
+// src/app/include/neomifes/app/message_dialogs.h (WI-15d追加分)
+void showJsonFormatInvalidDialog(HWND owner);
+void showJsonValidDialog(HWND owner);
+void showJsonValidationErrorDialog(HWND owner, std::u16string_view message);
+```
+
+**設計上の要点 (WI-15d、整形・バリデーション):**
+- `formatJsonNode()`のリーフ値(String/Number/Boolean/Null)は`JsonNode::text`(生ソーステキスト)をそのまま出力し、nlohmannの`.dump()`のような再シリアライズを行わない。Objectキーのみ`JsonNode::key`(デコード済み)を新規`escapeJsonString()`(RFC 8259 §7準拠の最小限のエスケープ)で再エンコードする — `JsonNode::key`は生の引用符・エスケープ済みソース片を保持しない設計のため。
+- `validateJson()`は新規パーシング経路を作らず、既存の`DepthLimitSax`(WI-15c、ネスト深度ガード)を拡張して実装した。`parse_error()`SAXコールバックの`position`引数はnlohmannの例外`.byte`と同一の`chars_read_total`(vendoredソース読解で確認済み)であり、`parseJsonTree()`が既に構築済みの`byteToUtf16`テーブルでO(1)変換できる。ネスト超過(`start_object`/`start_array`がfalseを返すケース)はnlohmannから位置情報を渡されないため、position=0+固定メッセージとした。
+- **最終ゲートで`formatJsonNode()`がclang-tidyの`misc-no-recursion`(相互再帰、`formatValue`⇄`formatChildren`)に抵触した。** NOLINT抑制ではなく、`json_tree.cpp`の`buildTree()`が同じ理由で採用済みの「明示スタックによる反復実装」への全面書き換えで解消(200段のネスト上限自体は安全マージンとして十分だが、プロジェクトの`.clang-tidy`方針そのものへの適合を優先した)。
+- ダイアログ表示は新規MessageBoxWではなく、既存の`message_dialogs.h`(TaskDialogIndirectベースのOK専用ダイアログパターン、`showLogFormatNotDetectedDialog()`等と同型)を踏襲。`showJsonValidationErrorDialog()`はこのファイル内で唯一、固定/enum選択ではなく呼び出し元が渡した動的テキストを表示する関数。
+- `core::ReplaceRangeCommand`(既存)が、このコードベースで初めて「文書全体を1回のUndo可能な編集として書き換える」実際の消費者になった。
+- コマンド配線は`edit.duplicateLine`/`edit.selectAll`と同型、`CommandId::None`+コマンドパレット限定(新規`CommandId`・キーバインド・メニュー項目は追加しない)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15d)」参照。
 
 ### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜e実装、Phase 10.2 フィルタ・ソートUI達成)
 

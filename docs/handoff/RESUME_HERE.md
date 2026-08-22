@@ -176,7 +176,8 @@
 | **10.2c** | **CSV モード グリッドUI実装 🎉** (`ui::CsvGridPane`、`Ctrl+Shift+G`、仮想モードWC_LISTVIEW、セルダブルクリックジャンプ、タブ切替/文書スワップ時の自動非表示) | ✅ **完了 (WI-16c、2026-08-19、§3.90参照)。🎉 Phase 10.2 グリッドUI MVP達成** |
 | **10.2d** | **CSV フィルタ・ソート ヘッドレス計算基盤** (`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214ms実測、EditorSession配線/UIは未着手) | ✅ **完了 (WI-16d、2026-08-19、§3.91参照)** |
 | **10.2e** | **CSV フィルタ・ソート EditorSession配線+UI実装 🎉** (フィルタ編集欄150msデバウンス、列ヘッダクリックで3段階ソートサイクル、実機ドッグフーディング確認済み) | ✅ **完了 (WI-16e、2026-08-19、§3.92参照)。🎉 Phase 10.2 フィルタ・ソートUI達成** |
-| 10.2/10.3残り → 11 → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(UI続き) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
+| **10.3d** | **JSON 整形(Format)・バリデーション(Validate) 🎉** (コマンドパレット限定「JSON: Format Document」「JSON: Validate」、`core::ReplaceRangeCommand`初の文書全体書き換え消費者) | ✅ **完了 (WI-15d、2026-08-19、§3.93参照)。🎉 Phase 10.3 整形・バリデーション達成** |
+| 10.2/10.3残り → 11 → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/JSONPath/真の左右分割ペイン化) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2653,6 +2654,32 @@ WI-16d完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`1556634`/`70addd0`/`bf61a8a`)、pushはユーザーの明示指示待ち。Phase 10.2はフィルタ・ソートのUI/配線まで完了 — 列固定・セル単位クリック編集・式列・列指定の厳密一致フィルタは全て後続サブWI(WI-16f以降)へ。次はPhase 10.2の続き(列固定/セル編集)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
 
+### 3.93 WI-15d (JSON 整形(Format)・バリデーション(Validate)) 完了記録 (2026-08-19)
+
+WI-16e完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16f: CSVモードの続き / WI-15d: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「WI-15d: JSON/XML Treeの続き(推奨)」**が選ばれた — JSON側がWI-15a→b→cの3サブWIでツリーUI MVPまで到達した一方、CSV側は既に5サブWI(a〜e)を消化しており、JSON側とのバランスを取る判断。
+
+要件定義書§10・master_roadmap.md §10.3が挙げる残りスコープ(XML対応/整形/バリデーション/XPath/JSONPath/真の左右分割ペイン化)は性質の異なる6項目で1WIに収まらないと判断し、WI-16dのフィルタ+ソート統合と同型の「関連する2機能を1WIにまとめる」パターンを踏襲、**本WIは「整形(Format)」「バリデーション(Validate)」の2つに絞った。** XML対応(新規ライブラリのADRが必要)・XPath(XML前提)・JSONPath(自前パーサ+評価器が必要)・真の左右分割ペイン化(RenderPipeline変更)は全てWI-15e以降へ。
+
+**設計上の要点:**
+- `formatJsonNode()`は`JsonNode`自身の生テキストをそのまま出力し、nlohmannの`.dump()`のような再シリアライズを行わない設計にした(`"1.50"`が`"1.5"`に化けない)。Objectキーのみ新規`escapeJsonString()`で再エンコードする必要があった(`JsonNode::key`はデコード済み文字列のみを保持する既存設計のため)。
+- `validateJson()`は新規パーシング経路を作らず既存の`DepthLimitSax`(WI-15c)を拡張して実装した。`parse_error()`SAXコールバックの`position`引数がnlohmannの例外`.byte`と同一の`chars_read_total`であることをvendoredソース(`json.hpp`)読解で実装前に確認した(CLAUDE.mdルール3)。
+- **ダイアログ表示の設計を実装中に訂正した。** 当初はMessageBoxW(「バージョン情報」ダイアログの前例)で計画していたが、着手中により確立された`message_dialogs.h`(TaskDialogIndirectベース、`showLogFormatNotDetectedDialog()`等の前例)の存在に気づき、そちらへ設計を訂正した。
+- コマンド配線は`edit.duplicateLine`/`edit.selectAll`と同型、`CommandId::None`+コマンドパレット限定(新規`CommandId`・キーバインド・メニュー項目は追加しない)。
+
+### 実施内容 (3コミット)
+
+1. `formatJsonNode()`(整形) + 単体テスト8件 (`d4b346a`)
+2. `validateJson()`(バリデーション、`DepthLimitSax`拡張) + 単体テスト8件 (`c1cfbf0`)
+3. コマンド配線(`dispatchJsonFormatCommand()`/`dispatchJsonValidateCommand()`、パレット2エントリ)+最終ゲート+実機ドッグフーディング (`067fc84`)
+
+**最終ゲート1回目でclang-tidyが`json_format.cpp`に5件検出した。** C配列(`cppcoreguidelines-avoid-c-arrays`)+非定数インデックス2件+相互再帰2件(`misc-no-recursion`、`formatValue`⇄`formatChildren`)。C配列は`std::array`+`.at()`で解消。**相互再帰はNOLINT抑制ではなく設計変更で対応した** — `json_tree.cpp`のbuildTree()が同じ理由(このプロジェクトの`.clang-tidy`が`misc-no-recursion`をプロジェクト全体で有効化している既存方針)で明示スタックを採用している前例に倣い、`formatJsonNode()`を`std::vector<PendingContainer>`による反復実装へ全面書き換えした。書き換え前後で既存8件の単体テストが全てバイト単位で同一の出力を返すことを確認(手計算トレース+テスト実行の両方で検証)。
+
+**最終ゲート:** Debug/Release/ubsan全1407件green、clang-tidy新規警告0(4ファイル)。`core::ReplaceRangeCommand`がこのコードベースで初めて「文書全体を1回のUndo可能な編集として書き換える」実際の消費者になった。
+
+**実機ドッグフーディング(Release構成)は全項目を実際の画面操作で確認できた。** コマンドパレットには`WM_COMMAND`直接送信の代替経路が無い(`CommandId::None`のため)ため、`CommandId::CommandPaletteShow`(値40005)で開き、フィルタ編集欄(id 2001)へ`WM_CHAR`で「JSON: Format」/「JSON: Validate」を打ち込みEnterで実行する経路を確立(CSVグリッドのフィルタ編集欄で確立済みの`WM_CHAR`手法を再利用)。整形前後の1行圧縮JSON→2スペースインデント複数行への変化、`Ctrl+Z`(`WM_COMMAND`経由、`CommandId::Undo`値40033)での正確な原文復元、有効JSONでの「有効なJSONです」ダイアログ、無効JSON(末尾カンマ)での「JSONの構文エラー」ダイアログ(nlohmannの生メッセージ`[json.exception.parse_error.101] ... unexpected '}'; expected string literal`)+カーソルジャンプ(ステータスバー・視覚的キャレット位置・nlohmannが報告する`column: 26`が一致)、いずれもスクリーンショットで確認済み。ドッグフーディング中、自動化ツール側が`SB_GETTEXTW`をクロスプロセスで誤用し対象プロセスを1回クラッシュさせる事故があったが、WI-16c/WI-16eで既に発生した同種の自動化ハーネス限界(ポインタ引数の未マーシャリング)でありWI-15d自体の欠陥ではない。
+
+コミット済み(`d4b346a`/`c1cfbf0`/`067fc84`)、pushはユーザーの明示指示待ち。Phase 10.3は整形・バリデーションまで完了 — XML対応・XPath・JSONPath・真の左右分割ペイン化は全て後続サブWI(WI-15e以降)へ。次はPhase 10.2の続き(WI-16f: 列固定/セル編集/式列)、Phase 10.3の続き(WI-15e以降)、またはユーザー指定の次項目。
+
 ---
 
 ## 4. Phase 2a のコンテキスト圧縮版
@@ -2702,15 +2729,17 @@ WI-16d完了・push未実施の状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.92 (WI-16e CSV フィルタ・ソート EditorSession配線+UI
-実装 完了記録)を読んで現状を把握せよ。
+RESUME_HERE.md §3.93 (WI-15d JSON 整形(Format)・バリデーション
+(Validate) 完了記録)を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
 (2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a→b→c
-(ツリーUI、Ctrl+Shift+Jでトグル・折り畳み統合)まで完了し🎉ツリー
-UI MVPを達成(2026-08-19)。XML対応・整形・バリデーション・
-XPath/JSONPath・真の左右分割ペイン化はWI-15d以降へ。Phase 10.2
+(ツリーUI、Ctrl+Shift+Jでトグル・折り畳み統合)→WI-15d(コマンド
+パレット限定「JSON: Format Document」/「JSON: Validate」、
+`core::ReplaceRangeCommand`初の文書全体書き換え消費者)まで完了し
+🎉整形・バリデーションを達成(いずれも2026-08-19)。XML対応・
+XPath・JSONPath・真の左右分割ペイン化はWI-15e以降へ。Phase 10.2
 (CSVモード)はWI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面
 置き換え表示・セルダブルクリックジャンプ)→WI-16d(フィルタ・ソート
 のヘッドレス計算基盤`computeCsvRowOrder()`、100万行フィルタ569ms/
@@ -2718,7 +2747,7 @@ XPath/JSONPath・真の左右分割ペイン化はWI-15d以降へ。Phase 10.2
 150msデバウンス+列ヘッダクリックで3段階ソートサイクル、実機
 ドッグフーディング確認済み)まで完了し🎉フィルタ・ソートUIを達成
 (いずれも2026-08-19)。列固定・セル編集・式列はWI-16f以降へ。
-Debug/Release/ubsan全1391件green、clang-tidy新規警告0を確認済み。
+Debug/Release/ubsan全1407件green、clang-tidy新規警告0を確認済み。
 
 **副産物issue: 末尾改行のあるCSVでグリッドの「#」列が実データ行数+1
 (暗黙の空行)を表示する(WI-16aで既に文書化済みの既存仕様がグリッド
@@ -2764,16 +2793,32 @@ JsonTreeToggle/CsvGridToggle両方を登録済み。
 経路を追加する際は、必ずこの3関数のいずれか経由にすること(直接
 `m_csvFilter`等を書き換える経路を新設しない)。
 
+**WI-15dで`formatJsonNode()`がclang-tidyの`misc-no-recursion`に抵触し、
+NOLINT抑制ではなく反復実装への全面書き換えで解消した。** `json_tree.cpp`
+の`buildTree()`が同じ理由で採用済みの明示スタックパターンに倣った
+判断 — このプロジェクトの`.clang-tidy`は`misc-no-recursion`をプロジェクト
+全体で有効化しているため、200段のネスト上限(安全マージンとしては
+十分)があっても再帰実装は今後も同じ指摘を受ける。今後`JsonNode`を
+再帰的に処理する新規関数を書く際は、最初から明示スタックで書くことを
+検討すること。
+
+**WI-15dでダイアログ表示の設計を実装中に訂正した。** 当初計画は
+MessageBoxW(「バージョン情報」ダイアログの前例)だったが、着手中に
+より確立された`message_dialogs.h`(TaskDialogIndirectベース、
+`showLogFormatNotDetectedDialog()`等の前例)の存在に気づき、そちらへ
+設計を訂正した。今後ユーザー向けの一回限りの通知ダイアログを追加する
+際は、まず`message_dialogs.h`に既存の型が無いか確認すること。
+
 **WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
 (WI-15/16/17)を2026-08-18にWI-16/17/18へ、CSV側のWI-16a新設で衝突した
 ため2026-08-19にさらにWI-17/18/19へ繰り下げた(build_plan.md §5
-「WI-17〜19」節)。WI-15c/WI-16b/WI-16c/WI-16d/WI-16eはこの番号割当に
-影響しない(既存のWI-15/WI-16の続き番号)。
+「WI-17〜19」節)。WI-15c/WI-15d/WI-16b/WI-16c/WI-16d/WI-16eはこの
+番号割当に影響しない(既存のWI-15/WI-16の続き番号)。
 
 次はPhase 10.2の続き(WI-16f以降: 列固定・セル編集・式列)、または
-Phase 10.3の続き(WI-15d以降: XML対応・整形・バリデーション・
-XPath/JSONPath・真の左右分割ペイン化)、またはユーザー指定の次項目。
+Phase 10.3の続き(WI-15e以降: XML対応・XPath・JSONPath・
+真の左右分割ペイン化)、またはユーザー指定の次項目。
 着手前にbuild_plan.md §5とmaster_roadmap.md §10.2(または§10.3)を
 読み、本書§5と同じ形式でサブWIへ切り直すこと。
 

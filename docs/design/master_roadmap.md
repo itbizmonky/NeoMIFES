@@ -285,7 +285,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
-| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **ツリーUI MVP達成 (WI-15a〜c完了、2026-08-19。XML対応/整形/バリデーション/XPath・JSONPath/真の左右分割ペイン化は未着手、WI-15d以降)** | §10.3 |
+| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **整形・バリデーション達成 (WI-15a〜d完了、2026-08-19。XML対応/XPath・JSONPath/真の左右分割ペイン化は未着手、WI-15e以降)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **フィルタ・ソートUI達成 (WI-16a〜e完了、2026-08-19。列固定/セル編集/式列は未着手、WI-16f以降)** | §10.2 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
@@ -2311,6 +2311,18 @@ WI-15cで`EditorSession::jsonTree()`系4点(WI-15b)を実際に消費する最�
 - **WI-15b最終ゲートで発見したP1 issue(`nlohmann::ordered_json::parse()`の深いネストによるスタックオーバーフロー)を本WIのコミット1として解消した。** `DepthLimitSax`(`nlohmann::json_sax<T>`の最小実装)による事前深度チェック(`kMaxJsonNestingDepth=200`)を`ordered_json::parse()`の前に追加。この設計の技術的前提(SAXコールバックの`false`が実際に再帰前に解析を打ち切ること)はスタンドアロンprobe+`nlohmann/detail/input/parser.hpp`のソース読解の両方で実装前に検証した。副産物として、`DepthLimitSax`のクラス派生がclang-tidyの`portability-template-virtual-member-function`を13件引き起こすことが判明し(NOLINTでは一次診断位置がサードパーティヘッダのため抑制不可)、`.clang-tidy`でこのチェックをプロジェクト全体で除外した(このプロジェクトが対象とする2コンパイラ=MSVC v143/clang-cl のいずれについても既に3構成の検証ゲートで実際にビルドしているため、チェックの前提=「コンパイラによる差異」という懸念自体が実質的に当てはまらないと判断)。
 - **Format/Validate/JSONPath/XPath・XML対応・折り畳み状態の永続化・巨大JSON対応(プログレッシブ表示)は全て本サブWIのスコープ外(WI-15d以降)。** 折り畳み統合自体は行った(`buildJsonFoldRegions()`が`FoldingModel`へ統合、ガター折り畳みマーカーが機能する) — スコープ外なのはこれらより高度な機能群。
 - 詳細は`build_plan.md` WI-15cセクション参照。
+
+#### 実装後の確定事項 (WI-15d、JSON 整形(Format)・バリデーション(Validate)、2026-08-19)
+
+WI-15dで要件定義書§10の残り6項目(XML対応/整形/バリデーション/XPath/JSONPath/真の左右分割ペイン化)のうち「整形」「バリデーション」の2つを実装した。コマンドパレット限定(`CommandId::None`)の「JSON: Format Document」「JSON: Validate」の2コマンドとして提供。
+
+- **`formatJsonNode()`は`JsonNode`自身の生テキストをそのまま出力し、nlohmannの`.dump()`のような再シリアライズを行わない設計にした。** 数値`"1.50"`が`"1.5"`に化けない。Objectキーのみ`JsonNode::key`(デコード済み)を新規`escapeJsonString()`で再エンコードする必要があった。
+- **`validateJson()`は新規パーシング経路を作らず、既存の`DepthLimitSax`(WI-15c)を拡張して実装した。** 構文エラーの位置はnlohmannの`parse_error`SAXコールバックの`position`引数(例外の`.byte`と同一の`chars_read_total`、vendoredソース読解で確認)を`parseJsonTree()`が既に構築済みの`byteToUtf16`テーブルでO(1)変換して取得する。ネスト超過は位置情報を得られないため固定メッセージ+位置0とした。
+- **最終ゲートで`formatJsonNode()`がclang-tidyの`misc-no-recursion`に抵触した(相互再帰、`formatValue`⇄`formatChildren`)。** NOLINT抑制ではなく、`json_tree.cpp`の`buildTree()`が同じ理由で既に採用している「明示スタックによる反復実装」へ全面書き換えして解消した。書き換え前後で単体テスト8件全てがバイト単位で同一の出力を返すことを確認。
+- **`core::ReplaceRangeCommand`が、このコードベースで初めて「文書全体を1回のUndo可能な編集として書き換える」実際の消費者になった。**
+- **ダイアログは新規MessageBoxWではなく既存の`message_dialogs.h`(TaskDialogIndirectベース)を踏襲した。** 実装序盤の設計をMessageBoxWから訂正した経緯あり(詳細はbuild_plan.md WI-15dセクション参照)。
+- **XML対応・XPath・JSONPath・真の左右分割ペイン化は全て本サブWIのスコープ外(WI-15e以降)。**
+- 詳細は`build_plan.md` WI-15dセクション参照。
 
 ---
 

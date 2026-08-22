@@ -3243,4 +3243,30 @@ WI-16d完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`1556634`/`70addd0`/`bf61a8a`)、pushはユーザーの明示指示待ち。Phase 10.2はフィルタ・ソートのUI/配線まで完了 — 列固定・セル単位クリック編集・式列・列指定の厳密一致フィルタは全て後続サブWI(WI-16f以降)へ。次はPhase 10.2の続き(列固定/セル編集)、Phase 10.3の続き(WI-15d)、またはユーザー指定の次項目。
 
+## Session 104 (2026-08-19): WI-15d(JSON 整形(Format)・バリデーション(Validate))実装完了
+
+WI-16e完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16f: CSVモードの続き / WI-15d: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「WI-15d: JSON/XML Treeの続き(推奨)」**が選ばれた — JSON側がWI-15a→b→cの3サブWIでツリーUI MVPまで到達した一方、CSV側は既に5サブWI(a〜e)を消化しており、JSON側とのバランスを取る判断。
+
+要件定義書§10・master_roadmap.md §10.3が挙げる残りスコープ(XML対応/整形/バリデーション/XPath/JSONPath/真の左右分割ペイン化)は性質の異なる6項目で1WIに収まらないと判断し、WI-16dのフィルタ+ソート統合と同型の「関連する2機能を1WIにまとめる」パターンを踏襲、**本WIは「整形(Format)」「バリデーション(Validate)」の2つに絞った。** 着手前調査は直接ファイル読解+1件のsubagent委任調査(`core::ReplaceRangeCommand`の存在確認、nlohmann/json v3.11.3の`parse_error`が`.byte`(UTF-8バイトオフセット、1始まり)+`.what()`を提供すること、`edit.duplicateLine`の「`CommandId::None`+コマンドパレット限定」配線パターン)で行った。加えて、nlohmannの`parse_error`SAXコールバックの`position`引数が例外の`.byte`と同一のセマンティクス(`chars_read_total`)であることを、vendored nlohmann/jsonソース(`json.hpp`)を直接読解して実装前に確認した(CLAUDE.mdルール3)。
+
+**設計判断の核心1: `formatJsonNode()`は`JsonNode`自身の生テキストをそのまま出力し、nlohmannの`.dump()`のような再シリアライズを行わない設計にした。** 数値`"1.50"`が`"1.5"`に化けない、`json_tree.h`自身の設計哲学(生テキスト保持)をそのまま継承する判断。Objectキーのみ、`JsonNode::key`がデコード済み文字列のみを保持する既存設計のため新規`escapeJsonString()`(RFC 8259 §7準拠の最小限のエスケープ)で再エンコードする必要があった。
+
+**設計判断の核心2: `validateJson()`は既存の`DepthLimitSax`(WI-15c、ネスト深度ガード)を拡張して実装した。** 新規の別パーシング経路を作らず、既存ガードが握りつぶしていた拒否理由(位置+メッセージ)を記録するよう変更。`parse_error()`コールバックの`position`引数はnlohmannの1始まりのバイト位置であり、`parseJsonTree()`が既に構築済みの`byteToUtf16`テーブルでO(1)変換できる。ネスト超過(`start_object`/`start_array`がfalseを返すケース)はnlohmannからposition引数を渡されないため、position=0+固定メッセージという設計にした。
+
+**設計判断の核心3(実装中の自己訂正): ダイアログ表示は新規MessageBoxWではなく、既存の`message_dialogs.h`(TaskDialogIndirectベース)パターンを踏襲するよう設計を訂正した。** 実装序盤ではMessageBoxW(「バージョン情報」ダイアログの前例)を使う設計だったが、着手中に`message_dialogs.h`という、より確立された「OK専用ダイアログ」専用モジュールの存在を発見し、設計を訂正した(コードレビューの「reuse」観点で見つかるべき逸脱を自己発見・是正した実例)。
+
+**実施内容(3コミット):** ①`formatJsonNode()`(整形)+単体テスト8件(`d4b346a`、Debug構成でctest 1399/1399 green確認)。②`validateJson()`(バリデーション、`DepthLimitSax`拡張)+単体テスト8件(`c1cfbf0`、既存`JsonTreeTest.*`全18件で回帰無しを確認)。③コマンド配線(`dispatchJsonFormatCommand()`/`dispatchJsonValidateCommand()`、パレット2エントリ「JSON: Format Document」「JSON: Validate」)+最終ゲート+実機ドッグフーディング(`067fc84`)。
+
+**最終ゲート1回目でclang-tidyが`json_format.cpp`に5件検出した。** C配列(`cppcoreguidelines-avoid-c-arrays`)+非定数インデックスアクセス2件+相互再帰2件(`misc-no-recursion`、`formatValue`⇄`formatChildren`が循環)。C配列は`std::array`+`.at()`で解消。**相互再帰は、NOLINT抑制ではなく設計変更で対応した** — `json_tree.cpp`のbuildTree()が同じ理由(このプロジェクトの`.clang-tidy`が`misc-no-recursion`をプロジェクト全体で有効にしている既存方針)で明示スタックを採用している前例に倣い、`formatJsonNode()`自体を`std::vector<PendingContainer>`による反復実装へ全面書き換えした。書き換え後、既存8件の単体テストが全てバイト単位で同一の出力を返すことを手計算トレース+テスト実行の両方で確認した。
+
+**`core::ReplaceRangeCommand`が、このコードベースで初めて「文書全体を1回のUndo可能な編集として書き換える」実際の消費者になった。** 既存の`ReplaceAllCommand`はN個の独立範囲を対象にした異なる用途であり、`ReplaceRangeCommand`単体を文書全体([0, length))という単一範囲に適用する用法はWI-15dが最初。
+
+**最終ゲート:** Debug/Release/ubsan全1407件green、clang-tidy新規警告0(4ファイル)。
+
+**実機ドッグフーディング(Release構成)は全項目を実際の画面操作で確認できた、ただし1件の自動化ツール側のクラッシュ事故が発生した。** コマンドパレットには`WM_COMMAND`直接送信の代替経路が無い(`CommandId::None`のため)ため、`CommandId::CommandPaletteShow`(値40005)で開き、フィルタ編集欄(id 2001)へ`WM_CHAR`で「JSON: Format」/「JSON: Validate」を打ち込みEnterで実行する経路を確立(CSVグリッドのフィルタ編集欄で確立済みの`WM_CHAR`手法を再利用)。整形前後の1行圧縮JSON→2スペースインデント複数行への変化、`Ctrl+Z`(`WM_COMMAND`経由、`CommandId::Undo`値40033)での正確な原文復元、有効JSONでの「有効なJSONです」ダイアログ、無効JSON(末尾カンマ)での「JSONの構文エラー」ダイアログ(nlohmannの生メッセージ`[json.exception.parse_error.101] parse error at line 1, column 26: syntax error while parsing object key - unexpected '}'; expected string literal`、英語のまま未翻訳)+カーソルジャンプ(ステータスバー・視覚的キャレット位置・nlohmannが報告する`column: 26`が一致)、いずれもスクリーンショットで確認済み。ドッグフーディング中、自動化ツール側が`SB_GETTEXTW`(ポインタペイロードを要するメッセージ)をクロスプロセスで誤用し対象プロセスを1回クラッシュさせる事故があったが、WI-16c/WI-16eで既に発生した同種の自動化ハーネス限界(ポインタ引数の未マーシャリング)でありWI-15d自体の欠陥ではないと判断した。
+
+**ドキュメント同期:** `build_plan.md`(§3チェック+コミットハッシュ、新規「WI-15d」セクション)、`master_roadmap.md`(§2フェーズ表+§10.3実装後の確定事項追記)、`detailed_design.md`(§11.4見出し更新+コード例拡張)、`RESUME_HERE.md`(§1状態表+新規§3.93+§6推奨プロンプト)、TIMELINE.md(Session 104)、メモリ(`project_neomifes_state.md`/`MEMORY.md`)。
+
+コミット済み(`d4b346a`/`c1cfbf0`/`067fc84`)、pushはユーザーの明示指示待ち。Phase 10.3は整形・バリデーションまで完了 — XML対応・XPath・JSONPath・真の左右分割ペイン化は全て後続サブWI(WI-15e以降)へ。次はPhase 10.2の続き(WI-16f: 列固定/セル編集/式列)、Phase 10.3の続き(WI-15e以降)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
