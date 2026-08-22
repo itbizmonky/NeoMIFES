@@ -44,6 +44,15 @@ add_subdirectory(jsontree)
 # text, so it needs neither an external parsing library nor
 # neomifes::util/neomifes::encoding for UTF-8 conversion.
 add_subdirectory(csvmode)
+# neomifes_git (WI-17a, Phase 11.1 headless core, ADR-022): depends only on
+# libgit2package (PRIVATE - see src/git/CMakeLists.txt's own comment on why
+# no public header of this module ever exposes a libgit2 type). Placed after
+# csvmode/before render simply because add_subdirectory() call order doesn't
+# need to match dependency order for this project's own targets (see the
+# comment further up this file) - libgit2 itself is already fully populated
+# by cmake/Dependencies.cmake (include()'d from the root CMakeLists.txt
+# before add_subdirectory(src) ever runs).
+add_subdirectory(git)
 add_subdirectory(render)
 add_subdirectory(ui)
 add_subdirectory(app)

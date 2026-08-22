@@ -552,6 +552,43 @@ target_include_directories(tree-sitter-sql-grammar PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/tree-sitter-sql-generated/src")
 target_link_libraries(tree-sitter-sql-grammar PRIVATE tree-sitter)
 
+# ---- libgit2 (Phase 11.1, ADR-022) -----------------------------------------
+# Only local Diff/Blame/Commit/Branch-switch is in scope (roadmap sec.11.1) -
+# every network-capable feature (clone/push/pull/fetch over SSH/HTTPS) is
+# explicitly disabled below, since this project has no use for it and each
+# one would otherwise pull in libssh2/OpenSSL/mbedTLS as further transitive
+# dependencies. Verified via a standalone scratchpad probe (not this repo)
+# before this block was written, per CLAUDE.md rule 3 - see ADR-022's own
+# "実機検証で判明した実務上の注意点" section for the 3 non-obvious settings
+# below (STATIC_CRT, the include-dir story, and the core.longpaths build
+# prerequisite this probe surfaced).
+FetchContent_Declare(
+    libgit2
+    GIT_REPOSITORY https://github.com/libgit2/libgit2.git
+    GIT_TAG        v1.9.7
+    GIT_SHALLOW    TRUE
+    EXCLUDE_FROM_ALL
+)
+set(BUILD_TESTS     OFF        CACHE BOOL   "" FORCE)
+set(BUILD_CLI       OFF        CACHE BOOL   "" FORCE)
+set(USE_SSH         "OFF"      CACHE STRING "" FORCE)
+set(USE_HTTPS       "OFF"      CACHE STRING "" FORCE)
+set(USE_GSSAPI      OFF        CACHE BOOL   "" FORCE)
+set(USE_HTTP_PARSER "builtin"  CACHE STRING "" FORCE)
+set(REGEX_BACKEND   "builtin"  CACHE STRING "" FORCE)
+set(USE_BUNDLED_ZLIB ON        CACHE BOOL   "" FORCE)
+# libgit2's own CMakeLists.txt injects /MT-/MTd directly into CMAKE_C_FLAGS
+# when this is left at its default ON, bypassing MSVC_RUNTIME_LIBRARY
+# entirely and producing the same "_ITERATOR_DEBUG_LEVEL mismatch" class of
+# link error this file's Abseil block (above) already fought - unlike
+# Abseil's ABSL_MSVC_STATIC_RUNTIME (worked around post-hoc in the
+# CRT-forcing loop below), libgit2 has no equivalent post-hoc fix, so this
+# MUST be set before FetchContent_MakeAvailable() runs.
+set(STATIC_CRT      OFF        CACHE BOOL   "" FORCE)
+# BUILD_SHARED_LIBS OFF already forced above (RE2 block) and stays in effect.
+
+FetchContent_MakeAvailable(libgit2)
+
 # Third-party targets should not be linted with our strict flags, nor built
 # with COMPILE_WARNING_AS_ERROR (RE2/Abseil are warning-clean upstream but
 # not against our stricter /W4 policy).
@@ -582,8 +619,15 @@ target_link_libraries(tree-sitter-sql-grammar PRIVATE tree-sitter)
 # tree-sitter-sql-grammar (Phase 7y) is too, despite not being FetchContent'd
 # (its parser.c/scanner.c are vendored under third_party/, see ADR-021) - it
 # is still generated/upstream third-party code, not held to our /W4 policy.
+# libgit2 (Phase 11.1, ADR-022) needs the same recursive-collection treatment
+# Abseil does: its own add_subdirectory()'d zlib/pcre2/llhttp/xdiff object
+# libraries live several directories deeper than libgit2's own top-level
+# CMakeLists.txt, so BUILDSYSTEM_TARGETS alone would miss them - same reason
+# neomifes_collect_targets_recursive() exists at all (see its own comment).
 neomifes_collect_targets_recursive(_neomifes_absl_targets "${abseil-cpp_SOURCE_DIR}")
-foreach(_tp ${_neomifes_absl_targets} re2 nlohmann_json tree-sitter tree-sitter-cpp-grammar tree-sitter-python-grammar
+neomifes_collect_targets_recursive(_neomifes_libgit2_targets "${libgit2_SOURCE_DIR}")
+foreach(_tp ${_neomifes_absl_targets} ${_neomifes_libgit2_targets} re2 nlohmann_json tree-sitter
+        tree-sitter-cpp-grammar tree-sitter-python-grammar
         tree-sitter-c-grammar tree-sitter-javascript-grammar tree-sitter-java-grammar tree-sitter-go-grammar
         tree-sitter-rust-grammar tree-sitter-json-grammar tree-sitter-html-grammar tree-sitter-css-grammar
         tree-sitter-bash-grammar tree-sitter-yaml-grammar tree-sitter-toml-grammar tree-sitter-xml-grammar

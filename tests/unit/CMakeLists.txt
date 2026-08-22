@@ -95,6 +95,7 @@ add_executable(neomifes_unit_tests
     csvmode_csv_delimiter_detection_test.cpp
     csvmode_csv_row_order_test.cpp
     app_csv_grid_bridge_test.cpp
+    git_init_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -110,6 +111,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::logmode
         neomifes::jsontree
         neomifes::csvmode
+        neomifes::git
         neomifes::syntax
         neomifes::plugin
         neomifes::app_input

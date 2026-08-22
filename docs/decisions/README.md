@@ -27,6 +27,7 @@
 | [ADR-019](ADR-019-plugin-show-toast-headless.md) | NeoMifesCoreApi::showToast はヘッドレスな ui::ToastState 状態層のみ実装し、registerCommand と実UIウィジェットは延期する | Accepted |
 | [ADR-020](ADR-020-plugin-register-command.md) | NeoMifesCoreApi::registerCommand は既存SEHトランポリンを再利用したヘッドレスな ui::PluginCommandRegistry 状態層のみ実装し、CommandPalette への実配線とunload時自動クリーンアップは延期する | Accepted |
 | [ADR-021](ADR-021-sql-grammar-vendored-generation.md) | tree-sitter-sql は上流に parser.c が無いため、ビルド時 tree-sitter CLI 導入ではなく開発機上で一度だけ生成した parser.c を third_party/ へベンダリングする | Accepted |
+| [ADR-022](ADR-022-git-integration-library.md) | Git 統合ライブラリに libgit2 を採用する | Accepted |
 
 ## 運用ルール
 
