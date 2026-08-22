@@ -3269,4 +3269,30 @@ WI-16e完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`d4b346a`/`c1cfbf0`/`067fc84`)、pushはユーザーの明示指示待ち。Phase 10.3は整形・バリデーションまで完了 — XML対応・XPath・JSONPath・真の左右分割ペイン化は全て後続サブWI(WI-15e以降)へ。次はPhase 10.2の続き(WI-16f: 列固定/セル編集/式列)、Phase 10.3の続き(WI-15e以降)、またはユーザー指定の次項目。
 
+## Session 105 (2026-08-22): WI-17a(Git統合 ヘッドレス基盤)実装完了
+
+WI-15d完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16f: CSVモードの続き / WI-15e: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「Phase 11以降(WI-17〜19、推奨)」**が選ばれた — Phase 10(CSV/JSON)は両トラックとも実用段階のUI/機能(CSVはフィルタ・ソートUI、JSONは整形・バリデーション)に到達済みのため、製品全体の出荷に向けて次の柱へ進む判断。続けて2回目のAskUserQuestionでPhase 11の3本柱(Git統合/LSP完全実装/マクロ、いずれも新規外部ライブラリのADRが必要な規模)のうちどれから着手するかを確認したところ、**「Git統合(推奨)」**が選ばれた。
+
+要件定義書§11・master_roadmap.md §11.1が挙げるGit統合のスコープ(Diff/3-Way Merge/Blame/Commit/Branch切替/インラインBlame)は、WI-14/15/16で確立された「ヘッドレス基盤→非同期化+EditorSession配線→UI」パターンに倣い、**本WI(WI-17a)はライブラリ導入(ADR)+最小のヘッドレス基盤(現在のドキュメントとHEADとのファイル単位Diff計算)のみに絞った。** 3-Way Merge/Blame/Commit/Branch切替/インラインBlame/UI全般は全て後続サブWI(WI-17b以降)へ。
+
+**着手前にlibgit2のCMake FetchContent実現性を、実リポジトリを一切変更しないscratchpadのスタンドアロンCMakeプロジェクトで実機検証した(CLAUDE.mdルール3)。** libgit2 v1.9.7を実際にFetchContentし、MSVC v143+Ninja+`/std:c++latest`でconfigure→build→リンクまで成功することを確認した上で着手した。判明した3点の実務上の注意点: (1) Windowsの長パス問題 — libgit2自身のテストフィクスチャclone時に`Filename too long`で失敗しうるため`git config --global core.longpaths true`が前提条件(Windowsレジストリ`LongPathsEnabled=1`だけでは不十分)。(2) `STATIC_CRT`が既定`ON`のままだとこのプロジェクトの動的CRT方針(`/MD`/`/MDd`)と衝突するため`OFF`必須(Abseilで既に踏んだ`_ITERATOR_DEBUG_LEVEL`不一致と同じ罠)。(3) libgit2のCMakeターゲット(`libgit2package`)は`INSTALL_INTERFACE`のみでヘッダを公開しRE2/nlohmann_jsonのような`PUBLIC`自動伝播が効かないため、消費側で`target_include_directories`を手動追加する必要がある。これら3点はADR-022に記録した。
+
+**ADR-022でlibgit2を正式採用した。** roadmap自身が既にlibgit2を名指ししているため「採用するか」ではなく「実機検証で確認した注意点の記録」が主目的。却下理由節には「システムgit.exeへのシェルアウト」という軽量な代替案を検討した上で、roadmapが明示的にlibgit2(ネイティブ統合)を指定していること・シェルアウトはテキストパース依存で壊れやすくgit.exeがPATHに無い環境で機能しないことを理由に不採用としたことを記録した。`Dependencies.cmake`へlibgit2をvendoring(ネットワーク機能は全て無効化、ローカルDiff/Blame/Commit/Branch切替のみがスコープ)。libgit2は`zlib`/`pcre2`/`llhttp`/`xdiff`をネストvendoringするため、既存の`neomifes_collect_targets_recursive()`(CRT強制ループ、Abseil用に既存)をlibgit2のツリーへも拡張した。
+
+**新規`neomifes::git`モジュール(logmode/jsontree/csvmodeと同型の独立STATICライブラリ)を新設した。** `git_repository`(libgit2の不透明ハンドル型)はヘッダで前方宣言のみ、`<git2.h>`は`.cpp`内に閉じ込め、公開APIの利用側は一切libgit2型を意識しない設計にした。`GitRepository::discover()`は`git_repository_discover()`+`git_repository_open()`の2段階ではなく`git_repository_open_ext(&raw, path, 0, nullptr)`1回で実装 — vendoredソース(`git2/repository.h`)を直接読解し、`flags=0`(`GIT_REPOSITORY_OPEN_NO_SEARCH`を渡さない)で呼ぶと`git`自身と同じ上位ディレクトリへの検索が`open_ext()`自体に組み込まれていることを実装前に確認、当初計画の2段階手順が不要と判明した。`diffAgainstHead()`は`git_diff_blob_to_buffer()`(HEADブロブ vs メモリ上バッファの直接比較)を採用、コールバックは`hunk_cb`のみ設定(`file_cb`/`binary_cb`/`line_cb`はnullptr) — vendoredソース(`patch_generate.c`)を読解し、各コールバック呼び出し箇所が個別にnullチェック済みで`hunk_cb`設定時に内容読み込みが省略されないことを確認した。1 hunkにつき1つの`LineDiffRegion`を生成し、`old_lines==0`→Added、`new_lines==0`→Deleted、それ以外→Modifiedに分類する設計にした(hunk単位の粒度)。
+
+**単体テストが実際に設計ギャップを発見した。** 初回実装では`git_diff_options`の`context_lines`(既定値3)をそのまま使っていたため、純粋な追加・削除でも変更行の前後3行が同じhunkへ含まれ`old_lines`/`new_lines`が共に非ゼロになり、`Added`/`Deleted`と判定すべきケースが全て`Modified`に誤分類される問題があった。単体テスト3件(`DiffAgainstHeadDetectsAddedRegion`/`DetectsDeletedRegion`/`UsesInMemoryDocumentNotDiskContent`)が実際にこの誤分類を検出、背景subagentによる根本原因の精密診断(vendoredヘッダの`context_lines`ドキュメントコメント+`GIT_DIFF_OPTIONS_INIT`マクロの直接確認)を経て`options.context_lines = 0`(ガター用途では変更行そのものだけが必要、人間可読なパッチ表示のための文脈行は不要)に修正して解消した。単なるオフバイワンではなく、ガター用途特有の設計判断のギャップだったことをコード中に明記した。
+
+**テストは自前構築のGitリポジトリで検証した(外部git.exe・チェックイン済みフィクスチャ非依存)。** `app_autosave_test.cpp`の`uniqueTempDir()`/`writeFile()`+`fs::remove_all()`パターンを踏襲しつつ、libgit2自身の`git_repository_init()`/`git_index_add_bypath()`/`git_index_write_tree()`/`git_tree_lookup()`/`git_signature_now()`/`git_commit_create()`で最小限のコミットをテスト自身が作る設計にした。DoD上重要な1テスト(`DiffAgainstHeadUsesInMemoryDocumentNotDiskContent`)は、ディスク上の内容・HEADの内容・メモリ上`Document`の内容の3つを意図的に全て異ならせ、`diffAgainstHead()`がディスクを誤って読んでしまうバグを確実に検出できる設計にした。
+
+**実施内容(2コミット):** ① ADR-022+libgit2 FetchContent vendoring+疎通確認用の最小テスト(`b3acf43`、Debug構成で確認)。② `GitRepository::discover()`/`diffAgainstHead()`ヘッドレス実装+単体テスト8件+最終ゲート(`4e08de1`)。
+
+**最終ゲート:** Debug/Release/ubsan全1416/1416件green、sanitizer診断0件、clang-tidy新規警告0(`git_init.cpp`/`git_repository.cpp`)。libgit2のFetchContent実統合はscratchpad probeの結果通り、実リポジトリでの初回試行でCMakeレベルのエラー0件で成功した。
+
+**本WIはヘッドレス変更のため実アプリでの視覚確認は対象外(WI-14a/15a/16aと同じ扱い)。** UI/EditorSession配線/非同期化は一切行っていない。
+
+**ドキュメント同期:** `build_plan.md`(既存「WI-17〜19」スタブ節を「Git統合が複数サブWIに分かれる見通し」へ訂正+新規「WI-17a」セクション)、`master_roadmap.md`(§11.1実装状況コールアウト+実装後の確定事項+フェーズ状況表更新)、`detailed_design.md`(新規§11.6 `neomifes::git`リファレンス)、`RESUME_HERE.md`(§1状態表+新規§3.94+§6推奨プロンプト全面更新)、TIMELINE.md(Session 105)、メモリ(`project_neomifes_state.md`/`MEMORY.md`)。
+
+コミット済み(`b3acf43`/`4e08de1`)、pushはユーザーの明示指示待ち。Phase 11.1は「現在のドキュメントとHEADの行単位Diff計算」ができるヘッドレス基盤まで完了 — 非同期化・EditorSession配線・左ガターUI・Diffビュー・3-Way Merge・Blame・インラインBlame・Commit・Branch切替は全て後続サブWI(WI-17b以降)へ。次はWI-17b(非同期化+EditorSession配線)、Phase 10の残り(WI-16f/WI-15e以降)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

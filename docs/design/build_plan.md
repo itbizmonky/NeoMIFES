@@ -1576,20 +1576,72 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ## WI-17 〜 WI-19 — Phase 11 / 9 / 12
 
-**Phase 10 (10.1〜10.3) 完了まで着手を推奨しない** (roadmap §2 の優先順位表通り)。Phase 10.1 は WI-14a〜d で完結済み、Phase 10.3 は WI-15a〜c(ヘッドレス基盤+非同期化+ツリーUI MVP)まで完了・XML/整形/バリデーション/XPath/JSONPathは未着手、Phase 10.2 (CSV) は WI-16a〜c(ヘッドレス解析モデル+非同期化+グリッドUI MVP)まで完了・列固定/フィルタ/ソート/セル編集/式列は未着手。
+**Phase 10 (10.1〜10.3) は WI-13完了時点で着手解禁され、両トラックとも実用段階のUI/機能まで到達した(Phase 10.1完結、Phase 10.2はWI-16eまででフィルタ・ソートUI達成、Phase 10.3はWI-15dまでで整形・バリデーション達成)。2026-08-22、ユーザーの選択でPhase 10の残り(WI-16f以降・WI-15e以降)より先にPhase 11(Git統合/LSP/マクロ)へ進むことになった。** Phase 10自体は未完結のまま(WI-16f/WI-15e以降は後日再開可能)、製品全体の出荷に向けて次の柱へ進む判断。
 
-着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。
+着手時は `master_roadmap.md` の該当章を読み、**本書 §5 と同じ形式で WI を切り直してから**始めること (章をそのまま実装しようとすると 1 セッションに収まらない)。**Phase 11自体もWI-14/15/16と同様、Git統合/LSP/マクロという3本柱がそれぞれ複数サブWIに分かれる規模であり、`WI-17`という単一番号には収まらない見通しとなった(2026-08-22判明、詳細はWI-17a節参照)。** Phase 11のうち3本柱のどれから着手するかをAskUserQuestionで確認し「Git統合」が選ばれたため、Git統合をWI-17a〜として先に着手する。LSP・マクロの着手順・番号割当は未確定のまま(Git統合が複数サブWIに分かれる見通しのため、後続の番号を今確定させても2026-08-18/19のCSV側と同じ二重繰り下げが起きる可能性が高い — 実際に必要になった時点で確定させる)。
 
 **WI 番号の注記 (2026-08-18、2026-08-19追記):** roadmap原案は Phase 10 全体を「WI-14」1本に見込んでいたが、実際には Phase 10.1 だけで WI-14a〜d の4サブ WI を要し、Phase 10.3 も WI-15a から始まる複数サブ WI に分かれる見通しとなったため、Phase 11/9/12 の当初の割当番号 (WI-15/16/17) を1つずつ繰り下げて WI-16/17/18 とした(2026-08-18)。さらに Phase 10.2 (CSV) 着手時に WI-16a が新設されたことで、もう1つずつ繰り下げて WI-17/18/19 とした(2026-08-19)。
 
 | WI | 内容 | roadmap 章 | 目安 |
 |---|---|---|---|
-| WI-17 | Phase 11 — Git 統合 / LSP / マクロ | §11 | 3 領域 × 各 3〜6 サブ WI |
+| WI-17a〜 | Phase 11.1 — Git 統合(着手済み、詳細下記) | §11.1 | 複数サブWI(ヘッドレス基盤→非同期化+EditorSession配線→UI→Diff/Blame/Commit/Branch切替) |
+| WI-17?〜 | Phase 11.2 — LSP 完全実装(未着手) | §11.2 | 複数サブWI |
+| WI-17?〜 | Phase 11.3 — マクロ(未着手) | §11.3 | 複数サブWI |
 | WI-18 | Phase 9 — AI プラグイン | §9 | 4〜6 サブ WI |
 | WI-19 | Phase 12 — 総合品質保証・正式出荷 | §12 | §12.3 の 22 項目 |
 
 **順序の根拠:**
 - **Phase 9 (AI) が最後** — CLAUDE.md が「エディタ本体は AI 無しでも 100% 動作しなければならない」と定めており、本体完成後に載せるのが筋。加えて外部 API 依存で陳腐化が速い
+
+---
+
+## WI-17a — Git統合 ヘッドレス基盤(libgit2導入+ファイル単位Diff計算)
+
+**目的:** WI-15d(JSON整形・バリデーション)完了後、ユーザーに「次のPhase」を確認したところ(WI-16f: CSVモードの続き/WI-15e: JSON/XML Treeの続き/Phase 11以降、の3択)、**「Phase 11以降」**が選ばれた。続けてPhase 11の3本柱(Git統合/LSP/マクロ、いずれも新規外部ライブラリのADRが必要な規模)のうちどれから着手するかを確認したところ、**「Git統合」**が選ばれた。
+
+要件定義書§11・master_roadmap.md §11.1が挙げるGit統合のスコープ(Diff/3-Way Merge/Blame/Commit/Branch切替/インラインBlame)は、WI-14/15/16の「ヘッドレス基盤→非同期化+EditorSession配線→UI」という確立済みパターンに倣い、**本WI(WI-17a)はライブラリ導入(ADR)+最小のヘッドレス基盤(現在のドキュメントとHEADとのファイル単位Diff計算)のみに絞った。** 3-Way Merge/Blame/Commit/Branch切替/インラインBlame/UI全般は全て後続サブWI(WI-17b以降)へ。
+
+**前提:** WI-15d 完了・コミット済み (2026-08-19)
+
+**参照:** `docs/decisions/ADR-022-git-integration-library.md`、master_roadmap.md §11.1
+
+### 着手前調査・設計方針
+
+**着手前にlibgit2のCMake FetchContent実現性を実機で検証した(CLAUDE.mdルール3)。** スタンドアロンのCMakeプロジェクト(scratchpad、実リポジトリ非改変)でlibgit2 v1.9.7を実際にFetchContentし、MSVC v143 + Ninja + `/std:c++latest`でconfigure+build+リンクまで成功することを確認した上で着手した。判明した3点の実務上の注意点(Windows長パス問題→`core.longpaths`必須、`STATIC_CRT=OFF`必須、インクルードディレクトリ手動追加必須)はADR-022に記録した。
+
+- **ADR-022でlibgit2を正式採用した。** roadmap自身が既にlibgit2を名指ししているため「採用するか」ではなく「実機検証で確認した注意点の記録」が主目的。却下理由節には「システムgit.exeへのシェルアウト」を検討した上で不採用にした理由(git.exeがPATHに無い環境で機能しない、テキスト出力パースが壊れやすい)を記録した。
+- `Dependencies.cmake`へlibgit2をvendoring(ネットワーク機能は全て無効化、ローカルDiff/Blame/Commit/Branch切替のみがスコープ)。libgit2は`zlib`/`pcre2`/`llhttp`/`xdiff`をネストvendoringするため、既存の`neomifes_collect_targets_recursive()`(CRT強制ループ、Abseil用に既存)をlibgit2のツリーへも拡張した。
+- **新規`neomifes::git`モジュール(logmode/jsontree/csvmodeと同型の独立STATICライブラリ)を新設した。** `git_repository`(libgit2の不透明ハンドル型)はヘッダで前方宣言のみ、`<git2.h>`は`.cpp`内に閉じ込め、公開APIの利用側は一切libgit2型を意識しない設計にした。
+- **`GitRepository::discover()`は`git_repository_discover()`+`git_repository_open()`の2段階ではなく、`git_repository_open_ext()`1回で実装した。** vendoredソース(`git2/repository.h`)を直接読解したところ、`flags=0`(`GIT_REPOSITORY_OPEN_NO_SEARCH`を渡さない)で呼ぶと`git`自身と同じ上位ディレクトリへの検索を`open_ext()`自体が行うことが判明し、計画時に想定していた2段階の手順が不要と分かった。
+- **`diffAgainstHead()`は`git_diff_blob_to_buffer()`(HEADブロブ vs メモリ上バッファの直接比較)を採用した。** ブロブの生内容を自前で読み出してバッファ同士のdiff関数に渡す必要がなく、HEADブロブを直接渡せる。コールバックは`hunk_cb`のみ設定(`file_cb`/`binary_cb`/`line_cb`はnullptr) — vendoredソース(`patch_generate.c`)を読解し、各コールバック呼び出し箇所が個別にnullチェック済みで、`hunk_cb`を設定していれば内容読み込み自体は省略されないことを実装前に確認した。
+- 1フックにつき1つの`LineDiffRegion`を生成し、`old_lines==0`をAdded、`new_lines==0`をDeleted、それ以外をModifiedに分類する設計にした(hunk単位の粒度、行単位ではない)。
+
+### 実施内容 (2コミット)
+
+1. `chore(git)`: ADR-022 + libgit2 FetchContent vendoring + 疎通確認用の最小テスト(`git_libgit2_init()`成功のみ確認) (`b3acf43`)
+2. `feat(git)`: `GitRepository::discover()`/`diffAgainstHead()`ヘッドレス実装 + 単体テスト8件 + 最終ゲート + ドキュメント同期 (`4e08de1`)
+
+### DoD
+
+- [x] ADR-022が起票され、`docs/decisions/README.md`索引に反映されている
+- [x] libgit2がFetchContentで正しくvendoringされ、Debug/Release/ubsan全構成でビルドが通る(CRT不一致エラーが出ない)
+- [x] `GitRepository::discover()`がGitリポジトリ内外のパスを正しく判定する
+- [x] `diffAgainstHead()`がAdded(未追跡)/Modified(行変更)/Deleted(行削除)/変更なしの各パターンを正しく分類する(自前構築リポジトリでの単体テスト)
+- [x] メモリ上の未保存編集(ディスクの内容とは異なる)がdiff対象として正しく使われる(ディスク上の内容ではないことを明示的にテスト)
+- [x] `git_repository*`がRAIIラッパで管理されている(生ポインタでの所有権保持なし)
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] UI/EditorSession配線は本WIのスコープ外のまま(ヘッドレス変更のため実アプリ視覚確認は対象外、WI-14a/15a/16aと同じ扱い)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**単体テストが実際に設計ギャップを発見した。** 初回実装では`git_diff_options`の`context_lines`(変更行の前後に含める非変更行数)を既定値の3のまま使っていたため、純粋な追加・削除でも変更行の前後3行が同じhunkへ含まれ`old_lines`/`new_lines`が共に非ゼロになり、`Added`/`Deleted`と判定すべきケースが全て`Modified`に誤分類される問題があった。単体テスト3件(`DiffAgainstHeadDetectsAddedRegion`/`DetectsDeletedRegion`/`UsesInMemoryDocumentNotDiskContent`)が実際にこの誤分類を検出、`context_lines=0`(ガター用途では変更行そのものだけが必要、人間可読なパッチ表示のための文脈行は不要)に修正して解消した。単なるオフバイワンではなく設計判断のギャップだったことをvendoredヘッダの`context_lines`ドキュメントコメントで確認した。
+
+**最終ゲート(Release/ubsan)で`reinterpret_cast<git_blob*>`(libgit2自身の確立済みイディオム、`git_object_type()`確認後のキャスト)と`git_diff_hunk`のsigned int(`old_start`/`old_lines`/`new_start`/`new_lines`)から`document::LineNumber`(`uint64_t`)へのstatic_castについて、sanitizer診断が出ないことを明示的に確認した。** ubsan構成での初回コンパイル・実行だったが、8件全てのテストで診断0件。
+
+**新規`neomifes::git`モジュールがこのコードベースで初めてlibgit2を消費する実際のコードになった。** `src/git/CMakeLists.txt`の設計(libgit2のヘッダをPRIVATEインクルードとし、`neomifes::git`自身の公開ヘッダには一切露出させない)により、他のモジュールが`neomifes::git`をリンクしても`<git2.h>`を意識する必要がない境界を維持した。単体テストのみ、フィクスチャ構築(`git_repository_init`/`git_index_add_bypath`/`git_commit_create`等)のために例外的に`<git2.h>`を直接includeしている(`tests/unit/CMakeLists.txt`へ専用の`target_include_directories`を追加、`neomifes::git`自身の公開境界は変更していない)。
+
+コミット済み(`b3acf43`/`4e08de1`)、pushはユーザーの明示指示待ち。Phase 11.1は「現在のドキュメントとHEADの行単位Diff計算」ができるヘッドレス基盤まで完了 — 非同期化・EditorSession配線・左ガターUI・Diffビュー・3-Way Merge・Blame・インラインBlame・Commit・Branch切替は全て後続サブWI(WI-17b以降)へ。次はWI-17b(非同期化+EditorSession配線)、Phase 10の残り(WI-16f/WI-15e以降)、またはユーザー指定の次項目。
 
 ---
 

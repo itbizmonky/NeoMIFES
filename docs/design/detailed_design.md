@@ -3552,6 +3552,50 @@ public:
 - 副産物として、末尾改行のあるCSVでグリッドの「#」列が実データ行数+1(暗黙の空行)を表示することを発見(WI-16aで既に文書化済みの仕様がグリッドUIで初めて視覚的に露呈したもの、WI-16eの実装ミスではない) - `docs/issues/csv_grid_shows_trailing_implicit_empty_row.md`(P2)として起票。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16e完了)」参照。
 
+### 11.6 `neomifes::git` リファレンス (WI-17a実装、Phase 11.1 ヘッドレス基盤達成)
+
+`src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化・`EditorSession`配線・左ガター差分マーカーUI・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17b以降)。
+
+```cpp
+// neomifes/git/git_init.h (WI-17a)
+[[nodiscard]] bool initializeLibgit2();  // git_libgit2_init()、プロセス起動時に1回
+void shutdownLibgit2();                   // git_libgit2_shutdown()
+
+// neomifes/git/git_repository.h (WI-17a)
+enum class LineDiffKind : std::uint8_t { Added, Modified, Deleted };
+
+struct LineDiffRegion {
+    document::LineNumber startLine = 0;
+    document::LineNumber lineCount = 0;  // Deletedは常に0(点マーカー、対応する現在行が無い)
+    LineDiffKind          kind      = LineDiffKind::Added;
+};
+
+class GitRepository {
+public:
+    [[nodiscard]] static std::optional<GitRepository> discover(const std::filesystem::path& startPath);
+    GitRepository(const GitRepository&) = delete;
+    GitRepository& operator=(const GitRepository&) = delete;
+    GitRepository(GitRepository&&) noexcept;
+    GitRepository& operator=(GitRepository&&) noexcept;
+    ~GitRepository();
+
+    [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
+        const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
+
+private:
+    struct RepoDeleter { void operator()(git_repository*) const noexcept; };
+    std::unique_ptr<git_repository, RepoDeleter> m_repo;
+};
+```
+
+**設計上の要点 (WI-17a、ヘッドレス基盤):**
+- `git_repository`(libgit2の不透明ハンドル型)はヘッダで前方宣言のみ、`<git2.h>`は`.cpp`内に閉じ込めた(pImpl-with-forward-declared-type)。`neomifes::git`をリンクする側は一切libgit2の型を意識しない設計境界にした。
+- `discover()`は`git_repository_discover()`+`git_repository_open()`の2段階ではなく`git_repository_open_ext(&raw, path, 0, nullptr)`1回で実装 — `flags=0`(`GIT_REPOSITORY_OPEN_NO_SEARCH`を渡さない)により`git`コマンド自身と同じ上位ディレクトリへの自動探索が`open_ext()`自体に組み込まれていることをvendoredヘッダ読解で確認した上で採用した。
+- `diffAgainstHead()`は`git_diff_blob_to_buffer()`(HEADブロブ vs メモリ上バッファ)を使用、`document::Document`の**現在のメモリ上テキスト**(ディスク上の内容ではなく、未保存の編集を含む)とHEADブロブを直接比較する。コールバックは`hunk_cb`のみ設定(`file_cb`/`binary_cb`/`line_cb`はnullptr) — vendoredソース`patch_generate.c`の各コールバック呼び出し箇所がnullチェック済みで、`hunk_cb`設定時に内容読み込みが省略されないことを実装前に確認した。
+- **`git_diff_options.context_lines`の既定値3は本用途に不適** — 変更行の前後3行を同じhunkへ巻き込むため、純粋な追加・削除でも`old_lines`/`new_lines`が共に非ゼロになり`Modified`に誤分類される。単体テスト3件がこの誤分類を実際に検出し、`options.context_lines = 0`(ガター用途では変更行そのものだけが必要)で解消した。
+- 1 hunkにつき1つの`LineDiffRegion`を生成し、`old_lines==0`→Added、`new_lines==0`→Deleted、それ以外→Modifiedで分類する(hunk単位の粒度、行単位ではない)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17a、2026-08-22)」参照。
+
 ---
 
 ## 12. CSV モード 詳細

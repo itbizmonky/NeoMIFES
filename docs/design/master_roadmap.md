@@ -287,7 +287,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
 | 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **整形・バリデーション達成 (WI-15a〜d完了、2026-08-19。XML対応/XPath・JSONPath/真の左右分割ペイン化は未着手、WI-15e以降)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **フィルタ・ソートUI達成 (WI-16a〜e完了、2026-08-19。列固定/セル編集/式列は未着手、WI-16f以降)** | §10.2 |
-| 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | 未着手 | §11 |
+| 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | **着手 (WI-17a完了、2026-08-22): Git統合ヘッドレス基盤(`neomifes::git`、libgit2導入+ファイル単位Diff計算)のみ実装済み。UI/非同期化/LSP/マクロは未着手** | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
 | 12 | 総合品質保証 + 正式出荷 | 未着手 | §12 |
 | (凍結) | 8g: AppContainer サンドボックス | 🧊 凍結 (Phase 12 まで) | §8, §17.1 |
@@ -2330,6 +2330,8 @@ WI-15dで要件定義書§10の残り6項目(XML対応/整形/バリデーショ
 
 ### 11.1 Git 統合 (要件定義書 §11)
 
+> **実装状況 (2026-08-22、WI-17a完了):** ヘッドレス基盤(`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`)のみ実装済み。左ガター差分マーカー・`Ctrl+Shift+G`Gitペイン・Diffビュー・Blame・インラインBlame・Commit・Branch切替は全て未実装(WI-17b以降)。詳細は本節末尾の「実装後の確定事項」参照。
+
 #### 機能ビジョン
 - **凌駕元:** 秀丸の DIFF ビュー、VSCode の GitLens
 - **凌駕ポイント:** libgit2 で Diff / 3-Way Merge / Blame / Commit / Branch 切替を本体に統合、**GitLens 相当のインライン Blame 表示**
@@ -2344,6 +2346,14 @@ WI-15dで要件定義書§10の残り6項目(XML対応/整形/バリデーショ
 #### 影響ファイル
 - **新規:** `src/git/{git_repo.cpp, diff_computer.cpp, blame_reader.cpp, commit_dialog.cpp, inline_blame.cpp}`、`src/ui/{git_pane.{h,cpp}, diff_view.{h,cpp}}`、`tests/integration/git_*_test.cpp`
 - **変更:** `src/render/line_gutter.cpp` (差分マーカ)、`src/render/render_pipeline.cpp` (インライン Blame)、`src/app/main.cpp` (Git ペイン配線)、`third_party/libgit2/`
+
+#### 実装後の確定事項 (WI-17a、2026-08-22)
+
+- **ライブラリは`third_party/libgit2/`への直接バンドルではなく、既存の`Dependencies.cmake`のFetchContentパターン(RE2/nlohmann_json/Abseil等と同型)でvendoringした。** ADR-022参照。着手前にscratchpadでのCMake FetchContent実現性検証を実施し、Windows長パス問題(`git config --global core.longpaths true`必須)・`STATIC_CRT=OFF`必須・インクルードディレクトリ手動追加必須の3点を確認した上で着手した。
+- **モジュール名は`src/git/{git_repo.cpp, diff_computer.cpp, blame_reader.cpp, ...}`という上記の原案分割ではなく、`neomifes::git`という単一STATICライブラリ(`logmode`/`jsontree`/`csvmode`と同型)にした。** `diff_computer`相当の機能のみ(`GitRepository::diffAgainstHead()`)を実装、`blame_reader`/`commit_dialog`/`inline_blame`は未着手のため対応するファイルもまだ存在しない — 実装が追いつき次第、原案のファイル分割案を見直す(1ファイル1責務を超える規模になった時点で分割する方針、CLAUDE.md「1クラス≤300行」に準拠)。
+- **`diffAgainstHead()`はディスク上のファイル内容ではなく、`document::Document`のメモリ上テキスト(未保存の編集を含む)とHEADブロブを比較する設計にした。** 上記UI/UX節が想定する「左ガターに差分マーカー」機能は、保存前のリアルタイム編集にも反応する必要があるため。`git_diff_blob_to_buffer()`(HEADブロブ vs メモリ上バッファ)を採用し、ディスクへの再読込を経由しない。
+- **1 hunk = 1 `LineDiffRegion`という粒度にした**(行単位ではない、上記UI/UX節の「差分マーカ」は連続領域として表示すれば足りるため)。`old_lines==0`→Added、`new_lines==0`→Deleted、それ以外→Modifiedで分類する。実装中、`git_diff_options`の既定`context_lines=3`が純粋な追加・削除でも前後3行を巻き込みModifiedへ誤分類させるバグを単体テストで発見、`context_lines=0`(ガター用途では変更行そのものだけが必要)に修正して解消した。
+- 非同期化(`GitWorker`)・`EditorSession`配線・UI全般(左ガター描画・Gitペイン・Diffビュー・Blame・Commit・Branch切替)は全て未着手のまま、WI-17b以降へ委ねる。
 
 ### 11.2 LSP 統合 — 完全実装 (v2.0 大幅拡張)
 

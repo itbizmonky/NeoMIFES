@@ -177,7 +177,8 @@
 | **10.2d** | **CSV フィルタ・ソート ヘッドレス計算基盤** (`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214ms実測、EditorSession配線/UIは未着手) | ✅ **完了 (WI-16d、2026-08-19、§3.91参照)** |
 | **10.2e** | **CSV フィルタ・ソート EditorSession配線+UI実装 🎉** (フィルタ編集欄150msデバウンス、列ヘッダクリックで3段階ソートサイクル、実機ドッグフーディング確認済み) | ✅ **完了 (WI-16e、2026-08-19、§3.92参照)。🎉 Phase 10.2 フィルタ・ソートUI達成** |
 | **10.3d** | **JSON 整形(Format)・バリデーション(Validate) 🎉** (コマンドパレット限定「JSON: Format Document」「JSON: Validate」、`core::ReplaceRangeCommand`初の文書全体書き換え消費者) | ✅ **完了 (WI-15d、2026-08-19、§3.93参照)。🎉 Phase 10.3 整形・バリデーション達成** |
-| 10.2/10.3残り → 11 → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/JSONPath/真の左右分割ペイン化) → Git/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-17/18/19へ繰り下げ) |
+| **11.1a** | **Git統合 ヘッドレス基盤** (ADR-022・libgit2導入、`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`、非同期化/EditorSession配線/UI/Blame/Commit/Branch切替は未着手) | ✅ **完了 (WI-17a、2026-08-22、§3.94参照)** |
+| 10.2/10.3残り、11残り → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/JSONPath/真の左右分割ペイン化)/Git(非同期化・UI・Blame・Commit)/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-18/19以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2682,6 +2683,34 @@ WI-16e完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 ---
 
+### 3.94 WI-17a (Git統合 ヘッドレス基盤: libgit2導入+ファイル単位Diff計算) 完了記録 (2026-08-22)
+
+WI-15d完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-16f: CSVモードの続き / WI-15e: JSON/XML Treeの続き / Phase 11以降)をAskUserQuestionで確認したところ、**「Phase 11以降(WI-17〜19、推奨)」**が選ばれた — CSV/JSONともに実用段階のUI/機能まで到達済みのため、製品全体の出荷に向けて次の柱へ進む判断。続けてPhase 11の3本柱(Git統合/LSP完全実装/マクロ)のうちどれから着手するかを確認したところ、**「Git統合(推奨)」**が選ばれた。
+
+要件定義書§11・master_roadmap.md §11.1が挙げるGit統合のスコープ(Diff/3-Way Merge/Blame/Commit/Branch切替/インラインBlame)はWI-14/15/16と同じ「ヘッドレス基盤→非同期化+EditorSession配線→UI」パターンに倣い、**本WI(WI-17a)はライブラリ導入(ADR)+最小のヘッドレス基盤(現在のドキュメントとHEADとのファイル単位Diff計算)のみに絞った。**
+
+**着手前にlibgit2のCMake FetchContent実現性をscratchpadの実機検証で確認した(CLAUDE.mdルール3)。** libgit2 v1.9.7を実際にFetchContentし、MSVC v143+Ninja+`/std:c++latest`でconfigure/build/リンクまで成功することを確認。判明した3点の実務上の注意点(Windows長パス問題→`git config --global core.longpaths true`必須、`STATIC_CRT=OFF`必須、インクルードディレクトリ手動追加必須)はADR-022に記録した。
+
+**設計上の要点:**
+- 新規`neomifes::git`モジュール(logmode/jsontree/csvmodeと同型の独立STATICライブラリ)。`git_repository`(libgit2の不透明ハンドル型)はヘッダで前方宣言のみ、`<git2.h>`は`.cpp`内に閉じ込めた。
+- `GitRepository::discover()`は`git_repository_open_ext(&raw, path, 0, nullptr)`1回で実装 — `flags=0`で上位ディレクトリへの自動探索がAPI自体に組み込まれていることをvendoredヘッダ読解で確認し、当初計画していた`git_repository_discover()`+`git_repository_open()`の2段階を不要と判断した。
+- `diffAgainstHead()`は`git_diff_blob_to_buffer()`(HEADブロブ vs メモリ上バッファ)を採用、`document::Document`の現在のメモリ上テキスト(ディスク上の内容ではなく未保存の編集を含む)とHEADブロブを直接比較する。
+
+### 実施内容 (2コミット)
+
+1. `chore(git)`: ADR-022 + libgit2 FetchContent vendoring + 疎通確認用の最小テスト (`b3acf43`)
+2. `feat(git)`: `GitRepository::discover()`/`diffAgainstHead()`ヘッドレス実装 + 単体テスト8件 + 最終ゲート (`4e08de1`)
+
+**単体テストが実際に設計ギャップを発見した。** 初回実装では`git_diff_options`の`context_lines`(既定値3)をそのまま使っていたため、純粋な追加・削除でも変更行の前後3行が同じhunkへ含まれ`old_lines`/`new_lines`が共に非ゼロになり、`Added`/`Deleted`と判定すべきケースが全て`Modified`に誤分類される問題があった。単体テスト3件(`DiffAgainstHeadDetectsAddedRegion`/`DetectsDeletedRegion`/`UsesInMemoryDocumentNotDiskContent`)が実際にこの誤分類を検出、`options.context_lines = 0`(ガター用途では変更行そのものだけが必要)に修正して解消した。
+
+**最終ゲート:** Debug/Release/ubsan全1416/1416件green、sanitizer診断0件、clang-tidy新規警告0(`git_init.cpp`/`git_repository.cpp`)。libgit2のFetchContent実統合は初回試行でCMakeレベルのエラー0件、scratchpad probeの結果がそのまま実リポジトリへ転用できることを確認した。
+
+**本WIはヘッドレス変更のため実アプリでの視覚確認は対象外(WI-14a/15a/16aと同じ扱い)。** UI/EditorSession配線/非同期化は一切行っていない。
+
+コミット済み(`b3acf43`/`4e08de1`)、pushはユーザーの明示指示待ち。Phase 11.1は「現在のドキュメントとHEADの行単位Diff計算」ができるヘッドレス基盤まで完了 — 非同期化・EditorSession配線・左ガターUI・Diffビュー・3-Way Merge・Blame・インラインBlame・Commit・Branch切替は全て後続サブWI(WI-17b以降)へ。次はWI-17b(非同期化+EditorSession配線)、Phase 10の残り(WI-16f/WI-15e以降)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2729,8 +2758,8 @@ WI-16e完了・push未実施の状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.93 (WI-15d JSON 整形(Format)・バリデーション
-(Validate) 完了記録)を読んで現状を把握せよ。
+RESUME_HERE.md §3.94 (WI-17a Git統合 ヘッドレス基盤 完了記録)を
+読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
@@ -2739,15 +2768,32 @@ Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
 パレット限定「JSON: Format Document」/「JSON: Validate」、
 `core::ReplaceRangeCommand`初の文書全体書き換え消費者)まで完了し
 🎉整形・バリデーションを達成(いずれも2026-08-19)。XML対応・
-XPath・JSONPath・真の左右分割ペイン化はWI-15e以降へ。Phase 10.2
-(CSVモード)はWI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面
-置き換え表示・セルダブルクリックジャンプ)→WI-16d(フィルタ・ソート
-のヘッドレス計算基盤`computeCsvRowOrder()`、100万行フィルタ569ms/
-ソート1,214msを実測しroadmap目標を達成)→WI-16e(フィルタ編集欄
-150msデバウンス+列ヘッダクリックで3段階ソートサイクル、実機
-ドッグフーディング確認済み)まで完了し🎉フィルタ・ソートUIを達成
-(いずれも2026-08-19)。列固定・セル編集・式列はWI-16f以降へ。
-Debug/Release/ubsan全1407件green、clang-tidy新規警告0を確認済み。
+XPath・JSONPath・真の左右分割ペイン化はWI-15e以降へ未着手のまま
+保留。Phase 10.2(CSVモード)はWI-16a→b→c(グリッドUI、
+Ctrl+Shift+Gでトグル・全画面置き換え表示・セルダブルクリック
+ジャンプ)→WI-16d(フィルタ・ソートのヘッドレス計算基盤
+`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214msを実測し
+roadmap目標を達成)→WI-16e(フィルタ編集欄150msデバウンス+
+列ヘッダクリックで3段階ソートサイクル、実機ドッグフーディング
+確認済み)まで完了し🎉フィルタ・ソートUIを達成(いずれも
+2026-08-19)。列固定・セル編集・式列はWI-16f以降へ未着手のまま保留。
+
+**2026-08-22、ユーザーの選択でPhase 10の残り(WI-16f/WI-15e以降)より
+先にPhase 11(Git統合/LSP/マクロ)へ進んだ。** Phase 11の3本柱のうち
+「Git統合」から着手、WI-17aで以下を完了:
+- ADR-022でlibgit2 v1.9.7をFetchContent採用(着手前にscratchpadで
+  実機検証済み、Windows長パス問題→`core.longpaths`必須・
+  `STATIC_CRT=OFF`必須・インクルードディレクトリ手動追加必須の
+  3点を確認)
+- 新規`neomifes::git`モジュール、`GitRepository::discover()`/
+  `diffAgainstHead()`(現在のメモリ上ドキュメントとHEADブロブの
+  ファイル単位Diff計算、`git_diff_blob_to_buffer()`使用)
+- 単体テストが`git_diff_options.context_lines`既定値3による
+  Added/Deleted誤分類バグを発見、`context_lines=0`で解消
+- 非同期化・EditorSession配線・UI(左ガター/Gitペイン/Diffビュー/
+  Blame/Commit/Branch切替)は全て未着手のままWI-17b以降へ
+
+Debug/Release/ubsan全1416/1416件green、clang-tidy新規警告0を確認済み。
 
 **副産物issue: 末尾改行のあるCSVでグリッドの「#」列が実データ行数+1
 (暗黙の空行)を表示する(WI-16aで既に文書化済みの既存仕様がグリッド
@@ -2813,14 +2859,18 @@ MessageBoxW(「バージョン情報」ダイアログの前例)だったが、�
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
 (WI-15/16/17)を2026-08-18にWI-16/17/18へ、CSV側のWI-16a新設で衝突した
 ため2026-08-19にさらにWI-17/18/19へ繰り下げた(build_plan.md §5
-「WI-17〜19」節)。WI-15c/WI-15d/WI-16b/WI-16c/WI-16d/WI-16eはこの
-番号割当に影響しない(既存のWI-15/WI-16の続き番号)。
+「WI-17〜19」節)。WI-15c/WI-15d/WI-16b/WI-16c/WI-16d/WI-16e/WI-17aは
+この番号割当に影響しない(既存の番号の続き、またはWI-17自体が
+「WI-17a〜」という複数サブWIに分割されたもの)。Phase 11自体もPhase
+10と同様3本柱それぞれが複数サブWIに分かれる規模と判明したため、
+LSP・マクロ側の番号割当はまだ確定していない(build_plan.md
+「WI-17〜19」節参照)。
 
-次はPhase 10.2の続き(WI-16f以降: 列固定・セル編集・式列)、または
-Phase 10.3の続き(WI-15e以降: XML対応・XPath・JSONPath・
-真の左右分割ペイン化)、またはユーザー指定の次項目。
-着手前にbuild_plan.md §5とmaster_roadmap.md §10.2(または§10.3)を
-読み、本書§5と同じ形式でサブWIへ切り直すこと。
+次はWI-17b(Git統合の非同期化+EditorSession配線)、Phase 10の残り
+(WI-16f以降: 列固定・セル編集・式列、またはWI-15e以降: XML対応・
+XPath・JSONPath・真の左右分割ペイン化)、またはユーザー指定の
+次項目。着手前にbuild_plan.md §5とmaster_roadmap.md §11.1(または
+§10.2/§10.3)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。
