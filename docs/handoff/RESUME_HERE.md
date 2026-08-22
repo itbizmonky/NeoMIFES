@@ -178,7 +178,8 @@
 | **10.2e** | **CSV フィルタ・ソート EditorSession配線+UI実装 🎉** (フィルタ編集欄150msデバウンス、列ヘッダクリックで3段階ソートサイクル、実機ドッグフーディング確認済み) | ✅ **完了 (WI-16e、2026-08-19、§3.92参照)。🎉 Phase 10.2 フィルタ・ソートUI達成** |
 | **10.3d** | **JSON 整形(Format)・バリデーション(Validate) 🎉** (コマンドパレット限定「JSON: Format Document」「JSON: Validate」、`core::ReplaceRangeCommand`初の文書全体書き換え消費者) | ✅ **完了 (WI-15d、2026-08-19、§3.93参照)。🎉 Phase 10.3 整形・バリデーション達成** |
 | **11.1a** | **Git統合 ヘッドレス基盤** (ADR-022・libgit2導入、`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`、非同期化/EditorSession配線/UI/Blame/Commit/Branch切替は未着手) | ✅ **完了 (WI-17a、2026-08-22、§3.94参照)** |
-| 10.2/10.3残り、11残り → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/JSONPath/真の左右分割ペイン化)/Git(非同期化・UI・Blame・Commit)/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-18/19以降で確定予定) |
+| **10.3e** | **JSONPath 🎉** (`neomifes::jsontree::json_path`自前実装、`ui::JsonPathBar`、コマンドパレット限定「JSON: Evaluate JSONPath」) | ✅ **完了 (WI-15e、2026-08-22、§3.95参照)。🎉 Phase 10.3 JSONPath達成** |
+| 10.2/10.3残り、11残り → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(非同期化・UI・Blame・Commit)/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-18/19以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2711,6 +2712,32 @@ WI-15d完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 ---
 
+### 3.95 WI-15e (JSONPath 自前実装クエリ言語) 完了記録 (2026-08-22)
+
+WI-17a完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-17b: Git統合の続き/WI-16f: CSVモードの続き/WI-15e: JSON/XML Treeの続き)をAskUserQuestionで確認したところ、**「WI-15e: JSON/XML Treeの続き」**が選ばれた。
+
+要件定義書§10・master_roadmap.md §10.3が挙げるJSON/XML Treeモードの残りスコープ(XML対応/XPath/JSONPath/真の左右分割ペイン化)のうち、**本WIは「JSONPath」のみに絞った** — 新規外部ライブラリ・ADRが不要(既存`JsonNode`ツリーへの読み取り専用クエリとして完結)なため、XML用パーサのADRが前提となるXML対応・XPathより先に着手する判断。
+
+**設計上の要点:**
+- サポート構文を`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖に絞った自前実装(`neomifes::jsontree::json_path`)。再帰下降(`..`)・フィルタ式・スライスは非対応、将来の再評価事項として明記。
+- `ui::JsonPathBar`は`ui::GotoLineBar`をほぼそのまま複製(単一WC_EDIT、デバウンス無し)。ライブプレビューは追わず、Enterで初めて評価する設計にした。
+- 新規コマンド`json.jsonpath`は`CommandId::None`でパレット限定、`JsonPathBar`が開くだけの薄いaction+`onSubmit`から呼ばれる`dispatchJsonPathCommand()`という2段構成 — json.format/json.validateと違い引数(式文字列)が必要なための設計。
+
+### 実施内容 (2コミット)
+
+1. `feat(jsontree)`: `json_path.h`/`.cpp`(パーサ+評価器) + 単体テスト24件 (`8a2228b`)
+2. `feat(app)`: `ui::JsonPathBar` + コマンド配線 + `message_dialogs`3種 + 最終ゲート + 実機ドッグフーディング (`bf8422f`)
+
+**最終ゲート1回目でclang-tidy/clang-cl固有の問題を3件検出した。** ①`evaluateJsonPath()`のcognitive-complexity超過(31、閾値25)を`appendKeyMatches()`/`appendIndexMatch()`/`appendWildcardMatches()`の3ヘルパー関数への抽出で解消。②テストファイルの`bugprone-unchecked-optional-access`5件を、`ASSERT_TRUE(x.has_value())`直後の`result->`/`(*result)[...]`繰り返しから`const JsonPathExpression& segments = *result;`という参照束縛パターンへの変更で解消。③clang-cl固有の`-Wmissing-designated-field-initializers`(MSVCでは無診断)が`JsonPathSegment{.kind=..., .index=...}`(`.key`省略)で発生 — `JsonPathSegment::key`に`= u""`という明示デフォルトを付与して解消(このプロジェクトの既存規約、`render_pipeline.h`のCursorVisualフィールドが前例)。3件ともDebug構成では検出されず、ubsan(clang-cl)構成の最終ゲートで初めて発覚した。
+
+**最終ゲート:** Debug/Release/ubsan全1440/1440件green、sanitizer診断0件、clang-tidy新規警告0(`json_path.cpp`/`json_path_bar.cpp`/`message_dialogs.cpp`/`normal_mode_wiring.cpp`/`main.cpp`/`jsontree_json_path_test.cpp`)。
+
+**実機ドッグフーディング(Debug構成)は全6ステップを実際の画面操作で確認できた、ただし1件の新しい自動化ハーネス制約が見つかった。** `CommandPaletteShow`(値40005)でパレットを開き、`WM_CHAR`で「JSON: Evaluate JSONPath」を打ち込みEnterで実行、開いた`JsonPathBar`へ`$.users[*].name`を入力しEnterで送信 → キャレットが`"name"`キーの先頭(`1:12`)へ正しくジャンプすることを3倍ズームのスクリーンショットで確認。無効な式(`$..bad`、再帰下降は非対応)で構文エラーダイアログ、マッチ0件の式(`$.missing`)で「一致するノードが見つかりませんでした」ダイアログ、いずれも表示・内容とも確認済み。**新しい制約:** `TaskDialogIndirect`はモーダルのため、同期`SendMessage`でEnterを送信すると呼び出し元が最大120秒ブロックする事故が1回発生 — `EnumWindows`で独立にダイアログのHWND(クラス`#32770`、メインウィンドウの子ではない)を発見してスクリーンショット・OKクリックし、以降は非同期`PostMessage`へ切り替えて対処した。WI-15d/16c/16eで既知の「ポインタ引数の未マーシャリング」とは別カテゴリの制約であり、NeoMIFES自体の欠陥ではない。
+
+コミット済み(`8a2228b`/`bf8422f`)、pushはユーザーの明示指示待ち。Phase 10.3は整形・バリデーションに加えJSONPathまで完了 — XML対応・XPath・真の左右分割ペイン化は全て後続サブWI(WI-15f以降)へ。次はWI-17b(Git統合の続き)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2758,29 +2785,30 @@ WI-15d完了・push未実施の状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.94 (WI-17a Git統合 ヘッドレス基盤 完了記録)を
-読んで現状を把握せよ。
+RESUME_HERE.md §3.95 (WI-15e JSONPath 完了記録)を読んで現状を
+把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
 (2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a→b→c
 (ツリーUI、Ctrl+Shift+Jでトグル・折り畳み統合)→WI-15d(コマンド
 パレット限定「JSON: Format Document」/「JSON: Validate」、
-`core::ReplaceRangeCommand`初の文書全体書き換え消費者)まで完了し
-🎉整形・バリデーションを達成(いずれも2026-08-19)。XML対応・
-XPath・JSONPath・真の左右分割ペイン化はWI-15e以降へ未着手のまま
-保留。Phase 10.2(CSVモード)はWI-16a→b→c(グリッドUI、
-Ctrl+Shift+Gでトグル・全画面置き換え表示・セルダブルクリック
-ジャンプ)→WI-16d(フィルタ・ソートのヘッドレス計算基盤
-`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214msを実測し
-roadmap目標を達成)→WI-16e(フィルタ編集欄150msデバウンス+
+`core::ReplaceRangeCommand`初の文書全体書き換え消費者)→WI-15e
+(自前実装JSONPath、`neomifes::jsontree::json_path`+`ui::JsonPathBar`、
+コマンドパレット限定「JSON: Evaluate JSONPath」)まで完了し
+🎉JSONPathを達成(2026-08-22)。XML対応・XPath・真の左右分割
+ペイン化はWI-15f以降へ未着手のまま保留。Phase 10.2(CSVモード)は
+WI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面置き換え表示・
+セルダブルクリックジャンプ)→WI-16d(フィルタ・ソートのヘッドレス
+計算基盤`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214ms
+を実測しroadmap目標を達成)→WI-16e(フィルタ編集欄150msデバウンス+
 列ヘッダクリックで3段階ソートサイクル、実機ドッグフーディング
 確認済み)まで完了し🎉フィルタ・ソートUIを達成(いずれも
 2026-08-19)。列固定・セル編集・式列はWI-16f以降へ未着手のまま保留。
 
 **2026-08-22、ユーザーの選択でPhase 10の残り(WI-16f/WI-15e以降)より
-先にPhase 11(Git統合/LSP/マクロ)へ進んだ。** Phase 11の3本柱のうち
-「Git統合」から着手、WI-17aで以下を完了:
+先にPhase 11(Git統合/LSP/マクロ)へ進み、続けてPhase 11の3本柱のうち
+「Git統合」から着手、WI-17aで以下を完了:**
 - ADR-022でlibgit2 v1.9.7をFetchContent採用(着手前にscratchpadで
   実機検証済み、Windows長パス問題→`core.longpaths`必須・
   `STATIC_CRT=OFF`必須・インクルードディレクトリ手動追加必須の
@@ -2793,7 +2821,24 @@ roadmap目標を達成)→WI-16e(フィルタ編集欄150msデバウンス+
 - 非同期化・EditorSession配線・UI(左ガター/Gitペイン/Diffビュー/
   Blame/Commit/Branch切替)は全て未着手のままWI-17b以降へ
 
-Debug/Release/ubsan全1416/1416件green、clang-tidy新規警告0を確認済み。
+**同日、続けてユーザーがWI-17b(Git統合の続き)ではなくWI-15e
+(JSON/XML Treeの続き)を選択、JSONPathを実装:**
+- 新規`neomifes::jsontree::json_path`(`parseJsonPath()`/
+  `evaluateJsonPath()`、`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖の
+  サブセット、再帰下降/フィルタ式/スライスは非対応)
+- 新規`ui::JsonPathBar`(`ui::GotoLineBar`の直複製)+コマンド
+  パレット限定「JSON: Evaluate JSONPath」(`json.jsonpath`、
+  `CommandId::None`)
+- 最終ゲートでclang-tidy/clang-cl固有の問題3件(cognitive-complexity
+  超過/bugprone-unchecked-optional-access/designated-field-
+  initializer省略)を検出・解消、いずれもDebug構成では検出されず
+  ubsan構成で初めて発覚
+- 実機ドッグフーディングでワイルドカード+キーチェーンでのカーソル
+  ジャンプ・構文エラー/JSON以外/マッチ0件の各ダイアログを確認、
+  TaskDialogIndirectのモーダル性による新しい自動化ハーネス制約
+  (同期SendMessageが最大120秒ブロック)を発見・回避
+
+Debug/Release/ubsan全1440/1440件green、clang-tidy新規警告0を確認済み。
 
 **副産物issue: 末尾改行のあるCSVでグリッドの「#」列が実データ行数+1
 (暗黙の空行)を表示する(WI-16aで既に文書化済みの既存仕様がグリッド
@@ -2855,22 +2900,40 @@ MessageBoxW(「バージョン情報」ダイアログの前例)だったが、�
 設計を訂正した。今後ユーザー向けの一回限りの通知ダイアログを追加する
 際は、まず`message_dialogs.h`に既存の型が無いか確認すること。
 
+**WI-15eで、`= u""`のような明示デフォルトを持たない集約フィールドを
+部分的な指定初期化子(designated initializer)で省略すると、clang-cl
+`-Wmissing-designated-field-initializers`がMSVCでは無診断のままビルド
+失敗を起こすことを再確認した。** `render_pipeline.h`のCursorVisualで
+既に確立済みの「集約の全フィールドに明示デフォルトを付与する」規約
+(reference_windows_cpp_ci_gotchas.mdにも記録済み)を、新規struct
+(`JsonPathSegment`)を書く際にうっかり踏み外した実例。新規struct/
+JsonNode系の値型を書くたびに全フィールドへ明示デフォルトを付ける
+ことを最初から徹底すること。
+
+**WI-15eで、`TaskDialogIndirect`のモーダル性が同期`SendMessage`
+ベースの自動化ハーネスを最大120秒ブロックする、この種のダイアログ
+機能では初めての制約が見つかった。** ダイアログを表示させるSubmit
+操作は非同期`PostMessage`で送り、ダイアログ自体は`EnumWindows`で
+独立に(メインウィンドウの子ではないクラス`#32770`として)発見して
+スクリーンショット・操作すること。今後`message_dialogs.h`系のダイアログ
+を実機ドッグフーディングする際は最初からこの手法を使うこと。
+
 **WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
 いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
 (WI-15/16/17)を2026-08-18にWI-16/17/18へ、CSV側のWI-16a新設で衝突した
 ため2026-08-19にさらにWI-17/18/19へ繰り下げた(build_plan.md §5
-「WI-17〜19」節)。WI-15c/WI-15d/WI-16b/WI-16c/WI-16d/WI-16e/WI-17aは
-この番号割当に影響しない(既存の番号の続き、またはWI-17自体が
+「WI-17〜19」節)。WI-15c/WI-15d/WI-15e/WI-16b/WI-16c/WI-16d/WI-16e/
+WI-17aはこの番号割当に影響しない(既存の番号の続き、またはWI-17自体が
 「WI-17a〜」という複数サブWIに分割されたもの)。Phase 11自体もPhase
 10と同様3本柱それぞれが複数サブWIに分かれる規模と判明したため、
 LSP・マクロ側の番号割当はまだ確定していない(build_plan.md
 「WI-17〜19」節参照)。
 
 次はWI-17b(Git統合の非同期化+EditorSession配線)、Phase 10の残り
-(WI-16f以降: 列固定・セル編集・式列、またはWI-15e以降: XML対応・
-XPath・JSONPath・真の左右分割ペイン化)、またはユーザー指定の
-次項目。着手前にbuild_plan.md §5とmaster_roadmap.md §11.1(または
-§10.2/§10.3)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
+(WI-16f以降: 列固定・セル編集・式列、またはWI-15f以降: XML対応・
+XPath・真の左右分割ペイン化)、またはユーザー指定の次項目。着手前に
+build_plan.md §5とmaster_roadmap.md §11.1(または§10.2/§10.3)を
+読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
 未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
 で実際の差分を確認してから、push はユーザーの明示指示を待つこと。

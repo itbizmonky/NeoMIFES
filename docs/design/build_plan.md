@@ -1645,6 +1645,52 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
+## WI-15e — JSONPath (自前実装クエリ言語)
+
+**目的:** WI-17a(Git統合 ヘッドレス基盤)完了後、ユーザーに「次のPhaseに進め」と指示された。3択(WI-17b: Git統合の続き/WI-16f: CSVモードの続き/WI-15e: JSON/XML Treeの続き)をAskUserQuestionで確認したところ、**「WI-15e: JSON/XML Treeの続き」**が選ばれた。
+
+要件定義書§10・master_roadmap.md §10.3が挙げるJSON/XML Treeモードの残りスコープ(XML対応/XPath/JSONPath/真の左右分割ペイン化)のうち、**本WIは「JSONPath」のみに絞った。** JSONPathは新規外部ライブラリ・ADRが不要(roadmap原案も「自前実装」と明記)で既存の`JsonNode`ツリーに対する読み取り専用クエリとして完結する一方、XML対応・XPathはXML用パーサのADRが前提、真の左右分割ペイン化は`RenderPipeline`のレイアウト変更を伴う別種の作業のため、いずれも非スコープとした(WI-15aがXMLを「別ライブラリ選定でスコープ分離」と明示的に切り離した判断を継承)。
+
+**前提:** WI-17a 完了・コミット済み (2026-08-22)
+
+**参照:** `docs/decisions/README.md`(新規ADR不要)、master_roadmap.md §10.3
+
+### 着手前調査・設計方針
+
+サブエージェントによる調査(`src/jsontree/include/neomifes/jsontree/json_tree.h`の`JsonNode`構造、`src/ui/include/neomifes/ui/goto_line_bar.h`/`goto_line_parser.h`の既存の単一WC_EDIT・自前パーサ規約、WI-15dのコマンド配線パターン)を経て設計を確定した。
+
+- **サポート構文サブセットを`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖に絞った。** 再帰下降(`..`)・フィルタ式(`[?()]`)・スライス(`[a:b]`)は非対応、将来の再評価事項として明記。
+- **`neomifes::jsontree::json_path`(`parseJsonPath()`/`evaluateJsonPath()`)は既存`neomifes_jsontree`ライブラリへ追加した新規`.h`/`.cpp`とした。** パーサは単一パス走査(`goto_line_parser.h`/`tag_jump_parser.h`の「自前パーサ+`std::optional`結果」規約を継承)、評価器はセグメント単位の反復実装(文法自体が再帰しないため`formatJsonNode()`のような明示スタックは不要、misc-no-recursion抵触の心配がそもそも無い設計)。
+- **`ui::JsonPathBar`は`ui::GotoLineBar`をほぼそのまま複製した。** 単一WC_EDIT、デバウンス無し、`onSubmit(std::u16string_view)`/`onClosed()`の2コールバックのみ。ライブプレビュー(入力中に随時評価)は追わない設計にした — 未完成の式を評価してエラーダイアログを出し続ける事態を避けるため。
+- **新規コマンドは`json.jsonpath`1個のみ、`CommandId::None`でパレット限定(WI-15dの`json.format`/`json.validate`と同型)。** ただしformat/validateと違い引数(式文字列)が必要なため、パレットのaction自体は`jsonPathBar.show()`を呼ぶだけに留め、実際の評価は`JsonPathBar`の`onSubmit`から呼ばれる新規`dispatchJsonPathCommand()`が行う設計にした。
+
+### 実施内容 (2コミット)
+
+1. `feat(jsontree)`: `json_path.h`/`.cpp`(パーサ+評価器) + 単体テスト24件(Debug構成で確認) (`8a2228b`)
+2. `feat(app)`: `ui::JsonPathBar` + コマンド配線 + `message_dialogs`3種 + 最終ゲート + 実機ドッグフーディング (`bf8422f`)
+
+### DoD
+
+- [x] `parseJsonPath()`がサポート構文(`$`/`.key`/`[N]`/`['key']`/`[*]`/連鎖)を正しく解釈し、不正入力を`nullopt`で拒否する
+- [x] `evaluateJsonPath()`がキー/インデックス/ワイルドカード(チェーン後のfan-out含む)を正しく解決し、存在しないパスは例外を投げず空集合を返す
+- [x] 新規コマンド「JSON: Evaluate JSONPath」(パレット限定)が`JsonPathBar`で式を受け取り、評価結果の先頭マッチへカーソルジャンプする
+- [x] 現在のドキュメントが有効なJSONでない/式が不正/マッチ0件、いずれもOK専用ダイアログで通知する
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] 実機ドッグフーディング(コマンドパレット→「JSON: Evaluate JSONPath」→`JsonPathBar`表示→式入力→Enter→カーソルジャンプ、無効な式・JSON以外のファイルでのダイアログ表示、いずれも実際の画面操作で確認)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**最終ゲート1回目でclang-tidyが2種の問題を検出した。** ①`evaluateJsonPath()`のcognitive-complexity超過(31、閾値25) — `appendKeyMatches()`/`appendIndexMatch()`/`appendWildcardMatches()`の3ヘルパー関数への抽出で解消(NOLINT抑制ではなく設計変更、WI-15dの`formatJsonNode()`反復化と同じ方針)。②テストファイルの`bugprone-unchecked-optional-access`5件 — `ASSERT_TRUE(x.has_value())`直後に`result->`/`(*result)[...]`を繰り返す代わりに`const JsonPathExpression& segments = *result;`という参照束縛パターンへ変更して解消。同時に、clang-cl固有の`-Wmissing-designated-field-initializers`(MSVCでは無診断)がテストファイルの`JsonPathSegment{.kind=..., .index=...}`(`.key`省略)で発生 — `JsonPathSegment::key`に`= u""`という明示デフォルトを与えて解消(このプロジェクトの既established規約、`render_pipeline.h`のCursorVisualフィールドが前例)。3件とも典型的な「Debugビルドでは見えず最終ゲートで初めて発覚するclang-cl/clang-tidy固有の問題」であり、ubsan構成の最終ゲートを毎WI必ず走らせる運用の効果を再確認した。
+
+**実機ドッグフーディングで、TaskDialogIndirectがモーダルであるため同期`SendMessage`でEnter送信すると呼び出し元が最大120秒ブロックするという、このプロジェクト初のダイアログ関連の自動化ハーネス制約が見つかった。** `EnumWindows`で独立してダイアログのHWND(クラス`#32770`、メインウィンドウの子ではない)を発見してスクリーンショット・OKクリックし、以降は非同期`PostMessage`へ切り替えて対処 — WI-15d/16c/16eで既知の「ポインタ引数の未マーシャリング」とは別カテゴリの制約として記録(NeoMIFES自体の欠陥ではない)。
+
+**カーソルジャンプの実際の着地点は「マッチしたノードの開始位置」(Objectメンバーの場合は`"key": value`全体の先頭)であり、値の中身の直前ではない。** `json_tree.h`の`JsonNode::startPos`の既存契約(Object メンバーはキーの開き引用符から)をそのまま踏襲した結果で、実機ドッグフーディングで`$.users[*].name`実行時のキャレット位置(`1:12`、`"name"`キーの先頭)として確認された — 意図通りの挙動であり、バグではない。
+
+コミット済み(`8a2228b`/`bf8422f`)、pushはユーザーの明示指示待ち。Phase 10.3は整形・バリデーションに加えJSONPathまで完了 — XML対応・XPath・真の左右分割ペイン化は全て後続サブWI(WI-15f以降)へ。次はWI-17b(Git統合の続き)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

@@ -3255,9 +3255,9 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
-### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜d実装、Phase 10.3 整形・バリデーション達成)
+### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜e実装、Phase 10.3 JSONPath達成)
 
-`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15c、整形(`json.format`)・バリデーション(`json.validate`、いずれもコマンドパレット限定)はWI-15dで実装済み。XML対応/XPath/JSONPath/真の左右分割ペイン化は未実装(WI-15e以降へ)。
+`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15c、整形(`json.format`)・バリデーション(`json.validate`)はWI-15d、JSONPath(`json.jsonpath`、いずれもコマンドパレット限定)はWI-15eで実装済み。XML対応/XPath/真の左右分割ペイン化は未実装(WI-15f以降へ)。
 
 ```cpp
 // neomifes/jsontree/json_tree.h (WI-15a、WI-15bでBufferSnapshotオーバーロード追加)
@@ -3366,6 +3366,50 @@ void showJsonValidationErrorDialog(HWND owner, std::u16string_view message);
 - `core::ReplaceRangeCommand`(既存)が、このコードベースで初めて「文書全体を1回のUndo可能な編集として書き換える」実際の消費者になった。
 - コマンド配線は`edit.duplicateLine`/`edit.selectAll`と同型、`CommandId::None`+コマンドパレット限定(新規`CommandId`・キーバインド・メニュー項目は追加しない)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15d)」参照。
+
+```cpp
+// neomifes/jsontree/json_path.h (WI-15e)
+enum class JsonPathSegmentKind : std::uint8_t { Key, Index, Wildcard };
+
+struct JsonPathSegment {
+    JsonPathSegmentKind kind = JsonPathSegmentKind::Wildcard;
+    std::u16string       key = u"";   // Keyのみ使用(明示デフォルトの理由は後述)
+    std::size_t           index = 0;  // Indexのみ使用
+};
+using JsonPathExpression = std::vector<JsonPathSegment>;
+
+// $/.key/['key']/[0]/[*]とその連鎖のみサポート。再帰下降(..)/フィルタ式/
+// スライスは非対応。単一パス走査、std::optionalで失敗を表現。
+[[nodiscard]] std::optional<JsonPathExpression> parseJsonPath(std::u16string_view expression) noexcept;
+
+// セグメント単位で「現在のマッチ集合」を次の集合へ変換する反復実装。
+// 存在しないキー/範囲外インデックス/Object・Array以外へのアクセスは
+// そのブランチを静かに落とす(実在のJSONPath実装と同じ「該当なし」扱い)。
+[[nodiscard]] std::vector<const JsonNode*> evaluateJsonPath(const JsonNode& root,
+                                                              const JsonPathExpression& expression);
+
+// src/ui/include/neomifes/ui/json_path_bar.h (WI-15e、GotoLineBarの直複製)
+class JsonPathBar {
+public:
+    [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const JsonPathBarConfig& config);
+    void show() noexcept;   // クリア+表示+フォーカス
+    void hide() noexcept;
+    void onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept;
+};
+
+// src/app/include/neomifes/app/message_dialogs.h (WI-15e追加分)
+void showJsonPathInvalidJsonDialog(HWND owner);
+void showJsonPathSyntaxErrorDialog(HWND owner, std::u16string_view expression);
+void showJsonPathNoMatchDialog(HWND owner);
+```
+
+**設計上の要点 (WI-15e、JSONPath):**
+- 新規外部ライブラリ・ADRは不要(既存`JsonNode`ツリーへの読み取り専用クエリとして完結)。サポート構文は`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖のサブセットに絞り、再帰下降(`..`)・フィルタ式・スライスは非対応(将来の再評価事項)。
+- パーサ(`parseJsonPath()`)は`goto_line_parser.h`/`tag_jump_parser.h`の「単一パス走査+`std::optional`結果」規約を継承した自前実装。評価器(`evaluateJsonPath()`)はJSONPathの文法自体が再帰しない(サポート範囲では)ため、セグメントごとに現在のマッチ集合を次の集合へ変換する素直な反復実装で足り、`formatJsonNode()`のような明示スタックは不要 — misc-no-recursion抵触の心配がそもそも無い設計。
+- `ui::JsonPathBar`は`ui::GotoLineBar`をほぼそのまま複製(単一WC_EDIT、デバウンス無し、Enterで生テキストを`onSubmit`へ渡す)。ライブプレビューは追わず、未完成の式でエラーダイアログが出続ける事態を避けた。
+- コマンド`json.jsonpath`は`json.format`/`json.validate`と違い引数(式文字列)が必要なため、パレットのactionは`jsonPathBar.show()`を呼ぶだけに留め、実際の評価は`onSubmit`から呼ばれる`dispatchJsonPathCommand()`が担う2段構成にした。
+- 最終ゲートで3件のclang-tidy/clang-cl固有の問題を検出・解消: `evaluateJsonPath()`のcognitive-complexity超過(31/25、3ヘルパー関数への抽出で解消)、テストの`bugprone-unchecked-optional-access`5件(参照束縛パターンへの変更で解消)、clang-cl固有の`-Wmissing-designated-field-initializers`(`JsonPathSegment::key`への`= u""`明示デフォルト付与で解消、`render_pipeline.h`のCursorVisualフィールドと同じ規約)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15e)」参照。
 
 ### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜e実装、Phase 10.2 フィルタ・ソートUI達成)
 

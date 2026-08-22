@@ -285,7 +285,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
-| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **整形・バリデーション達成 (WI-15a〜d完了、2026-08-19。XML対応/XPath・JSONPath/真の左右分割ペイン化は未着手、WI-15e以降)** | §10.3 |
+| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **JSONPath達成 (WI-15a〜e完了、2026-08-22。XML対応/XPath/真の左右分割ペイン化は未着手、WI-15f以降)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **フィルタ・ソートUI達成 (WI-16a〜e完了、2026-08-19。列固定/セル編集/式列は未着手、WI-16f以降)** | §10.2 |
 | 11 | Git / LSP / マクロ (Lua + JS + 秀丸互換レイヤ) | **着手 (WI-17a完了、2026-08-22): Git統合ヘッドレス基盤(`neomifes::git`、libgit2導入+ファイル単位Diff計算)のみ実装済み。UI/非同期化/LSP/マクロは未着手** | §11 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) — **v2.1 で最後尾へ移動** | 未着手 | §9 |
@@ -2323,6 +2323,18 @@ WI-15dで要件定義書§10の残り6項目(XML対応/整形/バリデーショ
 - **ダイアログは新規MessageBoxWではなく既存の`message_dialogs.h`(TaskDialogIndirectベース)を踏襲した。** 実装序盤の設計をMessageBoxWから訂正した経緯あり(詳細はbuild_plan.md WI-15dセクション参照)。
 - **XML対応・XPath・JSONPath・真の左右分割ペイン化は全て本サブWIのスコープ外(WI-15e以降)。**
 - 詳細は`build_plan.md` WI-15dセクション参照。
+
+#### 実装後の確定事項 (WI-15e、JSONPath、2026-08-22)
+
+WI-15dの残り4項目(XML対応/XPath/JSONPath/真の左右分割ペイン化)のうち「JSONPath」のみを実装した。新規外部ライブラリ・ADRが不要(既存`JsonNode`ツリーへの読み取り専用クエリとして完結)なことが、XML対応・XPath(XML用パーサのADRが前提)より先に着手した理由。
+
+- **サポート構文を`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖のサブセットに絞った自前実装(`neomifes::jsontree::json_path`)。** 再帰下降(`..`)・フィルタ式・スライスは非対応、将来の再評価事項として明記した。
+- **`ui::JsonPathBar`は`ui::GotoLineBar`をほぼそのまま複製した新規オーバーレイ(単一WC_EDIT、デバウンス無し)。** ライブプレビューは追わず、Enterで初めて評価する設計にした(未完成の式でエラーダイアログが出続ける事態を避けるため)。
+- **新規コマンド`json.jsonpath`は`CommandId::None`でパレット限定、`JsonPathBar`が開くだけの薄いaction+`onSubmit`から呼ばれる`dispatchJsonPathCommand()`という2段構成にした。** json.format/json.validateと異なり引数(式文字列)が必要なための設計上の違い。
+- **最終ゲートでclang-tidyの`readability-function-cognitive-complexity`(evaluateJsonPath()、31/25)を3ヘルパー関数への抽出で解消、テストファイルの`bugprone-unchecked-optional-access`5件を参照束縛パターンへの変更で解消、clang-cl固有の`-Wmissing-designated-field-initializers`(MSVCでは無診断)を`JsonPathSegment::key`への明示デフォルト`= u""`付与で解消した。** いずれもDebug構成では検出されず、ubsan(clang-cl)構成の最終ゲートで初めて発覚 — 毎WIでubsanを走らせる運用の効果を改めて確認した事例。
+- **実機ドッグフーディングで、TaskDialogIndirectのモーダル性が同期SendMessageベースの自動化ハーネスを最大120秒ブロックする、この種のダイアログ機能では初めての制約が見つかった。** `EnumWindows`での独立したダイアログHWND発見+非同期PostMessageへの切り替えで対処、NeoMIFES自体の欠陥ではない。
+- XML対応・XPath・真の左右分割ペイン化は全て本サブWIのスコープ外(WI-15f以降)。
+- 詳細は`build_plan.md` WI-15eセクション参照。
 
 ---
 

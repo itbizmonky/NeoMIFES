@@ -3295,4 +3295,32 @@ WI-15d完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 コミット済み(`b3acf43`/`4e08de1`)、pushはユーザーの明示指示待ち。Phase 11.1は「現在のドキュメントとHEADの行単位Diff計算」ができるヘッドレス基盤まで完了 — 非同期化・EditorSession配線・左ガターUI・Diffビュー・3-Way Merge・Blame・インラインBlame・Commit・Branch切替は全て後続サブWI(WI-17b以降)へ。次はWI-17b(非同期化+EditorSession配線)、Phase 10の残り(WI-16f/WI-15e以降)、またはユーザー指定の次項目。
 
+## Session 106 (2026-08-22): WI-15e(JSONPath 自前実装クエリ言語)実装完了
+
+WI-17a完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-17b: Git統合の続き/WI-16f: CSVモードの続き/WI-15e: JSON/XML Treeの続き)をAskUserQuestionで確認したところ、**「WI-15e: JSON/XML Treeの続き」**が選ばれた。
+
+要件定義書§10・master_roadmap.md §10.3が挙げるJSON/XML Treeモードの残りスコープ(XML対応/XPath/JSONPath/真の左右分割ペイン化)のうち、**本WIは「JSONPath」のみに絞った。** JSONPathは新規外部ライブラリ・ADRが不要(roadmap原案も「自前実装」と明記)で既存の`JsonNode`ツリーへの読み取り専用クエリとして完結する一方、XML対応・XPathはXML用パーサのADRが前提、真の左右分割ペイン化は`RenderPipeline`のレイアウト変更を伴う別種の作業のため、いずれも非スコープとした(WI-15aがXMLを「別ライブラリ選定でスコープ分離」と明示的に切り離した判断の継承)。
+
+**着手前調査は直接ファイル読解(`json_tree.h`のJsonNode構造)+1件のsubagent委任調査(`goto_line_parser.h`/`tag_jump_parser.h`の既存の自前パーサ規約、WI-15dのコマンド配線パターン、`message_dialogs.h`にテキスト入力欄が無いこと)で行った。** サポート構文を`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖のサブセットに絞り、再帰下降(`..`)・フィルタ式(`[?()]`)・スライス(`[a:b]`)は非対応(将来の再評価事項として明記)。
+
+**設計判断の核心1: `ui::JsonPathBar`は`ui::GotoLineBar`をほぼそのまま複製した。** 単一WC_EDIT、デバウンス無し、`onSubmit(std::u16string_view)`/`onClosed()`の2コールバックのみ。ライブプレビュー(入力中に随時評価)は追わない設計にした — 未完成の式を評価してエラーダイアログを出し続ける事態を避けるため。
+
+**設計判断の核心2: 新規コマンドは`json.jsonpath`1個のみ、`CommandId::None`でパレット限定(WI-15dの`json.format`/`json.validate`と同型)。** ただしformat/validateと違い引数(式文字列)が必要なため、パレットのaction自体は`jsonPathBar.show()`を呼ぶだけに留め、実際の評価は`JsonPathBar`の`onSubmit`から呼ばれる新規`dispatchJsonPathCommand()`が行う2段構成にした。
+
+**設計判断の核心3: `evaluateJsonPath()`はセグメント単位で「現在のマッチ集合」を次の集合へ変換する反復実装にした。** JSONPathの文法自体(サポート範囲では)が再帰しないため、`formatJsonNode()`のような明示スタックは不要 — misc-no-recursion抵触の心配がそもそも無い設計にできた。
+
+**実施内容(2コミット):** ①`json_path.h`/`.cpp`(パーサ+評価器)+単体テスト24件(`8a2228b`、Debug構成でctest 1440/1440 green確認)。②`ui::JsonPathBar`+コマンド配線(`dispatchJsonPathCommand()`/`buildJsonPathBarConfig()`、`json.jsonpath`のCommandDescriptor登録、`wireNormalMode()`/`buildCommandRegistry()`パラメータリストへの`JsonPathBar&`追加、`main.cpp`のメンバ+呼び出し更新)+`message_dialogs.h`新規3関数+最終ゲート+実機ドッグフーディング(`bf8422f`)。
+
+**コミット2の中間検証で、`buildCommandRegistry()`の再帰呼び出し3箇所(keybindings.reload/keybindings.preset.*/logmode.patterns.reload)を見落としていたビルドエラーを発見・修正した。** `JsonPathBar&`パラメータを`buildCommandRegistry()`本体の宣言・末尾の実呼び出し(`wireNormalMode()`内)には追加していたが、この3つの内部再帰呼び出し(設定/キーバインド再読込時にパレット全体を再構築する箇所)への伝播を最初は見落とし、C2660(引数個数不一致)で発覚。3箇所全てのラムダキャプチャリストと再帰呼び出しの実引数リストへ`&jsonPathBar`/`jsonPathBar`を追加して解消。同時に`#include "neomifes/jsontree/json_path.h"`の追加漏れ(C2039/C3861)も同時に発覚・修正。
+
+**最終ゲート1回目でclang-tidy/clang-cl固有の問題を3件検出した。** ①`evaluateJsonPath()`のcognitive-complexity超過(31、閾値25) — セグメント種別ごとの処理(Key/Index/Wildcard)を`appendKeyMatches()`/`appendIndexMatch()`/`appendWildcardMatches()`の3ヘルパー関数へ抽出して解消(NOLINT抑制ではなく設計変更、WI-15dの`formatJsonNode()`反復化と同じ方針)。②テストファイルの`bugprone-unchecked-optional-access`5件 — `ASSERT_TRUE(x.has_value())`直後に`result->`/`(*result)[...]`を繰り返す代わりに`const JsonPathExpression& segments = *result;`という参照束縛パターンへ変更して解消(gtestのASSERT_TRUE経由の絞り込みをclang-tidyのデータフロー解析が全ての後続アクセスに対して一貫して認識するとは限らない実例)。③clang-cl固有の`-Wmissing-designated-field-initializers`(MSVCでは無診断)がテストファイルの`JsonPathSegment{.kind=..., .index=...}`(`.key`省略)で発生 — `JsonPathSegment::key`に`= u""`という明示デフォルトを与えて解消(このプロジェクトの既存規約、`render_pipeline.h`のCursorVisualフィールドが前例、`reference_windows_cpp_ci_gotchas.md`にも記録済みのパターンを新規struct作成時にうっかり踏み外した実例)。3件ともDebugビルドでは検出されず、ubsan(clang-cl)構成の最終ゲートで初めて発覚した。
+
+**最終ゲート:** Debug/Release/ubsan全1440/1440件green、sanitizer診断0件、clang-tidy新規警告0(`json_path.cpp`/`json_path_bar.cpp`/`message_dialogs.cpp`/`normal_mode_wiring.cpp`/`main.cpp`/`jsontree_json_path_test.cpp`)。
+
+**実機ドッグフーディング(Debug構成)は全6ステップを実際の画面操作で確認できた、ただし1件の新しい自動化ハーネス制約が見つかった。** `CommandPaletteShow`(値40005)でパレットを開き`WM_CHAR`で「JSON: Evaluate JSONPath」を打ち込みEnterで実行、開いた`JsonPathBar`へ`$.users[*].name`を入力しEnterで送信 → キャレットが`"name"`キーの先頭(ステータスバー`1:12`)へ正しくジャンプすることを3倍ズームのスクリーンショットで確認(`JsonNode::startPos`の既存契約通り、Objectメンバーはキーの開き引用符から — 値の中身の直前ではないことも確認、意図通りの挙動でバグではない)。無効な式(`$..bad`、再帰下降は非対応)で「JSONPathの構文エラー」ダイアログ(入力した式をそのまま表示)、マッチ0件の式(`$.missing`)で「一致するノードが見つかりませんでした」ダイアログ、いずれも表示・内容とも確認済み。**新しい制約の発見:** `TaskDialogIndirect`はモーダルのため、同期`SendMessage`でEnterを送信すると呼び出し元が最大120秒ブロックする事故が1回発生 — `EnumWindows`で独立にダイアログのHWND(クラス`#32770`、メインウィンドウの子ではない)を発見してスクリーンショット・OKクリックし、以降は非同期`PostMessage`へ切り替えて対処した。WI-15d/16c/16eで既知の「ポインタ引数の未マーシャリング」とは別カテゴリの制約であり、NeoMIFES自体の欠陥ではない。
+
+**ドキュメント同期:** `build_plan.md`(新規「WI-15e」セクション)、`master_roadmap.md`(§10.3実装後の確定事項追記+フェーズ状況表更新)、`detailed_design.md`(§11.4見出し更新+コード例拡張)、`RESUME_HERE.md`(§1状態表+新規§3.95+§6推奨プロンプト全面更新+新規教訓2件)、TIMELINE.md(Session 106)、メモリ(`project_neomifes_state.md`/`MEMORY.md`)。
+
+コミット済み(`8a2228b`/`bf8422f`)、pushはユーザーの明示指示待ち。Phase 10.3は整形・バリデーションに加えJSONPathまで完了 — XML対応・XPath・真の左右分割ペイン化は全て後続サブWI(WI-15f以降)へ。次はWI-17b(Git統合の続き)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
