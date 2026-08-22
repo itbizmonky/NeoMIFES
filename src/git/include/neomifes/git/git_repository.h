@@ -1,0 +1,103 @@
+#pragma once
+
+// GitRepository - headless, file-scoped Git diff computation (WI-17a,
+// Phase 11.1 core, ADR-022). Mirrors neomifes::logmode/jsontree/csvmode's
+// "headless first" staging: no async worker, no EditorSession integration,
+// no UI - see this WI's build_plan.md entry for the full sub-WI breakdown.
+// Win32-mechanics-free and libgit2-opaque at the boundary: `git_repository`
+// is forward-declared here (never defined - it is libgit2's own opaque
+// handle type) so this header never requires <git2.h> from its own callers,
+// the same "consumers of this module never need the vendored library's own
+// headers" boundary src/git/CMakeLists.txt's own comment establishes for
+// the whole module.
+//
+// Requires neomifes::git::initializeLibgit2() (git_init.h) to have already
+// succeeded once for this process before any GitRepository method is
+// called - this class does not initialize libgit2's runtime itself, the
+// same "assume the shared resource already exists" contract this
+// codebase's render:: types already have toward Direct2D/DirectWrite
+// factories.
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <vector>
+
+#include "neomifes/document/text_pos.h"  // document::LineNumber
+
+struct git_repository;  // libgit2's own opaque handle type (git2/types.h) - never defined here
+
+namespace neomifes::document {
+class Document;
+}  // namespace neomifes::document
+
+namespace neomifes::git {
+
+enum class LineDiffKind : std::uint8_t { Added, Modified, Deleted };
+
+// One contiguous diff region in the CURRENT document's line-number space
+// (0-based, matching document::LineNumber's own convention throughout this
+// codebase) - one entry per libgit2 diff hunk, not one entry per line, so a
+// large localized change stays compact rather than exploding into one
+// region per line.
+//
+// Added/Modified: [startLine, startLine + lineCount) are the CURRENT
+// document's own lines this region covers. Deleted: HEAD had lines here
+// that the current document no longer has at all - there is no current-
+// document line range to report (the deleted content simply isn't present
+// any more), so this is a POINT marker: startLine is the current-document
+// line immediately AFTER where the deleted content used to be (matching
+// the gutter-marker convention GitLens/VSCode use - a small indicator
+// between two existing lines, not a highlighted range), and lineCount is
+// always 0 for this kind.
+struct LineDiffRegion {
+    document::LineNumber startLine = 0;
+    document::LineNumber lineCount = 0;
+    LineDiffKind          kind      = LineDiffKind::Added;
+};
+
+class GitRepository {
+public:
+    // Walks upward from startPath (a file OR directory path) looking for a
+    // .git directory/file, the same search libgit2's own git_repository_
+    // open_ext() performs by default (GIT_REPOSITORY_OPEN_NO_SEARCH is
+    // deliberately NOT passed) - matches `git`'s own CLI behavior of
+    // working from any subdirectory of a repo. std::nullopt if no
+    // repository is found, or if libgit2 itself fails to open one it did
+    // find (never throws).
+    [[nodiscard]] static std::optional<GitRepository> discover(const std::filesystem::path& startPath);
+
+    GitRepository(const GitRepository&)            = delete;
+    GitRepository& operator=(const GitRepository&) = delete;
+    GitRepository(GitRepository&&) noexcept;
+    GitRepository& operator=(GitRepository&&) noexcept;
+    ~GitRepository();
+
+    // Computes a line-level diff between HEAD's own blob for
+    // `absoluteFilePath` and `doc`'s CURRENT in-memory text (NOT whatever
+    // is currently on disk - `doc` may hold unsaved edits, and diffing
+    // against the live buffer rather than the file is the whole point of a
+    // "gutter shows your uncommitted changes as you type" feature).
+    //
+    // std::nullopt (not an empty vector) when: `absoluteFilePath` is
+    // outside this repository's working directory, OR HEAD has no blob for
+    // this path (an untracked/newly-added file, or a repository with no
+    // commits yet) - callers should treat either case as "the whole file
+    // is new, don't ask this class about it" rather than "no changes".
+    // An empty (non-null) vector means HEAD's blob and doc's current text
+    // are identical from libgit2's own diff algorithm's perspective.
+    [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
+        const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
+
+private:
+    struct RepoDeleter {
+        void operator()(git_repository* repo) const noexcept;
+    };
+
+    explicit GitRepository(std::unique_ptr<git_repository, RepoDeleter> repo) noexcept;
+
+    std::unique_ptr<git_repository, RepoDeleter> m_repo;
+};
+
+}  // namespace neomifes::git

@@ -1,5 +1,6 @@
 add_library(neomifes_git STATIC
     src/git_init.cpp
+    src/git_repository.cpp
 )
 add_library(neomifes::git ALIAS neomifes_git)
 
@@ -19,8 +20,15 @@ target_include_directories(neomifes_git
 )
 
 target_link_libraries(neomifes_git
+    PUBLIC
+        # git_repository.h exposes document::LineNumber in LineDiffRegion's
+        # public API and takes a document::Document& in diffAgainstHead(),
+        # same reasoning as neomifes::logmode/neomifes::jsontree/
+        # neomifes::csvmode's identical PUBLIC neomifes::document.
+        neomifes::document
     PRIVATE
         neomifes::compile_options
+        neomifes::util
         libgit2package
 )
 

@@ -96,6 +96,7 @@ add_executable(neomifes_unit_tests
     csvmode_csv_row_order_test.cpp
     app_csv_grid_bridge_test.cpp
     git_init_test.cpp
+    git_repository_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests
@@ -116,8 +117,21 @@ target_link_libraries(neomifes_unit_tests
         neomifes::plugin
         neomifes::app_input
         neomifes::ui
+        libgit2package
         GTest::gtest
         GTest::gtest_main
+)
+
+# WI-17a: git_repository_test.cpp builds its own real Git repository fixture
+# directly against libgit2's index/commit APIs (GitRepository itself has no
+# write/commit API - out of this WI's scope), so this ONE test file needs
+# <git2.h> visible even though neomifes::git's own PUBLIC interface
+# deliberately never exposes it (see src/git/CMakeLists.txt's own comment).
+# A target-wide addition, not a change to neomifes_git's public boundary.
+target_include_directories(neomifes_unit_tests
+    PRIVATE
+        "${libgit2_SOURCE_DIR}/include"
+        "${libgit2_BINARY_DIR}/include"
 )
 
 set_target_properties(neomifes_unit_tests PROPERTIES
