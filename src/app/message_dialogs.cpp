@@ -220,4 +220,38 @@ void showJsonValidationErrorDialog(HWND owner, std::u16string_view message) {
     ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
 }
 
+void showJsonPathInvalidJsonDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_ERROR_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"JSONPathを評価できません";
+    config.pszContent         = L"現在のドキュメントは有効なJSONではないためJSONPathを評価できません。";
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showJsonPathSyntaxErrorDialog(HWND owner, std::u16string_view expression) {
+    const std::wstring content(neomifes::util::toWstringView(expression));
+
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_ERROR_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"JSONPathの構文エラー";
+    config.pszContent         = content.c_str();
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showJsonPathNoMatchDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_INFORMATION_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"一致するノードが見つかりませんでした";
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
 }  // namespace neomifes::app

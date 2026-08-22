@@ -138,6 +138,7 @@ using neomifes::ui::CommandPalette;
 using neomifes::ui::CsvGridPane;
 using neomifes::ui::FindBar;
 using neomifes::ui::GotoLineBar;
+using neomifes::ui::JsonPathBar;
 using neomifes::ui::GrepBar;
 using neomifes::ui::JsonTreePane;
 using neomifes::ui::MainWindow;
@@ -495,6 +496,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Ctrl+G goto-line/column overlay (Phase 4b8b) - simplest of the three
     // overlays (single WC_EDIT, no debounce/listbox).
     GotoLineBar gotoLineBar;
+    // "JSON: Evaluate JSONPath" command's input overlay (WI-15e) - palette-
+    // only (no CommandId/keybinding), same single-WC_EDIT shape as
+    // gotoLineBar above.
+    JsonPathBar jsonPathBar;
     // Ctrl+Shift+F Grep results pane (Phase 5c3) - two WC_EDIT + one
     // WC_LISTBOX, see grep_bar.h's class comment. grepState holds the actual
     // search::GrepMatch data GrepBar itself never sees (same rationale as
@@ -697,7 +702,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // stored/later-invoked callback needs it, so a future tab switch is
         // reflected everywhere without this call site changing again.
         wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
-                       gotoLineBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
+                       gotoLineBar, jsonPathBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,

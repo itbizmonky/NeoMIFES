@@ -93,6 +93,44 @@ namespace {
     return true;
 }
 
+// The three per-segment-kind matchers evaluateJsonPath() below dispatches
+// to. Split out (rather than inlined in a switch inside the double loop)
+// purely to keep evaluateJsonPath() itself under this project's clang-tidy
+// cognitive-complexity threshold - each one mirrors exactly the branch it
+// replaced, no behavior change.
+
+void appendKeyMatches(const JsonNode& node, const std::u16string& key, std::vector<const JsonNode*>& out) {
+    if (node.kind != JsonNodeKind::Object) {
+        return;
+    }
+    // Not stopping at the first match: a well-formed document never has a
+    // duplicate key within one object, so in practice this yields at most
+    // one node anyway - but matching all occurrences (rather than picking
+    // "first" or "last" arbitrarily) is the simpler, better-defined choice
+    // for the pathological duplicate-key case.
+    for (const JsonNode& child : node.children) {
+        if (child.key.has_value() && *child.key == key) {
+            out.push_back(&child);
+        }
+    }
+}
+
+void appendIndexMatch(const JsonNode& node, std::size_t index, std::vector<const JsonNode*>& out) {
+    if (node.kind == JsonNodeKind::Array && index < node.children.size()) {
+        out.push_back(&node.children[index]);
+    }
+}
+
+void appendWildcardMatches(const JsonNode& node, std::vector<const JsonNode*>& out) {
+    // Every child regardless of Object/Array, per evaluateJsonPath()'s own
+    // header comment - an Object's members and an Array's elements are both
+    // just JsonNode entries in the same children vector (json_tree.h's own
+    // documented design), so no kind check is needed here.
+    for (const JsonNode& child : node.children) {
+        out.push_back(&child);
+    }
+}
+
 }  // namespace
 
 std::optional<JsonPathExpression> parseJsonPath(std::u16string_view expression) noexcept {
@@ -132,35 +170,13 @@ std::vector<const JsonNode*> evaluateJsonPath(const JsonNode& root, const JsonPa
         for (const JsonNode* node : current) {
             switch (segment.kind) {
                 case JsonPathSegmentKind::Key:
-                    if (node->kind == JsonNodeKind::Object) {
-                        // Not stopping at the first match: a well-formed
-                        // document never has a duplicate key within one
-                        // object, so in practice this yields at most one
-                        // node anyway - but matching all occurrences (rather
-                        // than picking "first" or "last" arbitrarily) is the
-                        // simpler, better-defined choice for the pathological
-                        // duplicate-key case.
-                        for (const JsonNode& child : node->children) {
-                            if (child.key.has_value() && *child.key == segment.key) {
-                                next.push_back(&child);
-                            }
-                        }
-                    }
+                    appendKeyMatches(*node, segment.key, next);
                     break;
                 case JsonPathSegmentKind::Index:
-                    if (node->kind == JsonNodeKind::Array && segment.index < node->children.size()) {
-                        next.push_back(&node->children[segment.index]);
-                    }
+                    appendIndexMatch(*node, segment.index, next);
                     break;
                 case JsonPathSegmentKind::Wildcard:
-                    // Every child regardless of Object/Array, per this
-                    // function's own header comment - an Object's members
-                    // and an Array's elements are both just JsonNode entries
-                    // in the same children vector (json_tree.h's own
-                    // documented design), so no kind check is needed here.
-                    for (const JsonNode& child : node->children) {
-                        next.push_back(&child);
-                    }
+                    appendWildcardMatches(*node, next);
                     break;
             }
         }

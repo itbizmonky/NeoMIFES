@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "neomifes/document/document.h"
 #include "neomifes/jsontree/json_path.h"
@@ -29,7 +30,8 @@ using neomifes::jsontree::parseJsonTree;
 TEST(JsonPathParseTest, RootAloneParsesToEmptyExpression) {
     const auto result = parseJsonPath(u"$");
     ASSERT_TRUE(result.has_value());
-    EXPECT_TRUE(result->empty());
+    const JsonPathExpression& segments = *result;
+    EXPECT_TRUE(segments.empty());
 }
 
 TEST(JsonPathParseTest, DotKeyChainParsesToKeySegments) {
@@ -45,28 +47,31 @@ TEST(JsonPathParseTest, DotKeyChainParsesToKeySegments) {
 TEST(JsonPathParseTest, BracketIndexParsesToIndexSegment) {
     const auto result = parseJsonPath(u"$[0]");
     ASSERT_TRUE(result.has_value());
-    ASSERT_EQ(result->size(), 1U);
-    EXPECT_EQ((*result)[0].kind, JsonPathSegmentKind::Index);
-    EXPECT_EQ((*result)[0].index, 0U);
+    const JsonPathExpression& segments = *result;
+    ASSERT_EQ(segments.size(), 1U);
+    EXPECT_EQ(segments[0].kind, JsonPathSegmentKind::Index);
+    EXPECT_EQ(segments[0].index, 0U);
 }
 
 TEST(JsonPathParseTest, BracketQuotedKeyAcceptsSingleAndDoubleQuotes) {
     const auto singleQuoted = parseJsonPath(u"$['a b']");
     ASSERT_TRUE(singleQuoted.has_value());
-    ASSERT_EQ(singleQuoted->size(), 1U);
-    EXPECT_EQ((*singleQuoted)[0].kind, JsonPathSegmentKind::Key);
-    EXPECT_EQ((*singleQuoted)[0].key, u"a b");
+    const JsonPathExpression& singleSegments = *singleQuoted;
+    ASSERT_EQ(singleSegments.size(), 1U);
+    EXPECT_EQ(singleSegments[0].kind, JsonPathSegmentKind::Key);
+    EXPECT_EQ(singleSegments[0].key, u"a b");
 
     const auto doubleQuoted = parseJsonPath(u"$[\"a b\"]");
     ASSERT_TRUE(doubleQuoted.has_value());
-    EXPECT_EQ(*doubleQuoted, *singleQuoted);
+    EXPECT_EQ(*doubleQuoted, singleSegments);
 }
 
 TEST(JsonPathParseTest, WildcardParsesToWildcardSegment) {
     const auto result = parseJsonPath(u"$[*]");
     ASSERT_TRUE(result.has_value());
-    ASSERT_EQ(result->size(), 1U);
-    EXPECT_EQ((*result)[0].kind, JsonPathSegmentKind::Wildcard);
+    const JsonPathExpression& segments = *result;
+    ASSERT_EQ(segments.size(), 1U);
+    EXPECT_EQ(segments[0].kind, JsonPathSegmentKind::Wildcard);
 }
 
 TEST(JsonPathParseTest, MixedChainParsesInOrder) {
@@ -124,8 +129,12 @@ constexpr std::u16string_view kSampleJson =
 
 [[nodiscard]] JsonNode parseSample() {
     const Document doc  = makeDoc(kSampleJson);
-    const auto      tree = parseJsonTree(doc);
-    return tree.value();
+    auto            tree = parseJsonTree(doc);
+    if (!tree.has_value()) {
+        ADD_FAILURE() << "kSampleJson unexpectedly failed to parse as JSON";
+        return JsonNode{};
+    }
+    return std::move(*tree);
 }
 
 TEST(JsonPathEvaluateTest, EmptyExpressionMatchesRootOnly) {

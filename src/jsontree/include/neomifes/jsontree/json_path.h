@@ -48,8 +48,16 @@ enum class JsonPathSegmentKind : std::uint8_t {
 
 struct JsonPathSegment {
     JsonPathSegmentKind kind = JsonPathSegmentKind::Wildcard;
-    std::u16string       key;        // Key only
-    std::size_t           index = 0;  // Index only
+    // Explicit `= u""` (not just the type's own default constructor) so a
+    // designated-initializer site that only sets .kind/.index (this file's
+    // own parseBracketContent() call sites use plain assignment instead, but
+    // test code constructs JsonPathSegment this way) still compiles under
+    // clang-cl's -Wmissing-designated-field-initializers - this codebase's
+    // established convention (see render_pipeline.h's CursorVisual fields)
+    // is every aggregate field gets an explicit default for exactly this
+    // reason.
+    std::u16string key = u"";        // Key only
+    std::size_t     index = 0;  // Index only
 
     friend bool operator==(const JsonPathSegment&, const JsonPathSegment&) = default;
 };

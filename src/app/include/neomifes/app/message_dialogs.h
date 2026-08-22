@@ -68,6 +68,25 @@ void showJsonValidDialog(HWND owner);
 // this function only shows the dialog.
 void showJsonValidationErrorDialog(HWND owner, std::u16string_view message);
 
+// WI-15e: OK-only dialog for "JSONPathを評価" (command palette,
+// json.jsonpath) when the current document isn't well-formed JSON
+// (jsontree::parseJsonTree() returned nullopt) - same shape as
+// showJsonFormatInvalidDialog(), a separate function rather than reusing
+// that one because its message text is Format-specific ("整形できません").
+void showJsonPathInvalidJsonDialog(HWND owner);
+
+// WI-15e: OK-only error dialog for "JSONPathを評価" when jsontree::
+// parseJsonPath() rejected the user's input. `expression` is the raw text
+// the user typed, shown verbatim - same "caller-supplied dynamic text"
+// shape as showJsonValidationErrorDialog(), but here the text is the
+// invalid expression itself rather than a library-provided error message
+// (parseJsonPath() itself carries no error-reason string, only nullopt).
+void showJsonPathSyntaxErrorDialog(HWND owner, std::u16string_view expression);
+
+// WI-15e: OK-only dialog for "JSONPathを評価" when jsontree::
+// evaluateJsonPath() parsed successfully but matched zero nodes.
+void showJsonPathNoMatchDialog(HWND owner);
+
 // WI-11: Restore/Discard prompt shown once per recoverable autosave found at
 // startup (app::scanForRecoverableAutoSaves()). Returns true if the user
 // chose to restore. `owner` may be nullptr - this runs at startup, BEFORE

@@ -47,6 +47,7 @@
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/csv_grid_pane.h"
+#include "neomifes/ui/json_path_bar.h"
 #include "neomifes/ui/json_tree_pane.h"
 #include "neomifes/ui/main_window.h"
 #include "neomifes/ui/outline_pane.h"
@@ -254,9 +255,16 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // these two fields, rather than threading them as 2 more parameters through
 // every dispatch*Command() function that calls those two sync functions -
 // see that struct's own field comment for the reasoning.
+//
+// WI-15e: takes ui::JsonPathBar& jsonPathBar - a plain submit-on-Enter
+// overlay with no pending-token/tab-switch machinery of its own (unlike
+// JsonTreePane/CsvGridPane above), same lifecycle shape as gotoLineBar - it
+// only exists while open and is fully resolved (result applied or dropped)
+// by the time Enter/Escape returns.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
-                    ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar, ui::GrepBar& grepBar,
+                    ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
+                    ui::JsonPathBar& jsonPathBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
                     ui::TabBar& tabBar, ui::StatusBar& statusBar, core::Settings& settings,
                     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,

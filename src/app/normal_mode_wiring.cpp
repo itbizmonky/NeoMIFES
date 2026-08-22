@@ -56,6 +56,7 @@
 #include "neomifes/document/file_saver.h"
 #include "neomifes/encoding/encoding.h"
 #include "neomifes/jsontree/json_format.h"
+#include "neomifes/jsontree/json_path.h"
 #include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/format_detection.h"
 #include "neomifes/logmode/log_grouping.h"
@@ -129,6 +130,8 @@ using neomifes::ui::GotoLineBar;
 using neomifes::ui::GotoLineBarConfig;
 using neomifes::ui::GrepBar;
 using neomifes::ui::GrepBarConfig;
+using neomifes::ui::JsonPathBar;
+using neomifes::ui::JsonPathBarConfig;
 using neomifes::ui::JsonTreePane;
 using neomifes::ui::JsonTreePaneConfig;
 using neomifes::ui::MainWindow;
@@ -1295,6 +1298,39 @@ void dispatchJsonValidateCommand(HWND hwnd, RenderPipeline& renderPipeline, Edit
     showJsonValidationErrorDialog(hwnd, error->message);
 }
 
+// WI-15e ("JSONPathを評価", command palette only via JsonPathBar - see this
+// WI's plan for why no CommandId/keybinding/menu entry). Called from
+// JsonPathBar's onSubmit (buildJsonPathBarConfig() below), NOT directly from
+// buildCommandRegistry()'s action lambda - that lambda only opens the bar
+// (json.jsonpath needs a user-supplied expression string first, unlike
+// json.format/json.validate above which act on the whole document with no
+// argument). Reparses the whole document (same "never trust
+// session.jsonTree(), which may be stale/unpopulated" reasoning
+// dispatchJsonFormatCommand() already documents) rather than the parsed
+// path's own tree, then jumps the cursor to the FIRST match only - cycling
+// through multiple matches (F3-style) or highlighting all of them in
+// JsonTreePane is explicitly out of this WI's scope (see the plan's own
+// "非スコープ" section).
+void dispatchJsonPathCommand(std::u16string_view expression, HWND hwnd, RenderPipeline& renderPipeline,
+                             EditorSession& session) {
+    const auto tree = jsontree::parseJsonTree(session.document());
+    if (!tree.has_value()) {
+        showJsonPathInvalidJsonDialog(hwnd);
+        return;
+    }
+    const auto path = jsontree::parseJsonPath(expression);
+    if (!path.has_value()) {
+        showJsonPathSyntaxErrorDialog(hwnd, expression);
+        return;
+    }
+    const auto matches = jsontree::evaluateJsonPath(*tree, *path);
+    if (matches.empty()) {
+        showJsonPathNoMatchDialog(hwnd);
+        return;
+    }
+    jumpToOutlinePosition(matches.front()->startPos, hwnd, session, renderPipeline);
+}
+
 // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K. Deliberately hardcoded VK_* comparisons
 // - NOT routed through core::KeyBindings/chordMatches() like
 // Copy/Cut/Paste/Undo/Redo in handleClipboardOrUndoRedoKey() below - these 5
@@ -2025,7 +2061,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const std::optional<std::filesystem::path>& logPatternsDir, JsonTreePane& jsonTreePane,
     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, const void*& jsonTreePanePendingSessionToken,
     CsvGridPane& csvGridPane, std::optional<csvmode::CsvModelWorker>& csvModelWorker,
-    const void*& csvGridPanePendingSessionToken) {
+    const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -2167,6 +2203,16 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &workspace, &renderPipeline]() {
             dispatchJsonValidateCommand(hwnd, renderPipeline, workspace.active());
         }});
+    // WI-15e: "JSONPathを評価" - palette-only, same CommandId::None shape as
+    // json.format/json.validate above, EXCEPT this action only opens
+    // jsonPathBar rather than doing the work inline - json.jsonpath needs a
+    // user-supplied expression string first (dispatchJsonPathCommand() is
+    // called later, from JsonPathBar's own onSubmit - see
+    // buildJsonPathBarConfig()).
+    commands.push_back(CommandDescriptor{
+        .id = u"json.jsonpath", .title = u"JSON: Evaluate JSONPath", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [&jsonPathBar]() { jsonPathBar.show(); }});
     commands.push_back(CommandDescriptor{
         .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",
         .commandId = CommandId::None,
@@ -2291,7 +2337,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                   &csvGridPanePendingSessionToken]() {
+                   &csvGridPanePendingSessionToken, &jsonPathBar]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2301,7 +2347,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
-                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken));
+                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
+                jsonPathBar));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2333,7 +2380,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                        &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                       &csvGridPanePendingSessionToken, presetName = std::u16string(choice.name)]() {
+                       &csvGridPanePendingSessionToken, &jsonPathBar, presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2343,7 +2390,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
-                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken));
+                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
+                jsonPathBar));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2366,7 +2414,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                   &csvGridPanePendingSessionToken]() {
+                   &csvGridPanePendingSessionToken, &jsonPathBar]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2375,7 +2423,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
-                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken));
+                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
+                jsonPathBar));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
@@ -2443,6 +2492,24 @@ GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Workspace& workspace, Render
     };
     config.onClosed = [hwnd, &gotoLineBar]() {
         gotoLineBar.hide();
+        ::SetFocus(hwnd);
+    };
+    return config;
+}
+
+// Builds the JsonPathBarConfig callbacks (WI-15e) - same extraction
+// rationale/shape as buildGotoLineBarConfig() above, including resolving
+// workspace.active() fresh at invocation time.
+JsonPathBarConfig buildJsonPathBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
+                                         JsonPathBar& jsonPathBar) {
+    JsonPathBarConfig config{};
+    config.onSubmit = [hwnd, &workspace, &renderPipeline, &jsonPathBar](std::u16string_view input) {
+        dispatchJsonPathCommand(input, hwnd, renderPipeline, workspace.active());
+        jsonPathBar.hide();
+        ::SetFocus(hwnd);
+    };
+    config.onClosed = [hwnd, &jsonPathBar]() {
+        jsonPathBar.hide();
         ::SetFocus(hwnd);
     };
     return config;
@@ -3677,7 +3744,8 @@ void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
 // completely unchanged.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
-                    CommandPalette& commandPalette, GotoLineBar& gotoLineBar, GrepBar& grepBar,
+                    CommandPalette& commandPalette, GotoLineBar& gotoLineBar, JsonPathBar& jsonPathBar,
+                    GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
                     TabBar& tabBar, StatusBar& statusBar, core::Settings& settings,
                     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
@@ -3709,7 +3777,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // file) can reuse the SAME HMENU pair - see this file's own callers of
     // that function.
     cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
-                          &gotoLineBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
+                          &gotoLineBar, &jsonPathBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
@@ -3787,7 +3855,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
                                              userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
                                              jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                                             csvGridPanePendingSessionToken);
+                                             csvGridPanePendingSessionToken, jsonPathBar);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -3796,6 +3864,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             buildGotoLineBarConfig(hwnd, workspace, renderPipeline, gotoLineBar);
         [[maybe_unused]] const bool gotoLineBarCreated =
             gotoLineBar.create(hwnd, hInstance, gotoLineBarConfig);
+
+        // WI-15e: same non-fatal treatment as findBar.create() above.
+        const JsonPathBarConfig jsonPathBarConfig =
+            buildJsonPathBarConfig(hwnd, workspace, renderPipeline, jsonPathBar);
+        [[maybe_unused]] const bool jsonPathBarCreated =
+            jsonPathBar.create(hwnd, hInstance, jsonPathBarConfig);
 
         // Same non-fatal treatment as findBar.create() above.
         const GrepBarConfig grepBarConfig = buildGrepBarConfig(hwnd, workspace, renderPipeline, findBar,
@@ -3846,7 +3920,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // call rather than the conditional inlined here.
         startAutoSaveTimerIfConfigured(window, settings);
     };
-    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar, &outlinePane,
+    cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &jsonPathBar, &grepBar,
+                    &outlinePane,
                     &jsonTreePane, &csvGridPane, &tabBar,
                     &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
@@ -3858,6 +3933,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         findBar.onParentResized(w, dpiScale);
         commandPalette.onParentResized(w, dpiScale);
         gotoLineBar.onParentResized(w, dpiScale);
+        jsonPathBar.onParentResized(w, dpiScale);
         grepBar.onParentResized(w, dpiScale);
         outlinePane.onParentResized(w, h, dpiScale);
         jsonTreePane.onParentResized(w, h, dpiScale);
