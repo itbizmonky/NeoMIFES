@@ -2365,7 +2365,19 @@ WI-15dの残り4項目(XML対応/XPath/JSONPath/真の左右分割ペイン化)�
 - **モジュール名は`src/git/{git_repo.cpp, diff_computer.cpp, blame_reader.cpp, ...}`という上記の原案分割ではなく、`neomifes::git`という単一STATICライブラリ(`logmode`/`jsontree`/`csvmode`と同型)にした。** `diff_computer`相当の機能のみ(`GitRepository::diffAgainstHead()`)を実装、`blame_reader`/`commit_dialog`/`inline_blame`は未着手のため対応するファイルもまだ存在しない — 実装が追いつき次第、原案のファイル分割案を見直す(1ファイル1責務を超える規模になった時点で分割する方針、CLAUDE.md「1クラス≤300行」に準拠)。
 - **`diffAgainstHead()`はディスク上のファイル内容ではなく、`document::Document`のメモリ上テキスト(未保存の編集を含む)とHEADブロブを比較する設計にした。** 上記UI/UX節が想定する「左ガターに差分マーカー」機能は、保存前のリアルタイム編集にも反応する必要があるため。`git_diff_blob_to_buffer()`(HEADブロブ vs メモリ上バッファ)を採用し、ディスクへの再読込を経由しない。
 - **1 hunk = 1 `LineDiffRegion`という粒度にした**(行単位ではない、上記UI/UX節の「差分マーカ」は連続領域として表示すれば足りるため)。`old_lines==0`→Added、`new_lines==0`→Deleted、それ以外→Modifiedで分類する。実装中、`git_diff_options`の既定`context_lines=3`が純粋な追加・削除でも前後3行を巻き込みModifiedへ誤分類させるバグを単体テストで発見、`context_lines=0`(ガター用途では変更行そのものだけが必要)に修正して解消した。
-- 非同期化(`GitWorker`)・`EditorSession`配線・UI全般(左ガター描画・Gitペイン・Diffビュー・Blame・Commit・Branch切替)は全て未着手のまま、WI-17b以降へ委ねる。
+- 非同期化・`EditorSession`配線・UI全般(左ガター描画・Gitペイン・Diffビュー・Blame・Commit・Branch切替)は全て未着手のまま、WI-17b以降へ委ねる(WI-17bで非同期化+EditorSession配線を実施、下記参照)。
+
+#### 実装後の確定事項 (WI-17b、2026-08-22)
+
+WI-17bでWI-14b(LogIndexWorker)/WI-15b(JsonTreeWorker)/WI-16b(CsvModelWorker)に相当する「非同期化+EditorSession配線」を実施した(ヘッドレスモデル→非同期ワーカー+EditorSession配線→UIという順序をGit側でも踏襲)。UIは本サブWIでも一切追加していない(WI-17c以降へ)。
+
+- **`GitRepository::diffAgainstHead()`にBufferSnapshotオーバーロードを追加した。** WI-17a時点の実装は`document::Document&`(UIスレッド専用、ADR-009)を直接取っており、バックグラウンドスレッドから安全に呼べなかった。`jsontree::parseJsonTree()`が確立した二重オーバーロード型(BufferSnapshot版が主エントリポイント、Document版はそれへ委譲)をそのまま踏襲し、機械的な置き換えで解消した。
+- **新規`GitDiffWorker`は`CsvModelWorker`を構造テンプレートに、失敗時の扱いは`JsonTreeWorker`側を踏襲した。** リポジトリに属さない/未追跡のファイルは「日常的な正常系」(`CsvParseError::InvalidDelimiter`のような呼び出し側の設定ミスとは性質が異なる)であり、握りつぶすと`gitDiffIndexInFlight()`が永久にtrueで固定される。`nullopt`でも必ずpostする設計にした。
+- **リポジトリのキャッシュはしない。** `discover()`はディレクトリ探索のみで軽量、`GitRepository`自体も`unique_ptr`1個だけで安価なため、複数リクエスト間で使い回すキャッシュ機構は今追加する必要性が無いと判断した(WI-16aの「まず素朴実装」という前例を踏襲)。
+- **`EditorSession::beginGitDiffIndexing()`はUntitledバッファに対して無条件no-opにした。** Gitはファイルパスが無いと本質的に動作できないため — 既存4ワーカー中、この種の「無効化」ガードを持つ最初のasync worker配線になった。
+- **`beginGitDiffIndexing()`を呼び出すコマンド/UIは本サブWIに含めなかった。** WI-14b/15b/16bの前例と同じ「配線のみ先行」の扱い。
+- **最終ゲートで、新規テストコードにclang-tidyの複数指摘(`bugprone-unchecked-optional-access`/`misc-misplaced-const`/`cppcoreguidelines-special-member-functions`等)が見つかり全て解消した。** 2件(`cert-msc30-c`/`readability-function-cognitive-complexity`)はWI-17a由来の既存未修正パターンをそのまま複製したものであり、一貫性を優先し意図的に据え置いた。
+- 詳細は`build_plan.md` WI-17bセクション参照。
 
 ### 11.2 LSP 統合 — 完全実装 (v2.0 大幅拡張)
 

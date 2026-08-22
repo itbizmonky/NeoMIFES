@@ -179,7 +179,8 @@
 | **10.3d** | **JSON 整形(Format)・バリデーション(Validate) 🎉** (コマンドパレット限定「JSON: Format Document」「JSON: Validate」、`core::ReplaceRangeCommand`初の文書全体書き換え消費者) | ✅ **完了 (WI-15d、2026-08-19、§3.93参照)。🎉 Phase 10.3 整形・バリデーション達成** |
 | **11.1a** | **Git統合 ヘッドレス基盤** (ADR-022・libgit2導入、`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`、非同期化/EditorSession配線/UI/Blame/Commit/Branch切替は未着手) | ✅ **完了 (WI-17a、2026-08-22、§3.94参照)** |
 | **10.3e** | **JSONPath 🎉** (`neomifes::jsontree::json_path`自前実装、`ui::JsonPathBar`、コマンドパレット限定「JSON: Evaluate JSONPath」) | ✅ **完了 (WI-15e、2026-08-22、§3.95参照)。🎉 Phase 10.3 JSONPath達成** |
-| 10.2/10.3残り、11残り → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(非同期化・UI・Blame・Commit)/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-18/19以降で確定予定) |
+| **11.1b** | **Git統合 非同期化+EditorSession配線** (`GitDiffWorker`、`diffAgainstHead()`のBufferSnapshot化、`EditorSession::gitDiff()`系4点、UIなし) | ✅ **完了 (WI-17b、2026-08-22、§3.96参照)** |
+| 10.2/10.3残り、11残り → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(UI・トリガー配線・Blame・Commit)/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-18/19以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2738,6 +2739,34 @@ WI-17a完了・push未実施の状態で、ユーザーから「次のPhaseに�
 
 ---
 
+### 3.96 WI-17b (Git統合 非同期化+EditorSession配線) 完了記録 (2026-08-22)
+
+WI-15e完了・push未実施の状態で、ユーザーから「次のPhaseに進め」と指示された。3択(WI-17b: Git統合の続き/WI-16f: CSVモードの続き/WI-15f: JSON/XML Treeの続き)をAskUserQuestionで確認したところ、**「WI-17b: Git統合の続き(推奨)」**が選ばれた。
+
+WI-17a(ヘッドレス基盤)は`GitRepository::discover()`/`diffAgainstHead()`という同期・UIスレッド専用の計算のみを実装した。WI-14/15/16がいずれも「ヘッドレス基盤→非同期化+EditorSession配線(UIなし)→UI」という3段階パターンを踏んでいるのに倣い、**本WI(WI-17b)はその第2段階のみを実装した。** 左ガター差分マーカー・Gitペイン・Diffビュー等のUIは全て後続サブWI(WI-17c以降)へ。
+
+**設計上の要点:**
+- `diffAgainstHead()`にBufferSnapshotオーバーロードを追加(スレッド安全性のため、`jsontree::parseJsonTree()`と同型)、既存`Document`版はそれへ委譲する利便オーバーロードに変更。
+- 新規`GitDiffWorker`は`CsvModelWorker`(構造)+`JsonTreeWorker`(失敗時「常にpost」)のハイブリッド設計。リポジトリに属さない/未追跡ファイルは「日常的な正常系」であり、握りつぶすと`gitDiffIndexInFlight()`が永久にtrueで固定されるため。
+- リポジトリのキャッシュはしない(`discover()`は軽量、`GitRepository`自体も安価なため、WI-16aの「まず素朴実装」前例を踏襲)。
+- `EditorSession::beginGitDiffIndexing()`はUntitledバッファに対して無条件no-op — 既存4ワーカー中初めての「無効化」ガード付きasync worker配線。
+- `beginGitDiffIndexing()`を呼び出すコマンド/UIは本WIでは一切追加せず(WI-14b/15b/16bの前例と同じ「配線のみ先行」)。
+
+### 実施内容 (2コミット)
+
+1. `feat(git)`: `diffAgainstHead()`BufferSnapshot化 + `GitDiffWorker` + 単体/統合テスト (`bf5f87d`)
+2. `feat(app)`: `EditorSession`配線 + `normal_mode_wiring.cpp`ルーティング + 最終ゲート (`5d1fedb`)
+
+**最終ゲート1回目でclang-tidyが新規テストコードに複数の問題を検出した。** `bugprone-unchecked-optional-access`(WI-15eと同じ参照束縛パターンで解消)、`misc-misplaced-const`(`const HWND`が`HWND__* const`という誤った意味になる、`const`除去で解消)、`cppcoreguidelines-special-member-functions`(`HiddenWindow`にmove系明示`= delete`追加)、`cppcoreguidelines-prefer-member-initializer`、`misc-const-correctness`。2件(`cert-msc30-c`/`readability-function-cognitive-complexity`)はWI-17a由来の`git_repository_test.cpp`に既存の未修正パターンをそのまま複製したものであり、一貫性を優先し意図的に据え置いた。
+
+**最終ゲート:** Debug/Release/ubsan全1447/1447件green、sanitizer診断0件、`src/`側5ファイルclang-tidy新規警告0。
+
+**本WIはUI/コマンド配線を一切追加していないため実アプリでの視覚確認は対象外(WI-14b/15b/16bと同じ扱い)。** 検証は新規`tests/integration/git_diff_worker_test.cpp`(5テスト)+`tests/unit/app_editor_session_test.cpp`の`EditorSessionGitDiffStateTest`(4テスト、うち1件は実際に`GitDiffWorker`+隠しウィンドウを構築してUntitledバッファでのno-opを証明)で行った。
+
+コミット済み(`bf5f87d`/`5d1fedb`)、pushはユーザーの明示指示待ち。Phase 11.1は「非同期化+EditorSession配線」まで完了 — 左ガターUI・Gitペイン・Diffビュー・3-Way Merge・Blame・Commit・Branch切替、および`beginGitDiffIndexing()`を実際に呼び出すトリガーは全て後続サブWI(WI-17c以降)へ。次はWI-17c(Git統合のUI/トリガー配線)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2785,8 +2814,8 @@ WI-17a完了・push未実施の状態で、ユーザーから「次のPhaseに�
 > **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
 
 ```
-RESUME_HERE.md §3.95 (WI-15e JSONPath 完了記録)を読んで現状を
-把握せよ。
+RESUME_HERE.md §3.96 (WI-17b Git統合 非同期化+EditorSession配線
+完了記録)を読んで現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
@@ -2838,7 +2867,27 @@ WI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面置き換え
   TaskDialogIndirectのモーダル性による新しい自動化ハーネス制約
   (同期SendMessageが最大120秒ブロック)を発見・回避
 
-Debug/Release/ubsan全1440/1440件green、clang-tidy新規警告0を確認済み。
+**同日、続けてユーザーがWI-17b(Git統合の続き、推奨)を選択、
+非同期化+EditorSession配線を実装:**
+- `diffAgainstHead()`にBufferSnapshotオーバーロードを追加(スレッド
+  安全性のため、`jsontree::parseJsonTree()`と同型)、既存Document版は
+  それへ委譲する利便オーバーロードに変更
+- 新規`GitDiffWorker`(`CsvModelWorker`の構造+`JsonTreeWorker`の
+  「失敗時も常にpost」のハイブリッド、リポジトリに属さない/未追跡
+  ファイルは日常的な正常系のため握りつぶさない)
+- `EditorSession::gitDiff()`/`gitDiffIndexInFlight()`/
+  `beginGitDiffIndexing()`/`applyGitDiffResult()`を`csvModel()`系と
+  同型で追加。`beginGitDiffIndexing()`はUntitledバッファに対して
+  無条件no-op(既存4ワーカー中初の「無効化」ガード)
+- `beginGitDiffIndexing()`を呼び出すコマンド/UIは本WIでは一切追加
+  せず(WI-14b/15b/16bの前例と同じ「配線のみ先行」)
+- 最終ゲートでclang-tidyが新規テストコードに複数の問題(bugprone-
+  unchecked-optional-access/misc-misplaced-const/special-member-
+  functions等)を検出・解消、2件はWI-17a由来の既存未修正パターンと
+  の一貫性を優先し意図的に据え置き
+
+Debug/Release/ubsan全1447/1447件green、clang-tidy新規警告0(src/側
+5ファイル)を確認済み。
 
 **副産物issue: 末尾改行のあるCSVでグリッドの「#」列が実データ行数+1
 (暗黙の空行)を表示する(WI-16aで既に文書化済みの既存仕様がグリッド
@@ -2923,13 +2972,14 @@ JsonNode系の値型を書くたびに全フィールドへ明示デフォルト
 (WI-15/16/17)を2026-08-18にWI-16/17/18へ、CSV側のWI-16a新設で衝突した
 ため2026-08-19にさらにWI-17/18/19へ繰り下げた(build_plan.md §5
 「WI-17〜19」節)。WI-15c/WI-15d/WI-15e/WI-16b/WI-16c/WI-16d/WI-16e/
-WI-17aはこの番号割当に影響しない(既存の番号の続き、またはWI-17自体が
-「WI-17a〜」という複数サブWIに分割されたもの)。Phase 11自体もPhase
-10と同様3本柱それぞれが複数サブWIに分かれる規模と判明したため、
-LSP・マクロ側の番号割当はまだ確定していない(build_plan.md
+WI-17a/WI-17bはこの番号割当に影響しない(既存の番号の続き、または
+WI-17自体が「WI-17a〜」という複数サブWIに分割されたもの)。Phase 11
+自体もPhase 10と同様3本柱それぞれが複数サブWIに分かれる規模と判明
+したため、LSP・マクロ側の番号割当はまだ確定していない(build_plan.md
 「WI-17〜19」節参照)。
 
-次はWI-17b(Git統合の非同期化+EditorSession配線)、Phase 10の残り
+次はWI-17c(Git統合のUI/トリガー配線: 左ガター差分マーカー・
+Gitペイン・Diffビュー・保存時の再diffトリガー等)、Phase 10の残り
 (WI-16f以降: 列固定・セル編集・式列、またはWI-15f以降: XML対応・
 XPath・真の左右分割ペイン化)、またはユーザー指定の次項目。着手前に
 build_plan.md §5とmaster_roadmap.md §11.1(または§10.2/§10.3)を

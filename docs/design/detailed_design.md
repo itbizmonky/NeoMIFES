@@ -3596,9 +3596,9 @@ public:
 - 副産物として、末尾改行のあるCSVでグリッドの「#」列が実データ行数+1(暗黙の空行)を表示することを発見(WI-16aで既に文書化済みの仕様がグリッドUIで初めて視覚的に露呈したもの、WI-16eの実装ミスではない) - `docs/issues/csv_grid_shows_trailing_implicit_empty_row.md`(P2)として起票。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16e完了)」参照。
 
-### 11.6 `neomifes::git` リファレンス (WI-17a実装、Phase 11.1 ヘッドレス基盤達成)
+### 11.6 `neomifes::git` リファレンス (WI-17a〜b実装、Phase 11.1 非同期化+EditorSession配線達成)
 
-`src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化・`EditorSession`配線・左ガター差分マーカーUI・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17b以降)。
+`src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化(`GitDiffWorker`)+`EditorSession`配線(`gitDiff()`系4点)はWI-17bで実装済み。左ガター差分マーカーUI・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17c以降)。
 
 ```cpp
 // neomifes/git/git_init.h (WI-17a)
@@ -3623,12 +3623,32 @@ public:
     GitRepository& operator=(GitRepository&&) noexcept;
     ~GitRepository();
 
+    // 主エントリポイント(WI-17b、バックグラウンドスレッドから安全)
+    [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
+        const std::filesystem::path& absoluteFilePath, const document::BufferSnapshot& snapshot) const;
+    // UIスレッド向け利便オーバーロード。snapshot()を取って上記へ委譲するのみ。
     [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
         const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
 
 private:
     struct RepoDeleter { void operator()(git_repository*) const noexcept; };
     std::unique_ptr<git_repository, RepoDeleter> m_repo;
+};
+
+// neomifes/git/git_diff_worker.h (WI-17b、csvmode::CsvModelWorkerを構造
+// テンプレートに、失敗時の扱いはjsontree::JsonTreeWorker側を踏襲)
+inline constexpr UINT kMsgGitDiffReady = WM_APP + 6;
+
+class GitDiffWorker {
+public:
+    explicit GitDiffWorker(HWND targetHwnd);
+    ~GitDiffWorker();
+    // move/copy全て削除(他の全ワーカーと同型)
+
+    void requestDiff(std::shared_ptr<const document::BufferSnapshot> snapshot,
+                     std::filesystem::path absoluteFilePath, const void* sessionToken) noexcept;
+    // ... (FIFO std::deque、workerLoop()内でdiscover()+diffAgainstHead()を
+    // リクエストごとに再実行、nulloptでも必ずkMsgGitDiffReadyをpost)
 };
 ```
 
@@ -3639,6 +3659,15 @@ private:
 - **`git_diff_options.context_lines`の既定値3は本用途に不適** — 変更行の前後3行を同じhunkへ巻き込むため、純粋な追加・削除でも`old_lines`/`new_lines`が共に非ゼロになり`Modified`に誤分類される。単体テスト3件がこの誤分類を実際に検出し、`options.context_lines = 0`(ガター用途では変更行そのものだけが必要)で解消した。
 - 1 hunkにつき1つの`LineDiffRegion`を生成し、`old_lines==0`→Added、`new_lines==0`→Deleted、それ以外→Modifiedで分類する(hunk単位の粒度、行単位ではない)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17a、2026-08-22)」参照。
+
+**設計上の要点 (WI-17b、非同期化+EditorSession配線):**
+- `diffAgainstHead()`の主エントリポイントを`BufferSnapshot`版へ変更した(WI-17a時点は`document::Document&`直接、UIスレッド専用でバックグラウンドスレッドから呼べなかった) — `jsontree::parseJsonTree()`の二重オーバーロード型をそのまま踏襲、`Document`版は`BufferSnapshot`版への委譲のみ。
+- `GitDiffWorker`は`CsvModelWorker`を構造テンプレートに、失敗時の扱いは`JsonTreeWorker`側を踏襲した — リポジトリに属さない/未追跡ファイルは「日常的な正常系」であり、握りつぶすと`gitDiffIndexInFlight()`が永久にtrueで固定される。`nullopt`でも必ずpostする。
+- `workerLoop()`は各リクエストごとに`GitRepository::discover()`+`diffAgainstHead()`を再実行する(リポジトリのキャッシュはしない) — `discover()`はディレクトリ探索のみで軽量、`GitRepository`自体も`unique_ptr`1個だけで安価なため、キャッシュ機構は今追加する必要性が無いと判断した。
+- `EditorSession::gitDiff()`/`gitDiffIndexInFlight()`/`beginGitDiffIndexing()`/`applyGitDiffResult()`を`csvModel()`系4点と同型で追加。`beginGitDiffIndexing()`はUntitledバッファ(`pathIfNamed()`がnullopt)に対して無条件no-opにした — Gitはファイルパスが無いと本質的に動作できないため、既存4ワーカー中この種の「無効化」ガードを持つ最初のasync worker配線になった。
+- `applyGitDiffReadyMessage()`(`normal_mode_wiring.cpp`)はUIなしの最小形にした — `applyLogIndexReadyMessage()`のWI-14b時点の形(hwnd/renderPipeline無し)を踏襲、`Workspace`を線形走査しトークン一致するセッションへ結果を適用するのみ。
+- `beginGitDiffIndexing()`を呼び出すコマンド/UIは本サブWIに含めなかった(WI-14b/15b/16bの前例と同じ「配線のみ先行」)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17b、2026-08-22)」参照。
 
 ---
 

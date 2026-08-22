@@ -1691,6 +1691,56 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 ---
 
+## WI-17b — Git統合 非同期化+EditorSession配線 (UIなし)
+
+**目的:** WI-15e(JSONPath)完了後、ユーザーに「次のPhaseに進め」と指示された。3択(WI-17b: Git統合の続き/WI-16f: CSVモードの続き/WI-15f: JSON/XML Treeの続き)をAskUserQuestionで確認したところ、**「WI-17b: Git統合の続き(推奨)」**が選ばれた。
+
+WI-17a(ヘッドレス基盤)は`GitRepository::discover()`/`diffAgainstHead()`という同期・UIスレッド専用の計算のみを実装した。WI-14(ログモード)/WI-15(JSONツリー)/WI-16(CSV)がいずれも「ヘッドレス基盤→**非同期化+EditorSession配線(UIなし)**→UI」という3段階パターンを踏んでいるのに倣い、本WI(WI-17b)はその第2段階のみを実装する。左ガター差分マーカー・Gitペイン・Diffビュー等のUIは全て後続サブWI(WI-17c以降)へ。
+
+**前提:** WI-15e 完了・コミット済み (2026-08-22)
+
+**参照:** `docs/design/master_roadmap.md` §11.1、`src/csvmode/csv_model_worker.h`(直接のテンプレート)
+
+### 着手前調査・設計方針
+
+サブエージェント2件による並行調査(既存3ワーカー(LogIndexWorker/JsonTreeWorker/CsvModelWorker)+`EditorSession`配線パターン+`normal_mode_wiring.cpp`のWM_APPルーティング、および`GitRepository`のスレッド安全性/`pathIfNamed()`の既存契約/`git_repository_test.cpp`のフィクスチャパターン)を経て設計を確定した。
+
+- **`GitRepository::diffAgainstHead()`にBufferSnapshotオーバーロードを追加した。** 既存実装は内部で`doc.length()`/`doc.snapshot()->extract(...)`を呼んでおり、`document::Document`はUIスレッド専用(ADR-009)。`jsontree::parseJsonTree()`が確立した二重オーバーロード型(BufferSnapshot版が主エントリポイント、Document版はそれへ委譲する利便オーバーロード)をそのまま踏襲、実装は`doc.length()`/`doc.snapshot()->extract(...)`を`snapshot.length()`/`snapshot.extract(...)`に置き換えるだけの機械的な変更で済んだ。既存8件の単体テストは無変更のままgreen。
+- **新規`GitDiffWorker`は`CsvModelWorker`(直近の最も単純な非同期ワーカー)を構造テンプレートにしつつ、失敗時の扱いは`JsonTreeWorker`側の設計を踏襲した。** 「リポジトリに属さないファイル」「HEADに存在しない未追跡ファイル」はユーザーがGitリポジトリに属さないファイルを開くことの方がむしろ多い「日常的な正常系」であり、`CsvParseError::InvalidDelimiter`(呼び出し側の設定ミス)とは性質が異なる。握りつぶすと`gitDiffIndexInFlight()`が永久にtrueで固定されるため、`nullopt`でも必ずpostする設計にした。
+- **リポジトリのキャッシュはしない。** `discover()`はディレクトリ探索のみで軽量、`GitRepository`インスタンス自体も`unique_ptr`1個だけで安価なため、複数リクエスト間で使い回すキャッシュ機構を今追加する必要性は無いと判断(WI-16aの「まず素朴実装、キャッシュ要否は後続WIの判断事項として残す」という前例を踏襲)。
+- **`EditorSession::beginGitDiffIndexing()`はUntitledバッファに対して無条件no-opにした。** Gitはファイルパスが無いと本質的に動作できないため — 既存4ワーカー中、この種の「無効化」ガードを持つ最初のasync worker配線になった。
+- **`applyGitDiffReadyMessage()`はUIなしの最小形にした。** `applyLogIndexReadyMessage()`のWI-14b時点の形(hwnd/renderPipeline無し)を踏襲、`Workspace`を線形走査しトークン一致するセッションへ`applyGitDiffResult()`を適用するのみ。
+- **`beginGitDiffIndexing()`を呼び出すコマンド/UIは本WIでは一切追加しなかった。** WI-14b/15b/16bの前例と同じ「配線のみ先行」の扱い。
+
+### 実施内容 (2コミット)
+
+1. `feat(git)`: `diffAgainstHead()`BufferSnapshot化 + `GitDiffWorker` + 単体/統合テスト(Debug構成で確認) (`bf5f87d`)
+2. `feat(app)`: `EditorSession`配線 + `normal_mode_wiring.cpp`ルーティング + 最終ゲート + ドキュメント同期 (`5d1fedb`)
+
+### DoD
+
+- [x] `diffAgainstHead()`のBufferSnapshotオーバーロードが既存8件+新規テストで正しく動作する(Documentオーバーロードは無変更でgreenのまま)
+- [x] `GitDiffWorker`が追跡ファイルの変更を検出し`kMsgGitDiffReady`をpostする
+- [x] 非リポジトリ/未追跡ファイルに対するリクエストも必ず`nullopt`をpostする(握りつぶさない、JsonTreeWorkerと同型の判断)
+- [x] 複数セッションの同時リクエストが両方処理される(FIFO、CsvModelWorker/JsonTreeWorkerと同型のテストで実証)
+- [x] `EditorSession::gitDiff()`/`gitDiffIndexInFlight()`/`beginGitDiffIndexing()`/`applyGitDiffResult()`が正しく動作する
+- [x] `beginGitDiffIndexing()`はUntitledバッファに対して何もしない(indexInFlightも立てない)
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] UI/コマンド配線は本WIのスコープ外のまま(実アプリ視覚確認は対象外、WI-14b/15b/16bと同じ扱い。統合テストでの実ワーカー往復確認が検証手段)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**最終ゲート1回目でclang-tidyが新規テストコードに複数の問題を検出した。** `bugprone-unchecked-optional-access`(WI-15eと同じ参照束縛パターンで解消)、`misc-misplaced-const`(`const HWND hwnd = ...`が`HWND__* const`という誤った意味になる — `HWND`自体がポインタ型のtypedefのため。`const`除去で解消)、`cppcoreguidelines-special-member-functions`(新規`HiddenWindow`クラスにmoveコンストラクタ/代入の明示的`= delete`を追加)、`cppcoreguidelines-prefer-member-initializer`(`m_hwnd`をコンストラクタ本体の代入からメンバ初期化子リストへ移動)、`misc-const-correctness`(再利用しない`HiddenWindow window`/`GitRepository& repository`をconst化)。2件(`cert-msc30-c`/`readability-function-cognitive-complexity`、いずれも`uniqueTempDir()`の`std::rand()`と`makeRepoWithCommit()`の複雑度超過)は、WI-17a由来の`tests/unit/git_repository_test.cpp`に既に存在する未修正パターンをそのまま複製したものであり、一貫性を優先し意図的に据え置いた(その事実をmaster_roadmap.mdの実装後の確定事項にも明記)。
+
+**最終ゲート:** Debug/Release/ubsan全1447/1447件green、sanitizer診断0件、`src/`側5ファイル(`git_repository.cpp`/`git_diff_worker.cpp`/`editor_session.cpp`/`normal_mode_wiring.cpp`/`main.cpp`)clang-tidy新規警告0。
+
+**本WIはUI/コマンド配線を一切追加していないため実アプリでの視覚確認は対象外(WI-14b/15b/16bと同じ扱い)。** 検証は新規`tests/integration/git_diff_worker_test.cpp`(5テスト、`csvmode_csv_model_worker_test.cpp`を直接のテンプレート)+`tests/unit/app_editor_session_test.cpp`の`EditorSessionGitDiffStateTest`(4テスト、うち1件は実際に`GitDiffWorker`+隠しウィンドウを構築してUntitledバッファでのno-opを証明)で行った。
+
+コミット済み(`bf5f87d`/`5d1fedb`)、pushはユーザーの明示指示待ち。Phase 11.1は「非同期化+EditorSession配線」まで完了 — 左ガターUI・Gitペイン・Diffビュー・3-Way Merge・Blame・Commit・Branch切替、および`beginGitDiffIndexing()`を実際に呼び出すトリガー(保存時の再diff等)は全て後続サブWI(WI-17c以降)へ。次はWI-17c(Git統合のUI/トリガー配線)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)
