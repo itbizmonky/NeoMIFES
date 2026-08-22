@@ -143,12 +143,14 @@ TEST_F(GitRepositoryTest, DiffAgainstHeadBufferSnapshotOverloadDetectsAddedRegio
     makeRepoWithCommit(dir, "a.txt", "line1\nline2\n");
     auto repo = GitRepository::discover(dir);
     ASSERT_TRUE(repo.has_value());
+    const GitRepository& repository = *repo;
 
     const Document doc    = makeDoc(u"line1\nline2\nline3\n");
-    const auto      result = repo->diffAgainstHead(dir / "a.txt", *doc.snapshot());
+    const auto      result = repository.diffAgainstHead(dir / "a.txt", *doc.snapshot());
     ASSERT_TRUE(result.has_value());
-    ASSERT_EQ(result->size(), 1U);
-    EXPECT_EQ((*result)[0].kind, LineDiffKind::Added);
+    const auto& regions = *result;
+    ASSERT_EQ(regions.size(), 1U);
+    EXPECT_EQ(regions[0].kind, LineDiffKind::Added);
 
     fs::remove_all(dir);
 }
@@ -160,10 +162,11 @@ TEST_F(GitRepositoryTest, DiffAgainstHeadDocumentAndBufferSnapshotOverloadsAgree
     makeRepoWithCommit(dir, "a.txt", "line1\nline2\nline3\n");
     auto repo = GitRepository::discover(dir);
     ASSERT_TRUE(repo.has_value());
+    const GitRepository& repository = *repo;
 
     const Document doc = makeDoc(u"line1\nCHANGED\nline3\n");
-    const auto viaDocument       = repo->diffAgainstHead(dir / "a.txt", doc);
-    const auto viaBufferSnapshot = repo->diffAgainstHead(dir / "a.txt", *doc.snapshot());
+    const auto viaDocument       = repository.diffAgainstHead(dir / "a.txt", doc);
+    const auto viaBufferSnapshot = repository.diffAgainstHead(dir / "a.txt", *doc.snapshot());
     ASSERT_TRUE(viaDocument.has_value());
     ASSERT_TRUE(viaBufferSnapshot.has_value());
     EXPECT_EQ(*viaDocument, *viaBufferSnapshot);

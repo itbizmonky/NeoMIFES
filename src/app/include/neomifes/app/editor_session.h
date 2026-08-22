@@ -42,6 +42,7 @@
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/text_pos.h"
 #include "neomifes/encoding/encoding.h"
+#include "neomifes/git/git_repository.h"
 #include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/log_model.h"
 #include "neomifes/logmode/log_pattern.h"
@@ -59,6 +60,10 @@ class JsonTreeWorker;
 namespace neomifes::csvmode {
 class CsvModelWorker;
 }  // namespace neomifes::csvmode
+
+namespace neomifes::git {
+class GitDiffWorker;
+}  // namespace neomifes::git
 
 namespace neomifes::app {
 
@@ -283,6 +288,46 @@ public:
     // WI-16b left it) because it now also calls recomputeCsvRowOrder().
     void applyCsvIndexResult(csvmode::CsvModel result) noexcept;
 
+    // WI-17b: per-tab Git diff state. Always constructed, conditionally
+    // populated - same "always there, empty until a feature turns it on"
+    // pattern as m_logModel/m_jsonTree/m_csvModel above.
+    //
+    // Unlike csvModel(), std::nullopt here is NOT reserved for "never
+    // requested" - it also covers "requested, but this file isn't inside any
+    // Git repository / isn't tracked at HEAD" (GitRepository::discover()/
+    // diffAgainstHead()'s own std::nullopt contracts, both collapsed the
+    // same way GitDiffWorker always posts even a std::nullopt result - see
+    // git_diff_worker.h's own header comment). gitDiff() alone cannot
+    // distinguish those cases, same acceptable ambiguity jsonTree() already
+    // has toward "never indexed" vs "not valid JSON".
+    [[nodiscard]] const std::optional<std::vector<git::LineDiffRegion>>& gitDiff() const noexcept {
+        return m_gitDiff;
+    }
+    [[nodiscard]] bool gitDiffIndexInFlight() const noexcept { return m_gitDiffIndexInFlight; }
+
+    // Fires an async GitDiffWorker request for this session's current
+    // document snapshot, using `this` as the opaque sessionToken (see
+    // git_diff_worker.h - never dereferenced by the worker, only round-
+    // tripped back via kMsgGitDiffReady's wParam so the receiver can find
+    // this exact EditorSession again). A no-op for an Untitled buffer
+    // (pathIfNamed() == std::nullopt) - Git fundamentally cannot diff
+    // content that has never been saved to a path, so neither
+    // gitDiffIndexInFlight() nor gitDiff() change in that case. Otherwise
+    // sets gitDiffIndexInFlight() immediately; gitDiff() is populated later
+    // by applyGitDiffResult() once the worker's response arrives.
+    void beginGitDiffIndexing(git::GitDiffWorker& worker);
+
+    // Called by the kMsgGitDiffReady receiver once it has matched a
+    // response's sessionToken back to this EditorSession. `result` is
+    // std::nullopt whenever this file isn't inside a Git repository (or
+    // isn't tracked at HEAD) - GitDiffWorker (like JsonTreeWorker, unlike
+    // CsvModelWorker) always posts a response, precisely so this method is
+    // reachable and gitDiffIndexInFlight() never gets stuck at true.
+    void applyGitDiffResult(std::optional<std::vector<git::LineDiffRegion>> result) noexcept {
+        m_gitDiff              = std::move(result);
+        m_gitDiffIndexInFlight = false;
+    }
+
     // WI-16e: this session's current CSV grid filter/sort configuration -
     // always present (default-constructed = "no filter, unsorted"), one per
     // tab, same "always there" shape as m_logLevelFilterMask above. A
@@ -394,6 +439,8 @@ private:
     csvmode::CsvFilterOptions              m_csvFilter;
     csvmode::CsvSortOptions                m_csvSort;
     std::vector<std::size_t>               m_csvRowOrder;
+    std::optional<std::vector<git::LineDiffRegion>> m_gitDiff;
+    bool                                              m_gitDiffIndexInFlight = false;
 
     // WI-16e: the single place that keeps m_csvRowOrder in sync with
     // m_csvModel/m_csvFilter/m_csvSort - see csvRowOrder()'s own comment

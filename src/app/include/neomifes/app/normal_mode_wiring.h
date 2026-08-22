@@ -35,6 +35,7 @@
 #include "neomifes/core/search_history.h"
 #include "neomifes/core/settings.h"
 #include "neomifes/csvmode/csv_model_worker.h"
+#include "neomifes/git/git_diff_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 #include "neomifes/logmode/log_pattern.h"
@@ -261,6 +262,13 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // JsonTreePane/CsvGridPane above), same lifecycle shape as gotoLineBar - it
 // only exists while open and is fully resolved (result applied or dropped)
 // by the time Enter/Escape returns.
+//
+// WI-17b: takes std::optional<git::GitDiffWorker>& gitDiffWorker - same
+// deferred-construction shape as jsonTreeWorker/csvModelWorker above
+// (emplace()d once inside cfg.onDeferredInit, once a real hwnd exists). No
+// UI pane parameter yet (unlike jsonTreePane/csvGridPane) - this WI wires
+// only the worker + EditorSession + kMsgGitDiffReady routing, no command
+// calls beginGitDiffIndexing() yet (see build_plan.md's WI-17b section).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
@@ -278,6 +286,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                     std::optional<csvmode::CsvModelWorker>& csvModelWorker, ui::JsonTreePane& jsonTreePane,
                     const void*& jsonTreePanePendingSessionToken, ui::CsvGridPane& csvGridPane,
-                    const void*& csvGridPanePendingSessionToken);
+                    const void*& csvGridPanePendingSessionToken,
+                    std::optional<git::GitDiffWorker>& gitDiffWorker);
 
 }  // namespace neomifes::app

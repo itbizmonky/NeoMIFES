@@ -88,9 +88,9 @@ void makeRepoWithCommit(const fs::path& dir, std::string_view filename, std::str
 // message-capable window is all GitDiffWorker's PostMessageW target needs.
 class HiddenWindow {
 public:
-    HiddenWindow() {
-        m_hwnd = ::CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 200, 100, nullptr, nullptr, nullptr, nullptr);
-    }
+    HiddenWindow()
+        : m_hwnd(::CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 200, 100, nullptr, nullptr, nullptr,
+                                   nullptr)) {}
     ~HiddenWindow() {
         if (m_hwnd != nullptr) {
             ::DestroyWindow(m_hwnd);
@@ -98,6 +98,8 @@ public:
     }
     HiddenWindow(const HiddenWindow&)            = delete;
     HiddenWindow& operator=(const HiddenWindow&) = delete;
+    HiddenWindow(HiddenWindow&&)                 = delete;
+    HiddenWindow& operator=(HiddenWindow&&)      = delete;
 
     [[nodiscard]] HWND get() const noexcept { return m_hwnd; }
 
@@ -146,7 +148,7 @@ TEST_F(GitDiffWorkerTest, RequestDiffDeliversAddedRegionViaWindowMessage) {
     const fs::path dir = uniqueTempDir();
     makeRepoWithCommit(dir, "a.txt", "line1\nline2\n");
 
-    HiddenWindow window;
+    const HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
 
     const Document doc = makeDoc(u"line1\nline2\nline3\n");
@@ -159,8 +161,9 @@ TEST_F(GitDiffWorkerTest, RequestDiffDeliversAddedRegionViaWindowMessage) {
     EXPECT_EQ(results[0].sessionToken, &token);
     ASSERT_NE(results[0].regions, nullptr);
     ASSERT_TRUE(results[0].regions->has_value());
-    ASSERT_EQ((*results[0].regions)->size(), 1U);
-    EXPECT_EQ((**results[0].regions)[0].kind, LineDiffKind::Added);
+    const auto& regions = **results[0].regions;
+    ASSERT_EQ(regions.size(), 1U);
+    EXPECT_EQ(regions[0].kind, LineDiffKind::Added);
 
     fs::remove_all(dir);
 }
@@ -173,7 +176,7 @@ TEST_F(GitDiffWorkerTest, RequestDiffDeliversAddedRegionViaWindowMessage) {
 TEST_F(GitDiffWorkerTest, RequestDiffOutsideAnyRepositoryStillDeliversNulloptMessage) {
     const fs::path dir = uniqueTempDir();  // no git_repository_init() call - not a repo
 
-    HiddenWindow window;
+    const HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
 
     const Document doc = makeDoc(u"anything\n");
@@ -199,7 +202,7 @@ TEST_F(GitDiffWorkerTest, MultipleSessionsAreAllProcessedNotJustTheLatest) {
     const fs::path dirB = uniqueTempDir();
     makeRepoWithCommit(dirB, "b.txt", "y\n");
 
-    HiddenWindow window;
+    const HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
 
     const Document docA = makeDoc(u"x\nnew\n");
@@ -233,7 +236,7 @@ TEST_F(GitDiffWorkerTest, WorkerDestructorJoinsCleanlyWithPendingRequests) {
     const fs::path dir = uniqueTempDir();
     makeRepoWithCommit(dir, "a.txt", "x\n1\n");
 
-    HiddenWindow window;
+    const HiddenWindow window;
     ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
 
     const Document doc = makeDoc(u"x\n1\n2\n");

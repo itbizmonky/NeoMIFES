@@ -7,6 +7,7 @@
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/csvmode/csv_model_worker.h"
 #include "neomifes/csvmode/csv_row_order.h"
+#include "neomifes/git/git_diff_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 
@@ -78,6 +79,18 @@ void EditorSession::applyCsvIndexResult(csvmode::CsvModel result) noexcept {
     m_csvModel         = std::move(result);
     m_csvIndexInFlight = false;
     recomputeCsvRowOrder();
+}
+
+void EditorSession::beginGitDiffIndexing(git::GitDiffWorker& worker) {
+    const auto path = pathIfNamed();
+    if (!path.has_value()) {
+        // Untitled buffer - nothing to diff against (see this method's own
+        // header comment). Deliberately does not touch
+        // m_gitDiffIndexInFlight - there is no request in flight to wait for.
+        return;
+    }
+    worker.requestDiff(m_document.snapshot(), *path, /*sessionToken=*/this);
+    m_gitDiffIndexInFlight = true;
 }
 
 void EditorSession::setCsvFilter(csvmode::CsvFilterOptions filter) {

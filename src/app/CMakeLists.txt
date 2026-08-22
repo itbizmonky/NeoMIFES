@@ -59,6 +59,11 @@ target_link_libraries(neomifes_app_input
         # (csvModel()/beginCsvIndexing()) - same reasoning as
         # neomifes::jsontree immediately above.
         neomifes::csvmode
+        # editor_session.h (WI-17b) exposes git::LineDiffRegion/
+        # git::GitDiffWorker in its public signature
+        # (gitDiff()/beginGitDiffIndexing()) - same reasoning as
+        # neomifes::csvmode immediately above.
+        neomifes::git
     PRIVATE
         neomifes::compile_options
         neomifes::util

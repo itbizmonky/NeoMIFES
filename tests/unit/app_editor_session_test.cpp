@@ -7,11 +7,17 @@
 
 #include <gtest/gtest.h>
 
+#include <windows.h>
+
+#include <cstdint>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "neomifes/app/editor_session.h"
 #include "neomifes/csvmode/csv_model.h"
+#include "neomifes/git/git_diff_worker.h"
+#include "neomifes/git/git_repository.h"
 #include "neomifes/jsontree/json_tree.h"
 #include "neomifes/logmode/log_model.h"
 #include "neomifes/logmode/log_pattern.h"
@@ -20,6 +26,10 @@ namespace {
 
 using neomifes::app::EditorSession;
 using neomifes::csvmode::CsvModel;
+using neomifes::git::GitDiffWorker;
+using neomifes::git::kMsgGitDiffReady;
+using neomifes::git::LineDiffKind;
+using neomifes::git::LineDiffRegion;
 using neomifes::jsontree::JsonNode;
 using neomifes::jsontree::JsonNodeKind;
 using neomifes::logmode::kAllLogLevelsVisible;
@@ -145,6 +155,93 @@ TEST(EditorSessionCsvModelStateTest, ApplyCsvIndexResultPopulatesCsvModelAndClea
     ASSERT_TRUE(model.has_value());
     EXPECT_EQ(model->rowCount(), 1U);  // a blank EditorSession's document is empty
     EXPECT_FALSE(session.csvIndexInFlight());
+}
+
+// WI-17b: EditorSession's per-tab Git-diff state (gitDiff()/
+// gitDiffIndexInFlight()/applyGitDiffResult()). Headless -
+// beginGitDiffIndexing() requires a real GitDiffWorker (background thread +
+// HWND) AND a real Document path to diff against, so its round trip
+// (including the Untitled-buffer no-op case) is exercised by the
+// integration test (tests/integration/git_diff_worker_test.cpp) instead of
+// here - same split as EditorSessionLogModeStateTest/
+// EditorSessionJsonTreeStateTest/EditorSessionCsvModelStateTest above.
+TEST(EditorSessionGitDiffStateTest, InitiallyHasNoGitDiffAndIsNotInFlight) {
+    const EditorSession session;
+    EXPECT_FALSE(session.gitDiff().has_value());
+    EXPECT_FALSE(session.gitDiffIndexInFlight());
+}
+
+TEST(EditorSessionGitDiffStateTest, ApplyGitDiffResultPopulatesGitDiffAndClearsInFlight) {
+    EditorSession session;
+
+    std::vector<LineDiffRegion> regions{
+        LineDiffRegion{.startLine = 0, .lineCount = 1, .kind = LineDiffKind::Added}};
+    session.applyGitDiffResult(regions);
+
+    const auto& diff = session.gitDiff();
+    ASSERT_TRUE(diff.has_value());
+    EXPECT_EQ(*diff, regions);
+    EXPECT_FALSE(session.gitDiffIndexInFlight());
+}
+
+// git_diff_worker.h's design departure from CsvModelWorker (see that
+// header's own comment): a request for a file outside any Git repository
+// must still reach applyGitDiffResult() as std::nullopt rather than being
+// dropped, so gitDiffIndexInFlight() cannot get stuck at true. This pins
+// down EditorSession's half of that contract, same as
+// EditorSessionJsonTreeStateTest's identical test for JsonTreeWorker.
+TEST(EditorSessionGitDiffStateTest, ApplyGitDiffResultWithNulloptClearsInFlightLeavingDiffEmpty) {
+    EditorSession session;
+
+    session.applyGitDiffResult(std::vector<LineDiffRegion>{
+        LineDiffRegion{.startLine = 0, .lineCount = 1, .kind = LineDiffKind::Added}});
+    ASSERT_TRUE(session.gitDiff().has_value());
+
+    session.applyGitDiffResult(std::nullopt);
+
+    EXPECT_FALSE(session.gitDiff().has_value());
+    EXPECT_FALSE(session.gitDiffIndexInFlight());
+}
+
+// beginGitDiffIndexing()'s own guard clause: an Untitled buffer has no path
+// to diff against, so this must be a complete no-op (no GitDiffWorker
+// request fired, gitDiffIndexInFlight() stays false) - not just "gitDiff()
+// stays nullopt", which would also be true if a request were fired and
+// simply hadn't completed yet. A real GitDiffWorker + hidden window is used
+// here (rather than app_editor_session_test.cpp's usual pure-headless
+// style) specifically to prove the negative: no message ever arrives. This
+// does not touch libgit2 directly (unlike git_repository_test.cpp/
+// git_diff_worker_test.cpp's own fixture-building tests), so it stays a
+// unit test rather than needing the integration suite's extra libgit2
+// include-directory wiring.
+TEST(EditorSessionGitDiffStateTest, BeginGitDiffIndexingIsNoOpForUntitledSession) {
+    HWND hwnd = ::CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 200, 100, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(hwnd, nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    EditorSession session;
+    ASSERT_TRUE(session.isUntitled());
+    GitDiffWorker worker(hwnd);
+
+    session.beginGitDiffIndexing(worker);
+    EXPECT_FALSE(session.gitDiffIndexInFlight());
+
+    const ULONGLONG deadline = ::GetTickCount64() + 200;
+    bool             sawMessage = false;
+    while (::GetTickCount64() < deadline) {
+        MSG msg{};
+        while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == kMsgGitDiffReady) {
+                sawMessage = true;
+            } else {
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+            }
+        }
+        ::Sleep(5);
+    }
+    EXPECT_FALSE(sawMessage) << "beginGitDiffIndexing() must not fire a request for an Untitled session";
+
+    ::DestroyWindow(hwnd);
 }
 
 }  // namespace

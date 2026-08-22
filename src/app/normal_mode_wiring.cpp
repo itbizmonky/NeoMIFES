@@ -3471,6 +3471,33 @@ void applyLogIndexReadyMessage(Workspace& workspace, RenderPipeline& renderPipel
     }
 }
 
+// WI-17b: GitDiffWorker's background-thread diff completion signal receiver
+// (wireNormalMode()'s cfg.onAppMessage kMsgGitDiffReady branch). `wParam` is
+// the opaque sessionToken requestDiff() was given back - see
+// applyLogIndexReadyMessage()'s own comment for why pointer-VALUE comparison
+// against &workspace.sessionAt(i) is safe even if the issuing tab has since
+// closed. `lParam` is always non-null (like JsonTreeWorker, unlike
+// CsvModelWorker, GitDiffWorker posts even a std::nullopt result - see
+// git_diff_worker.h's header comment) and owns a heap-allocated
+// std::optional<std::vector<LineDiffRegion>>* that must be reconstructed
+// into a unique_ptr immediately to avoid leaking it. Deliberately the
+// MINIMAL shape (no hwnd/renderPipeline/pane) - this WI adds no UI to
+// refresh, same "UIが無いため再描画の必要が無い" treatment
+// applyLogIndexReadyMessage() had before WI-14c later enriched it with
+// hwnd/renderPipeline for pushing log visuals; a future Git gutter-UI sub-WI
+// will grow this function's parameter list the same way, not before.
+void applyGitDiffReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+    const std::unique_ptr<std::optional<std::vector<neomifes::git::LineDiffRegion>>> result(
+        reinterpret_cast<std::optional<std::vector<neomifes::git::LineDiffRegion>>*>(lParam));
+    const auto* const token = reinterpret_cast<const void*>(wParam);
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
+            workspace.sessionAt(i).applyGitDiffResult(std::move(*result));
+            break;
+        }
+    }
+}
+
 // WI-15b: JsonTreeWorker's background-thread indexing completion signal
 // receiver (wireNormalMode()'s cfg.onAppMessage kMsgJsonTreeReady branch).
 // `wParam` is the opaque sessionToken requestIndex() was given back - see
@@ -3587,6 +3614,10 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
                       const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                       const void*& csvGridPanePendingSessionToken, HWND hwnd, UINT msg, WPARAM wParam,
                       LPARAM lParam) {
+    if (msg == neomifes::git::kMsgGitDiffReady) {
+        applyGitDiffReadyMessage(workspace, wParam, lParam);
+        return;
+    }
     if (msg == neomifes::render::kMsgSyntaxTokensReady) {
         const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
             reinterpret_cast<std::vector<neomifes::syntax::Token>*>(lParam));
@@ -3759,7 +3790,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                     std::optional<csvmode::CsvModelWorker>& csvModelWorker, JsonTreePane& jsonTreePane,
                     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
-                    const void*& csvGridPanePendingSessionToken) {
+                    const void*& csvGridPanePendingSessionToken,
+                    std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -3782,7 +3814,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
                           &jsonTreePanePendingSessionToken, &csvGridPane,
-                          &csvGridPanePendingSessionToken](HWND hwnd) {
+                          &csvGridPanePendingSessionToken, &gitDiffWorker](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -3803,6 +3835,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // CsvModelWorker's constructor also requires a real HWND and starts
         // its own background thread immediately.
         csvModelWorker.emplace(hwnd);
+        // WI-17b: same reasoning as jsonTreeWorker.emplace() above -
+        // GitDiffWorker's constructor also requires a real HWND and starts
+        // its own background thread immediately.
+        gitDiffWorker.emplace(hwnd);
         // Resolved once here for this lambda's own synchronous body below -
         // safe (nothing can switch tabs before the window's first deferred
         // init has even run). The nested paint handler lambda just below
