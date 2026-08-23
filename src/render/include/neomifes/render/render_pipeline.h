@@ -116,6 +116,27 @@ struct FoldVisual {
     friend constexpr bool operator==(const FoldVisual&, const FoldVisual&) = default;
 };
 
+// One Git diff hunk marker (WI-17c) - a render::-only mirror of
+// git::LineDiffRegion/git::LineDiffKind, same "independent, concurrently
+// runnable engines" reasoning as FoldVisual above (RenderPipeline does not
+// depend on neomifes::git; the app layer converts via app::
+// buildGitDiffMarkers() and pushes this in whenever EditorSession::gitDiff()
+// changes). Added/Modified: [startLine, startLine + lineCount) are the
+// CURRENT document's own lines this region covers. Deleted: lineCount is
+// always 0 (a point marker - HEAD had lines here the current document no
+// longer has at all, so startLine is the current-document line immediately
+// AFTER where the deleted content used to be, matching git::LineDiffRegion's
+// own documented convention exactly).
+enum class GitDiffKind : std::uint8_t { Added, Modified, Deleted };
+
+struct GitDiffMarker {
+    document::LineNumber startLine = 0;
+    document::LineNumber lineCount = 0;
+    GitDiffKind            kind      = GitDiffKind::Added;
+
+    friend constexpr bool operator==(const GitDiffMarker&, const GitDiffMarker&) = default;
+};
+
 // An in-progress IME composition (WI-06) - the unconfirmed text a Japanese/
 // CJK IME is still converting, never written to Document (only the eventual
 // committed string is - see main_window.h's onImeResult). Drawn as an
@@ -380,6 +401,19 @@ public:
         m_foldRegions = std::move(regions);
     }
 
+    // The full set of Git diff hunk markers to draw in the gutter (WI-17c).
+    // Same non-owning, render::-typed-only shape as setFoldRegions() above -
+    // the app layer rebuilds and pushes the whole vector after every
+    // EditorSession::gitDiff() change (a manual "Git: Refresh Diff Markers"
+    // command in this WI's scope, an automatic trigger in a later one). Empty
+    // clears all markers (untitled buffer, not yet diffed, or outside any
+    // Git repository - drawGutterOnLine() cannot and does not distinguish
+    // those cases, same ambiguity EditorSession::gitDiff() itself already
+    // documents).
+    void setGitDiffRegions(std::vector<GitDiffMarker> markers) noexcept {
+        m_gitDiffMarkers = std::move(markers);
+    }
+
     // WI-14c: per-document-line log severity, 1:1 with logmode::LogModel::
     // lines() (empty vector = log mode disabled for the attached document,
     // matching m_tokens/m_bookmarkedLines/m_foldRegions' own "empty means
@@ -568,6 +602,13 @@ private:
         // topLine/size unchanged) must not be coarse-frame-skipped either -
         // it changes which lines are drawn.
         std::vector<FoldVisual> foldRegions;
+        // WI-17c: same rationale, a Git diff refresh alone (document/topLine/
+        // size unchanged) must not be coarse-frame-skipped either. Hunk-
+        // granularity like bookmarkedLines/foldRegions above (bounded, not
+        // one-per-line) - unlike logLevelFilterMask's own comment below about
+        // m_logLineLevels, this is small enough to include directly rather
+        // than force a redraw via reset() on arrival.
+        std::vector<GitDiffMarker> gitDiffMarkers;
         // WI-03: same rationale as topLine above - a horizontal-only scroll
         // (e.g. dragging the new horizontal scrollbar with topLine/cursor/
         // selection/etc all unchanged) must not be coarse-frame-skipped
@@ -618,6 +659,11 @@ private:
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept;
+    // WI-17c: 3 solid brushes (Added/Modified/Deleted) for the Git diff
+    // gutter marker (drawGutterOnLine()), same one-method-for-a-related-set
+    // shape as ensureTokenBrushes()/ensureIndentGuideBrushes() below rather
+    // than 3 separate ensureXxxBrush() methods.
+    [[nodiscard]] RenderExpected<void> ensureGitDiffBrushes(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7i: the fold-marker triangle's brush (drawGutterOnLine()).
     [[nodiscard]] RenderExpected<void> ensureFoldMarkerBrush(ID2D1DeviceContext6& dc) noexcept;
     // WI-07 step7: the line-number digits' brush (drawGutterOnLine()).
@@ -1108,6 +1154,7 @@ private:
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
     std::vector<FoldVisual>                           m_foldRegions;      // empty: folding disabled (Phase 7i)
+    std::vector<GitDiffMarker>                        m_gitDiffMarkers;   // empty: no diff data (WI-17c)
     // WI-14c: see setLogLineLevels()'s own comment for why this can be
     // O(document size) and is deliberately excluded from FrameState.
     std::vector<logmode::LogLevel>                    m_logLineLevels;    // empty: log mode disabled
@@ -1179,6 +1226,11 @@ private:
     // Phase 4b8c: the bookmark gutter dot's brush, same device-bound reset
     // lifecycle as the brushes above.
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_bookmarkBrush;
+    // WI-17c: the Git diff gutter marker's 3 brushes, same device-bound
+    // reset lifecycle as the brushes above.
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffAddedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffModifiedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffDeletedBrush;
     // Phase 7i: fold-marker triangle brush, same device-bound reset
     // lifecycle as the brushes above. See ensureFoldMarkerBrush()/drawGutterOnLine().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_foldMarkerBrush;

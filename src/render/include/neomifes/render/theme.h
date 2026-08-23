@@ -58,6 +58,12 @@ struct Theme {
     // visually in this WI's MVP scope).
     D2D1_COLOR_F logError;
     D2D1_COLOR_F logWarning;
+    // WI-17c: Git diff gutter markers (RenderPipeline::drawGutterOnLine()'s
+    // 4th block). VSCode/GitLens convention: green=Added, yellow/orange=
+    // Modified, red=Deleted.
+    D2D1_COLOR_F diffAdded;
+    D2D1_COLOR_F diffModified;
+    D2D1_COLOR_F diffDeleted;
 };
 
 // Dark/Light/HighContrast -> the Theme RenderPipeline should paint with.

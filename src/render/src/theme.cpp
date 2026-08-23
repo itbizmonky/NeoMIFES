@@ -73,6 +73,12 @@ constexpr Theme kDarkTheme = {
     // coloring stays visually distinguishable from unrelated highlights.
     .logError = {244.0F / 255.0F, 71.0F / 255.0F, 71.0F / 255.0F, 1.0F},
     .logWarning = {204.0F / 255.0F, 167.0F / 255.0F, 0.0F / 255.0F, 1.0F},
+    // WI-17c: VSCode/GitLens gutter diff-indicator convention (green/orange/
+    // red), distinct enough from `bookmark`'s red and `type`'s green to
+    // avoid ambiguity even though they share the gutter/editor chrome area.
+    .diffAdded = {87.0F / 255.0F, 171.0F / 255.0F, 90.0F / 255.0F, 1.0F},
+    .diffModified = {229.0F / 255.0F, 155.0F / 255.0F, 53.0F / 255.0F, 1.0F},
+    .diffDeleted = {229.0F / 255.0F, 83.0F / 255.0F, 75.0F / 255.0F, 1.0F},
 };
 
 // VSCode Light+-inspired palette (new for WI-09). Overlay colors
@@ -125,6 +131,11 @@ constexpr Theme kLightTheme = {
     // logWarning comment.
     .logError = {209.0F / 255.0F, 34.0F / 255.0F, 34.0F / 255.0F, 1.0F},
     .logWarning = {133.0F / 255.0F, 95.0F / 255.0F, 0.0F / 255.0F, 1.0F},
+    // WI-17c: deeper than Dark's for legibility on white, same "inspired by,
+    // not identical to" caveat as this palette's own header comment.
+    .diffAdded = {35.0F / 255.0F, 134.0F / 255.0F, 54.0F / 255.0F, 1.0F},
+    .diffModified = {191.0F / 255.0F, 111.0F / 255.0F, 21.0F / 255.0F, 1.0F},
+    .diffDeleted = {209.0F / 255.0F, 61.0F / 255.0F, 52.0F / 255.0F, 1.0F},
 };
 
 // Windows-standard black/white/yellow high-contrast palette (new for
@@ -187,6 +198,12 @@ constexpr Theme kHighContrastTheme = {
     // saturated hues" design (see this constant's header comment).
     .logError = {1.0F, 0.0F, 0.0F, 1.0F},
     .logWarning = {1.0F, 1.0F, 0.0F, 1.0F},
+    // WI-17c: reduced to fully-saturated hues, same design as this theme's
+    // other fields (see this constant's header comment) - green/orange stay
+    // distinct from `bookmark`'s pure red used for Deleted below.
+    .diffAdded = {0.0F, 1.0F, 0.0F, 1.0F},
+    .diffModified = {1.0F, 140.0F / 255.0F, 0.0F / 255.0F, 1.0F},
+    .diffDeleted = {1.0F, 0.0F, 0.0F, 1.0F},
 };
 
 }  // namespace

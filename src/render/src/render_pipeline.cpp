@@ -39,6 +39,16 @@ constexpr float kMaxLayoutHeightDips = 65536.0F;
 // constant (not inlined) because gutterWidthDips() itself still needs it.
 constexpr float kGutterWidthDips  = 24.0F;
 constexpr float kBookmarkDotSizeDips = 8.0F;
+// WI-17c: the Git diff gutter marker's left-edge vertical bar - drawn at
+// x=0, the only gutter sub-region no other marker (line number/bookmark
+// dot/fold chevron) occupies (see drawGutterOnLine()'s own X-coordinate
+// choices for those three). kGitDiffDeletedMarkerHeightDips is a short bar
+// at the TOP of a line's row rather than the full row height, since a
+// Deleted GitDiffMarker is a point marker (git_repository.h's own
+// documented convention: "content used to be immediately above this line",
+// not a range covering this line).
+constexpr float kGitDiffBarWidthDips             = 3.0F;
+constexpr float kGitDiffDeletedMarkerHeightDips = 3.0F;
 
 // Phase 7h: top-of-editor Breadcrumb strip height. Same "every y-coordinate
 // consumer in this file must agree on this offset" contract kGutterWidthDips
@@ -119,6 +129,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .matchVisuals    = m_matchVisuals,
         .bookmarkedLines = m_bookmarkedLines,
         .foldRegions     = m_foldRegions,
+        .gitDiffMarkers  = m_gitDiffMarkers,
         .leftColumn      = m_leftColumn,
         .imeComposition  = m_imeComposition,
         .themeKind       = m_themeKind,
@@ -176,6 +187,9 @@ void RenderPipeline::resetThemeBrushes() noexcept {
     m_matchBrush.Reset();
     m_currentMatchBrush.Reset();
     m_bookmarkBrush.Reset();
+    m_diffAddedBrush.Reset();
+    m_diffModifiedBrush.Reset();
+    m_diffDeletedBrush.Reset();
     m_keywordBrush.Reset();
     m_typeBrush.Reset();
     m_stringBrush.Reset();
@@ -449,6 +463,30 @@ RenderExpected<void> RenderPipeline::ensureBookmarkBrush(ID2D1DeviceContext6& dc
     if (!m_bookmarkBrush) {
         // WI-09: see theme.h/theme.cpp for this color's value/rationale.
         const HRESULT hr = dc.CreateSolidColorBrush(themeForKind(m_themeKind).bookmark, m_bookmarkBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
+RenderExpected<void> RenderPipeline::ensureGitDiffBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // WI-17c: see theme.h/theme.cpp for these colors' values/rationale.
+    const Theme& theme = themeForKind(m_themeKind);
+    if (!m_diffAddedBrush) {
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.diffAdded, m_diffAddedBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_diffModifiedBrush) {
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.diffModified, m_diffModifiedBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_diffDeletedBrush) {
+        const HRESULT hr = dc.CreateSolidColorBrush(theme.diffDeleted, m_diffDeletedBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -1232,6 +1270,33 @@ void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumb
         dc.DrawLine(D2D1::Point2F(markerRight, centerY - kMarkerHalfSize), D2D1::Point2F(midX, centerY),
                     m_foldMarkerBrush.Get(), 1.5F);
     }
+
+    // WI-17c: a thin vertical bar at the gutter's left edge (VSCode/GitLens
+    // convention) for any Git diff hunk covering this line. m_gitDiffMarkers
+    // is small (hunk-granularity, not one-per-line, same as m_bookmarkedLines/
+    // m_foldRegions above) so a linear scan per visible line is fine - same
+    // reasoning the bookmark block above already relies on.
+    for (const GitDiffMarker& marker : m_gitDiffMarkers) {
+        if (marker.kind == GitDiffKind::Deleted) {
+            if (marker.startLine != line || !m_diffDeletedBrush) {
+                continue;
+            }
+            const D2D1_RECT_F bar =
+                D2D1::RectF(0.0F, y, kGitDiffBarWidthDips, y + kGitDiffDeletedMarkerHeightDips);
+            dc.FillRectangle(bar, m_diffDeletedBrush.Get());
+            continue;
+        }
+        if (line < marker.startLine || line >= marker.startLine + marker.lineCount) {
+            continue;
+        }
+        ID2D1SolidColorBrush* brush =
+            marker.kind == GitDiffKind::Added ? m_diffAddedBrush.Get() : m_diffModifiedBrush.Get();
+        if (brush == nullptr) {
+            continue;
+        }
+        const D2D1_RECT_F bar = D2D1::RectF(0.0F, y, kGitDiffBarWidthDips, y + m_lineHeightDips);
+        dc.FillRectangle(bar, brush);
+    }
 }
 
 void RenderPipeline::drawTokensOnLine(IDWriteTextLayout& layout, TextPos lineStart, TextPos lineEnd,
@@ -1829,6 +1894,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!bookmarkBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return bookmarkBrushResult;
+    }
+    auto gitDiffBrushResult = ensureGitDiffBrushes(*dc);
+    if (!gitDiffBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return gitDiffBrushResult;
     }
     auto tokenBrushResult = ensureTokenBrushes(*dc);
     if (!tokenBrushResult) {
