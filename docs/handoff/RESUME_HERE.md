@@ -15,7 +15,7 @@
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: 列固定・セル編集・式列 (WI-16f以降)
 > - Phase 10.3 (JSON/XML Tree) 残り: XML対応・XPath・真の左右分割ペイン化 (WI-15f以降)
-> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー・保存/編集時の再diffトリガー・最小限のDiffビュー (WI-17c以降)。WI-17a/bで作った`GitDiffWorker`/`EditorSession::gitDiff()`系配線が、UIから一度も呼ばれない「死んだ配線」のまま放置されるのを避ける目的
+> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ)はWI-17c(2026-08-23)で完了済み。残りは保存/編集時の自動再diffトリガー・Gitペイン・最小限のDiffビュー (WI-17d以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
 > **🧊 凍結(着手しない、商用配布を将来検討する際に再評価):**
@@ -199,7 +199,8 @@
 | **11.1a** | **Git統合 ヘッドレス基盤** (ADR-022・libgit2導入、`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`、非同期化/EditorSession配線/UI/Blame/Commit/Branch切替は未着手) | ✅ **完了 (WI-17a、2026-08-22、§3.94参照)** |
 | **10.3e** | **JSONPath 🎉** (`neomifes::jsontree::json_path`自前実装、`ui::JsonPathBar`、コマンドパレット限定「JSON: Evaluate JSONPath」) | ✅ **完了 (WI-15e、2026-08-22、§3.95参照)。🎉 Phase 10.3 JSONPath達成** |
 | **11.1b** | **Git統合 非同期化+EditorSession配線** (`GitDiffWorker`、`diffAgainstHead()`のBufferSnapshot化、`EditorSession::gitDiff()`系4点、UIなし) | ✅ **完了 (WI-17b、2026-08-22、§3.96参照)** |
-| 10.2/10.3残り、11残り → 9 → 12 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(UI・トリガー配線・Blame・Commit)/LSP/マクロ → AI → 正式出荷 | 未着手 (v2.1 で順序変更。WI番号はWI-18/19以降で確定予定) |
+| **11.1c** | **Git統合 左ガター差分マーカーUI 🎉** (手動リフレッシュコマンド「Git: Refresh Diff Markers」、`GitDiffMarker`/`GitDiffKind`、実機ドッグフーディングで重大バグ2件発見・解消) | ✅ **完了 (WI-17c、2026-08-23、§3.97参照)。🎉 Phase 11.1 左ガターUI達成** |
+| 10.2/10.3残り、11.1残り → v1出荷判定 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(自動トリガー・Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16f/WI-15f/WI-17d以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2786,6 +2787,36 @@ WI-17a(ヘッドレス基盤)は`GitRepository::discover()`/`diffAgainstHead()`�
 
 ---
 
+### 3.97 WI-17c (Git統合 左ガター差分マーカーUI、手動リフレッシュ) 完了記録 (2026-08-23)
+
+WI-17b完了・push済み、続けて2026-08-23にユーザーから「開発完了までの残工程を教えて欲しい」との指摘を受け残りスコープを確定(本書冒頭「🎯最重要」参照)。その合意に基づき「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17c: Git統合UI化/WI-16f: CSVの続き/WI-15f: JSON/XML Treeの続き)を提示し、**「WI-17c: Git統合UI化(推奨)」**が選ばれた。
+
+WI-17a/bで作った`GitDiffWorker`/`EditorSession::gitDiff()`系配線がUIから一度も呼ばれない「死んだ配線」のままだったのを解消。**スコープを意図的に絞り**、左ガター差分マーカーの表示+コマンドパレット限定の手動リフレッシュコマンド「Git: Refresh Diff Markers」のみとした。自動トリガー・Gitペイン・Diffビュー・Blameは全てWI-17d以降へ。
+
+**設計上の要点:**
+- 新規`render::GitDiffMarker`/`GitDiffKind`は`FoldVisual`と同型のrender::-localミラー型 — `RenderPipeline`を`neomifes::git`に依存させない独立エンジン原則(CLAUDE.md §3)を維持。変換は新規`app::buildGitDiffMarkers()`ブリッジ関数(`json_tree_bridge.h`と同パターン)。
+- 自動トリガー(保存時/ファイルを開いた時)は非スコープ。ファイルを開く経路が4箇所以上に分散しており単一のフック点が無いこと、CSV/JSONの前例(`refreshJsonTreePane()`等)が既に「手動トグルでのみ再取得」を受容していることから、Gitでも同じ制約を踏襲。
+
+### 実施内容 (2コミット)
+
+1. `feat(render)`: `Theme`3色 + `GitDiffMarker`/`GitDiffKind` + `drawGutterOnLine()`拡張 (`aae50cb`)
+2. `feat(app)`: `git_diff_bridge` + コマンド配線 + 最終ゲート + 実機ドッグフーディング (`43d99c6`)
+
+**実機ドッグフーディング(本サブWIが初めてUIを持つGit統合サブWIのため必須)で、単体テスト・ビルドでは検出できない重大なバグを2件発見した。**
+
+1. **`drawGutterOnLine()`のブロック配置順序バグ。** 新規Git差分マーカー描画ループを、既存の折り畳みマーカーブロック(2箇所の早期`return`を持つ)より後ろに置いてしまい、折り畳み領域を持たない行(=大半のファイルの事実上全ての行)で常に到達不能になっていた。ブックマークブロック直後・折り畳みブロックの早期returnより前に移動して解消。
+2. **`neomifes::git::initializeLibgit2()`が`src/app/`のどこからも呼ばれていなかった。** WI-17a以来、3件のテストフィクスチャの`SetUp()`内でのみ呼ばれており、実アプリの起動経路には一度も配線されていなかった。`GitRepository::discover()`が実アプリでは常に未初期化のlibgit2ランタイムに対して動作し静かに失敗し続けていたことになる — **Git統合機能(WI-17a/b/c)はテストスイート以外の実際のNeoMIFES.exe実行では一度も正しく動作していなかった可能性が高い。** `main.cpp`の`wWinMain()`にRAII `Libgit2Guard`+`initializeLibgit2()`呼び出しを追加して解消。
+
+(1)を修正した直後の再ドッグフーディングでもマーカーが表示されず、そこから(2)を発見した。**1つのバグの修正で満足せず再検証したことで、より深刻な2つ目のバグを発見できた。**
+
+**別件、本WIとは無関係なCI失敗の修正も同じセッションで実施した。** 直近2回のpushが`readability-math-missing-parentheses`(`src/ui/src/csv_grid_pane.cpp:209`、WI-16e由来の潜在的な問題)でCI失敗していた。ローカルのWI単位clang-tidy検証が「そのWIで触ったファイルのみ」にスコープされていたため見逃していた、CIの全ツリースキャンでしか検出できない種類の問題。1行を修正した上で、`src/`+`tests/`配下232ファイル全件のCI相当clang-tidyスイープをバックグラウンドエージェントで実施し**新規指摘0件**を確認(このファイルの1件が唯一の潜在問題だった)。
+
+**最終ゲート:** Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、対象6ファイルclang-tidy新規警告0、CI (`32613512464`) green。実機ドッグフーディングで3種のマーカー(Added=緑/Modified=橙/Deleted=赤の短点マーカー)の正しい描画をピクセル単位で確認済み。
+
+コミット済み(`aae50cb`/`43d99c6`)、push済み。Phase 11.1は「左ガター差分マーカーUI+手動リフレッシュ」まで完了 — 自動トリガー・Gitペイン・Diffビュー・Blame・Commit・Branch切替は全て後続サブWI(WI-17d以降)へ。次はWI-17d、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2836,13 +2867,15 @@ WI-17a(ヘッドレス基盤)は`GitRepository::discover()`/`diffAgainstHead()`�
 本ファイル冒頭の「🎯 最重要 (2026-08-23 スコープ確定)」を必ず先に読め。
 2026-08-23、ユーザーとの合意で残りスコープを確定した: Phase 10残り
 (CSV列固定・セル編集・式列/JSON XML対応・XPath・左右分割ペイン)+
-Git統合のUI化(左ガター差分マーカー・Diffビュー・トリガー配線)
-まで完成させたら、v1出荷判定(軽量版、master_roadmap.md §12.5)で
-一区切りとする。LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目
-フル版は🧊凍結、着手しないこと。目安+10〜15 WI。
+Git統合のUI化残り(自動再diffトリガー・Gitペイン・Diffビュー、左ガター
+差分マーカー+手動リフレッシュはWI-17cで完了済み)まで完成させたら、
+v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
+LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
+着手しないこと。目安+10〜15 WI。
 
-続けてRESUME_HERE.md §3.96 (WI-17b Git統合 非同期化+EditorSession配線
-完了記録)を読んで詳細な現状を把握せよ。
+続けてRESUME_HERE.md §3.97 (WI-17c Git統合 左ガター差分マーカーUI
+完了記録、実機ドッグフーディングで発見した重大バグ2件の記録を含む)を
+読んで詳細な現状を把握せよ。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
@@ -3005,15 +3038,21 @@ WI-17自体が「WI-17a〜」という複数サブWIに分割されたもの)。
 したため、LSP・マクロ側の番号割当はまだ確定していない(build_plan.md
 「WI-17〜19」節参照)。
 
-次はWI-17c(Git統合のUI/トリガー配線: 左ガター差分マーカー・
-Gitペイン・Diffビュー・保存時の再diffトリガー等)、Phase 10の残り
-(WI-16f以降: 列固定・セル編集・式列、またはWI-15f以降: XML対応・
-XPath・真の左右分割ペイン化)、またはユーザー指定の次項目。着手前に
-build_plan.md §5とmaster_roadmap.md §11.1(または§10.2/§10.3)を
-読み、本書§5と同じ形式でサブWIへ切り直すこと。
+WI-17c(Git統合 左ガター差分マーカーUI、手動リフレッシュ)は完了・
+push済み(2026-08-23、コミット`aae50cb`/`43d99c6`、CI green確認済み)。
+実機ドッグフーディングで発見した重大バグ2件(ガター描画ブロックの
+配置順序/`initializeLibgit2()`未呼び出し)の詳細はRESUME_HERE.md
+§3.97参照。
 
-未 push のコミットが複数件ある可能性がある。git log origin/main..HEAD
-で実際の差分を確認してから、push はユーザーの明示指示を待つこと。
+次はWI-17d(Git統合のUI/トリガー配線残り: Gitペイン・Diffビュー・
+保存時の自動再diffトリガー)、Phase 10の残り(WI-16f以降: 列固定・
+セル編集・式列、またはWI-15f以降: XML対応・XPath・真の左右分割
+ペイン化)、またはユーザー指定の次項目。着手前にbuild_plan.md §5と
+master_roadmap.md §11.1(または§10.2/§10.3)を読み、本書§5と同じ
+形式でサブWIへ切り直すこと。
+
+git log origin/main..HEAD で未pushの差分が無いことを確認してから
+作業を開始すること。
 ```
 
 **着手前に必ず確認すること (中間レビューによる新ルール):**

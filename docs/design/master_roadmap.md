@@ -287,7 +287,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
 | 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **JSONPath達成 (WI-15a〜e完了、2026-08-22。XML対応/XPath/真の左右分割ペイン化は未着手、WI-15f以降)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **フィルタ・ソートUI達成 (WI-16a〜e完了、2026-08-19。列固定/セル編集/式列は未着手、WI-16f以降)** | §10.2 |
-| 11.1 | Git 統合 | **着手 (WI-17a〜b完了、2026-08-22): ヘッドレス基盤+非同期化+EditorSession配線(`neomifes::git`、`GitDiffWorker`)まで実装済み。UI化(左ガター差分マーカー・Diffビュー・トリガー配線、WI-17c〜)が🎯現在のゴール。Blame/Commit/Branch切替/3-Way Mergeは🧊凍結 (2026-08-23)** | §11.1 |
+| 11.1 | Git 統合 | **着手 (WI-17a〜c完了、2026-08-23): ヘッドレス基盤+非同期化+EditorSession配線+左ガター差分マーカーUI(手動リフレッシュ)まで実装済み。残りは自動再diffトリガー・Gitペイン・Diffビュー(WI-17d〜)が🎯現在のゴール。Blame/Commit/Branch切替/3-Way Mergeは🧊凍結 (2026-08-23)** | §11.1 |
 | 11.2 | LSP 完全実装 | 🧊 **凍結 (2026-08-23、build_plan.md §0参照)** | §11.2 |
 | 11.3 | マクロ (Lua + JS + 秀丸互換レイヤ) | 🧊 **凍結 (2026-08-23)** | §11.3 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 🧊 **凍結 (2026-08-23。「本体はAI無しでも100%動作」原則自体は維持、単に本体側の機能追加を優先しAI実装は見送り)** | §9 |
@@ -2346,7 +2346,7 @@ WI-15dの残り4項目(XML対応/XPath/JSONPath/真の左右分割ペイン化)�
 
 ### 11.1 Git 統合 (要件定義書 §11)
 
-> **実装状況 (2026-08-22、WI-17a完了):** ヘッドレス基盤(`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`)のみ実装済み。左ガター差分マーカー・`Ctrl+Shift+G`Gitペイン・Diffビュー・Blame・インラインBlame・Commit・Branch切替は全て未実装(WI-17b以降)。詳細は本節末尾の「実装後の確定事項」参照。
+> **実装状況 (2026-08-23、WI-17c完了):** ヘッドレス基盤+非同期化+EditorSession配線+左ガター差分マーカーUI(手動リフレッシュコマンド限定)まで実装済み。自動再diffトリガー・`Ctrl+Shift+G`Gitペイン・Diffビュー・Blame・インラインBlame・Commit・Branch切替は全て未実装(WI-17d以降、Blame/Commit/Branch切替/3-Way Mergeは🧊凍結)。詳細は本節末尾の「実装後の確定事項」参照。
 
 #### 機能ビジョン
 - **凌駕元:** 秀丸の DIFF ビュー、VSCode の GitLens
@@ -2382,6 +2382,19 @@ WI-17bでWI-14b(LogIndexWorker)/WI-15b(JsonTreeWorker)/WI-16b(CsvModelWorker)に
 - **`beginGitDiffIndexing()`を呼び出すコマンド/UIは本サブWIに含めなかった。** WI-14b/15b/16bの前例と同じ「配線のみ先行」の扱い。
 - **最終ゲートで、新規テストコードにclang-tidyの複数指摘(`bugprone-unchecked-optional-access`/`misc-misplaced-const`/`cppcoreguidelines-special-member-functions`等)が見つかり全て解消した。** 2件(`cert-msc30-c`/`readability-function-cognitive-complexity`)はWI-17a由来の既存未修正パターンをそのまま複製したものであり、一貫性を優先し意図的に据え置いた。
 - 詳細は`build_plan.md` WI-17bセクション参照。
+
+#### 実装後の確定事項 (WI-17c、2026-08-23)
+
+WI-17cで左ガター差分マーカーUI+コマンドパレット限定の手動リフレッシュコマンドを実装した(自動トリガー・Gitペイン・Diffビュー・Blameは全てWI-17d以降へ)。`render::GitDiffMarker`/`GitDiffKind`は`FoldVisual`と同じrender::-localミラー型、変換は新規`app::buildGitDiffMarkers()`ブリッジ関数がapp層で行う設計にし、`RenderPipeline`を`neomifes::git`に依存させない独立エンジン原則(CLAUDE.md §3)を維持した。
+
+**実機ドッグフーディング(本サブWIが初めてUIを持つため必須)で重大バグを2件発見した。** どちらも単体テスト・ビルド確認では検出不可能で、実際にアプリを操作して初めて判明した。
+
+1. **`RenderPipeline::drawGutterOnLine()`のブロック配置順序バグ。** 新規Git差分マーカー描画ループを既存の折り畳みマーカーブロック(2箇所の早期`return`を持つ)より後ろに置いてしまい、折り畳み領域を持たない行(=大半のファイルの事実上全ての行)で常に到達不能になっていた。ブックマークブロック直後・折り畳みブロックの早期returnより前に移動して解消。
+2. **`neomifes::git::initializeLibgit2()`が`src/app/`のどこからも呼ばれていなかった。** WI-17aの実装以来、3件のテストフィクスチャの`SetUp()`内でのみ呼ばれており、実アプリの起動経路には一度も配線されていなかった。`GitRepository::discover()`が実アプリでは常に未初期化のlibgit2ランタイムに対して動作し、静かに失敗し続けていたことになる — **Git統合機能(WI-17a/b/c)はテストスイート以外の実際のNeoMIFES.exe実行では一度も正しく動作していなかった可能性が高い。** `main.cpp`の`wWinMain()`にRAII `Libgit2Guard`+`initializeLibgit2()`呼び出しを追加して解消した。
+
+(1)を修正した直後の再ドッグフーディングでもマーカーが表示されず、そこから(2)を発見した。1つのバグの修正で満足せず再検証したことで、より深刻な2つ目のバグを発見できた点が教訓。
+
+詳細は`build_plan.md` WI-17cセクション参照。
 
 ### 11.2 LSP 統合 — 完全実装 (v2.0 大幅拡張)
 

@@ -168,6 +168,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-17a** Git統合 ヘッドレス基盤 (ADR-022でlibgit2採用、`neomifes::git`、`GitRepository::discover()`/`diffAgainstHead()`) → コミット: `b3acf43`/`4e08de1`
 - [x] **WI-15e** JSONPath 自前実装クエリ言語 (`neomifes::jsontree::json_path`、`ui::JsonPathBar`、コマンドパレット限定「JSON: Evaluate JSONPath」、🎉 Phase 10.3 JSONPath達成) → コミット: `8a2228b`/`bf8422f`
 - [x] **WI-17b** Git統合 非同期化+EditorSession配線 (UIなし、`GitDiffWorker`、`diffAgainstHead()`のBufferSnapshot化、`EditorSession::gitDiff()`系4点) → コミット: `bf5f87d`/`5d1fedb`
+- [x] **WI-17c** Git統合 左ガター差分マーカーUI (手動リフレッシュ、`GitDiffMarker`/`GitDiffKind`、ドッグフーディングで重大バグ2件発見・解消) → コミット: `aae50cb`/`43d99c6`
 
 ## Phase 10/11 残り + v1出荷判定 (軽量版) — 🎯 現在のゴール、§0 参照
 
@@ -175,7 +176,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 - [ ] **WI-16f以降** Phase 10.2 の残り (列固定・セル編集・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-15f以降** Phase 10.3 の残り (XML対応・XPath・真の左右分割ペイン化) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
-- [ ] **WI-17c以降** Git統合の UI化 (左ガター差分マーカー・保存/編集時の再diffトリガー・最小限のDiffビュー) — Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
+- [ ] **WI-17d以降** Git統合の UI化残り (保存/編集時の自動再diffトリガー・Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュコマンドはWI-17cで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
   - 🎉 **M5 達成目標: v1出荷 (軽量版)**
 
@@ -1768,6 +1769,60 @@ WI-17a(ヘッドレス基盤)は`GitRepository::discover()`/`diffAgainstHead()`�
 **本WIはUI/コマンド配線を一切追加していないため実アプリでの視覚確認は対象外(WI-14b/15b/16bと同じ扱い)。** 検証は新規`tests/integration/git_diff_worker_test.cpp`(5テスト、`csvmode_csv_model_worker_test.cpp`を直接のテンプレート)+`tests/unit/app_editor_session_test.cpp`の`EditorSessionGitDiffStateTest`(4テスト、うち1件は実際に`GitDiffWorker`+隠しウィンドウを構築してUntitledバッファでのno-opを証明)で行った。
 
 コミット済み(`bf5f87d`/`5d1fedb`)、pushはユーザーの明示指示待ち。Phase 11.1は「非同期化+EditorSession配線」まで完了 — 左ガターUI・Gitペイン・Diffビュー・3-Way Merge・Blame・Commit・Branch切替、および`beginGitDiffIndexing()`を実際に呼び出すトリガー(保存時の再diff等)は全て後続サブWI(WI-17c以降)へ。次はWI-17c(Git統合のUI/トリガー配線)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
+## WI-17c — Git統合 左ガター差分マーカーUI (手動リフレッシュ)
+
+**目的:** 2026-08-23、「開発完了までの残工程を教えて欲しい」というユーザーの指摘を受けAskUserQuestionで残りスコープを確定した後(§0参照)、その合意に基づき「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17c: Git統合UI化/WI-16f: CSVの続き/WI-15f: JSON/XML Treeの続き)を提示し、**「WI-17c: Git統合UI化(推奨)」**が選ばれた。
+
+WI-17a/bで実装した`GitDiffWorker`/`EditorSession::gitDiff()`系配線がUIから一度も呼ばれない「死んだ配線」のままだった。本WIはこれを解消し、実際に画面へ差分マーカーを表示する。**スコープを意図的に絞り**、左ガター差分マーカーの表示+コマンドパレット限定の手動リフレッシュコマンドのみとした。自動トリガー(保存時/ファイルを開いた時)・Gitペイン・Diffビュー・Blameは全てWI-17d以降へ。
+
+**前提:** WI-17b 完了・コミット済み (2026-08-22)、2026-08-23のスコープ確定 (§0参照)
+
+**参照:** `docs/design/master_roadmap.md` §11.1
+
+### 着手前調査・設計方針
+
+サブエージェント2件による並行調査(ガター描画コード`drawGutterOnLine()`/ブックマーク描画の前例/`Theme`構造体/`RenderPipeline`が外部状態を受け取る既存パターン/`FrameState`、およびファイルを開く経路の分散状況/CSV・JSONの「手動トグルでのみ再取得」という既に確立された前例/`syncViewForActiveSession()`等の既存パラメータ)を経て設計を確定した。
+
+- **自動トリガーは今回やらない。** ファイルを開く経路が`Workspace::openFile()`/`openFileAndSyncView()`/起動時ドキュメント/クラッシュ復旧の4箇所以上に分散しており単一のフック点が存在しない。CSV/JSONモードの前例(`refreshJsonTreePane()`/`refreshCsvGridPane()`)も「手動トグルでのみ再取得」という制約を既に受容しており、Gitでも同じ制約を踏襲した。新規コマンド「Git: Refresh Diff Markers」(`CommandId::None`、パレット限定)を`beginGitDiffIndexing()`を呼ぶ唯一の経路とした。
+- **`RenderPipeline`は`neomifes::git`に依存させない。** CLAUDE.md §3の「独立エンジン」原則、および`FoldVisual`(`core::FoldRegion`のrender::-localミラー型)の既存前例を踏襲し、新規`render::GitDiffMarker`/`GitDiffKind`というrender::-localミラー型を定義した。`git::LineDiffRegion`→`render::GitDiffMarker`の変換は新規ブリッジ関数`app::buildGitDiffMarkers()`がapp層で行う(`json_tree_bridge.h`/`csv_grid_bridge.h`と同じパターン)。
+
+### 実施内容 (2コミット)
+
+1. `feat(render)`: `Theme`3色 + `GitDiffMarker`/`GitDiffKind` + `drawGutterOnLine()`拡張 + `FrameState`拡張 (`aae50cb`)
+2. `feat(app)`: `git_diff_bridge` + コマンド配線 + `applyGitDiffReadyMessage()`/`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`更新 + 最終ゲート + 実機ドッグフーディング (`43d99c6`)
+
+### DoD
+
+- [x] `buildGitDiffMarkers()`がAdded/Modified/Deleted/複数リージョン/空入力を正しく変換する(単体テスト5件)
+- [x] `drawGutterOnLine()`が新規4番目のブロックでAdded(緑縦バー)/Modified(橙縦バー)/Deleted(赤の短い点マーカー)を正しい行に描画する
+- [x] 新規コマンド「Git: Refresh Diff Markers」(パレット限定)が`beginGitDiffIndexing()`をトリガーする
+- [x] 結果が非同期で届いた際、現在アクティブなセッション宛であればガターへ即座に反映される(`InvalidateRect`)
+- [x] タブ切替時、既にdiff済みのセッションのマーカーが正しく復元される(`pushGitDiffVisualsForSession()`を`syncViewForActiveSession()`に配線)
+- [x] 文書スワップ時、古いマーカーが残らずクリアされる(`resetViewAfterDocumentSwap()`に`setGitDiffRegions({})`を追加)
+- [x] Untitledバッファでコマンドを実行しても何も起きない(WI-17bの既存no-op契約を再利用)
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] **実機ドッグフーディング** — 3種のマーカー(Added=緑/Modified=橙/Deleted=赤の短点マーカー)の正しい描画をピクセル単位で確認
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+**実機ドッグフーディング(本WIが初めてUIを持つGit統合サブWIのため必須)で、単体テスト・ビルドでは検出できない重大なバグを2件発見した。** いずれも「プロセスが生存していた」だけでは絶対に見つからない類のバグであり、このプロジェクト自身の「実機確認必須」ルール(CLAUDE.md §11チェックリスト、gap_analysis.md由来)を直接裏付ける結果になった。
+
+1. **ガター描画ブロックの配置順序バグ。** 新規Git差分マーカー描画ループを、既存の折り畳みマーカーブロック(2箇所の早期`return`を持つ)より**後ろ**に置いてしまった。折り畳み領域を持たない行(=折り畳み機能を使わない大半のファイルの、事実上全ての行)では折り畳みブロックの早期returnで関数が終了するため、新規ブロックが常に到達不能になっていた。ブックマークブロック直後・折り畳みブロックの早期returnより**前**に移動して解消した。
+2. **`neomifes::git::initializeLibgit2()`が実アプリから一度も呼ばれていなかった。** WI-17aで実装したこの関数は、3件のテストフィクスタの`SetUp()`内でのみ呼ばれており、`src/app/`のどこからも呼ばれていなかった。これは`GitRepository::discover()`が実アプリの全ての実行で未初期化のlibgit2ランタイムに対して動作し、常に静かに失敗していたことを意味する — **WI-17a/b/cを通じて、Git統合機能はテストスイート以外の実際のNeoMIFES.exeの実行では一度も正しく動作していなかった可能性が高い。** `main.cpp`の`wWinMain()`に新規RAII `Libgit2Guard`+`initializeLibgit2()`呼び出しを追加して解消した。
+
+(1)の修正後の再ドッグフーディングでもマーカーが表示されず、そこから(2)を発見した — 1つのバグを直して満足せず再検証したことで2つ目の、より深刻なバグを発見できた。
+
+**`Libgit2Guard`のRule-of-Five。** カスタムデストラクタを持つ新規RAIIガードに対し、clang-tidyが`cppcoreguidelines-special-member-functions`を正しく指摘した(WI-17bの`HiddenWindow`と同じパターン)。コピー/moveコンストラクタ・代入を明示的`= delete`にして解消。
+
+**別件、本WIとは無関係なCI失敗の修正を同じセッションで実施。** 直近2回のpushでCIが`readability-math-missing-parentheses`(`src/ui/src/csv_grid_pane.cpp:209`、WI-16e由来の潜在的な問題)で失敗していた。原因はローカルのWI単位clang-tidy検証が「そのWIで触ったファイルのみ」にスコープされており、CIの全ツリースキャンでしか検出できない種類の問題だったこと。1行を修正した上で、他に同種の潜在問題が無いかを確認するため`src/`+`tests/`配下232ファイル全件のCI相当clang-tidyスイープをバックグラウンドエージェントで実施し、**新規指摘0件**を確認した(このファイルの1件が唯一の潜在問題だった)。
+
+**最終ゲート:** Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、対象6ファイル(`main.cpp`/`normal_mode_wiring.cpp`/`render_pipeline.cpp`/`csv_grid_pane.cpp`/`git_diff_bridge.h`/`app_git_diff_bridge_test.cpp`)clang-tidy新規警告0、CI (`32613512464`) green。
+
+コミット済み(`aae50cb`/`43d99c6`)、push済み(ユーザーの明示指示`pushせよ`により実施)。Phase 11.1は「左ガター差分マーカーUI+手動リフレッシュ」まで完了 — 自動トリガー・Gitペイン・Diffビュー・Blame・Commit・Branch切替は全て後続サブWI(WI-17d以降)へ。次はWI-17d(Git統合の自動トリガー/Gitペイン/Diffビュー)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
 
 ---
 
