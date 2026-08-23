@@ -42,6 +42,7 @@
 #include "neomifes/core/key_bindings.h"
 #include "neomifes/core/recent_files.h"
 #include "neomifes/core/settings.h"
+#include "neomifes/git/git_diff_worker.h"
 #include "neomifes/platform/handle_guard.h"
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/command_ids.h"
@@ -119,6 +120,22 @@ struct CommandDispatchContext {
     // whatever csvGridPane/token wireNormalMode() itself already has.
     ui::CsvGridPane& csvGridPane;
     const void*&     csvGridPanePendingSessionToken;
+    // WI-17d: dispatchSaveCommand() reads this to auto-trigger a Git re-diff
+    // (EditorSession::beginGitDiffIndexing()) immediately after every
+    // explicit Ctrl+S/Ctrl+Shift+S/File>Save - the automatic counterpart to
+    // the existing manual "Git: Refresh Diff Markers" palette command
+    // (dispatchGitRefreshDiffCommand(), WI-17c). None of the other command
+    // families this context also serves (Copy/Cut/Paste/Undo/Redo/
+    // ToggleOverwriteMode/Open/New/tab-switch/tab-close) ever read this
+    // field - added here rather than as a dispatchSaveCommand()-only
+    // parameter for the same "avoid N pointless signature changes for
+    // command families that never touch it" reasoning the csvGridPane
+    // fields above already document. Deliberately NOT consulted by
+    // confirmDiscardIfDirty()'s own Save branch (tab-close/WM_CLOSE, see
+    // performSave()'s callers) - that session is about to be destroyed or
+    // hidden, so a re-diff there would be moot; this field is reachable
+    // ONLY via dispatchCommand()'s CommandId::Save/SaveAs cases.
+    git::GitDiffWorker& gitDiffWorker;
 };
 
 // Handles: Save, SaveAs, Open, New, TabNext, TabPrevious, TabClose,
