@@ -1240,6 +1240,40 @@ void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumb
         dc.FillEllipse(dot, m_bookmarkBrush.Get());
     }
 
+    // WI-17c: a thin vertical bar at the gutter's left edge (VSCode/GitLens
+    // convention) for any Git diff hunk covering this line. m_gitDiffMarkers
+    // is small (hunk-granularity, not one-per-line, same as m_bookmarkedLines/
+    // m_foldRegions above) so a linear scan per visible line is fine - same
+    // reasoning the bookmark block above already relies on. Placed BEFORE
+    // the fold-marker block below deliberately - that block early-returns
+    // out of this entire function for any non-fold-header line (the common
+    // case), which would make this block unreachable if it came after (a
+    // real bug this WI's own dogfooding step caught: markers never painted
+    // for any file, even one with diff hunks, because m_foldRegions is
+    // empty for a file with no folding and every line hit that early return
+    // first).
+    for (const GitDiffMarker& marker : m_gitDiffMarkers) {
+        if (marker.kind == GitDiffKind::Deleted) {
+            if (marker.startLine != line || !m_diffDeletedBrush) {
+                continue;
+            }
+            const D2D1_RECT_F bar =
+                D2D1::RectF(0.0F, y, kGitDiffBarWidthDips, y + kGitDiffDeletedMarkerHeightDips);
+            dc.FillRectangle(bar, m_diffDeletedBrush.Get());
+            continue;
+        }
+        if (line < marker.startLine || line >= marker.startLine + marker.lineCount) {
+            continue;
+        }
+        ID2D1SolidColorBrush* brush =
+            marker.kind == GitDiffKind::Added ? m_diffAddedBrush.Get() : m_diffModifiedBrush.Get();
+        if (brush == nullptr) {
+            continue;
+        }
+        const D2D1_RECT_F bar = D2D1::RectF(0.0F, y, kGitDiffBarWidthDips, y + m_lineHeightDips);
+        dc.FillRectangle(bar, brush);
+    }
+
     // Phase 7i: a small chevron at the gutter's right edge for any fold
     // header line (folded or not) - drawn with DrawLine() rather than a
     // ID2D1PathGeometry so no COM geometry object is allocated per visible
@@ -1269,33 +1303,6 @@ void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumb
                     m_foldMarkerBrush.Get(), 1.5F);
         dc.DrawLine(D2D1::Point2F(markerRight, centerY - kMarkerHalfSize), D2D1::Point2F(midX, centerY),
                     m_foldMarkerBrush.Get(), 1.5F);
-    }
-
-    // WI-17c: a thin vertical bar at the gutter's left edge (VSCode/GitLens
-    // convention) for any Git diff hunk covering this line. m_gitDiffMarkers
-    // is small (hunk-granularity, not one-per-line, same as m_bookmarkedLines/
-    // m_foldRegions above) so a linear scan per visible line is fine - same
-    // reasoning the bookmark block above already relies on.
-    for (const GitDiffMarker& marker : m_gitDiffMarkers) {
-        if (marker.kind == GitDiffKind::Deleted) {
-            if (marker.startLine != line || !m_diffDeletedBrush) {
-                continue;
-            }
-            const D2D1_RECT_F bar =
-                D2D1::RectF(0.0F, y, kGitDiffBarWidthDips, y + kGitDiffDeletedMarkerHeightDips);
-            dc.FillRectangle(bar, m_diffDeletedBrush.Get());
-            continue;
-        }
-        if (line < marker.startLine || line >= marker.startLine + marker.lineCount) {
-            continue;
-        }
-        ID2D1SolidColorBrush* brush =
-            marker.kind == GitDiffKind::Added ? m_diffAddedBrush.Get() : m_diffModifiedBrush.Get();
-        if (brush == nullptr) {
-            continue;
-        }
-        const D2D1_RECT_F bar = D2D1::RectF(0.0F, y, kGitDiffBarWidthDips, y + m_lineHeightDips);
-        dc.FillRectangle(bar, brush);
     }
 }
 

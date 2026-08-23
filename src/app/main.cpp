@@ -79,6 +79,7 @@
 #include "neomifes/core/settings.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
+#include "neomifes/git/git_init.h"
 #include "neomifes/logmode/log_pattern_file.h"
 #include "neomifes/platform/app_data_dir.h"
 #include "neomifes/platform/handle_guard.h"
@@ -384,6 +385,35 @@ void processRecoverableAutoSaves(Workspace& workspace, const std::vector<Recover
     }
 }
 
+// WI-17c: this codebase's own missing-wire bug, found by this WI's
+// dogfooding step - neomifes::git::initializeLibgit2() (WI-17a) had never
+// actually been called from anywhere in src/app/, only from test fixtures'
+// own SetUp() methods. Without it, every GitRepository::discover() call in
+// the real running app silently failed (git_repository_open_ext() against an
+// uninitialized libgit2 runtime), so Git diff markers never rendered in any
+// real session - a pure plumbing gap, not a design flaw in WI-17a/b's own
+// contract (git_repository.h's own header comment already documented this
+// precondition correctly; nothing downstream ever satisfied it). RAII rather
+// than a call paired with every one of wWinMain()'s several return points
+// below (measurement-mode early exits, message-loop failure) - shutdownLibgit2()
+// is documented safe to call unconditionally (a no-op if init was never
+// called or returned false), so a scope guard covers every exit path without
+// needing to track init's own success/failure here.
+struct Libgit2Guard {
+    Libgit2Guard()  = default;
+    ~Libgit2Guard() { neomifes::git::shutdownLibgit2(); }
+
+    // A copy/move would each independently call shutdownLibgit2() at
+    // destruction (double-teardown) - not reachable today (the single
+    // wWinMain() local below is never copied/moved), but deleted explicitly
+    // per this codebase's Rule-of-Five convention rather than left to
+    // clang-tidy's cppcoreguidelines-special-member-functions to flag.
+    Libgit2Guard(const Libgit2Guard&)            = delete;
+    Libgit2Guard& operator=(const Libgit2Guard&) = delete;
+    Libgit2Guard(Libgit2Guard&&)                 = delete;
+    Libgit2Guard& operator=(Libgit2Guard&&)      = delete;
+};
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance,
@@ -411,6 +441,22 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // Phase 5b3a: defensive, see initCommonControls()'s comment. Cheap and
     // harmless even on modes that never create a FindBar (Measure*).
     initCommonControls();
+
+    // WI-17c bugfix: see Libgit2Guard's own comment above for why this call
+    // (and its RAII shutdown counterpart) was missing from every real run of
+    // this app until now. A `false` return is not gated on anywhere below -
+    // no established pattern for a multi-layer "Git features disabled" state
+    // exists in this codebase yet (GitDiffWorker's construction and the
+    // command-palette "Git: Refresh Diff Markers" entry are both
+    // unconditional), and per git_init.h's own header comment,
+    // git_libgit2_init() only sets up in-process global state (no I/O, no
+    // network - USE_HTTPS/USE_SSH are both OFF per ADR-022), so a failure
+    // here would be exceptionally unlikely in practice. Same "best-effort,
+    // no retry policy" treatment RenderPipeline::attach() failure already
+    // gets elsewhere in this file, not a claim that every later
+    // neomifes::git call remains safe if this returned false.
+    [[maybe_unused]] const bool libgit2Initialized = neomifes::git::initializeLibgit2();
+    const Libgit2Guard libgit2Guard;
 
     // WI-02: currentDocumentPath/fileState are populated together with
     // `document` by prepareDocument() (same loadFile() call) - see

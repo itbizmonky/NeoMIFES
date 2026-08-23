@@ -22,6 +22,7 @@
 #include "neomifes/app/editor_input.h"
 #include "neomifes/app/file_dialogs.h"
 #include "neomifes/app/fold_bridge.h"
+#include "neomifes/app/git_diff_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
 #include "neomifes/app/json_fold_bridge.h"
@@ -671,6 +672,13 @@ void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, Edito
     findBar.setMatchCount(0, 0);
     renderPipeline.setMatchVisuals({});
     renderPipeline.setBookmarkedLines({});
+    // WI-17c: the OLD content's Git diff markers are meaningless for the
+    // newly swapped-in document - same "clear rather than leave stale"
+    // treatment as matchVisuals/bookmarkedLines above. The new document
+    // hasn't been diffed yet (no automatic trigger in this WI's scope, see
+    // build_plan.md's WI-17c section) - a fresh "Git: Refresh Diff Markers"
+    // run is what repopulates this.
+    renderPipeline.setGitDiffRegions({});
     session.folding().setFoldableRegions({});
     syncFoldingState(hwnd, renderPipeline, session.folding());
     renderPipeline.setLanguage(session.language());
@@ -704,6 +712,22 @@ void pushLogVisualsForSession(RenderPipeline& renderPipeline, const EditorSessio
     renderPipeline.setLogLevelFilter(session.logLevelFilterMask());
 }
 
+// WI-17c: pushes `session`'s Git diff gutter markers into `renderPipeline`
+// (or clears them, if `session` has never been diffed / isn't inside a Git
+// repository / is Untitled - EditorSession::gitDiff() itself doesn't
+// distinguish those cases, see its own comment). Same "one shared push
+// function, multiple call sites" shape as pushLogVisualsForSession() above -
+// shared by syncViewForActiveSession() below (tab switch) and
+// applyGitDiffReadyMessage() (async GitDiffWorker result arriving for the
+// currently active tab).
+void pushGitDiffVisualsForSession(RenderPipeline& renderPipeline, const EditorSession& session) {
+    if (!session.gitDiff()) {
+        renderPipeline.setGitDiffRegions({});
+        return;
+    }
+    renderPipeline.setGitDiffRegions(buildGitDiffMarkers(*session.gitDiff()));
+}
+
 // WI-05: pushes `session`'s OWN already-existing view state into
 // RenderPipeline/FindBar - the tab-switch counterpart to
 // resetViewAfterDocumentSwap() above. Deliberately NOT reused for a tab
@@ -733,6 +757,12 @@ void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorS
     // pushLogVisualsForSession()'s own comment explains why this is shared
     // with the async kMsgLogIndexReady path instead of only living there.
     pushLogVisualsForSession(renderPipeline, session);
+    // WI-17c: restores the newly active session's own already-cached Git
+    // diff markers (or clears them, if this session has never been diffed) -
+    // pushGitDiffVisualsForSession()'s own comment explains why this is
+    // shared with the async kMsgGitDiffReady path instead of only living
+    // there.
+    pushGitDiffVisualsForSession(renderPipeline, session);
     syncMatchVisuals(session.findReplaceState(), renderPipeline);
     findBar.setMatchCount(session.findReplaceState().currentMatchIndex,
                           session.findReplaceState().currentMatches.size());
@@ -1329,6 +1359,21 @@ void dispatchJsonPathCommand(std::u16string_view expression, HWND hwnd, RenderPi
         return;
     }
     jumpToOutlinePosition(matches.front()->startPos, hwnd, session, renderPipeline);
+}
+
+// WI-17c ("Git: Refresh Diff Markers", command palette only - see this WI's
+// plan for why no CommandId/keybinding/menu entry, same "edit.duplicateLine"
+// precedent dispatchDuplicateLineCommand() above follows). The ONLY call
+// site of EditorSession::beginGitDiffIndexing() in this codebase - no
+// automatic trigger (on save/open/edit) exists yet, see build_plan.md's
+// WI-17c section for why this is deliberately deferred rather than missing
+// by oversight. A no-op for an Untitled session (beginGitDiffIndexing()'s
+// own contract) - no dialog for that case, unlike json.format/json.validate,
+// to keep this WI's scope narrow (a silent no-op matches
+// beginGitDiffIndexing()'s own "nothing to diff" semantics rather than
+// treating it as an error).
+void dispatchGitRefreshDiffCommand(EditorSession& session, git::GitDiffWorker& worker) {
+    session.beginGitDiffIndexing(worker);
 }
 
 // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K. Deliberately hardcoded VK_* comparisons
@@ -2061,7 +2106,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const std::optional<std::filesystem::path>& logPatternsDir, JsonTreePane& jsonTreePane,
     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, const void*& jsonTreePanePendingSessionToken,
     CsvGridPane& csvGridPane, std::optional<csvmode::CsvModelWorker>& csvModelWorker,
-    const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar) {
+    const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, git::GitDiffWorker& gitDiffWorker) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -2213,6 +2258,16 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .id = u"json.jsonpath", .title = u"JSON: Evaluate JSONPath", .keybindingLabel = u"",
         .commandId = CommandId::None,
         .action = [&jsonPathBar]() { jsonPathBar.show(); }});
+    // WI-17c: "Git: Refresh Diff Markers" - palette-only, same CommandId::None
+    // shape as json.format/json.validate above. The only call site of
+    // EditorSession::beginGitDiffIndexing() in this codebase (no automatic
+    // trigger yet, see dispatchGitRefreshDiffCommand()'s own comment).
+    commands.push_back(CommandDescriptor{
+        .id = u"git.refreshDiff", .title = u"Git: Refresh Diff Markers", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [&workspace, &gitDiffWorker]() {
+            dispatchGitRefreshDiffCommand(workspace.active(), gitDiffWorker);
+        }});
     commands.push_back(CommandDescriptor{
         .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",
         .commandId = CommandId::None,
@@ -2337,7 +2392,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                   &csvGridPanePendingSessionToken, &jsonPathBar]() {
+                   &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2348,7 +2403,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                jsonPathBar));
+                jsonPathBar, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2380,7 +2435,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                        &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                       &csvGridPanePendingSessionToken, &jsonPathBar, presetName = std::u16string(choice.name)]() {
+                       &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker,
+                       presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2391,7 +2447,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                jsonPathBar));
+                jsonPathBar, gitDiffWorker));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2414,7 +2470,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                   &csvGridPanePendingSessionToken, &jsonPathBar]() {
+                   &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2424,7 +2480,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                jsonPathBar));
+                jsonPathBar, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
@@ -3480,19 +3536,26 @@ void applyLogIndexReadyMessage(Workspace& workspace, RenderPipeline& renderPipel
 // CsvModelWorker, GitDiffWorker posts even a std::nullopt result - see
 // git_diff_worker.h's header comment) and owns a heap-allocated
 // std::optional<std::vector<LineDiffRegion>>* that must be reconstructed
-// into a unique_ptr immediately to avoid leaking it. Deliberately the
-// MINIMAL shape (no hwnd/renderPipeline/pane) - this WI adds no UI to
-// refresh, same "UIが無いため再描画の必要が無い" treatment
-// applyLogIndexReadyMessage() had before WI-14c later enriched it with
-// hwnd/renderPipeline for pushing log visuals; a future Git gutter-UI sub-WI
-// will grow this function's parameter list the same way, not before.
-void applyGitDiffReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+// into a unique_ptr immediately to avoid leaking it.
+// WI-17c: gained hwnd/renderPipeline (previously just workspace/wParam/
+// lParam, WI-17b - "no UI consumes gitDiff() yet" no longer holds), same
+// enrichment applyLogIndexReadyMessage() got from WI-14c. The result is
+// ALWAYS cached into its owning EditorSession regardless of whether it's the
+// active tab (same as applyLogIndexReadyMessage()'s own unconditional
+// apply) - only the gutter repaint is gated on "is this the active tab
+// right now."
+void applyGitDiffReadyMessage(Workspace& workspace, RenderPipeline& renderPipeline, HWND hwnd, WPARAM wParam,
+                              LPARAM lParam) {
     const std::unique_ptr<std::optional<std::vector<neomifes::git::LineDiffRegion>>> result(
         reinterpret_cast<std::optional<std::vector<neomifes::git::LineDiffRegion>>*>(lParam));
     const auto* const token = reinterpret_cast<const void*>(wParam);
     for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
         if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
             workspace.sessionAt(i).applyGitDiffResult(std::move(*result));
+            if (i == workspace.activeIndex()) {
+                pushGitDiffVisualsForSession(renderPipeline, workspace.sessionAt(i));
+                ::InvalidateRect(hwnd, nullptr, FALSE);
+            }
             break;
         }
     }
@@ -3615,7 +3678,7 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
                       const void*& csvGridPanePendingSessionToken, HWND hwnd, UINT msg, WPARAM wParam,
                       LPARAM lParam) {
     if (msg == neomifes::git::kMsgGitDiffReady) {
-        applyGitDiffReadyMessage(workspace, wParam, lParam);
+        applyGitDiffReadyMessage(workspace, renderPipeline, hwnd, wParam, lParam);
         return;
     }
     if (msg == neomifes::render::kMsgSyntaxTokensReady) {
@@ -3891,7 +3954,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
                                              userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
                                              jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                                             csvGridPanePendingSessionToken, jsonPathBar);
+                                             csvGridPanePendingSessionToken, jsonPathBar, *gitDiffWorker);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
