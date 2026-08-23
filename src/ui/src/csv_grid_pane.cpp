@@ -206,7 +206,7 @@ void CsvGridPane::onParentResized(std::uint32_t parentWidth, std::uint32_t paren
     const auto marginPx        = static_cast<int>(kFilterMarginDips * dpiScale);
     const auto labelWidthPx    = static_cast<int>(kFilterLabelWidthDips * dpiScale);
     const auto controlHeightPx = static_cast<int>(kFilterControlHeightDips * dpiScale);
-    const auto controlYPx      = topPx + (filterRowPx - controlHeightPx) / 2;
+    const auto controlYPx      = topPx + ((filterRowPx - controlHeightPx) / 2);
 
     if (m_hwndFilterLabel) {
         ::SetWindowPos(m_hwndFilterLabel.get(), nullptr, marginPx, controlYPx, labelWidthPx, controlHeightPx,
