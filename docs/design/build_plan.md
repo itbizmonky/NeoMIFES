@@ -176,7 +176,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 - [ ] **WI-16f以降** Phase 10.2 の残り (列固定・セル編集・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-15f以降** Phase 10.3 の残り (XML対応・XPath・真の左右分割ペイン化) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
-- [ ] **WI-17d以降** Git統合の UI化残り (保存/編集時の自動再diffトリガー・Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュコマンドはWI-17cで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
+- [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
+- [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
   - 🎉 **M5 達成目標: v1出荷 (軽量版)**
 
@@ -1823,6 +1824,46 @@ WI-17a/bで実装した`GitDiffWorker`/`EditorSession::gitDiff()`系配線がUI�
 **最終ゲート:** Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、対象6ファイル(`main.cpp`/`normal_mode_wiring.cpp`/`render_pipeline.cpp`/`csv_grid_pane.cpp`/`git_diff_bridge.h`/`app_git_diff_bridge_test.cpp`)clang-tidy新規警告0、CI (`32613512464`) green。
 
 コミット済み(`aae50cb`/`43d99c6`)、push済み(ユーザーの明示指示`pushせよ`により実施)。Phase 11.1は「左ガター差分マーカーUI+手動リフレッシュ」まで完了 — 自動トリガー・Gitペイン・Diffビュー・Blame・Commit・Branch切替は全て後続サブWI(WI-17d以降)へ。次はWI-17d(Git統合の自動トリガー/Gitペイン/Diffビュー)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
+## WI-17d — Git統合 保存時の自動再diffトリガー
+
+**目的:** WI-17c完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17d: Git統合UI化の続き/WI-16f: CSVの続き/WI-15f: JSON/XML Treeの続き)を提示し、**「WI-17d: Git統合UI化の続き(推奨)」**が選ばれた。
+
+master_roadmap.md §11.1のUI/UX節が要求する残りは「保存/編集時の自動再diffトリガー」「Gitペイン(`Ctrl+Shift+G`)」「Diffビュー(`Alt+D`)」の3つだが、**本WIはスコープを意図的に絞り、保存時の自動再diffトリガーのみを対象とした。** 着手前調査で、Gitペインは`Ctrl+Shift+G`が既に`CsvGridToggle`と衝突しており、かつ`GitRepository`に「変更ファイル一覧」を返すAPIが存在しない(新規`statusList()`相当が必要)ため別サブWI(WI-17e)、Diffビューは`src/render/`/`src/ui/`のどこにも分割ビュー基盤が無く新規レンダリング機構が必要なためさらに大きい別サブWI(WI-17f以降)と判断した。保存トリガーは既存の非同期基盤(WI-17b/c実装済み)をそのまま呼ぶだけの純粋な配線作業であり、単独で価値のある最小スライスとして切り出した。
+
+### 着手前調査・設計方針
+
+Plan agentによる検証を経て設計を確定した。
+
+- **保存の呼び出し経路は「ファイルを開く」と異なり真に単一の合流点である。** `document::saveFile()`の呼び出し元は自動保存(対象外)と`performSave()`(唯一のユーザー起動保存経路)の2箇所のみ。`performSave()`の呼び出し元は`dispatchSaveCommand()`(Ctrl+S/Ctrl+Shift+S/メニューの唯一の経路、本WIの対象)と`confirmDiscardIfDirty()`のSaveブランチ(タブ/ウィンドウクローズ時の確認ダイアログ経由、**意図的に対象外** — セッションが破棄/非表示になる直前で再diffが無意味なため)の2つ。
+- `EditorSession::beginGitDiffIndexing()`は既にUntitledバッファへの安全なno-op契約を持つ。Untitledバッファの初回Save-Asでも、`performSave()`内の`session.setSavedPath()`がreturn前に同期的に完了するため特別扱い不要。
+- `dispatchCommand()`(単一switch文の合流点)は`CommandDispatchContext`を構築する6箇所全てから同じ形で呼ばれるため、新しい依存(`git::GitDiffWorker&`)を届けるには、既存の`csvGridPane`/`csvGridPanePendingSessionToken`フィールド(WI-16c)と同じパターンで`CommandDispatchContext`自体に新規フィールドを追加するのが正しい設計とした — 5コマンドファミリー(Copy/Cut/Paste/Undo/Redo等)は触れないが、それらに個別パラメータを追加するより安い。
+
+### 実施内容 (1コミット)
+
+`feat(app)`: `CommandDispatchContext::gitDiffWorker`新設+6箇所配線+`dispatchSaveCommand()`の自動トリガー+最終ゲート+実機ドッグフーディング (`cdb9c66`)
+
+新規レンダリング/新規ヘッドレスロジックが無いため、WI-17cの2コミット構成と異なり1コミットで完結した。
+
+### DoD
+
+- [x] `CommandDispatchContext`に`gitDiffWorker`フィールドが追加され6箇所全ての構築サイトが更新されている
+- [x] `dispatchSaveCommand()`が保存成功後に`beginGitDiffIndexing()`を呼ぶ(`confirmDiscardIfDirty()`経由の保存では呼ばれない)
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] **実機ドッグフーディング**: (a) 追跡済みファイルを編集→Ctrl+S相当のWM_COMMAND(Save)送信→手動リフレッシュコマンドを使わずガターのマーカーが自動更新されることを確認、(b) Untitledバッファ→Save Asの経路も確認(保存先が未追跡ファイルのためマーカー無しだが、これはdiffの対象がないための正しい挙動)
+- [x] ドキュメント同期
+
+### 実装後の確定事項
+
+`performSave()`/`dispatchSaveCommand()`等は`normal_mode_wiring.cpp`の無名名前空間内(内部リンケージ)にあり`tests/unit/`から直接到達不可 — WI-17b/WI-17cと同じ扱い。本WIが追加したのは`EditorSession::beginGitDiffIndexing()`(既に単体テスト済み)への1行の呼び出しのみで新規の純粋ロジックが無いため、**新規単体テストは追加せず動作確認は実機ドッグフーディングのみで行った。**
+
+**実機ドッグフーディングで、追跡済みファイルの編集→保存(WM_COMMAND直接送信でCtrl+Sを再現)→手動コマンド無しでのガター自動更新を、ピクセル単位で確認した。** サンプルファイルの1行を編集し保存後、ガターのx=9座標でRGB(229,155,53)(WI-17cのテーマで定義した`diffModified`のオレンジ色そのもの)を確認、他の行は背景色RGB(30,30,30)のまま — 意図通りの1行のみへの正確な反映。Untitledバッファ→Save Asの経路も確認したが、保存先ファイルが`git add`されていない(未追跡)ためマーカーは表示されなかった — これはGitDiffWorkerの既存契約(未追跡ファイルはdiff対象外)通りの正しい挙動であり、バグではない。副次的な発見として、NeoMIFESはシングルインスタンス制約を持つ(2つ目のプロセス起動は引数なしで即終了)ことをドッグフーディング中に確認した。
+
+**最終ゲート:** Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、clang-tidy新規警告0。
+
+コミット済み(`cdb9c66`)、pushはユーザーの明示指示待ち。Phase 11.1は「左ガター差分マーカーUI+手動リフレッシュ+保存時自動トリガー」まで完了 — Gitペイン・Diffビュー・Blame・Commit・Branch切替は全て後続サブWI(WI-17e以降)へ。次はWI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレスAPI追加から)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
 
 ---
 

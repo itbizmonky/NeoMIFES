@@ -15,7 +15,7 @@
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: 列固定・セル編集・式列 (WI-16f以降)
 > - Phase 10.3 (JSON/XML Tree) 残り: XML対応・XPath・真の左右分割ペイン化 (WI-15f以降)
-> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ)はWI-17c(2026-08-23)で完了済み。残りは保存/編集時の自動再diffトリガー・Gitペイン・最小限のDiffビュー (WI-17d以降)
+> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
 > **🧊 凍結(着手しない、商用配布を将来検討する際に再評価):**
@@ -200,7 +200,8 @@
 | **10.3e** | **JSONPath 🎉** (`neomifes::jsontree::json_path`自前実装、`ui::JsonPathBar`、コマンドパレット限定「JSON: Evaluate JSONPath」) | ✅ **完了 (WI-15e、2026-08-22、§3.95参照)。🎉 Phase 10.3 JSONPath達成** |
 | **11.1b** | **Git統合 非同期化+EditorSession配線** (`GitDiffWorker`、`diffAgainstHead()`のBufferSnapshot化、`EditorSession::gitDiff()`系4点、UIなし) | ✅ **完了 (WI-17b、2026-08-22、§3.96参照)** |
 | **11.1c** | **Git統合 左ガター差分マーカーUI 🎉** (手動リフレッシュコマンド「Git: Refresh Diff Markers」、`GitDiffMarker`/`GitDiffKind`、実機ドッグフーディングで重大バグ2件発見・解消) | ✅ **完了 (WI-17c、2026-08-23、§3.97参照)。🎉 Phase 11.1 左ガターUI達成** |
-| 10.2/10.3残り、11.1残り → v1出荷判定 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(自動トリガー・Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16f/WI-15f/WI-17d以降で確定予定) |
+| **11.1d** | **Git統合 保存時の自動再diffトリガー** (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) | ✅ **完了 (WI-17d、2026-08-23、§3.98参照)** |
+| 10.2/10.3残り、11.1残り → v1出荷判定 | CSV(列固定/セル編集/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16f/WI-15f/WI-17e以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2817,6 +2818,30 @@ WI-17a/bで作った`GitDiffWorker`/`EditorSession::gitDiff()`系配線がUIか�
 
 ---
 
+### 3.98 WI-17d (Git統合 保存時の自動再diffトリガー) 完了記録 (2026-08-23)
+
+WI-17c完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17d: Git統合UI化の続き/WI-16f: CSVの続き/WI-15f: JSON/XML Treeの続き)を提示し、**「WI-17d: Git統合UI化の続き(推奨)」**が選ばれた。
+
+master_roadmap.md §11.1のUI/UX節が要求する残り3項目(自動再diffトリガー・Gitペイン・Diffビュー)のうち、**本WIはスコープを意図的に絞り保存時の自動再diffトリガーのみを対象とした。** Gitペインは`Ctrl+Shift+G`が既存`CsvGridToggle`と衝突しかつ`GitRepository`に「変更ファイル一覧」を返すAPIが無いため別サブWI(WI-17e)、Diffビューは分割ビュー基盤が皆無で新規レンダリング機構が必要なためさらに大きい別サブWI(WI-17f以降)と判断。保存トリガーは既存の非同期基盤をそのまま呼ぶだけの純粋な配線作業であり単独で価値のある最小スライスとして切り出した。
+
+**設計上の要点:**
+- `document::saveFile()`の呼び出し元は自動保存とユーザー起動保存(`performSave()`)の2箇所のみ — 「ファイルを開く」の4箇所以上に分散した経路と異なり真に単一の合流点。`performSave()`の呼び出し元のうち`dispatchSaveCommand()`(Ctrl+S/Ctrl+Shift+S/メニュー)のみを対象とし、`confirmDiscardIfDirty()`のSaveブランチ(タブ/ウィンドウクローズ確認ダイアログ経由)は意図的に対象外とした(セッションが破棄/非表示になる直前で再diffが無意味なため)。
+- `dispatchCommand()`(単一switch文の合流点)が`CommandDispatchContext`を構築する6箇所全てから同じ形で呼ばれるため、新しい依存(`git::GitDiffWorker&`)を届けるには既存の`csvGridPane`フィールド(WI-16c)と同じパターンで`CommandDispatchContext`自体に新規フィールドを追加した。
+
+### 実施内容 (1コミット)
+
+`feat(app)`: `CommandDispatchContext::gitDiffWorker`新設+6箇所配線+`dispatchSaveCommand()`の自動トリガー+最終ゲート+実機ドッグフーディング (`cdb9c66`)
+
+新規レンダリング/新規ヘッドレスロジックが無いため、WI-17cの2コミット構成と異なり1コミットで完結した。
+
+**実機ドッグフーディングで、追跡済みファイルを編集→Ctrl+S相当のWM_COMMAND(Save)直接送信→手動リフレッシュコマンド無しでのガター自動更新をピクセル単位で確認した。** ガターx=9座標でRGB(229,155,53)(WI-17cの`diffModified`テーマ色そのもの)を確認、他行は背景色のまま — 意図通り1行のみへの正確な反映。Untitledバッファ→Save Asの経路も確認したが保存先が未追跡ファイルのためマーカー無し(GitDiffWorkerの既存契約通りの正しい挙動、バグではない)。副次的にNeoMIFESのシングルインスタンス制約(2つ目のプロセスは引数なしで即終了)を発見した。
+
+**最終ゲート:** Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、clang-tidy新規警告0。
+
+コミット済み(`cdb9c66`)、pushはユーザーの明示指示待ち。Phase 11.1は「左ガター差分マーカーUI+手動リフレッシュ+保存時自動トリガー」まで完了 — Gitペイン・Diffビュー・Blame・Commit・Branch切替は全て後続サブWI(WI-17e以降)へ。次はWI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレスAPI追加から)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2873,9 +2898,9 @@ v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
 LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
 着手しないこと。目安+10〜15 WI。
 
-続けてRESUME_HERE.md §3.97 (WI-17c Git統合 左ガター差分マーカーUI
-完了記録、実機ドッグフーディングで発見した重大バグ2件の記録を含む)を
-読んで詳細な現状を把握せよ。
+続けてRESUME_HERE.md §3.98 (WI-17d Git統合 保存時の自動再diffトリガー
+完了記録)を読んで詳細な現状を把握せよ。§3.97 (WI-17c、実機ドッグ
+フーディングで発見した重大バグ2件の記録を含む)も背景として参照。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
@@ -3044,12 +3069,17 @@ push済み(2026-08-23、コミット`aae50cb`/`43d99c6`、CI green確認済み)�
 配置順序/`initializeLibgit2()`未呼び出し)の詳細はRESUME_HERE.md
 §3.97参照。
 
-次はWI-17d(Git統合のUI/トリガー配線残り: Gitペイン・Diffビュー・
-保存時の自動再diffトリガー)、Phase 10の残り(WI-16f以降: 列固定・
-セル編集・式列、またはWI-15f以降: XML対応・XPath・真の左右分割
-ペイン化)、またはユーザー指定の次項目。着手前にbuild_plan.md §5と
-master_roadmap.md §11.1(または§10.2/§10.3)を読み、本書§5と同じ
-形式でサブWIへ切り直すこと。
+続けてWI-17d(Git統合 保存時の自動再diffトリガー)も完了した
+(2026-08-23、コミット`cdb9c66`、実機ドッグフーディングでピクセル
+単位確認済み)。詳細はRESUME_HERE.md §3.98参照。push はユーザーの
+明示指示待ち。
+
+次はWI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレス
+API追加から)、Phase 10の残り(WI-16f以降: 列固定・セル編集・式列、
+またはWI-15f以降: XML対応・XPath・真の左右分割ペイン化)、または
+ユーザー指定の次項目。着手前にbuild_plan.md §5とmaster_roadmap.md
+§11.1(または§10.2/§10.3)を読み、本書§5と同じ形式でサブWIへ
+切り直すこと。
 
 git log origin/main..HEAD で未pushの差分が無いことを確認してから
 作業を開始すること。

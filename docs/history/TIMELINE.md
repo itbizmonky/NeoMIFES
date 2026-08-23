@@ -3390,4 +3390,18 @@ Session 108でのスコープ確定を受け、ユーザーの「次のPhaseに�
 
 次はWI-17d(Git統合のUI/トリガー配線残り: Gitペイン・Diffビュー・保存時の自動再diffトリガー)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
 
+## Session 110 (2026-08-23): WI-17d(Git統合 保存時の自動再diffトリガー)完了
+
+WI-17c完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17d: Git統合UI化の続き/WI-16f: CSVの続き/WI-15f: JSON/XML Treeの続き)を提示し、**「WI-17d: Git統合UI化の続き(推奨)」**が選ばれた。
+
+**スコープ決定:** master_roadmap.md §11.1が要求する残り3項目(自動再diffトリガー・Gitペイン・Diffビュー)のうち、本WIは保存時の自動再diffトリガーのみに絞った。着手前調査(直接コード読解+Plan agentによる検証)で、Gitペインは`Ctrl+Shift+G`が既存`CsvGridToggle`と衝突しかつ`GitRepository`に「変更ファイル一覧」を返すAPIが無いこと、Diffビューは分割ビュー基盤が皆無で新規レンダリング機構が必要なことを確認し、いずれも規模の大きい別サブWI(WI-17e/WI-17f以降)へ先送りする判断の根拠とした。
+
+**設計:** `document::saveFile()`の呼び出し元が自動保存とユーザー起動保存の2箇所のみという「ファイルを開く」とは対照的な真に単一の合流点であることを確認し、`dispatchSaveCommand()`(Ctrl+S/Ctrl+Shift+S/メニュー)のみを対象とした。タブ/ウィンドウクローズ確認ダイアログ経由の保存(`confirmDiscardIfDirty()`)は意図的に対象外(セッションが破棄/非表示になる直前で再diffが無意味なため)。新しい依存(`git::GitDiffWorker&`)を`dispatchCommand()`の単一switch文まで届けるため、既存の`csvGridPane`フィールド(WI-16c)と同じパターンで`CommandDispatchContext`自体に新規フィールドを追加、6箇所の構築サイト全てへ配線した。
+
+**実装は1コミット(`cdb9c66`)** — WI-17cの2コミット構成と異なり、新規レンダリング/新規ヘッドレスロジックが無い純粋な配線作業のため。実機ドッグフーディングで、追跡済みファイルを編集しCtrl+S相当のWM_COMMAND(Save)を直接送信すると、手動リフレッシュコマンドを一切使わずガターにRGB(229,155,53)(WI-17cの`diffModified`テーマ色そのもの)のマーカーが正確な行にのみ出現することをピクセル単位で確認した。Untitledバッファ→Save Asの経路も確認したが、保存先が未追跡ファイルのためマーカーは表示されなかった — これはGitDiffWorkerの既存契約(未追跡ファイルはdiff対象外)通りの正しい挙動であり、バグではないと判定した。副次的な発見として、NeoMIFESがシングルインスタンス制約を持つ(引数無しの2つ目のプロセス起動は即座に終了する)ことがドッグフーディング中に判明した。
+
+最終ゲート: Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、clang-tidy新規警告0。コミット(`cdb9c66`)はpushはユーザーの明示指示待ち。ドキュメント同期(build_plan.md WI-17dセクション新設、master_roadmap.md §11.1実装後の確定事項+フェーズ状況表、RESUME_HERE.md §3.98新設+冒頭コールアウト+§6更新)は本セッション内で完了。
+
+次はWI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレスAPI追加から)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
