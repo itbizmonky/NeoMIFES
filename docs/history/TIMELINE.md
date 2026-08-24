@@ -3430,4 +3430,24 @@ WI-17d完了後、ユーザーの「次のPhaseに進め」への回答として
 
 最終ゲート: Debug/Release/ubsan全1462/1462件green、clang-tidy新規警告0。ドキュメント同期(build_plan.md/master_roadmap.md/RESUME_HERE.mdへ追記、issueを解決済みへ更新)も完了。
 
+## Session 112 (2026-08-25): WI-15f(XML ツリーモデル ヘッドレス基盤)完了、pugixml→tree-sitter-xml設計転換
+
+WI-16f push後(コミット`932d0f4`〜`08322ca`、CI green確認)、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15f: JSON/XML Treeの続き/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15f: JSON/XML Treeの続き(推奨)」**が選ばれた。
+
+**設計転換(本セッション最大の技術的判断):** master_roadmap.md §10.3原案の「XML: `pugixml`」採用を覆した。着手前調査(2件のExplore agent並行調査+自身の直接ソース読解+Plan agentによる検証、Plan Modeでユーザー承認済み)の結果、`pugixml`はノード単位の位置復元APIを一切公開しない(エラー時オフセットのみ)ため、JSON側が`nlohmann`の同種の欠落に対処した独自`PositionScanner`を、構文要素がより多いXML向けにさらに複雑な形で再実装する必要があると判明。一方、Phase 7r以来ベンダリング済みの`tree-sitter-xml`は新規依存・新規ADRが一切不要(ADR-014が既に「不正な入力に対する堅牢性」という設計哲学を承認済みで、本WIの意図と完全に一致)で、決定的に、既存のtree-sitter利用(`outline.cpp`)が入力をUTF-16LEとしてパーサへ渡しているため`ts_node_start_byte(node)/2`が直接このプロジェクトの`document::TextPos`になる — 位置復元パスが実質無料で手に入る。WI-15aのsimdjson→nlohmann転換と同種の、着手前調査による原案の意図的な上書きとして扱った。
+
+**実装前の技術検証(CLAUDE.mdルール3):** ベンダリング済み`tree-sitter-xml` v0.7.0の実パーサに対しスタンドアロンプローブ(`ts_probe_xmltree`、スクラッチのみ・コミットなし)を作成・実行し、grammar構造(`document`の`"root"`必須フィールドによるルート要素の直接取得、`Attribute`/`content`の構造的分離、`AttValue`がリテラルテキストの子ノードを持たないこと、自己終了タグ`EmptyElemTag`と明示的空要素`STag`+`ETag`(contentノード自体が存在しない)の区別、空文書・不整合閉じタグがいずれも`"root"`フィールド解決不能な状態に一様に縮退すること、5000階層の深いネストでクラッシュ・スタックオーバーフローが発生しないこと)を実証してから実装に着手した。
+
+**設計:** `XmlNode`/`XmlAttribute`/`XmlNodeKind`/`XmlTree`は`JsonNode`の機械的な型(`neomifes::jsontree`と同型のモジュール構成)だが1点意図的に異なる — `parseXmlTree()`は`std::optional`を返さず常に`XmlTree`を返す。JSON側はnlohmannが厳格なfail-fastパーサであるため`std::optional`が自然な契約だったが、tree-sitterは本質的にエラー耐性パーサ(ADR-014の採用根拠そのもの)であり、この性質をXML側では活かす設計にした(ルート要素が解決できない場合は`XmlNodeKind::Error`という不透明な葉ノードをルートとして返す)。木構築(`buildXmlTree()`)は明示スタックによる反復実装(`ContentFrame`、`json_tree.cpp`の`PendingContainer`/`consumeNextChild()`と同じ「stackを再確保しうる操作の前に必要な値を全て捕捉してから`top`を破棄する」イディオムを踏襲)。
+
+**実装完了後、単体テスト作成中に予期しない`hasErrors=true`という結果に遭遇し、追加調査で新たな限界を発見した。** 深いネスト回帰テスト(当初depth=3000)が失敗し、二分探索プローブ(`ts_probe_xmldepth`、これもスクラッチのみ)で閾値を実測した結果、**tree-sitter-xml自体がXMLタグのネスト深さ約505〜510階層を境に、整形式・バランス済み入力であっても`ts_node_has_error()`が`true`になる(誤検知する)という、当初のWI-15f計画時点のプローブ(5000階層、`hasError=1`という不可解な結果を保留していた)では原因未特定だった別の限界だと判明した。** クラッシュ・スタックオーバーフローではなく(その観点では5000階層まで安全と別途確認済み)、既存の「ルート要素解決不能→`XmlNodeKind::Error`センチネル」設計が安全に縮退するため対応不要と判断し、`docs/issues/xmltree_deep_nesting_misparse_limit.md`として起票した(P2、実例確認まで待機)。単体テストの深いネスト回帰テストは安全域(450階層)へ調整し、テスト自体もclang-tidyの`readability-function-cognitive-complexity`対応でヘルパー関数(`buildDeepNestingXml()`/`assertDeepNestingShape()`)へ抽出した。
+
+**検証はサブエージェントへの委任(Release/ubsanビルド+テスト、clang-tidy詳細確認)を活用した。** 最初のエージェントの中間報告が「clang-tidy: 3エラー/3警告」と件数のみだったため、詳細な診断テキストを取得する2件目のエージェントを追加で起動し、6件全ての正確な行番号・チェック名・メッセージを入手してから修正した(`xml_tree.cpp`側3件: `misc-const-correctness`×2、`hicpp-use-auto`。テスト側3件: `readability-function-cognitive-complexity`、`readability-math-missing-parentheses`、`readability-container-data-pointer`)。
+
+**追記: ubsanゲートを担当したバックグラウンドエージェントの完了通知が異例に長時間届かなかったため、自身で直接`cmake --build --preset ubsan`+`ctest --preset ubsan`を実行し確定した(1473/1473件green)。** ビルド自体は既に完了しており(新規xmltreeファイル4件のみ再ビルド対象)、テスト実行のみで確定できた — エージェントが実際に停止していたのか通知経路の問題だったのかは不明だが、いずれにせよ自己検証で確実な結果を得られたため対応を続行した。最終ゲート: Debug/Release/ubsan全1473/1473件green、clang-tidy新規警告0(対象2ファイル、上記6件全て解消済み)。2コミット(`9470227`+ドキュメント同期コミット)作成、pushはユーザーの明示指示待ち。ドキュメント同期(build_plan.md WI-15fセクション新設+§0/§5要約更新、master_roadmap.md §10.3実装後の確定事項+データ構造節のpugixml取り消し線+フェーズ状況表、RESUME_HERE.md §3.100新設+冒頭コールアウト+§6更新)は本セッション内で完了。
+
+続けてユーザーから「今後の開発計画を提示せよ」と指示され、残りスコープ(WI-15g以降/WI-16g/WI-17e)と2026-08-23合意の全体像を提示、WI-15g(XMLツリーUI)から着手することを推奨した。続けて「次のPhaseに進め」と指示され、AskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し**「WI-15g: XMLツリーUI(推奨)」**が選ばれた。**ただし、WI-15f計画自身の非スコープ節が「非同期ワーカー(`XmlTreeWorker`)・`EditorSession`配線はWI-15g以降、UIはWI-15h以降」と段階分けを既に定めていたため、AskUserQuestionの選択肢ラベル(「WI-15g: XMLツリーUI」)が自分自身の計画と矛盾していたことに気づいた。** ユーザーの選択意図(JSON/XML Tree方面の続行)を尊重しつつ、実際のWI-15gのスコープは元の計画通り`XmlTreeWorker`+`EditorSession`配線(UIなし、WI-15b直テンプレート)とし、ツリーUI自体は次のサブWI(WI-15h)へ回す修正を行った。
+
+次はWI-15g(`XmlTreeWorker`+`EditorSession`配線、UIなし)。
+
 <!-- 次セッションはここに追記 -->

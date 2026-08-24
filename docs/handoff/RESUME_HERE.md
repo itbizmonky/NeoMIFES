@@ -14,7 +14,7 @@
 >
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: セル編集はWI-16f(2026-08-24)で完了済み。残りは列固定・式列 (WI-16g以降)
-> - Phase 10.3 (JSON/XML Tree) 残り: XML対応・XPath・真の左右分割ペイン化 (WI-15f以降)
+> - Phase 10.3 (JSON/XML Tree) 残り: XMLヘッドレス基盤はWI-15f(2026-08-25)で完了済み。残りはXPath・真の左右分割ペイン化・XMLツリーUI (WI-15g以降)
 > - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
@@ -2870,6 +2870,29 @@ master_roadmap.md §10.2の残り3項目(列固定・セル編集・式列)の�
 
 ---
 
+### 3.100 WI-15f (XML ツリーモデル ヘッドレス基盤) 完了記録 (2026-08-25)
+
+WI-16f push後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15f: JSON/XML Treeの続き/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15f: JSON/XML Treeの続き(推奨)」**が選ばれた。
+
+**設計転換(重要):** master_roadmap.md §10.3原案の「XML: `pugixml`」採用を、着手前調査(2件のExplore agent並行調査+直接ソース読解+Plan agent検証)で覆した。`pugixml`はノード単位の位置復元APIを一切公開しないため、JSON側の`PositionScanner`回避策をより複雑な形で再実装する必要がある。一方、Phase 7rで既にベンダリング済みの`tree-sitter-xml`は新規依存・新規ADR不要(ADR-014が既承認)で、かつ既存のtree-sitter利用がUTF-16LEでパーサへ入力を渡しているため`ts_node_start_byte(node)/2`が直接`document::TextPos`になる — 位置復元が実質無料。WI-15aのsimdjson→nlohmann転換と同種の、着手前調査による原案の意図的な上書き。
+
+**実装前の技術検証:** ベンダリング済み`tree-sitter-xml` v0.7.0の実パーサに対するスタンドアロンプローブ(`ts_probe_xmltree`、スクラッチのみ)で、grammar構造(`document`の`"root"`必須フィールド、`Attribute`/`content`の構造的分離、自己終了タグvs明示的空要素の区別、空文書・不整合閉じタグの`ERROR`ノード縮退)と深いネスト(5000階層)でのクラッシュ非発生を実証してから実装した(CLAUDE.mdルール3)。
+
+**設計:** `XmlNode`/`XmlAttribute`/`XmlNodeKind`/`XmlTree`は`JsonNode`の機械的な型だが1点意図的に異なる — `parseXmlTree()`は`std::optional`を返さず常に`XmlTree`を返す(tree-sitterのエラー耐性を活かす設計、ルート要素解決不能時は`XmlNodeKind::Error`センチネル)。木構築は明示スタックによる反復実装(`misc-no-recursion`対応)。
+
+**追加で発見した限界:** 単体テスト作成中に`hasErrors=true`という予期しない結果に遭遇し、二分探索プローブ(`ts_probe_xmldepth`)で追加調査した結果、**tree-sitter-xml自体がXMLタグのネスト深さ約505〜510階層を境に、整形式・バランス済み入力であっても誤検知する**という別の限界を発見した。クラッシュではなく、既存のErrorセンチネル設計が安全に縮退するため対応不要と判断し、`docs/issues/xmltree_deep_nesting_misparse_limit.md`として起票(P2)。単体テストの深いネスト回帰テストは安全域(450階層)を使用。
+
+### 実施内容 (2コミット予定)
+
+1. `feat(xmltree)`: モジュール実装+CMake配線
+2. `feat(xmltree)`: 単体テストスイート(11件)+最終ゲート
+
+**最終ゲート:** Debug/Release/ubsan全1473/1473件green(バックグラウンドエージェントの完了通知が長時間届かなかったため、ubsanのみ自身で直接ビルド・実行して確定した)。clang-tidy新規警告0(対象2ファイル: `xml_tree.cpp`、`xmltree_xml_tree_test.cpp` — `misc-const-correctness`×2/`hicpp-use-auto`/`readability-function-cognitive-complexity`/`readability-math-missing-parentheses`/`readability-container-data-pointer`の計6件を解消)。
+
+コミット済み(`9470227`+本コミット)、pushはユーザーの明示指示待ち。Phase 10.3はXMLヘッドレス基盤まで完了 — XPath・真の左右分割ペイン化・XMLツリーUIは全て後続サブWI(WI-15g以降)へ。「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し**「WI-15g: XMLツリーUI(推奨)」**が選ばれたが、WI-15f計画の非スコープ節の段階分け(非同期ワーカー+EditorSession配線が先)に従い、WI-15gの実スコープは`XmlTreeWorker`+`EditorSession`配線(UIなし、WI-15b直テンプレート)とし、ツリーUI自体は次のサブWIへ回す。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2926,9 +2949,9 @@ v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
 LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
 着手しないこと。目安+10〜15 WI。
 
-続けてRESUME_HERE.md §3.99 (WI-16f CSV セル単位クリック編集完了記録、
-WI-16c以来の既存バグ発見の記録を含む)を読んで詳細な現状を把握せよ。
-§3.97/§3.98 (WI-17c/d、Git統合UI化)も背景として参照。
+続けてRESUME_HERE.md §3.100 (WI-15f XML ツリーモデル ヘッドレス基盤
+完了記録、pugixml→tree-sitter-xml設計転換の記録を含む)を読んで
+詳細な現状を把握せよ。§3.99 (WI-16f、CSVセル編集)も背景として参照。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した

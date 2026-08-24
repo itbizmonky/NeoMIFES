@@ -70,7 +70,7 @@ ctest --preset debug --output-on-failure
 >
 > **やる (残りスコープ):**
 > - Phase 10.2 (CSV) 残り: 列固定・式列 (WI-16g以降。セル編集はWI-16fで完了済み)
-> - Phase 10.3 (JSON/XML Tree) 残り: XML対応・XPath・真の左右分割ペイン化 (WI-15f以降)
+> - Phase 10.3 (JSON/XML Tree) 残り: XPath・真の左右分割ペイン化・XMLツリーUI (WI-15g以降。XMLヘッドレス基盤自体はWI-15fで完了済み)
 > - Phase 11.1 (Git統合) の UI 化残り: Gitペイン・最小限のDiffビュー (WI-17e以降。左ガター差分マーカー・保存時自動再diffトリガーはWI-17c/dで完了済み)
 > - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。
 >
@@ -150,7 +150,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a (ヘッドレス基盤) → WI-15b (非同期インデックス化 + EditorSession配線、UIなし) → WI-15c (ツリーUI MVP) → WI-15d (整形・バリデーション) まで進行、XML対応・XPath・JSONPath・真の左右分割ペイン化は残り(WI-15e以降)。CSV (§10.2) は WI-16a (ヘッドレス解析モデル) → WI-16b (非同期ワーカー + EditorSession配線、UIなし) → WI-16c (グリッドUI MVP) → WI-16d (フィルタ・ソート ヘッドレス計算基盤) → WI-16e (フィルタ・ソート EditorSession配線+UI) まで進行、列固定・セル編集・式列は残り(WI-16f以降)。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) に続き WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) まで進行、XPath・真の左右分割ペイン化・XMLツリーUIは残り(WI-15g以降)。CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -176,7 +176,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 - [x] **WI-16f** CSV セル単位クリック編集 (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、`applyCsvCellEdit()`、実機ドッグフーディングで`LVS_EX_FULLROWSELECT`未設定というWI-16c以来の既存バグを発見・解消) → コミット: `932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`
 - [ ] **WI-16g以降** Phase 10.2 の残り (列固定・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
-- [ ] **WI-15f以降** Phase 10.3 の残り (XML対応・XPath・真の左右分割ペイン化) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: (このセッション内、詳細は本書 §5 参照)
+- [ ] **WI-15g以降** Phase 10.3 の残り (XPath・真の左右分割ペイン化・XMLツリーUI) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
@@ -1927,6 +1928,60 @@ push前、ユーザーが実機でCSVグリッドのフィルタ行付近に表�
 2. **根本修正:** 新規`m_hwndFilterBackdrop`(無地の`WC_STATIC`)を`m_hwndFilterLabel`/`m_hwndFilterEdit`より先に生成しz-order背面に配置、フィルタ行バンド全体を隙間なく覆うようにした。
 
 コミット`25f0414`。Debug/Release/ubsan全1462/1462件green、clang-tidy新規警告0。実機ドッグフーディングでユーザー自身が解消を確認済み(2026-08-25)。
+
+---
+
+## WI-15f — XML ツリーモデル ヘッドレス基盤
+
+**目的:** WI-16f完了・push後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15f: JSON/XML Treeの続き/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15f: JSON/XML Treeの続き(推奨)」**が選ばれた。WI-15a〜eでJSON側が完結する一方、XML側はmaster_roadmap.md §10.3の原案で「pugixml採用」とスケッチされたまま毎回「ADR未発行のため対象外」と先送りされてきた、Phase 10.3最後の未着手領域。
+
+**前提:** WI-16f 完了・push・CI green確認 (2026-08-25)
+
+**参照:** `master_roadmap.md` §10.3、WI-15a セクション(本書上記、設計テンプレート)
+
+### 着手前調査で判明した原案からの設計転換 (pugixml → tree-sitter-xml)
+
+2件のExplore agentによる並行調査 + 直接のソース読解 + Plan agentによる検証を経て、**原案の`pugixml`採用を覆した。**
+
+- `pugixml`(MIT、FetchContent導入自体は容易)は**ノード単位の位置復元APIを一切公開しない**(エラー時のオフセットのみ)。JSON側が`nlohmann`の同種の欠落に対し独自`PositionScanner`で対応した回避策を、XML側で(構文要素がJSONより多い分、より複雑な形で)再実装する必要が生じる。
+- 一方`tree-sitter-xml`はPhase 7r以来ベンダリング済み(構文ハイライト用)で新規依存・新規ADRが一切不要。決定的な発見として、既存のtree-sitter利用(`outline.cpp`)は入力をUTF-16LEとしてパーサへ渡しており、`ts_node_start_byte(node)/2`が直接このプロジェクトの`document::TextPos`そのものになる — 位置復元パスが実質無料で手に入る。
+- ADR新規発行は不要(ADR-014がtree-sitterの採用とその「不正な入力に対する堅牢性」という設計哲学を既に承認済みで、本WIの意図と完全に一致するため)。
+
+### 実装前の技術検証 (CLAUDE.mdルール3)
+
+標準入力プローブ(`ts_probe_xmltree`、スクラッチのみ・コミットなし)をベンダリング済み`tree-sitter-xml` v0.7.0の実パーサ against実行し、以下を実証してから実装した:
+
+- `document`ノードは`"root"`という必須フィールドでルート要素を直接取得できる(prolog/Comment/PIを自動的にスキップ)
+- `Attribute`は`content`と構造的に独立、`AttValue`は引用符トークンのみでリテラルテキストの子ノードを持たない(生スパン切り出しが必須)
+- 自己終了タグ(`EmptyElemTag`)と明示的空要素(`STag`+`ETag`、`content`ノード自体が存在しない)は文法上区別される
+- 空文書・不整合閉じタグはいずれもトップレベルが`"root"`フィールド解決不能な状態になる(前者は`document`型、後者は`ERROR`型だが、どちらも同一のnullチェックで一様に処理できる)
+- 深いネスト(5000階層)で**クラッシュ・スタックオーバーフローは発生しない**
+
+### 追加で発見した限界 (実装完了後、単体テスト作成中に判明)
+
+深いネスト回帰テスト作成中に`hasErrors=true`という予期しない結果に遭遇し、二分探索プローブ(`ts_probe_xmldepth`)で追加調査した結果、**tree-sitter-xml自体がXMLタグのネスト深さ約505〜510階層を境に、整形式・バランス済み入力であっても`ts_node_has_error()`が`true`になる(誤検知する)という別の限界を発見した。** クラッシュではなく、本モジュール既存の「ルート要素解決不能→`XmlNodeKind::Error`センチネル」設計が安全に縮退するため対応不要と判断し、`docs/issues/xmltree_deep_nesting_misparse_limit.md`として起票(P2、実例確認まで待機)。単体テストは安全域(450階層)を使うよう調整した。
+
+### 実施内容 (2コミット)
+
+1. `src/xmltree/`モジュール新設(`neomifes::jsontree`の機械的な型)、`XmlNode`/`XmlNodeKind`/`XmlAttribute`/`XmlTree`/`parseXmlTree()`実装 — 木構築は明示スタック(`misc-no-recursion`対応)、JSONと異なり`std::optional`を返さず常に`XmlTree`を返す(tree-sitterのエラー耐性を活かす意図的な設計差異)
+2. 単体テスト9カテゴリ11件(構造的正しさ/自己終了・明示的空要素の区別/属性両クォート形式/混在コンテンツ/実体参照/位置精度/退化・不正入力/BufferSnapshotオーバーロード/複数ピース境界/深いネスト回帰) + `docs/issues/xmltree_deep_nesting_misparse_limit.md`起票
+
+### DoD
+
+- [x] `XmlNode`/`XmlAttribute`/`XmlNodeKind`/`XmlTree`(公開ヘッダ、`document::TextPos`のみ依存)
+- [x] `parseXmlTree()`が`std::optional`を返さず常に`XmlTree`を返す
+- [x] 実装前の技術検証(軽量プローブ)の結果を実装後の確定事項に記録
+- [x] 木の走査が反復実装(明示スタック)、`misc-no-recursion`警告なし
+- [x] 深いネスト入力でのスタックオーバーフロー有無を実測し、ガードの要否を判断 — スタック安全性は5000階層まで確認しガード不要と確定。別途、パース精度の限界(約505〜510階層)を発見しissue化(上記参照)
+- [x] 単体テスト(複数ピース境界含む)が全てpass
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ドキュメント同期
+
+### 最終ゲート
+
+Debug/Release/ubsan全1473/1473件green(バックグラウンドエージェントの完了通知が長時間届かなかったため、ubsanのみ自身で直接ビルド・実行して確定した)。clang-tidy新規警告0(対象2ファイル: `src/xmltree/src/xml_tree.cpp`、`tests/unit/xmltree_xml_tree_test.cpp` — 前者3件・後者3件の指摘を全て解消: `misc-const-correctness`×2、`hicpp-use-auto`、`readability-function-cognitive-complexity`、`readability-math-missing-parentheses`、`readability-container-data-pointer`)。
+
+コミット済み(`9470227`+本コミット)、pushはユーザーの明示指示待ち。ユーザーへ「次のPhaseに進め」の回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し、**「WI-15g: XMLツリーUI(推奨)」**が選ばれた。次はWI-15g — ただし正確には、WI-15f計画の非スコープ節が定めた段階分け(非同期ワーカー+EditorSession配線が先、UIは次)に従い、WI-15gの実際のスコープは`XmlTreeWorker`+`EditorSession`配線(UIなし)とし、ツリーUI自体はその次のサブWIへ回す。
 
 ---
 

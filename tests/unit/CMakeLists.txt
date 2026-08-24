@@ -90,6 +90,7 @@ add_executable(neomifes_unit_tests
     jsontree_json_format_test.cpp
     jsontree_json_validate_test.cpp
     jsontree_json_path_test.cpp
+    xmltree_xml_tree_test.cpp
     app_json_tree_bridge_test.cpp
     app_json_fold_bridge_test.cpp
     csvmode_csv_model_test.cpp
@@ -113,6 +114,7 @@ target_link_libraries(neomifes_unit_tests
         neomifes::search
         neomifes::logmode
         neomifes::jsontree
+        neomifes::xmltree
         neomifes::csvmode
         neomifes::git
         neomifes::syntax

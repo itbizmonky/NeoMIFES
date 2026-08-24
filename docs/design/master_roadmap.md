@@ -285,7 +285,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
-| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **JSONPath達成 (WI-15a〜e完了、2026-08-22。XML対応/XPath/真の左右分割ペイン化は未着手、WI-15f以降)** | §10.3 |
+| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **XMLヘッドレス基盤達成 (WI-15a〜f完了、2026-08-25。XPath/真の左右分割ペイン化/XMLツリーUIは未着手、WI-15g以降)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **セル編集達成 (WI-16a〜f完了、2026-08-24。列固定/式列は未着手、WI-16g以降)** | §10.2 |
 | 11.1 | Git 統合 | **着手 (WI-17a〜d完了、2026-08-23): ヘッドレス基盤+非同期化+EditorSession配線+左ガター差分マーカーUI(手動リフレッシュ+保存時自動トリガー)まで実装済み。残りはGitペイン・Diffビュー(WI-17e〜)が🎯現在のゴール。Blame/Commit/Branch切替/3-Way Mergeは🧊凍結 (2026-08-23)** | §11.1 |
 | 11.2 | LSP 完全実装 | 🧊 **凍結 (2026-08-23、build_plan.md §0参照)** | §11.2 |
@@ -2279,8 +2279,8 @@ JSON / XML の階層をツリーで見つつ、テキストとしても編集で
 - 整形 / バリデーション / XPath (XML) / JSONPath (JSON)
 
 #### データ構造・アルゴリズム
-- JSON: `simdjson` 検討 (Phase 10 着手時 ADR)
-- XML: `pugixml` (MIT、軽量)
+- JSON: `simdjson` 検討 (Phase 10 着手時 ADR) → 実装は `nlohmann::ordered_json` に転換 (WI-15a、位置復元APIの欠如が両ライブラリ共通の制約と判明したため独自`PositionScanner`方式を採用、詳細は上記実装後の確定事項参照)
+- XML: ~~`pugixml` (MIT、軽量)~~ → **`tree-sitter-xml` を再利用 (WI-15f、位置復元API欠如の`pugixml`より有利と判明、新規ADR不要、詳細は上記実装後の確定事項参照)**
 - 巨大 JSON (1GB+) は SAX 解析 + 部分ツリー展開
 - XPath / JSONPath は自前実装
 
@@ -2349,6 +2349,16 @@ WI-15dの残り4項目(XML対応/XPath/JSONPath/真の左右分割ペイン化)�
 - **実機ドッグフーディングで、TaskDialogIndirectのモーダル性が同期SendMessageベースの自動化ハーネスを最大120秒ブロックする、この種のダイアログ機能では初めての制約が見つかった。** `EnumWindows`での独立したダイアログHWND発見+非同期PostMessageへの切り替えで対処、NeoMIFES自体の欠陥ではない。
 - XML対応・XPath・真の左右分割ペイン化は全て本サブWIのスコープ外(WI-15f以降)。
 - 詳細は`build_plan.md` WI-15eセクション参照。
+
+#### 実装後の確定事項 (WI-15f、XML ツリーモデル ヘッドレス基盤、2026-08-25)
+
+WI-15fで要件定義書§10の残り3項目(XML対応/XPath/真の左右分割ペイン化)のうち「XML対応」のヘッドレス基盤のみを実装した。
+
+- **本節冒頭「データ構造・アルゴリズム」の原案`pugixml`採用を覆し、Phase 7r以来ベンダリング済みの`tree-sitter-xml`を再利用する設計に転換した。** `pugixml`はノード単位の位置復元APIを一切公開しない(エラー時のオフセットのみ)ため、JSON側が`nlohmann`の同種の欠落に独自`PositionScanner`で対応した回避策を、XML側でより複雑な形で再実装する必要が生じる。一方`tree-sitter-xml`は新規依存・新規ADRが一切不要(ADR-014が既に承認済み)で、かつ既存のtree-sitter利用がUTF-16LEでパーサへ入力を渡しているため`ts_node_start_byte(node)/2`が直接`document::TextPos`になり、位置復元パスが実質無料で手に入ると判明した(WI-15aのsimdjson→nlohmann転換と同種の、着手前調査による原案の意図的な上書き)。
+- **`XmlNode`/`XmlTree`の設計は`JsonNode`と意図的に異なる点が1つある: `parseXmlTree()`は`std::optional`を返さず常に`XmlTree`を返す。** nlohmannが厳格なfail-fastパーサであるためJSON側は`std::optional`が自然な契約だったのに対し、tree-sitterは本質的にエラー耐性パーサ(ADR-014の採用根拠そのもの)であり、この性質をXML側では活かす設計にした。文書のルート要素が解決できない場合(空文書、または不整合な閉じタグ名で文書全体が1つの`ERROR`ノードへ縮退する場合など)は`XmlNodeKind::Error`という不透明な葉ノードをルートとして返す。
+- **実装完了後、単体テスト作成中に新たな限界を発見した: `tree-sitter-xml`自体がXMLタグのネスト深さ約505〜510階層を境に、整形式・バランス済み入力であっても`ts_node_has_error()`が`true`になる(誤検知する)。** クラッシュ・スタックオーバーフローではなく(5000階層まで安全と別途確認済み)、既存の「ルート要素解決不能→`XmlNodeKind::Error`センチネル」設計が安全に縮退するため対応不要と判断し、`docs/issues/xmltree_deep_nesting_misparse_limit.md`として起票した(P2)。
+- **XPath・真の左右分割ペイン化・XMLツリーUI(`ui::JsonTreePane`が`ui::OutlineItem`のみに依存しJSON非依存と判明済みのため、`app::buildXmlTreeItems()`ブリッジ関数を書くだけで再利用できる見込み)は全て本サブWIのスコープ外(WI-15g以降)。**
+- 詳細は`build_plan.md` WI-15fセクション参照。
 
 ---
 
