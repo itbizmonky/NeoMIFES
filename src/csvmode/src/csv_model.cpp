@@ -257,4 +257,25 @@ std::u16string csvCellValue(const document::Document& doc, const CsvCell& cell) 
     return csvCellValue(*doc.snapshot(), cell);
 }
 
+std::u16string escapeCsvCellText(std::u16string_view value, char16_t delimiter) {
+    const bool needsQuoting = value.find(delimiter) != std::u16string_view::npos ||
+                              value.find(u'"') != std::u16string_view::npos ||
+                              value.find(u'\r') != std::u16string_view::npos ||
+                              value.find(u'\n') != std::u16string_view::npos;
+    if (!needsQuoting) {
+        return std::u16string(value);
+    }
+    std::u16string escaped;
+    escaped.reserve(value.size() + 2);
+    escaped.push_back(u'"');
+    for (const char16_t ch : value) {
+        if (ch == u'"') {
+            escaped.push_back(u'"');
+        }
+        escaped.push_back(ch);
+    }
+    escaped.push_back(u'"');
+    return escaped;
+}
+
 }  // namespace neomifes::csvmode

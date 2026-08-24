@@ -12,6 +12,7 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "neomifes/document/text_pos.h"  // document::TextPos
@@ -131,5 +132,15 @@ private:
 // whole model.
 [[nodiscard]] std::u16string csvCellValue(const document::BufferSnapshot& snapshot, const CsvCell& cell);
 [[nodiscard]] std::u16string csvCellValue(const document::Document& doc, const CsvCell& cell);
+
+// The encode-side counterpart to csvCellValue() above (WI-16f, cell editing):
+// given a logical value the user just typed and the delimiter the
+// surrounding CsvModel was parsed with, produces the raw text to write back
+// into the document at a CsvCell's [startPos, endPos) range. Quotes the
+// result (doubling any embedded '"') iff `value` contains `delimiter`, '"',
+// '\r', or '\n' (RFC4180 §2.6) - otherwise returns `value` unchanged. An
+// empty `value` round-trips to an empty, unquoted cell (matching
+// csvCellValue()'s own unquoted branch for `""`).
+[[nodiscard]] std::u16string escapeCsvCellText(std::u16string_view value, char16_t delimiter);
 
 }  // namespace neomifes::csvmode

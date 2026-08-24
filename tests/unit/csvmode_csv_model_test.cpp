@@ -13,6 +13,7 @@ using neomifes::csvmode::csvCellValue;
 using neomifes::csvmode::CsvModel;
 using neomifes::csvmode::CsvParseError;
 using neomifes::csvmode::CsvParseOptions;
+using neomifes::csvmode::escapeCsvCellText;
 using neomifes::document::Document;
 using neomifes::document::TextRange;
 
@@ -172,6 +173,59 @@ TEST(CsvModelTest, UnquotedFieldValueIsReturnedVerbatim) {
     EXPECT_EQ(csvCellValue(doc, model->row(0)[0]), u"hello world");
 }
 
+// --- Encoding via escapeCsvCellText() (WI-16f, cell editing) --------------
+
+TEST(EscapeCsvCellTextTest, PlainValueIsReturnedUnquoted) {
+    EXPECT_EQ(escapeCsvCellText(u"hello world", u','), u"hello world");
+}
+
+TEST(EscapeCsvCellTextTest, EmptyValueRoundTripsToEmptyUnquotedCell) {
+    EXPECT_EQ(escapeCsvCellText(u"", u','), u"");
+}
+
+TEST(EscapeCsvCellTextTest, ValueContainingDelimiterIsQuoted) {
+    EXPECT_EQ(escapeCsvCellText(u"a,b", u','), u"\"a,b\"");
+}
+
+TEST(EscapeCsvCellTextTest, ValueContainingTabDelimiterIsQuoted) {
+    EXPECT_EQ(escapeCsvCellText(u"a\tb", u'\t'), u"\"a\tb\"");
+}
+
+TEST(EscapeCsvCellTextTest, ValueContainingQuoteIsQuotedAndQuoteIsDoubled) {
+    EXPECT_EQ(escapeCsvCellText(u"a\"b", u','), u"\"a\"\"b\"");
+}
+
+TEST(EscapeCsvCellTextTest, ValueContainingCrIsQuoted) {
+    EXPECT_EQ(escapeCsvCellText(u"a\rb", u','), u"\"a\rb\"");
+}
+
+TEST(EscapeCsvCellTextTest, ValueContainingLfIsQuoted) {
+    EXPECT_EQ(escapeCsvCellText(u"a\nb", u','), u"\"a\nb\"");
+}
+
+TEST(EscapeCsvCellTextTest, ValueContainingOnlyANonDelimiterCommaIsNotQuotedWhenDelimiterIsSemicolon) {
+    EXPECT_EQ(escapeCsvCellText(u"a,b", u';'), u"a,b");
+}
+
+TEST(EscapeCsvCellTextTest, RoundTripsWithCsvCellValueForUnquotedField) {
+    const Document doc   = makeDoc(u"hello world\n");
+    const auto     model = CsvModel::build(doc);
+    ASSERT_TRUE(model.has_value());
+    const auto& cell  = model->row(0)[0];
+    const auto  value = csvCellValue(doc, cell);
+    EXPECT_EQ(escapeCsvCellText(value, u','), u"hello world");
+}
+
+TEST(EscapeCsvCellTextTest, RoundTripsWithCsvCellValueForQuotedFieldWithEmbeddedQuote) {
+    const Document doc   = makeDoc(u"\"a\"\"b\"\n");
+    const auto     model = CsvModel::build(doc);
+    ASSERT_TRUE(model.has_value());
+    const auto& cell  = model->row(0)[0];
+    const auto  value = csvCellValue(doc, cell);
+    EXPECT_EQ(value, u"a\"b");
+    EXPECT_EQ(escapeCsvCellText(value, u','), u"\"a\"\"b\"");
+}
+
 // --- Piece-boundary regression guard --------------------------------------
 
 TEST(CsvModelTest, ParsingAcrossMultiplePiecesMatchesSinglePieceResult) {
@@ -205,6 +259,21 @@ TEST(CsvModelTest, ParsingAcrossMultiplePiecesMatchesSinglePieceResult) {
 
 // --- BufferSnapshot overload -----------------------------------------------
 
+// Extracted from BuildFromBufferSnapshotMatchesDocumentOverload below purely
+// to keep that test under clang-tidy's cognitive-complexity threshold - the
+// nested loop plus its own ASSERT/EXPECT macros pushed the single-function
+// form over the limit. No behavior change.
+void expectRowsMatch(std::size_t rowCount, const CsvModel& lhsModel, const CsvModel& rhsModel) {
+    for (std::size_t r = 0; r < rowCount; ++r) {
+        const auto lhs = lhsModel.row(r);
+        const auto rhs = rhsModel.row(r);
+        ASSERT_EQ(lhs.size(), rhs.size());
+        for (std::size_t c = 0; c < lhs.size(); ++c) {
+            EXPECT_EQ(lhs[c], rhs[c]);
+        }
+    }
+}
+
 TEST(CsvModelTest, BuildFromBufferSnapshotMatchesDocumentOverload) {
     const Document doc         = makeDoc(u"a,b\n\"c,d\",e\n");
     const auto     viaDocument = CsvModel::build(doc);
@@ -212,14 +281,7 @@ TEST(CsvModelTest, BuildFromBufferSnapshotMatchesDocumentOverload) {
     ASSERT_TRUE(viaDocument.has_value());
     ASSERT_TRUE(viaSnapshot.has_value());
     ASSERT_EQ(viaDocument->rowCount(), viaSnapshot->rowCount());
-    for (std::size_t r = 0; r < viaDocument->rowCount(); ++r) {
-        const auto lhs = viaDocument->row(r);
-        const auto rhs = viaSnapshot->row(r);
-        ASSERT_EQ(lhs.size(), rhs.size());
-        for (std::size_t c = 0; c < lhs.size(); ++c) {
-            EXPECT_EQ(lhs[c], rhs[c]);
-        }
-    }
+    expectRowsMatch(viaDocument->rowCount(), *viaDocument, *viaSnapshot);
 }
 
 // --- Failure contract -------------------------------------------------
