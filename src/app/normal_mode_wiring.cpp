@@ -2727,6 +2727,44 @@ void createAndPositionJsonTreePane(HWND hwnd, HINSTANCE hInstance, Workspace& wo
                                  static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
+// WI-16f: CsvGridPaneConfig::onCellEditCommitted. `rowIndex` is a DISPLAY
+// row index (into session.csvRowOrder()), same translation
+// onGetCellText/onCellActivated below already perform. Trusts CsvGridPane's
+// own guarantee that this only fires when `newText` actually differs from
+// the cell's original value (see CsvGridPaneConfig::onCellEditCommitted's
+// own comment) - no redundant no-op check here. Escapes `newText` via
+// csvmode::escapeCsvCellText() (WI-16f) into raw CSV text, dispatches it as
+// one core::ReplaceRangeCommand (same session.dispatcher().dispatch()
+// pattern dispatchJsonFormatCommand() above already uses for a document
+// rewrite), then re-detects the delimiter and kicks off a full re-index
+// (EditorSession::beginCsvIndexing()) - same detectCsvDelimiter() call
+// refreshCsvGridPane() below already makes, since CsvModel itself does not
+// remember which delimiter it was parsed with. The already-open grid's own
+// visual refresh happens later, once that re-index completes, via
+// applyCsvIndexReadyMessage()'s now-broadened condition (see that
+// function's own comment) - not here.
+void applyCsvCellEdit(HWND hwnd, RenderPipeline& renderPipeline, Workspace& workspace,
+                      std::optional<csvmode::CsvModelWorker>& csvModelWorker, std::size_t rowIndex,
+                      std::size_t colIndex, std::u16string_view newText) {
+    EditorSession& session = workspace.active();
+    if (!session.csvModel().has_value() || rowIndex >= session.csvRowOrder().size() || !csvModelWorker) {
+        return;
+    }
+    const auto&       model        = *session.csvModel();
+    const std::size_t dataRowIndex = session.csvRowOrder()[rowIndex];
+    const auto        row          = model.dataRow(dataRowIndex);
+    if (colIndex >= row.size()) {
+        return;
+    }
+    const csvmode::CsvCell& cell      = row[colIndex];
+    const char16_t          delimiter = csvmode::detectCsvDelimiter(session.document()).value_or(u',');
+    const std::u16string    escaped   = csvmode::escapeCsvCellText(newText, delimiter);
+    session.dispatcher().dispatch(
+        std::make_unique<ReplaceRangeCommand>(TextRange{.start = cell.startPos, .end = cell.endPos}, escaped));
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    session.beginCsvIndexing(*csvModelWorker, csvmode::CsvParseOptions{.delimiter = delimiter, .hasHeader = true});
+}
+
 // Same "create then prime the first position/size explicitly" shape as
 // createAndPositionJsonTreePane() above (WI-16c). config.onGetCellText/
 // onCellActivated resolve workspace.active() FRESH at invocation time (WI-05's
@@ -2748,9 +2786,12 @@ void createAndPositionJsonTreePane(HWND hwnd, HINSTANCE hInstance, Workspace& wo
 // WI-16e: onGetCellText/onCellActivated now translate `rowIndex` through
 // session.csvRowOrder() before touching the CsvModel - see each lambda's own
 // inline comment.
+// WI-16f: gained csvModelWorker - onCellEditCommitted needs it to re-index
+// after a cell edit (see applyCsvCellEdit()'s own comment).
 void createAndPositionCsvGridPane(HWND hwnd, HINSTANCE hInstance, Workspace& workspace,
                                   RenderPipeline& renderPipeline, CsvGridPane& csvGridPane,
-                                  const void*& csvGridPanePendingSessionToken) {
+                                  const void*& csvGridPanePendingSessionToken,
+                                  std::optional<csvmode::CsvModelWorker>& csvModelWorker) {
     CsvGridPaneConfig config{};
     // WI-16e: `rowIndex` from CsvGridPane is now a DISPLAY row index
     // (0..session.csvRowOrder().size()-1, i.e. into the filtered/sorted
@@ -2828,6 +2869,16 @@ void createAndPositionCsvGridPane(HWND hwnd, HINSTANCE hInstance, Workspace& wor
         csvGridPanePendingSessionToken = nullptr;
         ::SetFocus(hwnd);
     };
+    // WI-16f: see applyCsvCellEdit()'s own comment for the full commit flow.
+    config.onCellEditCommitted = [hwnd, &renderPipeline, &workspace, &csvModelWorker](
+                                     std::size_t rowIndex, std::size_t colIndex, const std::u16string& newText) {
+        applyCsvCellEdit(hwnd, renderPipeline, workspace, csvModelWorker, rowIndex, colIndex, newText);
+    };
+    // WI-16f: vetoes opening a SECOND cell editor while a previous edit's
+    // re-index is still in flight - see CsvGridPaneConfig::canBeginCellEdit's
+    // own comment for why (stale CsvCell positions would corrupt the
+    // document).
+    config.canBeginCellEdit = [&workspace]() { return !workspace.active().csvIndexInFlight(); };
     if (!csvGridPane.create(hwnd, hInstance, config)) {
         return;
     }
@@ -3659,6 +3710,25 @@ void applyJsonTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane,
 // CAN type into the filter edit while indexing is still in flight, since
 // refreshCsvGridPane() shows it right away), so the display update below
 // just reads session.csvRowOrder().size() rather than model.dataRowCount().
+// WI-16f: broadened the refresh condition. Previously this only refreshed
+// the grid on `token == csvGridPanePendingSessionToken` - the pane's very
+// first population after being toggled on. A cell edit's own re-index
+// (applyCsvCellEdit() -> beginCsvIndexing()) fires AFTER that token has
+// already been consumed (nullptr), so without this change the grid would
+// silently keep showing the pre-edit cell text even though
+// session.applyCsvIndexResult() above already updated the session's own
+// state correctly - the user would see no visual change until closing and
+// reopening the pane. Now also refreshes whenever the pane is ALREADY
+// VISIBLE for the active session, using setRowCount() (not showWith()) for
+// that live-refresh case - columns/labels are unchanged by a cell edit
+// (escapeCsvCellText() always quotes a value containing the delimiter, so
+// an edit can never inject a new column boundary), and setRowCount()
+// preserves any column widths the user has drag-resized. LVM_SETITEMCOUNT
+// (setRowCount()'s underlying call) invalidates the visible item area
+// unconditionally, regardless of whether the count actually changed, so
+// this is also enough to make already-painted rows re-query
+// LVN_GETDISPINFOW for their new text - no separate forced-redraw call is
+// needed.
 void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
                                const void*& csvGridPanePendingSessionToken, WPARAM wParam, LPARAM lParam) {
     const std::unique_ptr<neomifes::csvmode::CsvModel> result(
@@ -3670,13 +3740,19 @@ void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
         }
         EditorSession& session = workspace.sessionAt(i);
         session.applyCsvIndexResult(std::move(*result));
-        if (token == csvGridPanePendingSessionToken) {
+        const bool isPendingToggle = (token == csvGridPanePendingSessionToken);
+        if (isPendingToggle) {
             csvGridPanePendingSessionToken = nullptr;
-            if (i == workspace.activeIndex() && session.csvModel().has_value()) {
+        }
+        if (i == workspace.activeIndex() && session.csvModel().has_value() &&
+            (isPendingToggle || csvGridPane.isVisible())) {
+            if (isPendingToggle) {
                 const auto& model = *session.csvModel();
                 csvGridPane.showWith(
                     neomifes::app::buildCsvGridColumnLabels(model, session.document(), session.csvSort()),
                     session.csvRowOrder().size());
+            } else {
+                csvGridPane.setRowCount(session.csvRowOrder().size());
             }
         }
         break;
@@ -4007,7 +4083,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // WI-16c: same non-fatal treatment as createAndPositionOutlinePane()
         // above.
         createAndPositionCsvGridPane(hwnd, hInstance, workspace, renderPipeline, csvGridPane,
-                                     csvGridPanePendingSessionToken);
+                                     csvGridPanePendingSessionToken, csvModelWorker);
         // WI-05 step 2: same non-fatal treatment as findBar.create() above -
         // a tab strip that fails to create simply isn't available this
         // session (the editor still works, just without visible tabs).

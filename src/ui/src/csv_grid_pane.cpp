@@ -130,8 +130,17 @@ bool CsvGridPane::create(HWND parent, HINSTANCE hInstance, const CsvGridPaneConf
     // this class's header comment) - grid lines make column boundaries
     // legible for a spreadsheet-like view, double-buffering avoids the
     // flicker LVS_OWNERDATA's per-cell repaint would otherwise cause.
-    ::SendMessageW(m_hwndList.get(), LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER,
-                  LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    // WI-16f: added LVS_EX_FULLROWSELECT - without it, NM_CLICK/
+    // LVN_ITEMACTIVATE's hit-testing only resolves a valid iItem for clicks
+    // in subitem 0 (the "#" column); every real CSV column (subitem 1+)
+    // reported iItem=-1, a real-machine dogfooding discovery (WI-16c's own
+    // cell-activate-by-mouse path had the identical latent bug since
+    // 2026-08-19, never exercised by a real click before now - WI-16c's own
+    // dogfooding only confirmed the keyboard/WM_COMMAND path, see that WI's
+    // own completion record).
+    ::SendMessageW(m_hwndList.get(), LVM_SETEXTENDEDLISTVIEWSTYLE,
+                  LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT,
+                  LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT);
 
     ensureFont(1.0F);
     return true;
