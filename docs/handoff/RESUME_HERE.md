@@ -14,7 +14,7 @@
 >
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: セル編集はWI-16f(2026-08-24)で完了済み。残りは列固定・式列 (WI-16g以降)
-> - Phase 10.3 (JSON/XML Tree) 残り: XMLヘッドレス基盤はWI-15f(2026-08-25)で完了済み。残りはXPath・真の左右分割ペイン化・XMLツリーUI (WI-15g以降)
+> - Phase 10.3 (JSON/XML Tree) 残り: XMLヘッドレス基盤(WI-15f)+非同期化・EditorSession配線(WI-15g)は完了済み(2026-08-25)。残りはXPath・真の左右分割ペイン化・XMLツリーUI (WI-15h以降)
 > - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
@@ -2889,7 +2889,15 @@ WI-16f push後、ユーザーの「次のPhaseに進め」への回答としてA
 
 **最終ゲート:** Debug/Release/ubsan全1473/1473件green(バックグラウンドエージェントの完了通知が長時間届かなかったため、ubsanのみ自身で直接ビルド・実行して確定した)。clang-tidy新規警告0(対象2ファイル: `xml_tree.cpp`、`xmltree_xml_tree_test.cpp` — `misc-const-correctness`×2/`hicpp-use-auto`/`readability-function-cognitive-complexity`/`readability-math-missing-parentheses`/`readability-container-data-pointer`の計6件を解消)。
 
-コミット済み(`9470227`+本コミット)、pushはユーザーの明示指示待ち。Phase 10.3はXMLヘッドレス基盤まで完了 — XPath・真の左右分割ペイン化・XMLツリーUIは全て後続サブWI(WI-15g以降)へ。「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し**「WI-15g: XMLツリーUI(推奨)」**が選ばれたが、WI-15f計画の非スコープ節の段階分け(非同期ワーカー+EditorSession配線が先)に従い、WI-15gの実スコープは`XmlTreeWorker`+`EditorSession`配線(UIなし、WI-15b直テンプレート)とし、ツリーUI自体は次のサブWIへ回す。
+コミット済み(`9470227`+本コミット)、pushはユーザーの明示指示待ち。「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し**「WI-15g: XMLツリーUI(推奨)」**が選ばれたが、WI-15f計画の非スコープ節の段階分け(非同期ワーカー+EditorSession配線が先)に従い、WI-15gの実スコープは`XmlTreeWorker`+`EditorSession`配線(UIなし、WI-15b直テンプレート)とし、ツリーUI自体は次のサブWIへ回した。
+
+### 3.101 WI-15g (XML ツリー 非同期インデックス化+EditorSession配線) 完了記録 (2026-08-25)
+
+WI-15b(JSONツリーの非同期化+配線)を直テンプレートに、`XmlTreeWorker`(`kMsgXmlTreeReady`=`WM_APP+7`)+`EditorSession`4点(`xmlTree()`/`xmlTreeIndexInFlight()`/`beginXmlTreeIndexing()`/`applyXmlTreeResult()`)+`main.cpp`/`normal_mode_wiring`配線をUIなしで実装した。`parseXmlTree()`が`std::optional`を返さない設計(WI-15f)のため、JsonTreeWorkerが抱えていた「失敗時に投函するかドロップするか」の判断自体が不要になった。`m_xmlTree`は`std::optional<xmltree::XmlTree>`とし、`std::nullopt`は「未インデックス」のみを意味する(jsonTree()と異なりパース失敗の意味を兼ねない)。
+
+統合テスト5件(`tests/integration/xmltree_xml_tree_worker_test.cpp`、`jsontree_json_tree_worker_test.cpp`と同型)を新設、clang-tidyで5件の指摘(`cppcoreguidelines-special-member-functions`等)を発見・解消。
+
+最終ゲート: Debug/Release/ubsan全1474/1474件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット3件、pushはユーザーの明示指示待ち。次はWI-15h(XMLツリーUI)、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 ---
 
@@ -2949,9 +2957,10 @@ v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
 LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
 着手しないこと。目安+10〜15 WI。
 
-続けてRESUME_HERE.md §3.100 (WI-15f XML ツリーモデル ヘッドレス基盤
-完了記録、pugixml→tree-sitter-xml設計転換の記録を含む)を読んで
-詳細な現状を把握せよ。§3.99 (WI-16f、CSVセル編集)も背景として参照。
+続けてRESUME_HERE.md §3.101 (WI-15g XML ツリー 非同期化+EditorSession
+配線完了記録)を読んで詳細な現状を把握せよ。§3.100 (WI-15f、
+pugixml→tree-sitter-xml設計転換)、§3.99 (WI-16f、CSVセル編集)も
+背景として参照。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した

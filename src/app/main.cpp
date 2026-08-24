@@ -148,6 +148,7 @@ using neomifes::ui::MainWindowConfig;
 using neomifes::ui::OutlinePane;
 using neomifes::ui::StatusBar;
 using neomifes::ui::TabBar;
+using neomifes::xmltree::XmlTreeWorker;
 
 // WI-07 step2: the underlying HACCEL may be nullptr (measurement-mode
 // launches never build a meaningful one - see wWinMain - or
@@ -684,6 +685,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // GitDiffWorker's constructor also requires a real HWND and starts a
     // background std::thread immediately.
     std::optional<GitDiffWorker> gitDiffWorker;
+    // WI-15g: same construction-timing reasoning as jsonTreeWorker above -
+    // XmlTreeWorker's constructor also requires a real HWND and starts a
+    // background std::thread immediately.
+    std::optional<XmlTreeWorker> xmlTreeWorker;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -759,7 +764,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
                        logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker, jsonTreePane,
                        jsonTreePanePendingSessionToken, csvGridPane, csvGridPanePendingSessionToken,
-                       gitDiffWorker);
+                       gitDiffWorker, xmlTreeWorker);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

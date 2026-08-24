@@ -145,6 +145,8 @@ using neomifes::ui::StatusBarParts;
 using neomifes::ui::TabBar;
 using neomifes::ui::TabBarConfig;
 using neomifes::ui::TabBarItem;
+using neomifes::xmltree::kMsgXmlTreeReady;
+using neomifes::xmltree::XmlTreeWorker;
 
 // Bridges core::Viewport/SelectionModel state into RenderPipeline and
 // requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel/
@@ -3759,13 +3761,34 @@ void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
     }
 }
 
+// WI-15g: XmlTreeWorker's background-thread indexing completion signal
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgXmlTreeReady branch) -
+// mirrors applyJsonTreeReadyMessage() above at its WI-15b-era shape (plain
+// workspace/wParam/lParam, no pane concerns - no UI consumes xmlTree() yet,
+// that's WI-15h). `lParam` is always non-null (XmlTreeWorker always posts -
+// see xml_tree_worker.h's header comment) and owns a heap-allocated
+// XmlTree* (not std::optional<XmlTree>*, since parseXmlTree() itself never
+// returns std::optional - see xml_tree.h) that must be reconstructed into a
+// unique_ptr immediately to avoid leaking it.
+void applyXmlTreeReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+    const std::unique_ptr<neomifes::xmltree::XmlTree> result(
+        reinterpret_cast<neomifes::xmltree::XmlTree*>(lParam));
+    const auto* const token = reinterpret_cast<const void*>(wParam);
+    for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
+        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
+            workspace.sessionAt(i).applyXmlTreeResult(std::move(*result));
+            break;
+        }
+    }
+}
+
 // MainWindowConfig::onAppMessage's body (WM_APP+N messages MainWindow
 // forwards unexamined - neomifes::ui never learns what
-// kMsgSyntaxTokensReady/kMsgLogIndexReady/kMsgJsonTreeReady/kMsgCsvIndexReady
-// mean, see that field's own doc comment; this file is the layer that
-// already depends on render::/logmode::/jsontree::/csvmode:: so it's the
-// only place that can safely compare against the constants and reconstruct
-// each payload's real type).
+// kMsgSyntaxTokensReady/kMsgLogIndexReady/kMsgJsonTreeReady/kMsgCsvIndexReady/
+// kMsgXmlTreeReady mean, see that field's own doc comment; this file is the
+// layer that already depends on render::/logmode::/jsontree::/csvmode::/
+// xmltree:: so it's the only place that can safely compare against the
+// constants and reconstruct each payload's real type).
 // Extracted out of wireNormalMode() into its own function (WI-14b) purely to
 // keep wireNormalMode() under the cognitive-complexity threshold - the
 // message branches below were previously inline in wireNormalMode()'s own
@@ -3796,6 +3819,10 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
     }
     if (msg == kMsgCsvIndexReady) {
         applyCsvIndexReadyMessage(workspace, csvGridPane, csvGridPanePendingSessionToken, wParam, lParam);
+        return;
+    }
+    if (msg == kMsgXmlTreeReady) {
+        applyXmlTreeReadyMessage(workspace, wParam, lParam);
     }
 }
 
@@ -4002,7 +4029,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::optional<csvmode::CsvModelWorker>& csvModelWorker, JsonTreePane& jsonTreePane,
                     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                     const void*& csvGridPanePendingSessionToken,
-                    std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker) {
+                    std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker,
+                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -4025,7 +4053,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
                           &jsonTreePanePendingSessionToken, &csvGridPane,
-                          &csvGridPanePendingSessionToken, &gitDiffWorker](HWND hwnd) {
+                          &csvGridPanePendingSessionToken, &gitDiffWorker, &xmlTreeWorker](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -4050,6 +4078,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // GitDiffWorker's constructor also requires a real HWND and starts
         // its own background thread immediately.
         gitDiffWorker.emplace(hwnd);
+        // WI-15g: same reasoning as jsonTreeWorker.emplace() above -
+        // XmlTreeWorker's constructor also requires a real HWND and starts
+        // its own background thread immediately.
+        xmlTreeWorker.emplace(hwnd);
         // Resolved once here for this lambda's own synchronous body below -
         // safe (nothing can switch tabs before the window's first deferred
         // init has even run). The nested paint handler lambda just below

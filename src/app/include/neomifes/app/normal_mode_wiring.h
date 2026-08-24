@@ -37,6 +37,7 @@
 #include "neomifes/csvmode/csv_model_worker.h"
 #include "neomifes/git/git_diff_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
+#include "neomifes/xmltree/xml_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
 #include "neomifes/logmode/log_pattern.h"
 #include "neomifes/platform/handle_guard.h"
@@ -269,6 +270,13 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // UI pane parameter yet (unlike jsonTreePane/csvGridPane) - this WI wires
 // only the worker + EditorSession + kMsgGitDiffReady routing, no command
 // calls beginGitDiffIndexing() yet (see build_plan.md's WI-17b section).
+//
+// WI-15g: takes std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker - same
+// deferred-construction shape as jsonTreeWorker/gitDiffWorker above. No UI
+// pane parameter yet (unlike jsonTreePane/csvGridPane) - this WI wires only
+// the worker + EditorSession + kMsgXmlTreeReady routing, no command calls
+// beginXmlTreeIndexing() yet (mirrors WI-15b/WI-17b's own scoping - UI is a
+// later sub-WI).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
@@ -287,6 +295,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     std::optional<csvmode::CsvModelWorker>& csvModelWorker, ui::JsonTreePane& jsonTreePane,
                     const void*& jsonTreePanePendingSessionToken, ui::CsvGridPane& csvGridPane,
                     const void*& csvGridPanePendingSessionToken,
-                    std::optional<git::GitDiffWorker>& gitDiffWorker);
+                    std::optional<git::GitDiffWorker>& gitDiffWorker,
+                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker);
 
 }  // namespace neomifes::app

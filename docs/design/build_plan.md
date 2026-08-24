@@ -150,7 +150,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) に続き WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) まで進行、XPath・真の左右分割ペイン化・XMLツリーUIは残り(WI-15g以降)。CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) に続き WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) まで進行、XPath・真の左右分割ペイン化・XMLツリーUIは残り(WI-15h以降)。CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -176,8 +176,9 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 - [x] **WI-16f** CSV セル単位クリック編集 (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、`applyCsvCellEdit()`、実機ドッグフーディングで`LVS_EX_FULLROWSELECT`未設定というWI-16c以来の既存バグを発見・解消) → コミット: `932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`
 - [ ] **WI-16g以降** Phase 10.2 の残り (列固定・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
-- [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: (このセッション内、詳細は本書 §5 参照)
-- [ ] **WI-15g以降** Phase 10.3 の残り (XPath・真の左右分割ペイン化・XMLツリーUI) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: `9470227`/`7cd90a3`
+- [x] **WI-15g** XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし、`XmlTreeWorker`+`EditorSession`4点、WI-15b直テンプレート) → コミット: (このセッション内、詳細は本書 §5 参照)
+- [ ] **WI-15h以降** Phase 10.3 の残り (XPath・真の左右分割ペイン化・XMLツリーUI) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
@@ -1981,7 +1982,45 @@ push前、ユーザーが実機でCSVグリッドのフィルタ行付近に表�
 
 Debug/Release/ubsan全1473/1473件green(バックグラウンドエージェントの完了通知が長時間届かなかったため、ubsanのみ自身で直接ビルド・実行して確定した)。clang-tidy新規警告0(対象2ファイル: `src/xmltree/src/xml_tree.cpp`、`tests/unit/xmltree_xml_tree_test.cpp` — 前者3件・後者3件の指摘を全て解消: `misc-const-correctness`×2、`hicpp-use-auto`、`readability-function-cognitive-complexity`、`readability-math-missing-parentheses`、`readability-container-data-pointer`)。
 
-コミット済み(`9470227`+本コミット)、pushはユーザーの明示指示待ち。ユーザーへ「次のPhaseに進め」の回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し、**「WI-15g: XMLツリーUI(推奨)」**が選ばれた。次はWI-15g — ただし正確には、WI-15f計画の非スコープ節が定めた段階分け(非同期ワーカー+EditorSession配線が先、UIは次)に従い、WI-15gの実際のスコープは`XmlTreeWorker`+`EditorSession`配線(UIなし)とし、ツリーUI自体はその次のサブWIへ回す。
+コミット済み(`9470227`+本コミット)、pushはユーザーの明示指示待ち。ユーザーへ「次のPhaseに進め」の回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し、**「WI-15g: XMLツリーUI(推奨)」**が選ばれたが、WI-15f計画の非スコープ節が定めた段階分け(非同期ワーカー+EditorSession配線が先、UIは次)に従い、WI-15gの実際のスコープは`XmlTreeWorker`+`EditorSession`配線(UIなし)とし、ツリーUI自体は次のサブWI(WI-15h)へ回した。
+
+---
+
+## WI-15g — XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし)
+
+**目的:** WI-15f(XMLヘッドレス基盤)完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15g: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し「WI-15g: XMLツリーUI(推奨)」が選ばれた。ただしWI-15f計画自身の非スコープ節が「非同期ワーカー・EditorSession配線が先、UIは次」と段階分けを既に定めていたため、実際のスコープはWI-15b(JSONツリーの非同期化+配線)を直テンプレートとした`XmlTreeWorker`+`EditorSession`配線(UIなし)とした。
+
+**前提:** WI-15f 完了・コミット済み・ubsan確定 (2026-08-25)
+
+**参照:** `master_roadmap.md` §10.3、WI-15b セクション(本書上記、直テンプレート)、`src/jsontree/include/neomifes/jsontree/json_tree_worker.h`
+
+### 設計 (WI-15b実装済みコードの直接読解、`git show`でWI-15b各ステップの実コミット差分を確認済み)
+
+- `XmlTreeWorker`は`JsonTreeWorker`の機械的な型(FIFO `std::deque`、専用`std::thread`、`kMsgXmlTreeReady`=`WM_APP+7`)。1点だけ単純: `parseXmlTree()`が`std::optional`を返さない(WI-15fの設計)ため、`JsonTreeWorker`が抱えていた「失敗時に投函するかドロップするか」という判断自体が不要 — 常に実体のある`XmlTree`を投函する。
+- `EditorSession`へ`xmlTree()`/`xmlTreeIndexInFlight()`/`beginXmlTreeIndexing()`/`applyXmlTreeResult()`の4点を`jsonTree()`系と同型で追加。`m_xmlTree`の型は`std::optional<xmltree::XmlTree>`とし、`std::nullopt`は「未インデックス」のみを意味する(`jsonTree()`と異なり、パース失敗によるnulloptは無い — `XmlTree::hasErrors`が代わりにその情報を持つ)。
+- `wireNormalMode()`/`main.cpp`は`jsonTreeWorker`と全く同じ配線パターン(`cfg.onDeferredInit`内で`emplace(hwnd)`、`applyXmlTreeReadyMessage()`新設+`handleAppMessage()`への`kMsgXmlTreeReady`分岐追加)。WI-15b当時(WI-15cのUI/pane機構が乗る前)の最も単純な形をそのまま踏襲 — `jsonTreePane`のようなUI引数は一切追加しない。
+- `beginXmlTreeIndexing()`を呼ぶコマンド/UIは本WIでは一切追加しない(WI-15b→WI-15cの前例通り、UIサブWIへ先送り)。
+
+### 実施内容 (3コミット)
+
+1. `feat(xmltree)`: `XmlTreeWorker`実装(`xml_tree_worker.h`/`.cpp`、`kMsgXmlTreeReady`=`WM_APP+7`)
+2. `feat(app)`: `EditorSession`へXMLツリー状態を配線(`xmlTree()`/`xmlTreeIndexInFlight()`/`beginXmlTreeIndexing()`/`applyXmlTreeResult()`)
+3. `feat(app)`: `main.cpp`/`normal_mode_wiring`配線+統合テスト5件+最終ゲート+ドキュメント同期
+
+### DoD
+
+- [x] `XmlTreeWorker`が`JsonTreeWorker`と同じFIFO・専用スレッド契約を持つ
+- [x] `EditorSession`の4点が`jsonTree()`系と同型で追加され、`std::nullopt`が「未インデックス」のみを意味する
+- [x] `wireNormalMode()`/`main.cpp`の配線がWI-15b当時の最小形(UI引数なし)を踏襲
+- [x] 統合テスト(`tests/integration/xmltree_xml_tree_worker_test.cpp`)が`jsontree_json_tree_worker_test.cpp`と同型の5カテゴリをカバー(単発配信/複数セッションFIFO/デストラクタの安全なjoin/不正入力でもErrorツリーを配信/深いネスト入力でのワーカースレッド生存)
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] ドキュメント同期
+
+### 最終ゲート
+
+Debug/Release/ubsan全1474/1474件green(3構成とも自身で直接ビルド・実行し確定)。clang-tidy新規警告0(対象6ファイル: `xml_tree_worker.h`/`.cpp`、`editor_session.h`/`.cpp`、`normal_mode_wiring.h`/`.cpp`、`main.cpp`、`xmltree_xml_tree_worker_test.cpp` — 後者で発見した5件(`cppcoreguidelines-special-member-functions`、`cppcoreguidelines-prefer-member-initializer`、`misc-const-correctness`×5箇所、`readability-function-cognitive-complexity`)を全て解消)。
+
+pushはユーザーの明示指示待ち。Phase 10.3はJSON側・XML側とも「ヘッドレス基盤+非同期化+EditorSession配線」まで対称的に完了 — XPath・真の左右分割ペイン化・XMLツリーUIは全て後続サブWI(WI-15h以降)へ。次はWI-15h(XMLツリーUI、`ui::JsonTreePane`がJSON非依存と判明済みのため`app::buildXmlTreeItems()`ブリッジだけで再利用できる見込み)、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 ---
 

@@ -3450,4 +3450,12 @@ WI-16f push後(コミット`932d0f4`〜`08322ca`、CI green確認)、ユーザ�
 
 次はWI-15g(`XmlTreeWorker`+`EditorSession`配線、UIなし)。
 
+続けて同じセッション内でWI-15gに着手した。WI-15b(JSONツリーの非同期化+配線)の実際のコミット差分を`git show`で直接確認し、`XmlTreeWorker`(`JsonTreeWorker`の機械的な型、`kMsgXmlTreeReady`=`WM_APP+7`)+`EditorSession`4点(`xmlTree()`/`xmlTreeIndexInFlight()`/`beginXmlTreeIndexing()`/`applyXmlTreeResult()`)+`main.cpp`/`normal_mode_wiring`配線をUIなしで実装した。`parseXmlTree()`(WI-15f)が`std::optional`を返さない設計のため、`JsonTreeWorker`が抱えていた「失敗時に投函するかドロップするか」の判断自体が不要になった点が、機械的な移植の中で唯一の実質的な単純化だった。`EditorSession::m_xmlTree`は`std::optional<xmltree::XmlTree>`とし、`jsonTree()`と異なり`std::nullopt`が「未インデックス」のみを意味する設計にした(パース失敗という概念自体が無く、`XmlTree::hasErrors`が代わりにその情報を持つため)。
+
+統合テスト5件(`tests/integration/xmltree_xml_tree_worker_test.cpp`、`jsontree_json_tree_worker_test.cpp`と同型)を新設、clang-tidyで`HiddenWindow`ヘルパークラスの`cppcoreguidelines-special-member-functions`/`cppcoreguidelines-prefer-member-initializer`と`misc-const-correctness`×5箇所・`readability-function-cognitive-complexity`の計7件を発見・解消。
+
+**ubsanゲートについて、前回(WI-15f)エージェントの完了通知が異例に長時間届かなかった経験を踏まえ、本WIでは最初から自身で直接`cmake --build`+`ctest`を実行する方針に切り替えた。** Debug/Release/ubsan全3構成とも1474/1474件greenを確定。コミット3件(worker実装/EditorSession配線/main.cpp配線+統合テスト+ドキュメント同期)作成、pushはユーザーの明示指示待ち。ドキュメント同期(build_plan.md WI-15gセクション新設+§0/§5要約更新、master_roadmap.md §10.3実装後の確定事項+フェーズ状況表、RESUME_HERE.md §3.101新設+冒頭コールアウト+§6更新)は本セッション内で完了。
+
+次はWI-15h(XMLツリーUI、`ui::JsonTreePane`がJSON非依存と判明済みのため`app::buildXmlTreeItems()`ブリッジだけで再利用できる見込み)、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->
