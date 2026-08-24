@@ -21,6 +21,10 @@ namespace {
 constexpr int      kListId        = 10001;
 constexpr int      kFilterLabelId = 10002;
 constexpr int      kFilterEditId  = 10003;
+// WI-16f: the cell-edit overlay - continues the same block, no WM_COMMAND
+// notification is ever routed by this id (unlike kFilterEditId's EN_CHANGE)
+// so it does not need to appear in handleCommand()'s own id comparison.
+constexpr int      kCellEditorId  = 10004;
 constexpr UINT_PTR kSubclassId    = 1;
 // Scoped per-HWND by Win32 (SetTimer/KillTimer take the owning window as a
 // parameter) - safe to reuse id 1 here even though ui::FindBar also uses
@@ -91,14 +95,33 @@ bool CsvGridPane::create(HWND parent, HINSTANCE hInstance, const CsvGridPaneConf
     }
     m_hwndFilterEdit.reset(filterEdit);
 
-    // The ListView and the filter edit share one subclass callback/dwRefData
-    // - handleSubclassMessage() distinguishes them by the `hwnd` it receives
-    // (same pattern ui::FindBar's find/replace edits already established).
+    // WI-16f: cell-edit overlay - created once here (like the filter edit
+    // above), positioned+shown per click by showCellEditor() rather than
+    // being created/destroyed on every edit. Starts hidden (no WS_VISIBLE);
+    // a sibling of m_hwndList under the same `parent`, not the ListView's
+    // own child - see showCellEditor()'s own comment for why its position
+    // needs MapWindowPoints().
+    HWND cellEditor = ::CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10,
+                                        parent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kCellEditorId)),
+                                        hInstance, nullptr);
+    if (cellEditor == nullptr) {
+        return false;
+    }
+    m_hwndCellEditor.reset(cellEditor);
+
+    // The ListView, the filter edit, and the cell editor all share one
+    // subclass callback/dwRefData - handleSubclassMessage() distinguishes
+    // them by the `hwnd` it receives (same pattern ui::FindBar's find/
+    // replace edits already established).
     if (::SetWindowSubclass(m_hwndList.get(), &CsvGridPane::subclassProc, kSubclassId,
                             reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
         return false;
     }
     if (::SetWindowSubclass(m_hwndFilterEdit.get(), &CsvGridPane::subclassProc, kSubclassId,
+                            reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
+        return false;
+    }
+    if (::SetWindowSubclass(m_hwndCellEditor.get(), &CsvGridPane::subclassProc, kSubclassId,
                             reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
         return false;
     }
@@ -167,6 +190,7 @@ void CsvGridPane::hide() noexcept {
     if (!m_hwndList) {
         return;
     }
+    cancelCellEditor();
     if (m_hwndFilterLabel) {
         ::ShowWindow(m_hwndFilterLabel.get(), SW_HIDE);
     }
@@ -235,6 +259,8 @@ LRESULT CsvGridPane::handleNotify(WPARAM /*wParam*/, LPARAM lParam) noexcept {
         handleItemActivate(lParam);
     } else if (header->code == LVN_COLUMNCLICK) {
         handleColumnClick(lParam);
+    } else if (header->code == NM_CLICK) {
+        handleClick(lParam);
     }
     return 0;
 }
@@ -281,6 +307,73 @@ void CsvGridPane::handleColumnClick(LPARAM lParam) noexcept {
     m_config.onSortColumnClicked(static_cast<std::size_t>(columnClick->iSubItem));
 }
 
+void CsvGridPane::handleClick(LPARAM lParam) noexcept {
+    const auto* click = reinterpret_cast<const NMITEMACTIVATE*>(lParam);
+    if (click->iItem < 0 || click->iSubItem <= 0) {
+        return;  // no row under the click, or the synthesized "#" column
+    }
+    if (m_config.canBeginCellEdit && !m_config.canBeginCellEdit()) {
+        return;
+    }
+    showCellEditor(static_cast<std::size_t>(click->iItem), static_cast<std::size_t>(click->iSubItem - 1));
+}
+
+void CsvGridPane::showCellEditor(std::size_t rowIndex, std::size_t colIndex) noexcept {
+    if (!m_hwndCellEditor || !m_hwndList || !m_config.onGetCellText) {
+        return;
+    }
+    RECT rect{};
+    const int subItem = static_cast<int>(colIndex) + 1;  // +1 for the "#" column
+    // ListView_GetSubItemRect is a commctrl.h macro, not a real function -
+    // no `::` scope prefix (unlike every other Win32 API call in this
+    // file).
+    if (ListView_GetSubItemRect(m_hwndList.get(), static_cast<int>(rowIndex), subItem, LVIR_BOUNDS, &rect) ==
+        FALSE) {
+        return;
+    }
+    // rect is in m_hwndList's own client coordinates; m_hwndCellEditor is a
+    // sibling under the same parent (see create()'s own comment), not the
+    // ListView's child, so it needs the parent's coordinate space.
+    HWND parent = ::GetParent(m_hwndList.get());
+    ::MapWindowPoints(m_hwndList.get(), parent, reinterpret_cast<POINT*>(&rect), 2);
+
+    m_cellEditorOriginalText = m_config.onGetCellText(rowIndex, colIndex);
+    m_cellEditorRow          = rowIndex;
+    m_cellEditorCol          = colIndex;
+    m_cellEditorActive       = true;
+
+    ::SetWindowPos(m_hwndCellEditor.get(), HWND_TOP, rect.left, rect.top, rect.right - rect.left,
+                   rect.bottom - rect.top, SWP_SHOWWINDOW);
+    const std::wstring textW(neomifes::util::toWstringView(m_cellEditorOriginalText));
+    ::SetWindowTextW(m_hwndCellEditor.get(), textW.c_str());
+    ::SetFocus(m_hwndCellEditor.get());
+    // Select-all so typing immediately replaces the prefilled value (the
+    // usual spreadsheet cell-edit convention).
+    ::SendMessageW(m_hwndCellEditor.get(), EM_SETSEL, 0, -1);
+}
+
+void CsvGridPane::commitCellEditor() noexcept {
+    if (!m_cellEditorActive || !m_hwndCellEditor) {
+        return;
+    }
+    const std::u16string newText = readEditText(m_hwndCellEditor.get());
+    m_cellEditorActive           = false;
+    ::ShowWindow(m_hwndCellEditor.get(), SW_HIDE);
+    if (newText != m_cellEditorOriginalText && m_config.onCellEditCommitted) {
+        m_config.onCellEditCommitted(m_cellEditorRow, m_cellEditorCol, newText);
+    }
+}
+
+void CsvGridPane::cancelCellEditor() noexcept {
+    if (!m_cellEditorActive) {
+        return;
+    }
+    m_cellEditorActive = false;
+    if (m_hwndCellEditor) {
+        ::ShowWindow(m_hwndCellEditor.get(), SW_HIDE);
+    }
+}
+
 void CsvGridPane::fireFilterQueryChanged() noexcept {
     if (m_hwndFilterEdit) {
         ::KillTimer(m_hwndFilterEdit.get(), kFilterDebounceTimerId);
@@ -310,6 +403,9 @@ void CsvGridPane::ensureFont(float dpiScale) noexcept {
     }
     if (m_hwndFilterEdit) {
         ::SendMessageW(m_hwndFilterEdit.get(), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    if (m_hwndCellEditor) {
+        ::SendMessageW(m_hwndCellEditor.get(), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
 }
 
@@ -349,12 +445,24 @@ LRESULT CsvGridPane::handleSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, L
         case WM_KEYDOWN:
             if (static_cast<UINT>(wParam) == VK_ESCAPE) {
                 // While composing, Escape cancels the IME conversion instead
-                // of closing the pane (same guard handleFilterEditKeyDown()
-                // applies to VK_RETURN) - this branch is shared by BOTH
-                // subclassed HWNDs (the ListView never composes, so
-                // m_composing is always false when Escape arrives from it).
+                // of closing the pane/editor (same guard
+                // handleFilterEditKeyDown() applies to VK_RETURN) - this
+                // branch is shared by every subclassed HWND (the ListView
+                // never composes, so m_composing is always false when
+                // Escape arrives from it).
                 if (m_composing) {
                     break;
+                }
+                // WI-16f: Escape from the cell editor cancels just the edit
+                // (discarding the typed text) rather than closing the whole
+                // pane - a deliberately different contract from the filter
+                // edit's own Escape (which falls through to the
+                // whole-pane-close below, matching its pre-WI-16f
+                // behavior).
+                if (m_hwndCellEditor && hwnd == m_hwndCellEditor.get() && m_cellEditorActive) {
+                    cancelCellEditor();
+                    ::SetFocus(m_hwndList.get());
+                    return 0;
                 }
                 hide();
                 if (m_config.onClosed) {
@@ -365,6 +473,27 @@ LRESULT CsvGridPane::handleSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, L
             if (m_hwndFilterEdit && hwnd == m_hwndFilterEdit.get() &&
                 handleFilterEditKeyDown(hwnd, static_cast<UINT>(wParam))) {
                 return 0;
+            }
+            // WI-16f: Enter commits the cell editor and returns focus to the
+            // ListView - moving focus synchronously delivers WM_KILLFOCUS to
+            // the editor first, which would call commitCellEditor() a
+            // second time, but that call is a safe no-op by then
+            // (m_cellEditorActive is already false, see commitCellEditor()'s
+            // own comment).
+            if (m_hwndCellEditor && hwnd == m_hwndCellEditor.get() && !m_composing &&
+                static_cast<UINT>(wParam) == VK_RETURN) {
+                commitCellEditor();
+                ::SetFocus(m_hwndList.get());
+                return 0;
+            }
+            break;
+        case WM_KILLFOCUS:
+            // WI-16f: losing focus also commits (spreadsheet-like UX) -
+            // e.g. clicking a different cell, which itself triggers this
+            // synchronously before the new cell's own NM_CLICK is
+            // processed, so ordering (commit old, then open new) is safe.
+            if (m_hwndCellEditor && hwnd == m_hwndCellEditor.get()) {
+                commitCellEditor();
             }
             break;
         case WM_TIMER:

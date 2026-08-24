@@ -83,6 +83,25 @@ struct CsvGridPaneConfig {
     // that column has no real CSV data to sort by; 1..columnCount == a real
     // CSV column).
     std::function<void(std::size_t colIndex)> onSortColumnClicked;
+    // WI-16f: fires when the cell-edit overlay (single click on a real CSV
+    // cell, never the "#" column) commits - Enter, or the overlay losing
+    // focus (spreadsheet-like UX; the pane cancels instead of committing on
+    // Escape, see cancelCellEditor()). Only fires when `newText` differs
+    // from what onGetCellText originally supplied for this cell - a no-op
+    // edit (opened, nothing changed) never reaches the caller.  `colIndex`
+    // uses the SAME shifted space onGetCellText's does (0 == the caller's
+    // own first CSV column) - the "#" column can never open an editor, see
+    // handleClick()'s own iSubItem<=0 guard.
+    std::function<void(std::size_t rowIndex, std::size_t colIndex, std::u16string newText)> onCellEditCommitted;
+    // WI-16f: checked before opening a cell editor; unset behaves as
+    // "always allowed" (matches onGetCellText/onCellActivated's own "unset
+    // callback = feature quietly does nothing extra" shape, just inverted
+    // for a permission gate). The caller vetoes while a previous edit's
+    // async re-index is still in flight - opening a second editor against a
+    // CsvModel that has not caught up yet would let the user commit a
+    // second edit against now-stale cell positions, corrupting the
+    // document (see this WI's own design notes for the full reasoning).
+    std::function<bool()> canBeginCellEdit;
 };
 
 class CsvGridPane {
@@ -115,6 +134,9 @@ public:
     // whenever the column set or a label's own text changes (initial load,
     // a sort-arrow indicator update).
     void setRowCount(std::size_t dataRowCount) noexcept;
+    // WI-16f: also cancels an active cell editor (never commits it) - same
+    // "closing discards an in-progress, uncommitted interaction" contract
+    // Escape already gives the cell editor itself (see cancelCellEditor()).
     void hide() noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
 
@@ -165,22 +187,60 @@ private:
     void handleGetDispInfo(LPARAM lParam) noexcept;
     void handleItemActivate(LPARAM lParam) noexcept;
     void handleColumnClick(LPARAM lParam) noexcept;
+    // WI-16f: NM_CLICK - comctl32 delivers a populated NMITEMACTIVATE for
+    // this notification too (same struct LVN_ITEMACTIVATE uses), so no
+    // manual LVM_SUBITEMHITTEST is needed. No-ops on the "#" column
+    // (iSubItem<=0) or when m_config.canBeginCellEdit vetoes.
+    void handleClick(LPARAM lParam) noexcept;
     // Fires onFilterQueryChanged with the filter edit's current text - shared
     // by the debounce WM_TIMER and VK_RETURN's "fire now" path (mirrors
     // ui::FindBar::fireQueryChanged()).
     void fireFilterQueryChanged() noexcept;
+    // WI-16f: positions+shows m_hwndCellEditor over the given cell's
+    // on-screen rect (LVM_GETSUBITEMRECT, mapped from the ListView's own
+    // client coordinates into the shared parent's - m_hwndCellEditor is a
+    // sibling of m_hwndList, not its child), pre-filled via
+    // m_config.onGetCellText and remembered in m_cellEditorOriginalText for
+    // commitCellEditor()'s later no-op-edit comparison.
+    void showCellEditor(std::size_t rowIndex, std::size_t colIndex) noexcept;
+    // Reads the editor's current text; fires onCellEditCommitted only if it
+    // differs from m_cellEditorOriginalText, then hides the editor. Safe to
+    // call when no editor is active (checks m_cellEditorActive itself) -
+    // both the explicit Enter path and the WM_KILLFOCUS path call this
+    // unconditionally and rely on that guard for re-entrancy safety (Enter
+    // synchronously moving focus back to the ListView also triggers
+    // WM_KILLFOCUS on the editor).
+    void commitCellEditor() noexcept;
+    // Hides the editor and discards its text - never fires
+    // onCellEditCommitted. Escape's own contract for the cell editor (see
+    // hide()'s own comment for CsvGridPane-wide Escape/close behavior).
+    void cancelCellEditor() noexcept;
     void ensureFont(float dpiScale) noexcept;
 
     neomifes::platform::WindowHandle    m_hwndList;
     neomifes::platform::WindowHandle    m_hwndFilterLabel;
     neomifes::platform::WindowHandle    m_hwndFilterEdit;
+    neomifes::platform::WindowHandle    m_hwndCellEditor;
     neomifes::platform::GdiObjectHandle m_font;
     CsvGridPaneConfig                   m_config;
     std::size_t                         m_columnCount = 0;  // real CSV columns only, excludes the "#" column
-    // Tracks WM_IME_STARTCOMPOSITION/WM_IME_ENDCOMPOSITION on the filter
-    // edit so Enter/Escape are left to the IME (confirm/cancel the
-    // composition) instead of being intercepted while converting Japanese/
-    // Chinese/Korean input - same guard ui::FindBar::m_composing provides.
+    // WI-16f: which cell m_hwndCellEditor is currently positioned over (only
+    // meaningful while m_cellEditorActive), and what onGetCellText supplied
+    // when it was opened (commitCellEditor()'s no-op-edit comparison).
+    bool           m_cellEditorActive = false;
+    std::size_t    m_cellEditorRow    = 0;
+    std::size_t    m_cellEditorCol    = 0;
+    std::u16string m_cellEditorOriginalText;
+    // Tracks WM_IME_STARTCOMPOSITION/WM_IME_ENDCOMPOSITION on whichever
+    // subclassed edit control (filter edit or, since WI-16f, the cell
+    // editor) currently has focus, so Enter/Escape are left to the IME
+    // (confirm/cancel the composition) instead of being intercepted while
+    // converting Japanese/Chinese/Korean input - same guard ui::FindBar::
+    // m_composing provides. One shared flag is safe across both edit
+    // controls: Win32 IME composition is tied to whichever HWND currently
+    // owns input focus, and losing focus force-ends composition before
+    // another control can gain it, so the two edits can never be
+    // mid-composition simultaneously.
     bool m_composing = false;
 };
 
