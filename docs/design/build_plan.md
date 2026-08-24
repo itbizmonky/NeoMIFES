@@ -1916,6 +1916,18 @@ Debug/Release/ubsan全1462/1462件green、sanitizer診断0件、clang-tidy新規
 
 コミット済み(`932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`)、pushはユーザーの明示指示待ち。Phase 10.2は「フィルタ・ソート+セル編集」まで完了 — 列固定・式列は全て後続サブWI(WI-16g以降)へ。次はWI-16g(列固定)、Phase 10.3の残り(WI-15f以降)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
+### 追記 (2026-08-25): push前にユーザーが発見したフィルタ行の描画リークを追加修正
+
+push前、ユーザーが実機でCSVグリッドのフィルタ行付近に表示異常(欠けた/重なったテキスト)があると指摘。`docs/issues/csv_grid_filter_row_visual_glitch.md`として起票済みだった既存バグ(WI-16f起因ではないと確認済み)の修正をユーザーから要請され、同じセッション内で追加対応した。
+
+**原因調査:** `GetWindowRect`でCsvGridPaneの子ウィンドウ全ての実測矩形を取得し配置計算を検証したが、フィルタ行・リストビューいずれも数学的に正しく重なりも無かった。代わりに`normal_mode_wiring.cpp`の`WM_PAINT`ハンドラを再確認し、**裏の通常テキストビュー(`RenderPipeline`のDirect2D描画)がCSVグリッド表示中かどうかに関わらず毎回無条件に描画されている**ことを発見した。`CsvGridPane`のフィルタ行は32dipバンド内に24dipのラベル/編集欄を中央寄せする設計で意図的な余白を残しており、この余白部分だけ裏の描画(CSV生テキスト)が透けて見えていた。
+
+**対応:**
+1. `handlePaintEvent()`(`wireNormalMode()`のcognitive-complexity超過を避けるため独立関数へ抽出、この抽出自体もこのファイルの既存パターン)で、`csvGridPane.isVisible()`の間は`RenderPipeline::render()`自体をスキップ。ただしこれだけでは既に描画済みの最後のフレームが画面に残るため症状は解消しなかった(スワップチェーンの内容は`render()`を呼ばなくても消えない)。
+2. **根本修正:** 新規`m_hwndFilterBackdrop`(無地の`WC_STATIC`)を`m_hwndFilterLabel`/`m_hwndFilterEdit`より先に生成しz-order背面に配置、フィルタ行バンド全体を隙間なく覆うようにした。
+
+コミット`25f0414`。Debug/Release/ubsan全1462/1462件green、clang-tidy新規警告0。実機ドッグフーディングでユーザー自身が解消を確認済み(2026-08-25)。
+
 ---
 
 # 6. MVP 出荷判定チェックリスト (WI-13)
