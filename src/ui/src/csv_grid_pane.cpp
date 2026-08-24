@@ -25,6 +25,9 @@ constexpr int      kFilterEditId  = 10003;
 // notification is ever routed by this id (unlike kFilterEditId's EN_CHANGE)
 // so it does not need to appear in handleCommand()'s own id comparison.
 constexpr int      kCellEditorId  = 10004;
+// WI-16f bugfix: the filter-row backdrop - see m_hwndFilterBackdrop's own
+// header comment. No notification is ever routed by this id either.
+constexpr int      kFilterBackdropId = 10005;
 constexpr UINT_PTR kSubclassId    = 1;
 // Scoped per-HWND by Win32 (SetTimer/KillTimer take the owning window as a
 // parameter) - safe to reuse id 1 here even though ui::FindBar also uses
@@ -76,6 +79,18 @@ bool CsvGridPane::create(HWND parent, HINSTANCE hInstance, const CsvGridPaneConf
         return false;
     }
     m_hwndList.reset(list);
+
+    // WI-16f bugfix: filter-row backdrop, created BEFORE the label/edit below
+    // so it sits behind them in z-order (each subsequently created sibling
+    // is inserted at the front) - see m_hwndFilterBackdrop's own header
+    // comment for why this needs to exist at all.
+    HWND filterBackdrop = ::CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | SS_LEFT, 0, 0, 10, 10, parent,
+                                            reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kFilterBackdropId)),
+                                            hInstance, nullptr);
+    if (filterBackdrop == nullptr) {
+        return false;
+    }
+    m_hwndFilterBackdrop.reset(filterBackdrop);
 
     // WI-16e: filter row - a WC_STATIC label + WC_EDIT, same control shapes
     // find_bar.cpp's own m_hwndInfoLabel/m_hwndFindEdit use.
@@ -178,6 +193,9 @@ void CsvGridPane::showWith(std::vector<std::u16string> columnLabels, std::size_t
 
     ::SendMessageW(m_hwndList.get(), LVM_SETITEMCOUNT, static_cast<WPARAM>(dataRowCount), LVSICF_NOSCROLL);
 
+    if (m_hwndFilterBackdrop) {
+        ::ShowWindow(m_hwndFilterBackdrop.get(), SW_SHOW);
+    }
     if (m_hwndFilterLabel) {
         ::ShowWindow(m_hwndFilterLabel.get(), SW_SHOW);
     }
@@ -200,6 +218,9 @@ void CsvGridPane::hide() noexcept {
         return;
     }
     cancelCellEditor();
+    if (m_hwndFilterBackdrop) {
+        ::ShowWindow(m_hwndFilterBackdrop.get(), SW_HIDE);
+    }
     if (m_hwndFilterLabel) {
         ::ShowWindow(m_hwndFilterLabel.get(), SW_HIDE);
     }
@@ -241,6 +262,14 @@ void CsvGridPane::onParentResized(std::uint32_t parentWidth, std::uint32_t paren
     const auto controlHeightPx = static_cast<int>(kFilterControlHeightDips * dpiScale);
     const auto controlYPx      = topPx + ((filterRowPx - controlHeightPx) / 2);
 
+    // WI-16f bugfix: spans the WHOLE [topPx, topPx+filterRowPx) band, not
+    // just the sub-rect the label/edit controls themselves occupy - see
+    // m_hwndFilterBackdrop's own header comment for why this needs to fully
+    // cover the band with no gaps.
+    if (m_hwndFilterBackdrop) {
+        ::SetWindowPos(m_hwndFilterBackdrop.get(), nullptr, 0, topPx, widthPx, filterRowPx,
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     if (m_hwndFilterLabel) {
         ::SetWindowPos(m_hwndFilterLabel.get(), nullptr, marginPx, controlYPx, labelWidthPx, controlHeightPx,
                        SWP_NOZORDER | SWP_NOACTIVATE);

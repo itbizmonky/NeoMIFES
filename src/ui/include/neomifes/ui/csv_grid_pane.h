@@ -218,6 +218,22 @@ private:
     void ensureFont(float dpiScale) noexcept;
 
     neomifes::platform::WindowHandle    m_hwndList;
+    // WI-16f bugfix: an opaque WC_STATIC spanning the ENTIRE filter row band
+    // (behind m_hwndFilterLabel/m_hwndFilterEdit in z-order, created before
+    // them so they paint on top of it), not just the sub-rects those two
+    // controls themselves occupy. Without it, the few-DIP margins
+    // onParentResized() leaves around them (deliberate - centers the
+    // controls within the taller band, see kFilterRowHeightDips vs
+    // kFilterControlHeightDips) were bare client area, and the Direct2D
+    // document view painted underneath (MainWindow::setPaintHandler() paints
+    // the whole client rect every WM_PAINT regardless of what native child
+    // HWNDs sit on top of it) showed through as a persistent visual glitch -
+    // a real user found this during WI-16f dogfooding, present since WI-16c
+    // (2026-08-19). Skipping the Direct2D render while this pane is visible
+    // (see normal_mode_wiring.cpp's handlePaintEvent()) only stops it from
+    // getting worse; it does not erase what was already painted there before
+    // the pane opened, so full opaque coverage is the actual fix.
+    neomifes::platform::WindowHandle    m_hwndFilterBackdrop;
     neomifes::platform::WindowHandle    m_hwndFilterLabel;
     neomifes::platform::WindowHandle    m_hwndFilterEdit;
     neomifes::platform::WindowHandle    m_hwndCellEditor;

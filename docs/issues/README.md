@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-24 (WI-16f、CSVグリッドのフィルタ行付近表示異常issueを新規起票)
+**最終更新:** 2026-08-25 (WI-16f、CSVグリッドのフィルタ行付近表示異常issueを解決)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -39,7 +39,6 @@
 | [`asan` プリセットがCIに常設化されていない](asan_preset_not_in_ci.md) | WI-13でローカル初回実行しDoD自体は満たしたが、以後の継続検証機構が無い | 待機 (CI実行時間とのトレードオフ検討) |
 | [Phase 10.1 v2.0拡張候補が未実装](phase_10_1_v2_extended_patterns.md) | リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/SAP・AWS・Azure等ベンダー固有パターンは実データ入手まで意図的に先送り (WI-14a) | 待機 (WI-14c MVP達成後、実データ入手時に再評価) |
 | [CSVグリッドが末尾改行由来の暗黙の空行を表示してしまう](csv_grid_shows_trailing_implicit_empty_row.md) | `CsvModel`の既存仕様(WI-16a、Document全体と一貫)がグリッドUIで視覚的ノイズとして露呈。データ欠落・誤りは無い | 待機 (要望が出るかPhase 10.2次期UI改善サブWI着手時に再評価) |
-| [CSVグリッドのフィルタ行付近に表示異常](csv_grid_filter_row_visual_glitch.md) | フィルタ行とヘッダー行の間に欠けた/重なったテキストが表示される。WI-16f着手前(`27a212c`)から再現するため既存バグと確定、原因未調査 | 待機 (原因調査未着手) |
 
 ## 対応不能 / 外部要因待ち
 
@@ -61,6 +60,7 @@
 | [アプリケーションシェルが未実装](no_application_shell.md) | 🟢 WI-01〜WI-07 (2026-08-13、🎉 M2「アプリケーションとして成立」達成)。ファイルUI/タブ/メニュー/ステータスバー/行番号/横スクロール/アイコンを全て実装、`main.cpp`は398行 |
 | [`parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる](json_tree_worker_deep_nesting_stack_overflow.md) | 🟢 WI-15c (2026-08-19)。`DepthLimitSax`によるSAX事前深度チェック(`kMaxJsonNestingDepth=200`)を追加、`nlohmann::ordered_json::parse()`を呼ぶ前に弾く設計に確定 |
 | [設定システムが存在しない](no_settings_system.md) | 🟢 WI-08 (2026-08-13)。`core::Settings`実装、`kTabWidth`二重定義解消(`SetIncrementalTabStop()`未着手ギャップも同時発見・解消)、フォント/タブ幅/行番号/ミニマップがsettings.json経由で再起動なしに反映されることを実機ドッグフーディングで確認 |
+| [CSVグリッドのフィルタ行付近に表示異常](csv_grid_filter_row_visual_glitch.md) | 🟢 WI-16f (2026-08-25)。原因はWM_PAINTが常に裏のテキストビューを描画しフィルタ行の余白から透けて見えていたこと。背景パネル(`m_hwndFilterBackdrop`)追加で解消、実機確認済み |
 
 ---
 

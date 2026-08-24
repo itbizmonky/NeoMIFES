@@ -3799,6 +3799,57 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
     }
 }
 
+// wireNormalMode()'s cfg.onPaint body, pulled all the way out (not just the
+// branching) for the same "a lambda defined inline inside wireNormalMode has
+// its own body counted toward wireNormalMode's cognitive complexity" reason
+// handleKeyDownEvent()/dispatchMouseDown() were already extracted for (see
+// this file's own precedent for that phrasing). WI-16f: skips the Direct2D
+// document render entirely while CsvGridPane covers the client area - this
+// codebase's only "full client-area replacement" pane (OutlinePane/
+// JsonTreePane are side-strips that deliberately coexist with the document
+// view, so this guard would be wrong for them). Rendering was pointless work
+// AND its output was bleeding through the few-DIP gaps CsvGridPane's filter
+// row deliberately leaves around its own child controls (WM_PAINT paints
+// the whole client area regardless of what native child HWNDs sit on top of
+// it) - a persistent visual glitch a real user found during WI-16f
+// dogfooding, present since WI-16c (2026-08-19) but never diagnosed until
+// window-rect inspection (GetWindowRect on every CsvGridPane child) ruled
+// out a layout/position bug and pointed here instead.
+void handlePaintEvent(HWND paintHwnd, MainWindow& window, RenderPipeline& renderPipeline, Workspace& workspace,
+                      TabBar& tabBar, StatusBar& statusBar, const CsvGridPane& csvGridPane) {
+    if (!csvGridPane.isVisible()) {
+        const auto rendered = renderPipeline.render();
+        if (!rendered) {
+            debugLogRenderError("RenderPipeline::render", rendered.error());
+            return;
+        }
+        updateImeCandidatePosition(window, renderPipeline);
+    }
+    EditorSession& session = workspace.active();
+    // WI-03: kept fresh every successful frame rather than only on
+    // WM_SIZE - m_charWidthDips (which visibleColumnCount() depends
+    // on) isn't measured until the FIRST render() call completes, so
+    // relying on resize() alone would leave this at 0 until the user
+    // manually resized the window. See syncHorizontalScrollBar()'s
+    // comment for why the scrollbar sync itself belongs here too.
+    session.viewport().setVisibleColumnCount(renderPipeline.visibleColumnCount());
+    syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
+    // WI-05 step 3: rebuilt from Workspace's actual session list every
+    // frame (not just on tab-count changes) - the simplest way to keep
+    // the ● unsaved-changes marker and each tab's label in sync with
+    // EditorSession::isDirty()/path() without a separate "did
+    // anything tab-relevant change" tracking mechanism. WM_PAINT is
+    // already OS-coalesced, so no additional throttling is needed.
+    tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
+    // WI-07 step4: same "rebuild every frame, no dirty-check guard"
+    // convention as tabBar.setTabs() above.
+    statusBar.setParts(buildStatusBarParts(session));
+    // WI-07 step8: same "rebuild every frame, no dirty-check guard"
+    // convention - MainWindow::setTitle()'s own doc comment explains
+    // why no diffing against the previous title is needed here.
+    window.setTitle(buildWindowTitle(session));
+}
+
 }  // namespace
 
 // No logging engine exists yet (basic_design.md sec.6.5 is a later phase);
@@ -4007,36 +4058,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // time (see this function's own header comment).
         EditorSession& session = workspace.active();
         renderPipeline.setDocument(&session.document());
-        window.setPaintHandler([&window, &renderPipeline, &workspace, &tabBar, &statusBar](HWND paintHwnd) {
-            const auto rendered = renderPipeline.render();
-            if (!rendered) {
-                debugLogRenderError("RenderPipeline::render", rendered.error());
-                return;
-            }
-            updateImeCandidatePosition(window, renderPipeline);
-            EditorSession& session = workspace.active();
-            // WI-03: kept fresh every successful frame rather than only on
-            // WM_SIZE - m_charWidthDips (which visibleColumnCount() depends
-            // on) isn't measured until the FIRST render() call completes, so
-            // relying on resize() alone would leave this at 0 until the user
-            // manually resized the window. See syncHorizontalScrollBar()'s
-            // comment for why the scrollbar sync itself belongs here too.
-            session.viewport().setVisibleColumnCount(renderPipeline.visibleColumnCount());
-            syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
-            // WI-05 step 3: rebuilt from Workspace's actual session list every
-            // frame (not just on tab-count changes) - the simplest way to keep
-            // the ● unsaved-changes marker and each tab's label in sync with
-            // EditorSession::isDirty()/path() without a separate "did
-            // anything tab-relevant change" tracking mechanism. WM_PAINT is
-            // already OS-coalesced, so no additional throttling is needed.
-            tabBar.setTabs(buildTabBarItems(workspace), workspace.activeIndex());
-            // WI-07 step4: same "rebuild every frame, no dirty-check guard"
-            // convention as tabBar.setTabs() above.
-            statusBar.setParts(buildStatusBarParts(session));
-            // WI-07 step8: same "rebuild every frame, no dirty-check guard"
-            // convention - MainWindow::setTitle()'s own doc comment explains
-            // why no diffing against the previous title is needed here.
-            window.setTitle(buildWindowTitle(session));
+        window.setPaintHandler([&window, &renderPipeline, &workspace, &tabBar, &statusBar,
+                                &csvGridPane](HWND paintHwnd) {
+            handlePaintEvent(paintHwnd, window, renderPipeline, workspace, tabBar, statusBar, csvGridPane);
         });
         const FindBarConfig findBarConfig =
             buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory);
