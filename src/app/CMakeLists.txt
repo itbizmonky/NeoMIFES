@@ -64,6 +64,11 @@ target_link_libraries(neomifes_app_input
         # (gitDiff()/beginGitDiffIndexing()) - same reasoning as
         # neomifes::csvmode immediately above.
         neomifes::git
+        # editor_session.h (WI-15g) exposes xmltree::XmlTree/
+        # xmltree::XmlTreeWorker in its public signature
+        # (xmlTree()/beginXmlTreeIndexing()) - same reasoning as
+        # neomifes::git immediately above.
+        neomifes::xmltree
     PRIVATE
         neomifes::compile_options
         neomifes::util

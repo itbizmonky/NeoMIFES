@@ -48,6 +48,7 @@
 #include "neomifes/logmode/log_pattern.h"
 #include "neomifes/search/search_service.h"
 #include "neomifes/syntax/syntax.h"
+#include "neomifes/xmltree/xml_tree.h"
 
 namespace neomifes::logmode {
 class LogIndexWorker;
@@ -56,6 +57,10 @@ class LogIndexWorker;
 namespace neomifes::jsontree {
 class JsonTreeWorker;
 }  // namespace neomifes::jsontree
+
+namespace neomifes::xmltree {
+class XmlTreeWorker;
+}  // namespace neomifes::xmltree
 
 namespace neomifes::csvmode {
 class CsvModelWorker;
@@ -255,6 +260,43 @@ public:
         m_jsonTreeIndexInFlight = false;
     }
 
+    // WI-15g: per-tab XML-tree state. Always constructed, conditionally
+    // populated - same "always there, empty until a feature turns it on"
+    // pattern as m_jsonTree/m_logModel above. No "disable" method exists yet
+    // (mirrors WI-15b's own scoping: the counterpart wasn't added until the
+    // sub-WI that ships the command calling it).
+    //
+    // Unlike jsonTree(), std::nullopt here IS reserved for "never indexed"
+    // only - xml_tree.h's own contract is that parseXmlTree() never fails
+    // (it always returns a real XmlTree, using XmlNodeKind::Error as an
+    // in-band sentinel rather than an out-of-band std::optional failure -
+    // see that header's own comment). So xmlTree() reaching a populated
+    // state is the only way it becomes non-nullopt; a caller that wants to
+    // know whether the document parsed cleanly checks the populated
+    // XmlTree::hasErrors field, not the outer std::optional.
+    [[nodiscard]] const std::optional<xmltree::XmlTree>& xmlTree() const noexcept { return m_xmlTree; }
+    [[nodiscard]] bool xmlTreeIndexInFlight() const noexcept { return m_xmlTreeIndexInFlight; }
+
+    // Fires an async XmlTreeWorker request for this session's current
+    // document snapshot, using `this` as the opaque sessionToken (see
+    // xml_tree_worker.h - never dereferenced by the worker, only round-
+    // tripped back via kMsgXmlTreeReady's wParam so the receiver can find
+    // this exact EditorSession again). Sets xmlTreeIndexInFlight()
+    // immediately; xmlTree() is populated later by applyXmlTreeResult() once
+    // the worker's response arrives.
+    void beginXmlTreeIndexing(xmltree::XmlTreeWorker& worker);
+
+    // Called by the kMsgXmlTreeReady receiver once it has matched a
+    // response's sessionToken back to this EditorSession. `result` is
+    // always a real XmlTree (never absent) - XmlTreeWorker always posts,
+    // and unlike applyJsonTreeResult()'s parameter this one is not itself
+    // optional (see xmlTree()'s own comment on where the "did this parse
+    // cleanly" signal actually lives).
+    void applyXmlTreeResult(xmltree::XmlTree result) noexcept {
+        m_xmlTree              = std::move(result);
+        m_xmlTreeIndexInFlight = false;
+    }
+
     // WI-16b: per-tab CSV-model state. Always constructed, conditionally
     // populated - same "always there, empty until a feature turns it on"
     // pattern as m_logModel/m_jsonTree above. No "disable" method exists yet
@@ -441,6 +483,8 @@ private:
     std::vector<std::size_t>               m_csvRowOrder;
     std::optional<std::vector<git::LineDiffRegion>> m_gitDiff;
     bool                                              m_gitDiffIndexInFlight = false;
+    std::optional<xmltree::XmlTree>        m_xmlTree;
+    bool                                    m_xmlTreeIndexInFlight = false;
 
     // WI-16e: the single place that keeps m_csvRowOrder in sync with
     // m_csvModel/m_csvFilter/m_csvSort - see csvRowOrder()'s own comment

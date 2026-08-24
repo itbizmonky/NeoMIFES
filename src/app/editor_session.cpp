@@ -10,6 +10,7 @@
 #include "neomifes/git/git_diff_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
+#include "neomifes/xmltree/xml_tree_worker.h"
 
 namespace neomifes::app {
 
@@ -68,6 +69,11 @@ void EditorSession::beginLogIndexing(logmode::LogIndexWorker& worker, const logm
 void EditorSession::beginJsonTreeIndexing(jsontree::JsonTreeWorker& worker) {
     worker.requestIndex(m_document.snapshot(), /*sessionToken=*/this);
     m_jsonTreeIndexInFlight = true;
+}
+
+void EditorSession::beginXmlTreeIndexing(xmltree::XmlTreeWorker& worker) {
+    worker.requestIndex(m_document.snapshot(), /*sessionToken=*/this);
+    m_xmlTreeIndexInFlight = true;
 }
 
 void EditorSession::beginCsvIndexing(csvmode::CsvModelWorker& worker, const csvmode::CsvParseOptions& options) {
