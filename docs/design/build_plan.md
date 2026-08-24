@@ -69,10 +69,10 @@ ctest --preset debug --output-on-failure
 > MVP達成後、差別化機能の追加に終わりの定義が無いまま作業が続いていたため、ユーザーとの合意でスコープを確定した。**新しいセッションは必ずこのゴールを起点に「次に何をすべきか」を判断すること。**
 >
 > **やる (残りスコープ):**
-> - Phase 10.2 (CSV) 残り: 列固定・セル編集・式列 (WI-16f以降)
+> - Phase 10.2 (CSV) 残り: 列固定・式列 (WI-16g以降。セル編集はWI-16fで完了済み)
 > - Phase 10.3 (JSON/XML Tree) 残り: XML対応・XPath・真の左右分割ペイン化 (WI-15f以降)
-> - Phase 11.1 (Git統合) の UI 化: 左ガター差分マーカー・保存/編集時の再diffトリガー・最小限のDiffビュー (WI-17c以降)。WI-17a/bで作った `GitDiffWorker`/`EditorSession::gitDiff()`系配線が、UIから一度も呼ばれない「死んだ配線」のまま放置されるのを避ける目的。
-> - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。目安: 現時点から **+10〜15 WI**。
+> - Phase 11.1 (Git統合) の UI 化残り: Gitペイン・最小限のDiffビュー (WI-17e以降。左ガター差分マーカー・保存時自動再diffトリガーはWI-17c/dで完了済み)
+> - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。
 >
 > **凍結する (🧊、着手しない):**
 > - Phase 11.2 LSP 完全実装、Phase 11.3 マクロ (Lua+JS+秀丸互換)、Phase 9 AI プラグイン
@@ -174,7 +174,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 **2026-08-23、ユーザーとの合意でスコープを確定した。** LSP完全実装・マクロ・AIプラグイン・元々の§12.3フル版(22項目、Google/MSリリース品質基準)は🧊凍結。以下が残りスコープの全て。
 
-- [ ] **WI-16f以降** Phase 10.2 の残り (列固定・セル編集・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-16f** CSV セル単位クリック編集 (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、`applyCsvCellEdit()`、実機ドッグフーディングで`LVS_EX_FULLROWSELECT`未設定というWI-16c以来の既存バグを発見・解消) → コミット: `932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`
+- [ ] **WI-16g以降** Phase 10.2 の残り (列固定・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [ ] **WI-15f以降** Phase 10.3 の残り (XML対応・XPath・真の左右分割ペイン化) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
@@ -1864,6 +1865,56 @@ Plan agentによる検証を経て設計を確定した。
 **最終ゲート:** Debug/Release/ubsan全1452/1452件green、sanitizer診断0件、clang-tidy新規警告0。
 
 コミット済み(`cdb9c66`)、pushはユーザーの明示指示待ち。Phase 11.1は「左ガター差分マーカーUI+手動リフレッシュ+保存時自動トリガー」まで完了 — Gitペイン・Diffビュー・Blame・Commit・Branch切替は全て後続サブWI(WI-17e以降)へ。次はWI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレスAPI追加から)、Phase 10.2の残り(WI-16f以降)、Phase 10.3の残り(WI-15f以降)、またはユーザー指定の次項目。
+
+---
+
+## WI-16f — CSV セル単位クリック編集
+
+**目的:** WI-17d完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-16f: CSVの続き/WI-15f: JSON/XML Treeの続き/WI-17e: Gitペイン)を提示し、**「WI-16f: CSVモードの続き(推奨)」**が選ばれた。
+
+master_roadmap.md §10.2が要求する残り3項目(列固定・セル編集・式列)のうち、着手前調査(2件のサブエージェントによる並行調査)で規模が大きく異なることが判明した — 列固定はネイティブ`WC_LISTVIEW`に対応する拡張スタイルが存在せず完全自前描画か2ListView同期が必要な規模の大きい別サブWI、式列はmaster_roadmap.md原案で最初から「(v2.0)」と明記されたストレッチゴール。**本WIはスコープを意図的に絞り、セル編集のみを対象とした。**
+
+### 設計 (直接コード読解 + Plan agentによる検証済み)
+
+- セルクリック(`NM_CLICK`)→新規`WC_EDIT`オーバーレイ(`m_hwndCellEditor`、フィルタ編集欄と同型、`create()`時に1回だけ生成)を`ListView_GetSubItemRect`+`MapWindowPoints`で位置決め→`onGetCellText`でプリフィル。Enter/フォーカス喪失でコミット、Escapeでキャンセル。
+- 新規ヘッドレス関数`csvmode::escapeCsvCellText()`(RFC4180準拠、区切り文字/引用符/CR/LFを含む値のみ引用符化)。`csvCellValue()`のエンコード側の対、単体テスト10件。
+- app層`applyCsvCellEdit()`: `rowIndex`(表示順)→`session.csvRowOrder()`→`dataRowIndex`→`CsvCell`→`escapeCsvCellText()`→`core::ReplaceRangeCommand`をdispatch→区切り文字を再検出し`beginCsvIndexing()`で全体再インデックス。
+- 新規`CsvGridPaneConfig::canBeginCellEdit`: 再インデックス中(`csvIndexInFlight()`)は新規セル編集を開始できないようveto — 二重編集による文書破壊(古い位置への誤った書き込み)を防止。
+- `applyCsvIndexReadyMessage()`の穴を修正: 従来は「グリッドを初めて開いたときの初回ポピュレート」のみを更新条件にしており、セル編集後の再インデックス結果(pending tokenは既に消費済み)が既に開いているグリッドへ反映されなかった。`isVisible()`も条件に加え、初回は`showWith()`、生存中リフレッシュは`setRowCount()`(列幅を保持)を使い分けるよう拡張。
+
+### 実施内容 (4コミット、既存WI-16の層別分割規約に従う)
+
+1. `feat(csvmode)`: `escapeCsvCellText()` + 単体テスト (`932d0f4`)
+2. `feat(ui)`: `CsvGridPane`へセルクリック編集オーバーレイ追加 (`dffd0eb`)
+3. `docs`: ワークスペース衛生ルール追加+CSVグリッド表示異常issueを起票 (`5878d44`、後述)
+4. `feat(app)`: `applyCsvCellEdit()`配線+`LVS_EX_FULLROWSELECT`修正+最終ゲート+実機ドッグフーディング (`7569ec1`)
+
+### 実機ドッグフーディングで発見した重大バグ
+
+**セルをクリックしても編集ボックスが一切開かないというバグを発見した。** 一時的な診断ログ(`WM_NOTIFY`の受信コードをファイルへ記録)を仕込み、ユーザーに実機で再現してもらったところ、`NM_CLICK`は正しく発火し`handleClick()`にも届いているが、`iItem`が常に`-1`(「#」列(`iSubItem=0`)をクリックした場合を除く)になっていることが判明した。原因は`LVS_EX_FULLROWSELECT`拡張スタイルの未設定 — このスタイルが無いとListViewの行ヒットテストは実質的に最初の列にしか反応しない、既知のWin32 ListViewの落とし穴。追加して解消した。
+
+**この不具合はWI-16fの新規コードではなく、WI-16c(2026-08-19)以来の既存バグだったと判明した。** WI-16c自身の完了記録は「セルダブルクリックのみ自動化ハーネスの制約で未確認」と正直に記録しており、実際に人間の手による本物のマウスクリックでの検証は今回が初めてだった。診断コードは解消後に削除済み。
+
+**別件、比較検証用に`C:\Users\<user>\`直下へ無断で`git worktree`を作成してしまい、ユーザーから厳重注意を受けた。** 再発防止のためCLAUDE.md 絶対ルール12として明文化(コミット`5878d44`)。併せて、ドッグフーディング中に発見した別の表示異常(フィルタ行付近の表示崩れ)は、`git worktree`でWI-16f着手前のコミット(`27a212c`)をチェックアウトし同じ操作で再現するかを確認したところ再現したため、WI-16f起因ではなく既存バグと判定し、`docs/issues/csv_grid_filter_row_visual_glitch.md`として起票した(原因未調査のままP2、同コミット)。
+
+### DoD
+
+- [x] `escapeCsvCellText()`が区切り文字/引用符/改行/空文字列を正しくエンコードする(単体テスト、`csvCellValue()`とのラウンドトリップ含む)
+- [x] セルクリックでその場にWC_EDITオーバーレイが現れ、既存の表示値がプリフィルされる
+- [x] Enter/Escape/フォーカス喪失でそれぞれコミット/キャンセル/コミットが正しく動作する(実機確認)
+- [x] コミットした内容が文書へ正しく書き戻される(引用符が必要な値は正しくエスケープされる、実機確認)
+- [x] 再インデックス中(`csvIndexInFlight()`)は新規セル編集を開始できない
+- [x] グリッドが既に開いている状態でセル編集後、手動操作なしにグリッド表示が新しい値に更新される
+- [x] タブ切替/文書スワップ時、編集中のセルエディタも安全に閉じる
+- [x] Debug/Release/ubsan全green、clang-tidy新規警告0
+- [x] **実機ドッグフーディング**: セルクリック→編集ボックス表示→Enter確定→文書とグリッド双方への反映、Escapeでのキャンセル、カンマを含む値の正しい引用符エスケープをいずれもユーザー自身が実機で確認
+- [x] ドキュメント同期
+
+### 最終ゲート
+
+Debug/Release/ubsan全1462/1462件green、sanitizer診断0件、clang-tidy新規警告0(対象4ファイル: `csv_model.h`/`.cpp`、`csv_grid_pane.h`/`.cpp`、`normal_mode_wiring.cpp`、`csvmode_csv_model_test.cpp`)。
+
+コミット済み(`932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`)、pushはユーザーの明示指示待ち。Phase 10.2は「フィルタ・ソート+セル編集」まで完了 — 列固定・式列は全て後続サブWI(WI-16g以降)へ。次はWI-16g(列固定)、Phase 10.3の残り(WI-15f以降)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 ---
 
