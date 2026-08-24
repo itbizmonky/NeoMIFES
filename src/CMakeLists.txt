@@ -38,6 +38,12 @@ add_subdirectory(logmode)
 # neomifes::document (TextPos) and links nlohmann_json::nlohmann_json +
 # neomifes::encoding privately, same shape as neomifes_logmode above.
 add_subdirectory(jsontree)
+# neomifes_xmltree (WI-15f, Phase 10.3 headless core) depends on
+# neomifes::document (TextPos) and links tree-sitter + tree-sitter-xml-
+# grammar privately - unlike neomifes_jsontree, no neomifes::util/
+# neomifes::encoding dependency (tree-sitter is fed this project's native
+# UTF-16 text directly, no UTF-8 round-trip needed - see xml_tree.h).
+add_subdirectory(xmltree)
 # neomifes_csvmode (WI-16a, Phase 10.2 headless core) depends only on
 # neomifes::document (TextPos) - unlike logmode/jsontree, its hand-rolled
 # RFC4180 state machine operates directly on the Document's native UTF-16
