@@ -23,6 +23,7 @@
 #include "neomifes/app/file_dialogs.h"
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/git_diff_bridge.h"
+#include "neomifes/app/git_diff_view_bridge.h"
 #include "neomifes/app/git_pane_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
@@ -780,6 +781,20 @@ bool handleBookmarkKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
 // request could still resurrect the pane.
 void resetViewAfterDocumentSwap(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session, FindBar& findBar,
                                 CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken) {
+    // WI-17f: every call site of this function replaces `session`'s own
+    // Document content in place (its address is stable across the swap),
+    // which every OTHER piece of state below already relied on implicitly
+    // by never re-pointing renderPipeline at it. The Diff view is the
+    // first feature to break that assumption (it redirects renderPipeline
+    // at a wholly SEPARATE synthesized Document while open) - without this
+    // explicit re-point, opening the Diff view and then swapping this
+    // tab's content (e.g. Ctrl+O into the same tab) would leave the screen
+    // rendering the now-abandoned synthesized document, frozen, until some
+    // unrelated event forced a real repaint. setDiffViewActive(false) also
+    // clears any stale Added/Removed markers for the same reason
+    // syncViewForActiveSession() above does.
+    renderPipeline.setDocument(&session.document());
+    renderPipeline.setDiffViewActive(false);
     auto& findReplaceState = session.findReplaceState();
     findReplaceState.currentMatches.clear();
     findReplaceState.currentMatchIndex = 0;
@@ -862,6 +877,13 @@ void pushGitDiffVisualsForSession(RenderPipeline& renderPipeline, const EditorSe
 void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session, FindBar& findBar,
                               CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken) {
     renderPipeline.setDocument(&session.document());
+    // WI-17f: unconditionally closes the Diff view if it happened to be
+    // open - same "force-close a full-view overlay on any tab switch/file
+    // open" reasoning csvGridPane.hide() below already established for
+    // CsvGridPane. This function IS the Diff view's own "close" action
+    // (see the new git.toggleDiffView command's action lambda, which just
+    // calls this function again rather than duplicating restore logic).
+    renderPipeline.setDiffViewActive(false);
     renderPipeline.setLanguage(session.language());
     renderPipeline.setBookmarkedLines(std::vector<neomifes::document::LineNumber>(
         session.bookmarks().lines().begin(), session.bookmarks().lines().end()));
@@ -1552,6 +1574,53 @@ void toggleGitPane(HWND hwnd, RenderPipeline& renderPipeline, Workspace& workspa
     syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
 }
 
+// "git.toggleDiffView" command's action body (WI-17f, command-palette only -
+// roadmap's suggested Alt+D is deliberately not wired, same reasoning
+// git.refreshDiff/git.togglePane already established). Closing reuses
+// syncViewForActiveSession() itself (see that function's own WI-17f
+// comment - it already clears the Diff view as a side effect of restoring
+// normal session-active state) rather than a dedicated close function -
+// opening is the ONLY place that ever touches diffViewDocument's own
+// storage, see this file's normal_mode_wiring.h header comment on
+// wireNormalMode() for why.
+void toggleDiffView(HWND hwnd, RenderPipeline& renderPipeline, Workspace& workspace, FindBar& findBar,
+                    CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken,
+                    std::optional<document::Document>& diffViewDocument) {
+    if (renderPipeline.isDiffViewActive()) {
+        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
+                                 csvGridPanePendingSessionToken);
+        return;
+    }
+    EditorSession& session = workspace.active();
+    const auto     path    = session.pathIfNamed();
+    if (!path.has_value()) {
+        return;  // Untitled - nothing to diff (dispatchGitRefreshDiffCommand()'s own precedent)
+    }
+    auto repo = git::GitRepository::discover(path->parent_path());
+    if (!repo.has_value()) {
+        return;
+    }
+    const auto lines = repo->unifiedDiffAgainstHead(*path, session.document());
+    if (!lines.has_value()) {
+        return;
+    }
+    diffViewDocument.emplace();
+    diffViewDocument->insertText(0, neomifes::app::buildDiffViewDocumentText(*lines));
+    renderPipeline.setDocument(&*diffViewDocument);
+    renderPipeline.setDiffViewLineRegions(neomifes::app::buildDiffViewLineMarkers(*lines));
+    renderPipeline.setDiffViewActive(true);
+    // Deliberately NOT syncRenderStateAndInvalidate(hwnd, renderPipeline,
+    // session) - that pushes the LIVE session's own topLine/leftColumn/
+    // cursor positions, which refer to the live document's line numbering
+    // and would be meaningless (or land far past the end) against the
+    // synthesized diff document's own, unrelated line count. A fresh view
+    // always starts at the top with no cursor to show (read-only).
+    renderPipeline.setTopLine(0);
+    renderPipeline.setLeftColumn(0);
+    renderPipeline.setCursorVisuals({});
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K. Deliberately hardcoded VK_* comparisons
 // - NOT routed through core::KeyBindings/chordMatches() like
 // Copy/Cut/Paste/Undo/Redo in handleClipboardOrUndoRedoKey() below - these 5
@@ -1708,6 +1777,21 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (imeComposing) {
         return;
     }
+    // WI-17f: checked next, before any movement/edit handling below - the
+    // Diff view shows a synthesized, non-editable document; every key
+    // except Escape (which closes it, restoring the live document via the
+    // same syncViewForActiveSession() the toggle command's own close path
+    // uses) is silently swallowed here rather than reaching
+    // session.document() through the chain below, which would otherwise
+    // mutate the REAL (currently invisible) document while the screen kept
+    // showing the unrelated diff content.
+    if (renderPipeline.isDiffViewActive()) {
+        if (vkCode == VK_ESCAPE) {
+            syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
+                                     csvGridPanePendingSessionToken);
+        }
+        return;
+    }
     EditorSession& session = workspace.active();
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled, session,
                                    renderPipeline)) {
@@ -1812,6 +1896,12 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
 void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeline& renderPipeline,
                      bool imeComposing) {
     if (imeComposing) {
+        return;
+    }
+    // WI-17f: same reasoning as handleKeyDownEvent()'s own guard - typed
+    // characters must never reach the (currently invisible) real document
+    // while the Diff view is showing.
+    if (renderPipeline.isDiffViewActive()) {
         return;
     }
     auto& virtualColumns = session.freeCursorVirtualColumns();
@@ -2298,7 +2388,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
     std::optional<csvmode::CsvModelWorker>& csvModelWorker,
     const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, bool& jsonPathBarIsForXml,
-    git::GitDiffWorker& gitDiffWorker, GitPane& gitPane, git::GitStatusWorker& gitStatusWorker) {
+    git::GitDiffWorker& gitDiffWorker, GitPane& gitPane, git::GitStatusWorker& gitStatusWorker,
+    std::optional<document::Document>& diffViewDocument) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -2492,6 +2583,17 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &renderPipeline, &workspace, &outlinePane, &jsonTreePane, &gitPane, &gitStatusWorker]() {
             toggleGitPane(hwnd, renderPipeline, workspace, outlinePane, jsonTreePane, gitPane, gitStatusWorker);
         }});
+    // WI-17f: "Git: Toggle Diff View" - palette-only, same CommandId::None
+    // shape as git.togglePane above (roadmap's suggested Alt+D deliberately
+    // not wired).
+    commands.push_back(CommandDescriptor{
+        .id = u"git.toggleDiffView", .title = u"Git: Toggle Diff View", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &renderPipeline, &workspace, &findBar, &csvGridPane, &csvGridPanePendingSessionToken,
+                  &diffViewDocument]() {
+            toggleDiffView(hwnd, renderPipeline, workspace, findBar, csvGridPane, csvGridPanePendingSessionToken,
+                           diffViewDocument);
+        }});
     commands.push_back(CommandDescriptor{
         .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",
         .commandId = CommandId::None,
@@ -2617,7 +2719,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                    &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
-                   &gitDiffWorker, &gitPane, &gitStatusWorker]() {
+                   &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2629,7 +2731,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                 csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker, gitPane,
-                gitStatusWorker));
+                gitStatusWorker, diffViewDocument));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2662,7 +2764,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                        &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
                        &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar,
-                       &jsonPathBarIsForXml, &gitDiffWorker, &gitPane, &gitStatusWorker,
+                       &jsonPathBarIsForXml, &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument,
                        presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
@@ -2675,7 +2777,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
                     outlinePane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
                     csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml,
-                    gitDiffWorker, gitPane, gitStatusWorker));
+                    gitDiffWorker, gitPane, gitStatusWorker, diffViewDocument));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2699,7 +2801,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                    &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
-                   &gitDiffWorker, &gitPane, &gitStatusWorker]() {
+                   &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2710,7 +2812,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                 csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker, gitPane,
-                gitStatusWorker));
+                gitStatusWorker, diffViewDocument));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
@@ -4268,6 +4370,18 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // comment).
 void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
     EditorSession& session = ctx.workspace.active();
+    // WI-17f: Save/Undo/Redo/Cut/Paste/etc. all reach here via WM_COMMAND
+    // (accelerator table or menu click), a completely separate chokepoint
+    // from handleKeyDownEvent()'s own Diff-view guard - see that function's
+    // own comment. Closing the Diff view first (rather than silently
+    // swallowing the command, or leaving it open) means a real action
+    // always "just works": the view steps aside and the command proceeds
+    // normally afterward, the same as any other command reaching this
+    // single choke point.
+    if (ctx.renderPipeline.isDiffViewActive()) {
+        syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, session, ctx.findBar, ctx.csvGridPane,
+                                 ctx.csvGridPanePendingSessionToken);
+    }
     switch (id) {
         case CommandId::Save:
             dispatchSaveCommand(/*forceSaveAs=*/false, ctx, session);
@@ -4374,7 +4488,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     const void*& csvGridPanePendingSessionToken,
                     std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker,
                     std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml,
-                    GitPane& gitPane, std::optional<GitStatusWorker>& gitStatusWorker) {
+                    GitPane& gitPane, std::optional<GitStatusWorker>& gitStatusWorker,
+                    std::optional<document::Document>& diffViewDocument) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -4398,7 +4513,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
                           &jsonTreePanePendingSessionToken, &csvGridPane,
                           &csvGridPanePendingSessionToken, &gitDiffWorker, &xmlTreeWorker,
-                          &jsonPathBarIsForXml, &gitPane, &gitStatusWorker](HWND hwnd) {
+                          &jsonPathBarIsForXml, &gitPane, &gitStatusWorker, &diffViewDocument](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -4458,7 +4573,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
                                              csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
                                              jsonPathBar, jsonPathBarIsForXml, *gitDiffWorker, gitPane,
-                                             *gitStatusWorker);
+                                             *gitStatusWorker, diffViewDocument);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 

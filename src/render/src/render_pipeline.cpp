@@ -130,6 +130,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .bookmarkedLines = m_bookmarkedLines,
         .foldRegions     = m_foldRegions,
         .gitDiffMarkers  = m_gitDiffMarkers,
+        .diffViewLineMarkers = m_diffViewLineMarkers,
         .leftColumn      = m_leftColumn,
         .rightPaneWidthDips = m_rightPaneWidthDips,
         .imeComposition  = m_imeComposition,
@@ -175,7 +176,9 @@ RenderExpected<void> RenderPipeline::render() noexcept {
     return result;
 }
 
-// WI-09: the 21 device-bound brush ComPtrs this pipeline caches, reset to
+// WI-09: the device-bound brush ComPtrs this pipeline caches (23 as of
+// WI-17f's own 2 additions - count last updated here, not maintained
+// exactly on every future addition), reset to
 // force ensureXxxBrush()'s lazy-create-once guards to run again next frame.
 // Shared by two different triggers: recreateDevice() below (the device
 // context they were bound to no longer exists) and setTheme() (the device
@@ -191,6 +194,8 @@ void RenderPipeline::resetThemeBrushes() noexcept {
     m_diffAddedBrush.Reset();
     m_diffModifiedBrush.Reset();
     m_diffDeletedBrush.Reset();
+    m_diffViewAddedBrush.Reset();
+    m_diffViewRemovedBrush.Reset();
     m_keywordBrush.Reset();
     m_typeBrush.Reset();
     m_stringBrush.Reset();
@@ -488,6 +493,34 @@ RenderExpected<void> RenderPipeline::ensureGitDiffBrushes(ID2D1DeviceContext6& d
     }
     if (!m_diffDeletedBrush) {
         const HRESULT hr = dc.CreateSolidColorBrush(theme.diffDeleted, m_diffDeletedBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    return {};
+}
+
+RenderExpected<void> RenderPipeline::ensureDiffViewBrushes(ID2D1DeviceContext6& dc) noexcept {
+    // WI-17f: reuses theme.diffAdded/diffDeleted's own RGB values but at
+    // reduced alpha (theme.cpp defines both at alpha=1.0, correct for
+    // ensureGitDiffBrushes()'s thin opaque gutter bar but would fully hide
+    // the text if reused directly for a whole-line background fill here -
+    // confirmed via this WI's own Plan-phase codebase check before writing
+    // this, per CLAUDE.md rule 3).
+    constexpr float kDiffViewTintAlpha = 0.18F;
+    const Theme&      theme             = themeForKind(m_themeKind);
+    if (!m_diffViewAddedBrush) {
+        const D2D1_COLOR_F color = D2D1::ColorF(theme.diffAdded.r, theme.diffAdded.g, theme.diffAdded.b,
+                                                kDiffViewTintAlpha);
+        const HRESULT       hr    = dc.CreateSolidColorBrush(color, m_diffViewAddedBrush.GetAddressOf());
+        if (FAILED(hr)) {
+            return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+        }
+    }
+    if (!m_diffViewRemovedBrush) {
+        const D2D1_COLOR_F color = D2D1::ColorF(theme.diffDeleted.r, theme.diffDeleted.g, theme.diffDeleted.b,
+                                                kDiffViewTintAlpha);
+        const HRESULT       hr    = dc.CreateSolidColorBrush(color, m_diffViewRemovedBrush.GetAddressOf());
         if (FAILED(hr)) {
             return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
         }
@@ -913,6 +946,11 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     // are applied to the layout itself (not a background rect), so they
     // must be set before DrawTextLayout - order relative to the two
     // highlight calls above doesn't matter.
+    // WI-17f: a whole-line background element, so it must run before every
+    // other background/highlight call below (and well before DrawTextLayout)
+    // - see this function's own drawDiffViewLineBackground() declaration
+    // comment.
+    drawDiffViewLineBackground(dc, y, line, widthDips);
     drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
     drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
     // Phase 7e: a background element like the two calls above, so it must
@@ -1109,6 +1147,26 @@ void RenderPipeline::drawSelectionsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLa
             drawSelectionOnLine(dc, layout, y, static_cast<std::uint32_t>(overlapStart - lineStart),
                                static_cast<std::uint32_t>(overlapEnd - lineStart));
         }
+    }
+}
+
+void RenderPipeline::drawDiffViewLineBackground(ID2D1DeviceContext6& dc, float y, LineNumber line,
+                                                float widthDips) noexcept {
+    if (m_diffViewLineMarkers.empty()) {
+        return;  // common case - Diff view closed, or open with nothing to highlight
+    }
+    for (const DiffViewLineMarker& marker : m_diffViewLineMarkers) {
+        if (line < marker.startLine || line >= marker.startLine + marker.lineCount) {
+            continue;
+        }
+        ID2D1SolidColorBrush* brush =
+            marker.kind == GitDiffKind::Added ? m_diffViewAddedBrush.Get() : m_diffViewRemovedBrush.Get();
+        if (brush == nullptr) {
+            continue;
+        }
+        const D2D1_RECT_F bar = D2D1::RectF(0.0F, y, widthDips, y + m_lineHeightDips);
+        dc.FillRectangle(bar, brush);
+        return;  // a line belongs to at most one marker range - kind values never overlap
     }
 }
 
@@ -1913,6 +1971,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!gitDiffBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return gitDiffBrushResult;
+    }
+    auto diffViewBrushResult = ensureDiffViewBrushes(*dc);
+    if (!diffViewBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return diffViewBrushResult;
     }
     auto tokenBrushResult = ensureTokenBrushes(*dc);
     if (!tokenBrushResult) {

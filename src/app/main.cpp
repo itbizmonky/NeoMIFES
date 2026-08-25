@@ -708,6 +708,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // GitStatusWorker's constructor also requires a real HWND and starts a
     // background std::thread immediately.
     std::optional<GitStatusWorker> gitStatusWorker;
+    // WI-17f: owns the Diff view's own synthesized document's storage while
+    // it's open - RenderPipeline::setDocument() itself is non-owning (a
+    // plain Document*), so something outside it must keep the object alive
+    // for as long as it's being displayed. Default-constructed/empty
+    // (nullopt) whenever the Diff view is closed - see
+    // wireNormalMode()'s own header comment for why this is the ONLY thing
+    // this variable is for, unlike gitPane/gitStatusWorker above.
+    std::optional<Document> diffViewDocument;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -783,7 +791,8 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
                        logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker, jsonTreePane,
                        jsonTreePanePendingSessionToken, csvGridPane, csvGridPanePendingSessionToken,
-                       gitDiffWorker, xmlTreeWorker, jsonPathBarIsForXml, gitPane, gitStatusWorker);
+                       gitDiffWorker, xmlTreeWorker, jsonPathBarIsForXml, gitPane, gitStatusWorker,
+                       diffViewDocument);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

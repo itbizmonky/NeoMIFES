@@ -137,6 +137,25 @@ struct GitDiffMarker {
     friend constexpr bool operator==(const GitDiffMarker&, const GitDiffMarker&) = default;
 };
 
+// WI-17f: one contiguous run of Added or Removed lines in the Diff view's
+// own SYNTHESIZED document (see setDiffViewLineRegions()'s own comment for
+// why this is a deliberately SEPARATE type from GitDiffMarker above, not a
+// reinterpretation of it). Reuses GitDiffKind's Added/Deleted values only
+// (Modified has no per-line meaning in a unified diff - a "modified" line
+// is just a Removed line immediately followed by an Added line, the same
+// decomposition git::UnifiedDiffLine/unifiedDiffAgainstHead() already
+// produce). UNLIKE GitDiffMarker's Deleted point-marker convention,
+// [startLine, startLine + lineCount) here is always a REAL range - the
+// synthesized diff document actually contains removed lines as real text,
+// something the live document never does.
+struct DiffViewLineMarker {
+    document::LineNumber startLine = 0;
+    document::LineNumber lineCount = 0;
+    GitDiffKind            kind      = GitDiffKind::Added;
+
+    friend constexpr bool operator==(const DiffViewLineMarker&, const DiffViewLineMarker&) = default;
+};
+
 // An in-progress IME composition (WI-06) - the unconfirmed text a Japanese/
 // CJK IME is still converting, never written to Document (only the eventual
 // committed string is - see main_window.h's onImeResult). Drawn as an
@@ -434,6 +453,38 @@ public:
         m_gitDiffMarkers = std::move(markers);
     }
 
+    // WI-17f: the Diff view's own Added/Removed line ranges - painted as a
+    // full-line background tint (drawDiffViewLineBackground(), NOT the
+    // gutter bar drawGutterOnLine() paints for GitDiffMarker above), since a
+    // synthesized diff document has no gutter-marker use for hunk hints -
+    // every line IS either changed or context, spelled out directly. Same
+    // non-owning, whole-vector-replace shape as setGitDiffRegions() -
+    // rebuilt by app::buildDiffViewLineMarkers() every time the Diff view
+    // (re)opens.
+    void setDiffViewLineRegions(std::vector<DiffViewLineMarker> markers) noexcept {
+        m_diffViewLineMarkers = std::move(markers);
+    }
+
+    // WI-17f: true while the Diff view is showing a synthesized document
+    // instead of the active session's own live one - setDocument() alone
+    // can't distinguish the two (both are just `document::Document*`), and
+    // several call sites (handleKeyDownEvent()/handleCharEvent()'s input-
+    // blocking guard, dispatchCommand()'s auto-close-first guard) need to
+    // ask "is this the Diff view right now" without needing to know
+    // anything else about it. Setting `active` to false ALSO clears
+    // m_diffViewLineMarkers unconditionally - closing the Diff view and
+    // forgetting to also clear its markers would otherwise leave stale
+    // colored backgrounds painted over whatever real document is shown
+    // next, since the two pieces of state would otherwise have to be kept
+    // in sync by every caller individually.
+    void setDiffViewActive(bool active) noexcept {
+        m_diffViewActive = active;
+        if (!active) {
+            m_diffViewLineMarkers.clear();
+        }
+    }
+    [[nodiscard]] bool isDiffViewActive() const noexcept { return m_diffViewActive; }
+
     // WI-14c: per-document-line log severity, 1:1 with logmode::LogModel::
     // lines() (empty vector = log mode disabled for the attached document,
     // matching m_tokens/m_bookmarkedLines/m_foldRegions' own "empty means
@@ -629,6 +680,15 @@ private:
         // m_logLineLevels, this is small enough to include directly rather
         // than force a redraw via reset() on arrival.
         std::vector<GitDiffMarker> gitDiffMarkers;
+        // WI-17f: same rationale as gitDiffMarkers above - a Diff view
+        // marker change alone must not be coarse-frame-skipped either.
+        // Bounded (one entry per contiguous Added/Removed run), same
+        // "small enough to include directly" reasoning. Does not ALSO need
+        // a separate m_diffViewActive field here - every actual toggle
+        // transition (open/close) also swaps m_document to a different
+        // Document instance, which already forces documentGeneration to
+        // differ and a redraw to happen regardless.
+        std::vector<DiffViewLineMarker> diffViewLineMarkers;
         // WI-03: same rationale as topLine above - a horizontal-only scroll
         // (e.g. dragging the new horizontal scrollbar with topLine/cursor/
         // selection/etc all unchanged) must not be coarse-frame-skipped
@@ -696,6 +756,13 @@ private:
     // shape as ensureTokenBrushes()/ensureIndentGuideBrushes() below rather
     // than 3 separate ensureXxxBrush() methods.
     [[nodiscard]] RenderExpected<void> ensureGitDiffBrushes(ID2D1DeviceContext6& dc) noexcept;
+    // WI-17f: 2 solid brushes (Added/Removed), built at reduced opacity so
+    // text drawn on top of a full-line background fill stays readable -
+    // deliberately NOT a reuse of ensureGitDiffBrushes()'s own fully-opaque
+    // brushes above (those are sized for a thin 3dip gutter bar, not a
+    // whole-line fill - see setDiffViewLineRegions()'s own comment for why
+    // this is a wholly separate rendering path).
+    [[nodiscard]] RenderExpected<void> ensureDiffViewBrushes(ID2D1DeviceContext6& dc) noexcept;
     // Phase 7i: the fold-marker triangle's brush (drawGutterOnLine()).
     [[nodiscard]] RenderExpected<void> ensureFoldMarkerBrush(ID2D1DeviceContext6& dc) noexcept;
     // WI-07 step7: the line-number digits' brush (drawGutterOnLine()).
@@ -1013,6 +1080,20 @@ private:
     // behind the glyphs (Phase 4b2, N-cursor generalization Phase 4b7a).
     void drawSelectionsOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                              document::TextPos lineStart, document::TextPos lineEnd) noexcept;
+    // WI-17f: fills the FULL LINE WIDTH (not a layout-relative column range
+    // like drawMatchesOnLine()/drawSelectionsOnLine() below - m_diffViewLine
+    // Markers classify whole lines, not sub-ranges) with a translucent
+    // Added/Removed tint if `line` falls inside one of m_diffViewLineMarkers'
+    // ranges, at vertical offset `y`. No-op (and no ensureDiffViewBrushes()
+    // call) when m_diffViewLineMarkers is empty - the common case, since
+    // this state only exists while the Diff view is open. Called from
+    // drawTextLine() BEFORE drawMatchesOnLine() below - a whole-line
+    // background sits beneath everything else (selection/match highlights,
+    // glyphs), the same "background elements paint first" ordering that
+    // function's own declaration comment documents for the two calls
+    // immediately after it.
+    void drawDiffViewLineBackground(ID2D1DeviceContext6& dc, float y, document::LineNumber line,
+                                    float widthDips) noexcept;
     // Draws a translucent highlight rectangle for every m_matchVisuals entry
     // that overlaps [lineStart, lineEnd), at vertical offset `y` within
     // `layout`. Called from drawVisibleLines() BEFORE drawSelectionsOnLine()
@@ -1189,6 +1270,8 @@ private:
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)
     std::vector<FoldVisual>                           m_foldRegions;      // empty: folding disabled (Phase 7i)
     std::vector<GitDiffMarker>                        m_gitDiffMarkers;   // empty: no diff data (WI-17c)
+    std::vector<DiffViewLineMarker>                   m_diffViewLineMarkers;  // empty: Diff view closed, or open with no changes to highlight (WI-17f)
+    bool                                               m_diffViewActive       = false;  // WI-17f: see isDiffViewActive()'s own comment
     // WI-14c: see setLogLineLevels()'s own comment for why this can be
     // O(document size) and is deliberately excluded from FrameState.
     std::vector<logmode::LogLevel>                    m_logLineLevels;    // empty: log mode disabled
@@ -1265,6 +1348,13 @@ private:
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffAddedBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffModifiedBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffDeletedBrush;
+    // WI-17f: the Diff view's own 2 full-line-background brushes (Added/
+    // Removed), same device-bound reset lifecycle as the brushes above -
+    // deliberately separate ComPtrs from m_diffAddedBrush/m_diffDeletedBrush
+    // above (built at reduced opacity, see ensureDiffViewBrushes()'s own
+    // comment for why sharing those would be wrong).
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffViewAddedBrush;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_diffViewRemovedBrush;
     // Phase 7i: fold-marker triangle brush, same device-bound reset
     // lifecycle as the brushes above. See ensureFoldMarkerBrush()/drawGutterOnLine().
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_foldMarkerBrush;

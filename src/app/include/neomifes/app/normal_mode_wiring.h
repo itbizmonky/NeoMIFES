@@ -306,6 +306,18 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // is no per-tab race to guard against the way jsonTreePanePendingSessionToken/
 // csvGridPanePendingSessionToken exist to resolve (see workspace.h's own
 // gitStatus()-placement comment for the full reasoning).
+//
+// WI-17f: takes std::optional<document::Document>& diffViewDocument - the
+// ONLY thing this parameter is for is OWNING the Diff view's synthesized
+// document's storage across its open/close lifetime (RenderPipeline::
+// setDocument() itself is non-owning). Unlike gitPane/gitStatusWorker
+// above, this is deliberately NOT threaded into handleKeyDownEvent()/
+// dispatchCommand()'s own Diff-view guards - those only need to ASK "is the
+// Diff view showing right now", which RenderPipeline::isDiffViewActive()
+// (already reachable via the renderPipeline parameter every relevant
+// function already has) answers on its own. Only the git.toggleDiffView
+// command's own action (buildCommandRegistry()) ever touches this
+// parameter directly.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
@@ -326,6 +338,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     const void*& csvGridPanePendingSessionToken,
                     std::optional<git::GitDiffWorker>& gitDiffWorker,
                     std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml,
-                    ui::GitPane& gitPane, std::optional<git::GitStatusWorker>& gitStatusWorker);
+                    ui::GitPane& gitPane, std::optional<git::GitStatusWorker>& gitStatusWorker,
+                    std::optional<document::Document>& diffViewDocument);
 
 }  // namespace neomifes::app
