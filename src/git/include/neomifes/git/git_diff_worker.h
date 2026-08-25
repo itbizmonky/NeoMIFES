@@ -56,10 +56,12 @@ namespace neomifes::git {
 // Posted to the target HWND on completion of every requestDiff() call.
 // WM_APP+1 (kMsgDeferredInit, main_window.cpp), WM_APP+2
 // (kMsgSyntaxTokensReady, syntax_worker.h), WM_APP+3 (kMsgLogIndexReady,
-// log_index_worker.h), WM_APP+4 (kMsgJsonTreeReady, json_tree_worker.h), and
-// WM_APP+5 (kMsgCsvIndexReady, csv_model_worker.h) are the only other values
-// in use codebase-wide (grep-confirmed - there is no central WM_APP+N
-// registry, same caveat those files' own comments already note).
+// log_index_worker.h), WM_APP+4 (kMsgJsonTreeReady, json_tree_worker.h),
+// WM_APP+5 (kMsgCsvIndexReady, csv_model_worker.h), WM_APP+7
+// (kMsgXmlTreeReady, xml_tree_worker.h), and WM_APP+8 (kMsgGitStatusReady,
+// git_status_worker.h) are the only other values in use codebase-wide
+// (grep-confirmed - there is no central WM_APP+N registry, same caveat those
+// files' own comments already note).
 inline constexpr UINT kMsgGitDiffReady = WM_APP + 6;
 
 // One queued diff request. `sessionToken` is an opaque identifier the caller

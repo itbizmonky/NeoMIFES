@@ -247,6 +247,43 @@ set_tests_properties(git_diff_worker PROPERTIES
     TIMEOUT 30
 )
 
+# git_status_worker_test - exercises GitStatusWorker's real background
+# std::thread + PostMessageW completion handoff end-to-end (WI-17e), modeled
+# directly on git_diff_worker_test above.
+add_executable(neomifes_git_status_worker_test
+    git_status_worker_test.cpp
+)
+
+target_link_libraries(neomifes_git_status_worker_test
+    PRIVATE
+        neomifes::compile_options
+        neomifes::document
+        neomifes::git
+        libgit2package
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_include_directories(neomifes_git_status_worker_test
+    PRIVATE
+        "${libgit2_SOURCE_DIR}/include"
+        "${libgit2_BINARY_DIR}/include"
+)
+
+set_target_properties(neomifes_git_status_worker_test PROPERTIES
+    FOLDER "tests"
+)
+
+add_test(
+    NAME    git_status_worker
+    COMMAND neomifes_git_status_worker_test
+)
+
+set_tests_properties(git_status_worker PROPERTIES
+    LABELS "integration"
+    TIMEOUT 30
+)
+
 # xmltree_xml_tree_worker_test - exercises XmlTreeWorker's real background
 # std::thread + PostMessageW completion handoff end-to-end (WI-15g), modeled
 # directly on jsontree_json_tree_worker_test above.
