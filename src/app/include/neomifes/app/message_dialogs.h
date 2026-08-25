@@ -87,6 +87,23 @@ void showJsonPathSyntaxErrorDialog(HWND owner, std::u16string_view expression);
 // evaluateJsonPath() parsed successfully but matched zero nodes.
 void showJsonPathNoMatchDialog(HWND owner);
 
+// WI-15i: OK-only dialog for "XPathを評価" (command palette, xml.xpath) when
+// the current document's root couldn't be resolved (xmltree::parseXmlTree()
+// returned an XmlNodeKind::Error root - see xml_tree.h's own comment on why
+// this, not std::nullopt, is XML's equivalent of "not well-formed"). Same
+// shape as showJsonPathInvalidJsonDialog(), a separate function because its
+// message text is XML-specific.
+void showXPathInvalidXmlDialog(HWND owner);
+
+// WI-15i: OK-only error dialog for "XPathを評価" when xmltree::parseXPath()
+// rejected the user's input. Same shape as showJsonPathSyntaxErrorDialog().
+void showXPathSyntaxErrorDialog(HWND owner, std::u16string_view expression);
+
+// WI-15i: OK-only dialog for "XPathを評価" when xmltree::evaluateXPath()
+// parsed successfully but matched zero nodes. Same shape as
+// showJsonPathNoMatchDialog().
+void showXPathNoMatchDialog(HWND owner);
+
 // WI-11: Restore/Discard prompt shown once per recoverable autosave found at
 // startup (app::scanForRecoverableAutoSaves()). Returns true if the user
 // chose to restore. `owner` may be nullptr - this runs at startup, BEFORE

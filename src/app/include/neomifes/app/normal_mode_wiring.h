@@ -312,6 +312,6 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     const void*& jsonTreePanePendingSessionToken, ui::CsvGridPane& csvGridPane,
                     const void*& csvGridPanePendingSessionToken,
                     std::optional<git::GitDiffWorker>& gitDiffWorker,
-                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker);
+                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml);
 
 }  // namespace neomifes::app

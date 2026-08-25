@@ -75,6 +75,7 @@
 #include "neomifes/util/tag_jump_parser.h"
 #include "neomifes/util/version.h"
 #include "neomifes/util/wchar_cast.h"
+#include "neomifes/xmltree/xpath.h"
 
 namespace neomifes::app {
 
@@ -1462,6 +1463,35 @@ void dispatchJsonPathCommand(std::u16string_view expression, HWND hwnd, RenderPi
     jumpToOutlinePosition(matches.front()->startPos, hwnd, session, renderPipeline);
 }
 
+// WI-15i ("XPathを評価", command palette only via the SAME JsonPathBar
+// instance JSONPath already uses - see buildJsonPathBarConfig()'s own
+// comment for how onSubmit tells the two apart). Direct sibling of
+// dispatchJsonPathCommand() above, same "reparse the whole document rather
+// than trust a possibly-stale cached tree, jump to the first match only"
+// shape. Unlike dispatchJsonPathCommand(), the "not well-formed" check is
+// `tree.root.kind == Error`, not `!tree.has_value()` - xmltree::
+// parseXmlTree() never returns std::optional (see xml_tree.h's own header
+// comment on why XML's contract differs from JSON's fail-fast one).
+void dispatchXPathCommand(std::u16string_view expression, HWND hwnd, RenderPipeline& renderPipeline,
+                          EditorSession& session) {
+    const auto tree = xmltree::parseXmlTree(session.document());
+    if (tree.root.kind == xmltree::XmlNodeKind::Error) {
+        showXPathInvalidXmlDialog(hwnd);
+        return;
+    }
+    const auto path = xmltree::parseXPath(expression);
+    if (!path.has_value()) {
+        showXPathSyntaxErrorDialog(hwnd, expression);
+        return;
+    }
+    const auto matches = xmltree::evaluateXPath(tree.root, *path);
+    if (matches.empty()) {
+        showXPathNoMatchDialog(hwnd);
+        return;
+    }
+    jumpToOutlinePosition(matches.front()->startPos, hwnd, session, renderPipeline);
+}
+
 // WI-17c ("Git: Refresh Diff Markers", command palette only - see this WI's
 // plan for why no CommandId/keybinding/menu entry, same "edit.duplicateLine"
 // precedent dispatchDuplicateLineCommand() above follows). The ONLY call
@@ -2219,7 +2249,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
     std::optional<csvmode::CsvModelWorker>& csvModelWorker,
-    const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, git::GitDiffWorker& gitDiffWorker) {
+    const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, bool& jsonPathBarIsForXml,
+    git::GitDiffWorker& gitDiffWorker) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -2368,11 +2399,31 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     // jsonPathBar rather than doing the work inline - json.jsonpath needs a
     // user-supplied expression string first (dispatchJsonPathCommand() is
     // called later, from JsonPathBar's own onSubmit - see
-    // buildJsonPathBarConfig()).
+    // buildJsonPathBarConfig()). WI-15i: sets jsonPathBarIsForXml = false
+    // before showing - see buildJsonPathBarConfig()'s own comment on why.
     commands.push_back(CommandDescriptor{
         .id = u"json.jsonpath", .title = u"JSON: Evaluate JSONPath", .keybindingLabel = u"",
         .commandId = CommandId::None,
-        .action = [&jsonPathBar]() { jsonPathBar.show(); }});
+        .action = [&jsonPathBar, &jsonPathBarIsForXml]() {
+            jsonPathBarIsForXml = false;
+            jsonPathBar.show();
+        }});
+    // WI-15i: "XPathを評価" - the XPath counterpart of json.jsonpath above,
+    // reusing the SAME jsonPathBar instance (see buildJsonPathBarConfig()'s
+    // own comment) rather than a new ui::XPathBar - deliberately a SEPARATE
+    // command/title from json.jsonpath, not folded into one auto-detecting
+    // entry the way Ctrl+Shift+J's structure-tree toggle was (WI-15h) - the
+    // query SYNTAX itself ($.key vs /tag[1]) is far more visible to the user
+    // typing into this bar than a panel toggle ever was, so two clearly-
+    // labeled palette entries were chosen as more discoverable than one
+    // ambiguous one (confirmed with the user before implementing).
+    commands.push_back(CommandDescriptor{
+        .id = u"xml.xpath", .title = u"XML: Evaluate XPath", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [&jsonPathBar, &jsonPathBarIsForXml]() {
+            jsonPathBarIsForXml = true;
+            jsonPathBar.show();
+        }});
     // WI-17c: "Git: Refresh Diff Markers" - palette-only, same CommandId::None
     // shape as json.format/json.validate above. The only call site of
     // EditorSession::beginGitDiffIndexing() in this codebase (no automatic
@@ -2507,7 +2558,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
-                   &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
+                   &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
+                   &gitDiffWorker]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2518,7 +2570,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
+                csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2550,8 +2602,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                        &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
-                       &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker,
-                       presetName = std::u16string(choice.name)]() {
+                       &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar,
+                       &jsonPathBarIsForXml, &gitDiffWorker, presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2562,7 +2614,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
                     outlinePane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
-                    csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
+                    csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml,
+                    gitDiffWorker));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2585,7 +2638,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
-                   &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
+                   &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
+                   &gitDiffWorker]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2595,7 +2649,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
+                csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
@@ -2671,11 +2725,29 @@ GotoLineBarConfig buildGotoLineBarConfig(HWND hwnd, Workspace& workspace, Render
 // Builds the JsonPathBarConfig callbacks (WI-15e) - same extraction
 // rationale/shape as buildGotoLineBarConfig() above, including resolving
 // workspace.active() fresh at invocation time.
+//
+// WI-15i: `jsonPathBarIsForXml` is how a SINGLE shared JsonPathBar instance
+// (see this file's own xml.xpath command comment on why no new ui::XPathBar
+// was introduced - JsonPathBarConfig::onSubmit already only hands back raw
+// text, JSON-agnostic) serves two completely different query languages
+// ($.key vs /tag[1]). Set to true/false by whichever command
+// (json.jsonpath/xml.xpath) just called jsonPathBar.show() - a
+// wWinMain-local bool, same "UI-layer state that isn't any one
+// EditorSession's concern" placement as freeCursorModeEnabled/
+// isDraggingMinimap. Read here, once, at the moment the user actually
+// submits - not at show()-time - so it always reflects whichever command
+// most recently opened the bar, even across an close-without-submit +
+// reopen-via-the-other-command sequence.
 JsonPathBarConfig buildJsonPathBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
-                                         JsonPathBar& jsonPathBar) {
+                                         JsonPathBar& jsonPathBar, const bool& jsonPathBarIsForXml) {
     JsonPathBarConfig config{};
-    config.onSubmit = [hwnd, &workspace, &renderPipeline, &jsonPathBar](std::u16string_view input) {
-        dispatchJsonPathCommand(input, hwnd, renderPipeline, workspace.active());
+    config.onSubmit = [hwnd, &workspace, &renderPipeline, &jsonPathBar,
+                       &jsonPathBarIsForXml](std::u16string_view input) {
+        if (jsonPathBarIsForXml) {
+            dispatchXPathCommand(input, hwnd, renderPipeline, workspace.active());
+        } else {
+            dispatchJsonPathCommand(input, hwnd, renderPipeline, workspace.active());
+        }
         jsonPathBar.hide();
         ::SetFocus(hwnd);
     };
@@ -4162,7 +4234,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                     const void*& csvGridPanePendingSessionToken,
                     std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker,
-                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker) {
+                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -4185,7 +4257,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
                           &jsonTreePanePendingSessionToken, &csvGridPane,
-                          &csvGridPanePendingSessionToken, &gitDiffWorker, &xmlTreeWorker](HWND hwnd) {
+                          &csvGridPanePendingSessionToken, &gitDiffWorker, &xmlTreeWorker,
+                          &jsonPathBarIsForXml](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -4240,7 +4313,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              userLogPatterns, logPatternsDir, jsonTreePane, outlinePane,
                                              jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
                                              csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                                             jsonPathBar, *gitDiffWorker);
+                                             jsonPathBar, jsonPathBarIsForXml, *gitDiffWorker);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -4252,7 +4325,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
 
         // WI-15e: same non-fatal treatment as findBar.create() above.
         const JsonPathBarConfig jsonPathBarConfig =
-            buildJsonPathBarConfig(hwnd, workspace, renderPipeline, jsonPathBar);
+            buildJsonPathBarConfig(hwnd, workspace, renderPipeline, jsonPathBar, jsonPathBarIsForXml);
         [[maybe_unused]] const bool jsonPathBarCreated =
             jsonPathBar.create(hwnd, hInstance, jsonPathBarConfig);
 

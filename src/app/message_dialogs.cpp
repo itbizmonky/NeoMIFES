@@ -254,4 +254,38 @@ void showJsonPathNoMatchDialog(HWND owner) {
     ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
 }
 
+void showXPathInvalidXmlDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_ERROR_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"XPathを評価できません";
+    config.pszContent         = L"現在のドキュメントは有効なXMLではないためXPathを評価できません。";
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showXPathSyntaxErrorDialog(HWND owner, std::u16string_view expression) {
+    const std::wstring content(neomifes::util::toWstringView(expression));
+
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_ERROR_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"XPathの構文エラー";
+    config.pszContent         = content.c_str();
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
+void showXPathNoMatchDialog(HWND owner) {
+    TASKDIALOGCONFIG config = makeBaseConfig(owner);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    config.pszMainIcon = TD_INFORMATION_ICON;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    config.pszMainInstruction = L"一致するノードが見つかりませんでした";
+    config.dwCommonButtons    = TDCBF_OK_BUTTON;
+    ::TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+}
+
 }  // namespace neomifes::app

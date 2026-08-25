@@ -641,6 +641,14 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // handleFreeCursorRightArrow() comment), so it stays a wWinMain local
     // rather than an EditorSession member.
     bool freeCursorModeEnabled = false;
+    // WI-15i: which query language the shared jsonPathBar is currently
+    // evaluating on submit - "JSON: Evaluate JSONPath" and the new "XML:
+    // Evaluate XPath" commands both call jsonPathBar.show() on the same bar
+    // instance (see normal_mode_wiring.cpp's buildJsonPathBarConfig()), so
+    // this remembers which one most recently triggered it. Same
+    // "session-lifetime UI state, not document state" reasoning as
+    // freeCursorModeEnabled above.
+    bool jsonPathBarIsForXml = false;
     // WI-06: true for the duration of an in-progress IME composition - same
     // "session-lifetime UI state, not document state" reasoning as
     // freeCursorModeEnabled just above (see
@@ -764,7 +772,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
                        logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker, jsonTreePane,
                        jsonTreePanePendingSessionToken, csvGridPane, csvGridPanePendingSessionToken,
-                       gitDiffWorker, xmlTreeWorker);
+                       gitDiffWorker, xmlTreeWorker, jsonPathBarIsForXml);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to
