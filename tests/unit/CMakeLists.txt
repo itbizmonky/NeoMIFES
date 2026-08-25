@@ -93,6 +93,8 @@ add_executable(neomifes_unit_tests
     xmltree_xml_tree_test.cpp
     app_json_tree_bridge_test.cpp
     app_json_fold_bridge_test.cpp
+    app_xml_tree_bridge_test.cpp
+    app_xml_fold_bridge_test.cpp
     csvmode_csv_model_test.cpp
     csvmode_csv_delimiter_detection_test.cpp
     csvmode_csv_row_order_test.cpp

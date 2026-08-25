@@ -58,12 +58,12 @@ enum class XmlNodeKind : std::uint8_t {
 };
 
 struct XmlAttribute {
-    std::u16string name;  // raw source text, undecoded (no entity/reference resolution)
+    std::u16string name = u"";  // raw source text, undecoded (no entity/reference resolution)
     // AttValue's own raw span INCLUDING the surrounding quotes (single or
     // double - both are legal XML). Not decoded: an entity reference inside
     // the value (e.g. "x&amp;y") is kept as-is, matching JsonNode::text's
     // "raw source substring, not a decoded value" convention.
-    std::u16string value;
+    std::u16string value = u"";
     // Spans the whole `name="value"` run, matching JsonNode::startPos's
     // "object member spans key through value" convention.
     document::TextPos startPos = 0;
@@ -76,12 +76,12 @@ struct XmlNode {
     XmlNodeKind kind = XmlNodeKind::Element;
 
     // Element only. Raw source text (no entity decoding).
-    std::u16string tagName;
+    std::u16string tagName = u"";
 
     // Element only. In source order. Structurally disjoint from `children`
     // (tree-sitter-xml's own grammar never mixes an Attribute into an
     // element's content-child list) - see xml_tree.cpp.
-    std::vector<XmlAttribute> attributes;
+    std::vector<XmlAttribute> attributes = {};
 
     // Element only. Distinguishes `<foo/>` from `<foo></foo>` - these are
     // structurally different node types in tree-sitter-xml's grammar
@@ -97,7 +97,7 @@ struct XmlNode {
     // of whatever tree-sitter node this stands in for (possibly the entire
     // document, e.g. for a mismatched-closing-tag document - see XmlTree's
     // comment).
-    std::u16string text;
+    std::u16string text = u"";
 
     // UTF-16 code-unit offsets into the original document (same coordinate
     // space as document::Document::offsetToLine()). endPos is exclusive.
@@ -110,7 +110,7 @@ struct XmlNode {
     // but-empty element (`<foo></foo>` has no `content` node in the grammar
     // at all - see xml_tree.cpp) - the two are distinguished by
     // `selfClosing`, not by this field.
-    std::vector<XmlNode> children;
+    std::vector<XmlNode> children = {};
 
     friend bool operator==(const XmlNode&, const XmlNode&) = default;
 };
