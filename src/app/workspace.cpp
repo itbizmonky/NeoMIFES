@@ -4,6 +4,8 @@
 #include <system_error>
 #include <utility>
 
+#include "neomifes/git/git_status_worker.h"
+
 namespace neomifes::app {
 
 namespace {
@@ -87,6 +89,20 @@ void Workspace::activate(std::size_t index) noexcept {
 bool Workspace::hasUnsavedChanges() const noexcept {
     return std::ranges::any_of(m_sessions,
                                 [](const std::unique_ptr<EditorSession>& session) { return session->isDirty(); });
+}
+
+void Workspace::beginGitStatusIndexing(git::GitStatusWorker& worker) {
+    const auto path = active().pathIfNamed();
+    if (!path.has_value()) {
+        // Untitled active tab - see this method's own header comment on why
+        // this actively clears rather than leaving a previous session's
+        // stale result in place.
+        m_gitStatus         = std::nullopt;
+        m_gitStatusInFlight = false;
+        return;
+    }
+    worker.requestStatus(*path, /*sessionToken=*/this);
+    m_gitStatusInFlight = true;
 }
 
 }  // namespace neomifes::app

@@ -16,6 +16,11 @@
 #include "neomifes/app/editor_session.h"
 #include "neomifes/document/document.h"
 #include "neomifes/document/file_loader.h"
+#include "neomifes/git/git_repository.h"  // git::GitStatusEntry
+
+namespace neomifes::git {
+class GitStatusWorker;
+}  // namespace neomifes::git
 
 namespace neomifes::app {
 
@@ -80,9 +85,51 @@ public:
 
     [[nodiscard]] bool hasUnsavedChanges() const noexcept;
 
+    // WI-17e: repo-wide Git status, deliberately stored on Workspace rather
+    // than per-EditorSession the way gitDiff()/csvModel()/jsonTree() are.
+    // Git status is a property of the REPOSITORY, not of any one open
+    // document - two tabs open on the same repo would otherwise redundantly
+    // re-fetch and could show inconsistent same-repo results depending on
+    // fetch timing. GitPane is itself a single window-wide instance (not
+    // one per tab), matching this placement.
+    //
+    // Same std::nullopt-collapses-two-cases ambiguity as gitDiff(): "never
+    // requested" and "requested, but not inside a Git repository" both read
+    // as std::nullopt (GitStatusWorker always posts a response either way -
+    // see git_status_worker.h's own header comment).
+    [[nodiscard]] const std::optional<std::vector<git::GitStatusEntry>>& gitStatus() const noexcept {
+        return m_gitStatus;
+    }
+    [[nodiscard]] bool gitStatusInFlight() const noexcept { return m_gitStatusInFlight; }
+
+    // Fires an async GitStatusWorker request scoped to the ACTIVE session's
+    // path, using `this` (the Workspace, not the session) as the opaque
+    // sessionToken - matches this feature's Workspace-wide cache, not a
+    // per-session one. If the active session is Untitled (no path),
+    // actively CLEARS m_gitStatus to std::nullopt instead of leaving it
+    // untouched - unlike EditorSession::beginGitDiffIndexing()'s simple
+    // no-op. That no-op is safe there only because gitDiff() is a per-
+    // session cache with no other tab's data to confuse it with; here, a
+    // stale m_gitStatus left over from a previously active session's
+    // repository would otherwise keep showing after switching to an
+    // Untitled tab, which has no repository of its own to report.
+    void beginGitStatusIndexing(git::GitStatusWorker& worker);
+
+    // Called by the kMsgGitStatusReady receiver once the worker's response
+    // arrives. `result` is std::nullopt whenever the requested path wasn't
+    // inside a Git repository - GitStatusWorker always posts a response,
+    // precisely so this method is reachable and gitStatusInFlight() never
+    // gets stuck at true.
+    void applyGitStatusResult(std::optional<std::vector<git::GitStatusEntry>> result) noexcept {
+        m_gitStatus         = std::move(result);
+        m_gitStatusInFlight = false;
+    }
+
 private:
     std::vector<std::unique_ptr<EditorSession>> m_sessions;
     std::size_t                                 m_activeIndex = 0;
+    std::optional<std::vector<git::GitStatusEntry>> m_gitStatus;
+    bool                                              m_gitStatusInFlight = false;
 };
 
 }  // namespace neomifes::app
