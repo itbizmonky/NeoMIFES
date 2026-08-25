@@ -7,6 +7,7 @@ add_library(neomifes_ui STATIC
     src/json_tree_pane.cpp
     src/json_path_bar.cpp
     src/csv_grid_pane.cpp
+    src/git_pane.cpp
     src/tab_bar.cpp
     src/status_bar.cpp
     src/main_window.cpp

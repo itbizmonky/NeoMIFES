@@ -23,6 +23,7 @@
 #include "neomifes/app/file_dialogs.h"
 #include "neomifes/app/fold_bridge.h"
 #include "neomifes/app/git_diff_bridge.h"
+#include "neomifes/app/git_pane_bridge.h"
 #include "neomifes/app/grep_query_builder.h"
 #include "neomifes/app/grep_result_formatting.h"
 #include "neomifes/app/json_fold_bridge.h"
@@ -58,6 +59,7 @@
 #include "neomifes/document/file_loader.h"
 #include "neomifes/document/file_saver.h"
 #include "neomifes/encoding/encoding.h"
+#include "neomifes/git/git_status_worker.h"
 #include "neomifes/jsontree/json_format.h"
 #include "neomifes/jsontree/json_path.h"
 #include "neomifes/jsontree/json_tree.h"
@@ -98,6 +100,8 @@ using neomifes::csvmode::kMsgCsvIndexReady;
 using neomifes::document::Document;
 using neomifes::document::LoadError;
 using neomifes::document::TextRange;
+using neomifes::git::GitStatusWorker;
+using neomifes::git::kMsgGitStatusReady;
 using neomifes::jsontree::kMsgJsonTreeReady;
 using neomifes::jsontree::JsonTreeWorker;
 using neomifes::logmode::builtInLogPatterns;
@@ -130,6 +134,8 @@ using neomifes::ui::CsvGridPane;
 using neomifes::ui::CsvGridPaneConfig;
 using neomifes::ui::FindBar;
 using neomifes::ui::FindBarConfig;
+using neomifes::ui::GitPane;
+using neomifes::ui::GitPaneConfig;
 using neomifes::ui::GotoLineBar;
 using neomifes::ui::GotoLineBarConfig;
 using neomifes::ui::GrepBar;
@@ -424,20 +430,25 @@ void refreshOutlinePane(EditorSession& session, neomifes::ui::OutlinePane& outli
 // m_statusBarHeightDips (set once at startup and never again), this value
 // changes whenever a pane opens or closes, and a stale value would leave
 // the document view rendering at the wrong width until some unrelated
-// resize happened to correct it. Takes the max() of the two panes' own
-// widthDips() rather than assuming mutual exclusivity - both dock to the
-// SAME right edge, so this is still correct even if they were ever
+// resize happened to correct it. Takes the max() of the three panes' own
+// widthDips() rather than assuming mutual exclusivity - all three dock to
+// the SAME right edge, so this is still correct even if they were ever
 // simultaneously visible (today they are not, by construction of every
 // toggle path below, but this doesn't rely on that). Always invalidates -
 // the document view must reflow immediately, not wait for the next paint.
+// WI-17e: gained gitPane - same right-docked-strip shape as outlinePane/
+// jsonTreePane above (see git_pane.h's own class comment).
 void syncRightPaneWidthDips(HWND hwnd, RenderPipeline& renderPipeline, const neomifes::ui::OutlinePane& outlinePane,
-                            const JsonTreePane& jsonTreePane) {
+                            const JsonTreePane& jsonTreePane, const GitPane& gitPane) {
     float widthDips = 0.0F;
     if (outlinePane.isVisible()) {
         widthDips = std::max(widthDips, neomifes::ui::OutlinePane::widthDips());
     }
     if (jsonTreePane.isVisible()) {
         widthDips = std::max(widthDips, JsonTreePane::widthDips());
+    }
+    if (gitPane.isVisible()) {
+        widthDips = std::max(widthDips, GitPane::widthDips());
     }
     renderPipeline.setRightPaneWidthDips(widthDips);
     ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -451,19 +462,20 @@ void syncRightPaneWidthDips(HWND hwnd, RenderPipeline& renderPipeline, const neo
 // outline_pane.h's class comment. WI-04: takes EditorSession& (document/
 // path/folding - 3 members). WI-15i: takes JsonTreePane& too, purely to pass
 // through to syncRightPaneWidthDips() (see that function's own comment) -
-// this function itself never touches jsonTreePane otherwise.
+// this function itself never touches jsonTreePane otherwise. WI-17e: same
+// reasoning for the added GitPane&.
 bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                      neomifes::ui::OutlinePane& outlinePane, JsonTreePane& jsonTreePane,
+                      neomifes::ui::OutlinePane& outlinePane, JsonTreePane& jsonTreePane, GitPane& gitPane,
                       RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings) {
     if (!chordMatches(keyBindings, CommandId::OutlineToggle, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
     if (outlinePane.isVisible()) {
         outlinePane.hide();
-        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
     } else {
         refreshOutlinePane(session, outlinePane);
-        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
         syncFoldingState(hwnd, renderPipeline, session.folding());
     }
     return true;
@@ -575,7 +587,7 @@ void refreshStructureTreePane(HWND hwnd, EditorSession& session, JsonTreePane& j
 // the pane would still match the stale token and silently pop the pane back
 // open (see normal_mode_wiring.h's own comment on this hazard).
 bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                       JsonTreePane& jsonTreePane, const neomifes::ui::OutlinePane& outlinePane,
+                       JsonTreePane& jsonTreePane, const neomifes::ui::OutlinePane& outlinePane, GitPane& gitPane,
                        std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                        std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, RenderPipeline& renderPipeline,
                        const core::KeyBindings& keyBindings, const void*& jsonTreePanePendingSessionToken) {
@@ -585,11 +597,11 @@ bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
     if (jsonTreePane.isVisible()) {
         jsonTreePane.hide();
         jsonTreePanePendingSessionToken = nullptr;
-        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
     } else {
         refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
                                  jsonTreePanePendingSessionToken);
-        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
     }
     return true;
 }
@@ -1507,6 +1519,39 @@ void dispatchGitRefreshDiffCommand(EditorSession& session, git::GitDiffWorker& w
     session.beginGitDiffIndexing(worker);
 }
 
+// WI-17e: shows/refreshes GitPane for the active session's repository -
+// same role as refreshOutlinePane()/refreshJsonTreePane() above, but async
+// like the latter (Workspace's Git status is worker-backed). Unlike
+// refreshJsonTreePane()'s "already cached -> show immediately, no request"
+// shortcut, this ALWAYS shows whatever Workspace::gitStatus() currently
+// holds right away (even if stale or nullopt/"never requested" - the
+// placeholder rows git_pane_bridge.h's buildGitPaneItems() produces for
+// nullopt make an empty/stale display self-explanatory rather than
+// confusing) and then kicks off a fresh request unless one is already in
+// flight - matching this WI's own plan §6 "toggle off/on is the manual
+// refresh path" contract (no separate "Git: Refresh Status" command).
+void refreshGitPane(Workspace& workspace, GitPane& gitPane, git::GitStatusWorker& gitStatusWorker) {
+    gitPane.showWith(neomifes::app::buildGitPaneItems(workspace.gitStatus()));
+    if (!workspace.gitStatusInFlight()) {
+        workspace.beginGitStatusIndexing(gitStatusWorker);
+    }
+}
+
+// "git.togglePane" command's action body (WI-17e, command-palette only -
+// see this WI's plan for why no CommandId/keybinding/menu entry, same
+// reasoning dispatchGitRefreshDiffCommand()'s own comment gives for
+// git.refreshDiff). Same toggle shape as handleOutlineKey() above.
+void toggleGitPane(HWND hwnd, RenderPipeline& renderPipeline, Workspace& workspace,
+                   const neomifes::ui::OutlinePane& outlinePane, JsonTreePane& jsonTreePane, GitPane& gitPane,
+                   git::GitStatusWorker& gitStatusWorker) {
+    if (gitPane.isVisible()) {
+        gitPane.hide();
+    } else {
+        refreshGitPane(workspace, gitPane, gitStatusWorker);
+    }
+    syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
+}
+
 // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K. Deliberately hardcoded VK_* comparisons
 // - NOT routed through core::KeyBindings/chordMatches() like
 // Copy/Cut/Paste/Undo/Redo in handleClipboardOrUndoRedoKey() below - these 5
@@ -1643,7 +1688,8 @@ void dispatchGitRefreshDiffCommand(EditorSession& session, git::GitDiffWorker& w
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
-                        JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                        JsonTreePane& jsonTreePane, GitPane& gitPane,
+                        std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                         std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                         const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                         std::optional<csvmode::CsvModelWorker>& csvModelWorker,
@@ -1683,12 +1729,13 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar, keyBindings)) {
         return;
     }
-    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, jsonTreePane, renderPipeline,
-                        keyBindings)) {
+    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, jsonTreePane, gitPane,
+                        renderPipeline, keyBindings)) {
         return;
     }
-    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, outlinePane, jsonTreeWorker,
-                          xmlTreeWorker, renderPipeline, keyBindings, jsonTreePanePendingSessionToken)) {
+    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, outlinePane, gitPane,
+                          jsonTreeWorker, xmlTreeWorker, renderPipeline, keyBindings,
+                          jsonTreePanePendingSessionToken)) {
         return;
     }
     if (handleCsvGridKey(vkCode, shiftDown, ctrlDown, session, csvGridPane, csvModelWorker, keyBindings,
@@ -2200,6 +2247,7 @@ void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, 
 void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
                                   RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings,
                                   JsonTreePane& jsonTreePane, const neomifes::ui::OutlinePane& outlinePane,
+                                  GitPane& gitPane,
                                   std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                                   std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                                   const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
@@ -2209,17 +2257,17 @@ void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND
         .id = u"view.jsonTree.toggle", .title = u"Toggle Structure Tree",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"view.jsonTree.toggle"),
         .commandId = CommandId::JsonTreeToggle,
-        .action = [hwnd, &workspace, &jsonTreePane, &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &renderPipeline,
-                  &jsonTreePanePendingSessionToken]() {
+        .action = [hwnd, &workspace, &jsonTreePane, &outlinePane, &gitPane, &jsonTreeWorker, &xmlTreeWorker,
+                  &renderPipeline, &jsonTreePanePendingSessionToken]() {
             EditorSession& session = workspace.active();
             if (jsonTreePane.isVisible()) {
                 jsonTreePane.hide();
                 jsonTreePanePendingSessionToken = nullptr;
-                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
             } else {
                 refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
                                         jsonTreePanePendingSessionToken);
-                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
             }
         }});
     commands.push_back(CommandDescriptor{
@@ -2250,7 +2298,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
     std::optional<csvmode::CsvModelWorker>& csvModelWorker,
     const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, bool& jsonPathBarIsForXml,
-    git::GitDiffWorker& gitDiffWorker) {
+    git::GitDiffWorker& gitDiffWorker, GitPane& gitPane, git::GitStatusWorker& gitStatusWorker) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -2434,6 +2482,16 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [&workspace, &gitDiffWorker]() {
             dispatchGitRefreshDiffCommand(workspace.active(), gitDiffWorker);
         }});
+    // WI-17e: "Git: Toggle Changed Files" - palette-only, same CommandId::None
+    // shape as git.refreshDiff above (see this WI's own plan for why: the
+    // roadmap-proposed Ctrl+Shift+G already belongs to CsvGridToggle, and the
+    // user chose "command palette only" over reassigning either keybinding).
+    commands.push_back(CommandDescriptor{
+        .id = u"git.togglePane", .title = u"Git: Toggle Changed Files", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &renderPipeline, &workspace, &outlinePane, &jsonTreePane, &gitPane, &gitStatusWorker]() {
+            toggleGitPane(hwnd, renderPipeline, workspace, outlinePane, jsonTreePane, gitPane, gitStatusWorker);
+        }});
     commands.push_back(CommandDescriptor{
         .id = u"settings.reload", .title = u"Reload Settings", .keybindingLabel = u"",
         .commandId = CommandId::None,
@@ -2559,7 +2617,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                    &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
-                   &gitDiffWorker]() {
+                   &gitDiffWorker, &gitPane, &gitStatusWorker]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2570,7 +2628,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker));
+                csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker, gitPane,
+                gitStatusWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2603,7 +2662,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                        &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
                        &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar,
-                       &jsonPathBarIsForXml, &gitDiffWorker, presetName = std::u16string(choice.name)]() {
+                       &jsonPathBarIsForXml, &gitDiffWorker, &gitPane, &gitStatusWorker,
+                       presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2615,7 +2675,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
                     outlinePane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
                     csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml,
-                    gitDiffWorker));
+                    gitDiffWorker, gitPane, gitStatusWorker));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2639,7 +2699,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                    &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
-                   &gitDiffWorker]() {
+                   &gitDiffWorker, &gitPane, &gitStatusWorker]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2649,7 +2709,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker));
+                csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker, gitPane,
+                gitStatusWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
@@ -2657,8 +2718,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     // appendStructuralViewCommands()'s own doc comment for why this block
     // lives in its own function rather than inline here.
     appendStructuralViewCommands(commands, hwnd, workspace, renderPipeline, keyBindings, jsonTreePane, outlinePane,
-                                 jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
-                                 csvModelWorker, csvGridPanePendingSessionToken);
+                                 gitPane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
+                                 csvGridPane, csvModelWorker, csvGridPanePendingSessionToken);
 
     // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
     // appendLogModeCommands()'s own doc comment for why this block lives in
@@ -2906,6 +2967,48 @@ void createAndPositionJsonTreePane(HWND hwnd, HINSTANCE hInstance, Workspace& wo
     const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
     jsonTreePane.onParentResized(static_cast<std::uint32_t>(clientRect.right),
                                  static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
+}
+
+// WI-17e: GitPaneConfig::onFileActivated - opens the clicked changed file.
+// Same open+error-check+sync shape as dispatchRecentFileCommand() below,
+// minus the RecentFiles/menu bookkeeping - this is not a "recently opened
+// file" feature, so re-recording/refreshing that menu would be a surprising
+// side effect of clicking a row in an unrelated panel.
+void dispatchGitPaneFileActivated(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline, FindBar& findBar,
+                                  CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken,
+                                  const std::filesystem::path& path) {
+    const auto result = workspace.openFile(path);
+    if (const auto* error = std::get_if<LoadError>(&result)) {
+        neomifes::app::showOpenErrorDialog(hwnd, *error);
+        return;
+    }
+    syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
+                             csvGridPanePendingSessionToken);
+}
+
+// Same "create then prime the first position/size explicitly" shape as
+// createAndPositionOutlinePane()/createAndPositionJsonTreePane() above
+// (WI-17e). config.onClosed has no pending-token to clear (unlike
+// createAndPositionJsonTreePane()'s own) - see git_pane.h's own class
+// comment on why GitPane has no such token.
+void createAndPositionGitPane(HWND hwnd, HINSTANCE hInstance, Workspace& workspace, RenderPipeline& renderPipeline,
+                              FindBar& findBar, CsvGridPane& csvGridPane,
+                              const void*& csvGridPanePendingSessionToken, GitPane& gitPane) {
+    GitPaneConfig config{};
+    config.onFileActivated = [hwnd, &workspace, &renderPipeline, &findBar, &csvGridPane,
+                              &csvGridPanePendingSessionToken](const std::filesystem::path& absolutePath) {
+        dispatchGitPaneFileActivated(hwnd, workspace, renderPipeline, findBar, csvGridPane,
+                                     csvGridPanePendingSessionToken, absolutePath);
+    };
+    config.onClosed = [hwnd]() { ::SetFocus(hwnd); };
+    if (!gitPane.create(hwnd, hInstance, config)) {
+        return;
+    }
+    RECT clientRect{};
+    ::GetClientRect(hwnd, &clientRect);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    gitPane.onParentResized(static_cast<std::uint32_t>(clientRect.right),
+                           static_cast<std::uint32_t>(clientRect.bottom), dpiScale);
 }
 
 // WI-16f: CsvGridPaneConfig::onCellEditCommitted. `rowIndex` is a DISPLAY
@@ -3674,7 +3777,8 @@ void dispatchUndoRedoCommand(CommandId id, const CommandDispatchContext& ctx, Ed
 bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
                                FindBar& findBar, CommandPalette& commandPalette, GrepBar& grepBar,
                                GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane,
-                               JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                               JsonTreePane& jsonTreePane, GitPane& gitPane,
+                               std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                                std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                                const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                                std::optional<csvmode::CsvModelWorker>& csvModelWorker,
@@ -3705,10 +3809,10 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             EditorSession& session = workspace.active();
             if (outlinePane.isVisible()) {
                 outlinePane.hide();
-                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
             } else {
                 refreshOutlinePane(session, outlinePane);
-                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
                 syncFoldingState(hwnd, renderPipeline, session.folding());
             }
             return true;
@@ -3718,11 +3822,11 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             if (jsonTreePane.isVisible()) {
                 jsonTreePane.hide();
                 jsonTreePanePendingSessionToken = nullptr;
-                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
             } else {
                 refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
                                         jsonTreePanePendingSessionToken);
-                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
             }
             return true;
         }
@@ -3985,6 +4089,37 @@ void applyXmlTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane, 
     }
 }
 
+// WI-17e: GitStatusWorker's background-thread status-scan completion signal
+// receiver (wireNormalMode()'s cfg.onAppMessage kMsgGitStatusReady branch).
+// Unlike applyGitDiffReadyMessage()/applyJsonTreeReadyMessage() above, there
+// is no per-session loop here and no "...PendingSessionToken" gate to
+// consult - Workspace::gitStatus() is Workspace-wide state (see that
+// method's own comment for why), and `this` (the ONE Workspace instance the
+// whole window has) is the only sessionToken beginGitStatusIndexing() ever
+// hands GitStatusWorker::requestStatus(), so the token match below can never
+// be ambiguous the way a per-EditorSession token comparison guards against.
+// `lParam` is always non-null (GitStatusWorker always posts, even a
+// std::nullopt result - see git_status_worker.h's header comment) and owns a
+// heap-allocated std::optional<std::vector<GitStatusEntry>>* that must be
+// reconstructed into a unique_ptr immediately to avoid leaking it. The
+// result is applied to Workspace unconditionally; gitPane's own displayed
+// content only refreshes if the pane is CURRENTLY visible - matching
+// git_pane.h's own "no live update, toggle off/on is the manual refresh"
+// contract (this WI's own plan §6) rather than the pending-token "was this
+// delivery specifically awaited" gate JsonTreePane/CsvGridPane use.
+void applyGitStatusReadyMessage(Workspace& workspace, GitPane& gitPane, WPARAM wParam, LPARAM lParam) {
+    const std::unique_ptr<std::optional<std::vector<neomifes::git::GitStatusEntry>>> result(
+        reinterpret_cast<std::optional<std::vector<neomifes::git::GitStatusEntry>>*>(lParam));
+    const auto* const token = reinterpret_cast<const void*>(wParam);
+    if (token != static_cast<const void*>(&workspace)) {
+        return;
+    }
+    workspace.applyGitStatusResult(std::move(*result));
+    if (gitPane.isVisible()) {
+        gitPane.showWith(neomifes::app::buildGitPaneItems(workspace.gitStatus()));
+    }
+}
+
 // MainWindowConfig::onAppMessage's body (WM_APP+N messages MainWindow
 // forwards unexamined - neomifes::ui never learns what
 // kMsgSyntaxTokensReady/kMsgLogIndexReady/kMsgJsonTreeReady/kMsgCsvIndexReady/
@@ -3998,10 +4133,14 @@ void applyXmlTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane, 
 // cfg.onAppMessage lambda.
 void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, JsonTreePane& jsonTreePane,
                       const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
-                      const void*& csvGridPanePendingSessionToken, HWND hwnd, UINT msg, WPARAM wParam,
-                      LPARAM lParam) {
+                      const void*& csvGridPanePendingSessionToken, GitPane& gitPane, HWND hwnd, UINT msg,
+                      WPARAM wParam, LPARAM lParam) {
     if (msg == neomifes::git::kMsgGitDiffReady) {
         applyGitDiffReadyMessage(workspace, renderPipeline, hwnd, wParam, lParam);
+        return;
+    }
+    if (msg == kMsgGitStatusReady) {
+        applyGitStatusReadyMessage(workspace, gitPane, wParam, lParam);
         return;
     }
     if (msg == neomifes::render::kMsgSyntaxTokensReady) {
@@ -4234,7 +4373,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                     const void*& csvGridPanePendingSessionToken,
                     std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker,
-                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml) {
+                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml,
+                    GitPane& gitPane, std::optional<GitStatusWorker>& gitStatusWorker) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -4258,7 +4398,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
                           &jsonTreePanePendingSessionToken, &csvGridPane,
                           &csvGridPanePendingSessionToken, &gitDiffWorker, &xmlTreeWorker,
-                          &jsonPathBarIsForXml](HWND hwnd) {
+                          &jsonPathBarIsForXml, &gitPane, &gitStatusWorker](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -4287,6 +4427,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // XmlTreeWorker's constructor also requires a real HWND and starts
         // its own background thread immediately.
         xmlTreeWorker.emplace(hwnd);
+        // WI-17e: same reasoning as jsonTreeWorker.emplace() above -
+        // GitStatusWorker's constructor also requires a real HWND and starts
+        // its own background thread immediately.
+        gitStatusWorker.emplace(hwnd);
         // Resolved once here for this lambda's own synchronous body below -
         // safe (nothing can switch tabs before the window's first deferred
         // init has even run). The nested paint handler lambda just below
@@ -4313,7 +4457,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              userLogPatterns, logPatternsDir, jsonTreePane, outlinePane,
                                              jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
                                              csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                                             jsonPathBar, jsonPathBarIsForXml, *gitDiffWorker);
+                                             jsonPathBar, jsonPathBarIsForXml, *gitDiffWorker, gitPane,
+                                             *gitStatusWorker);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -4346,6 +4491,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // above.
         createAndPositionCsvGridPane(hwnd, hInstance, workspace, renderPipeline, csvGridPane,
                                      csvGridPanePendingSessionToken, csvModelWorker);
+        // WI-17e: same non-fatal treatment as createAndPositionOutlinePane()
+        // above.
+        createAndPositionGitPane(hwnd, hInstance, workspace, renderPipeline, findBar, csvGridPane,
+                                 csvGridPanePendingSessionToken, gitPane);
         // WI-05 step 2: same non-fatal treatment as findBar.create() above -
         // a tab strip that fails to create simply isn't available this
         // session (the editor still works, just without visible tabs).
@@ -4380,7 +4529,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     };
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &jsonPathBar, &grepBar,
                     &outlinePane,
-                    &jsonTreePane, &csvGridPane, &tabBar,
+                    &jsonTreePane, &gitPane, &csvGridPane, &tabBar,
                     &statusBar](HWND hwnd, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
@@ -4394,7 +4543,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             // (defense in depth, not the primary sync path - see
             // syncRightPaneWidthDips()'s own comment for the toggle sites
             // that ARE the primary path).
-            syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
+            syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane, gitPane);
         }
         findBar.onParentResized(w, dpiScale);
         commandPalette.onParentResized(w, dpiScale);
@@ -4403,11 +4552,12 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         grepBar.onParentResized(w, dpiScale);
         outlinePane.onParentResized(w, h, dpiScale);
         jsonTreePane.onParentResized(w, h, dpiScale);
+        gitPane.onParentResized(w, h, dpiScale);
         csvGridPane.onParentResized(w, h, dpiScale, TabBar::heightDips(), StatusBar::heightDips());
         tabBar.onParentResized(w, dpiScale);
         statusBar.onParentResized(w, h, dpiScale);
     };
-    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &jsonTreePane,
+    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &jsonTreePane, &gitPane,
                      &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                      &csvModelWorker, &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
                      menuHandles, &settings, &autosave, &gitDiffWorker](HWND hwnd, WPARAM wParam, LPARAM lParam) {
@@ -4455,7 +4605,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // deliberately does NOT handle, see that function's own comment);
         // falls through to dispatchCommand() for everything else.
         if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, commandPalette,
-                                      grepBar, gotoLineBar, outlinePane, jsonTreePane, jsonTreeWorker,
+                                      grepBar, gotoLineBar, outlinePane, jsonTreePane, gitPane, jsonTreeWorker,
                                       xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                                       csvGridPanePendingSessionToken)) {
             return;
@@ -4471,10 +4621,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // NMHDR::hwndFrom (see OutlinePane::handleNotify()/TabBar::handleNotify()'s
     // own comments for why neither TVN_SELCHANGEDW nor TCN_SELCHANGE require
     // a specific non-zero reply, so discarding one return value is safe).
-    cfg.onNotify = [&outlinePane, &jsonTreePane, &csvGridPane, &tabBar,
+    cfg.onNotify = [&outlinePane, &jsonTreePane, &gitPane, &csvGridPane, &tabBar,
                     &statusBar](HWND, WPARAM wParam, LPARAM lParam) {
         outlinePane.handleNotify(wParam, lParam);
         jsonTreePane.handleNotify(wParam, lParam);
+        gitPane.handleNotify(wParam, lParam);
         csvGridPane.handleNotify(wParam, lParam);
         statusBar.handleNotify(wParam, lParam);
         return tabBar.handleNotify(wParam, lParam);
@@ -4483,9 +4634,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // completion signals - see handleAppMessage()'s own doc comment above
     // for why the actual branching logic lives there, not in this lambda.
     cfg.onAppMessage = [&renderPipeline, &workspace, &jsonTreePane, &jsonTreePanePendingSessionToken, &csvGridPane,
-                        &csvGridPanePendingSessionToken](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+                        &csvGridPanePendingSessionToken, &gitPane](HWND hwnd, UINT msg, WPARAM wParam,
+                                                                    LPARAM lParam) {
         handleAppMessage(renderPipeline, workspace, jsonTreePane, jsonTreePanePendingSessionToken, csvGridPane,
-                         csvGridPanePendingSessionToken, hwnd, msg, wParam, lParam);
+                         csvGridPanePendingSessionToken, gitPane, hwnd, msg, wParam, lParam);
     };
     // WI-02: WM_CLOSE veto - goes through confirmDiscardIfDirty() so an
     // unsaved edit is never silently discarded by closing the window. WI-05
@@ -4534,12 +4686,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &jsonTreePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
+                     &outlinePane, &jsonTreePane, &gitPane, &jsonTreeWorker, &xmlTreeWorker,
+                     &jsonTreePanePendingSessionToken,
                      &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &freeCursorModeEnabled,
                      &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings, &autosave,
                      &gitDiffWorker](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
-                          commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, jsonTreeWorker,
+                          commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, gitPane, jsonTreeWorker,
                           xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                           csvGridPanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,
                           recentFiles, menuHandles, settings, autosave, *gitDiffWorker);

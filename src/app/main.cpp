@@ -129,6 +129,7 @@ using neomifes::core::Settings;
 using neomifes::csvmode::CsvModelWorker;
 using neomifes::document::Document;
 using neomifes::git::GitDiffWorker;
+using neomifes::git::GitStatusWorker;
 using neomifes::jsontree::JsonTreeWorker;
 using neomifes::logmode::LogIndexWorker;
 using neomifes::platform::currentProcessMemory;
@@ -139,6 +140,7 @@ using neomifes::render::RenderPipeline;
 using neomifes::ui::CommandPalette;
 using neomifes::ui::CsvGridPane;
 using neomifes::ui::FindBar;
+using neomifes::ui::GitPane;
 using neomifes::ui::GotoLineBar;
 using neomifes::ui::JsonPathBar;
 using neomifes::ui::GrepBar;
@@ -571,6 +573,11 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // strips), this replaces the entire client area between the tab strip
     // and the status bar (see csv_grid_pane.h's class comment for why).
     CsvGridPane csvGridPane;
+    // Git changed-files panel (command palette only, WI-17e) - a single real-
+    // mode WC_LISTVIEW. Same 260dip right-docked shape as outlinePane/
+    // jsonTreePane above (unlike csvGridPane's full-client-area
+    // replacement) - see git_pane.h's class comment.
+    GitPane gitPane;
     // Tab strip (WI-05 step 2) - a single WC_TABCONTROL, always visible
     // (unlike outlinePane above), docked full-width along the top edge. See
     // tab_bar.h's class comment.
@@ -697,6 +704,10 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // XmlTreeWorker's constructor also requires a real HWND and starts a
     // background std::thread immediately.
     std::optional<XmlTreeWorker> xmlTreeWorker;
+    // WI-17e: same construction-timing reasoning as jsonTreeWorker above -
+    // GitStatusWorker's constructor also requires a real HWND and starts a
+    // background std::thread immediately.
+    std::optional<GitStatusWorker> gitStatusWorker;
 
     MainWindow window;
     MainWindowConfig cfg{};
@@ -772,7 +783,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
                        autosave, logIndexWorker, logPatternsStartup.userLogPatterns,
                        logPatternsStartup.logPatternsDir, jsonTreeWorker, csvModelWorker, jsonTreePane,
                        jsonTreePanePendingSessionToken, csvGridPane, csvGridPanePendingSessionToken,
-                       gitDiffWorker, xmlTreeWorker, jsonPathBarIsForXml);
+                       gitDiffWorker, xmlTreeWorker, jsonPathBarIsForXml, gitPane, gitStatusWorker);
         // Phase 7b/7d: reflect the startup document's language before the
         // first paint - attach() itself happens later inside onDeferredInit,
         // but setLanguage() only touches plain member state, so it's safe to

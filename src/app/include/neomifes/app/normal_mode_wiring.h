@@ -36,6 +36,7 @@
 #include "neomifes/core/settings.h"
 #include "neomifes/csvmode/csv_model_worker.h"
 #include "neomifes/git/git_diff_worker.h"
+#include "neomifes/git/git_status_worker.h"
 #include "neomifes/jsontree/json_tree_worker.h"
 #include "neomifes/xmltree/xml_tree_worker.h"
 #include "neomifes/logmode/log_index_worker.h"
@@ -49,6 +50,7 @@
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/csv_grid_pane.h"
+#include "neomifes/ui/git_pane.h"
 #include "neomifes/ui/json_path_bar.h"
 #include "neomifes/ui/json_tree_pane.h"
 #include "neomifes/ui/main_window.h"
@@ -293,6 +295,17 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // request's own result message (kMsgJsonTreeReady XOR kMsgXmlTreeReady) -
 // the same "at most one pending expectation, anything else is stale" logic
 // this token already relies on across ordinary tab switches.
+// WI-17e: takes ui::GitPane& gitPane and std::optional<git::GitStatusWorker>&
+// gitStatusWorker - same deferred-construction shape as jsonTreeWorker/
+// gitDiffWorker above for the worker, and the same 260dip-docked-strip
+// lifecycle shape as jsonTreePane/outlinePane above for the pane (see
+// git_pane.h's own class comment for why it is NOT modeled on CsvGridPane's
+// full-client-area replacement). Unlike jsonTreePane/csvGridPane, there is no
+// "...PendingSessionToken" parameter here - GitPane's own backing state
+// (Workspace::gitStatus()) is Workspace-wide, not per-EditorSession, so there
+// is no per-tab race to guard against the way jsonTreePanePendingSessionToken/
+// csvGridPanePendingSessionToken exist to resolve (see workspace.h's own
+// gitStatus()-placement comment for the full reasoning).
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
@@ -312,6 +325,7 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     const void*& jsonTreePanePendingSessionToken, ui::CsvGridPane& csvGridPane,
                     const void*& csvGridPanePendingSessionToken,
                     std::optional<git::GitDiffWorker>& gitDiffWorker,
-                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml);
+                    std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml,
+                    ui::GitPane& gitPane, std::optional<git::GitStatusWorker>& gitStatusWorker);
 
 }  // namespace neomifes::app
