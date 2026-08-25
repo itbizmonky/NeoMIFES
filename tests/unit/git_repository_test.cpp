@@ -346,7 +346,18 @@ TEST_F(GitRepositoryTest, StatusListClassifiesModifiedFile) {
     const GitStatusEntry* entry = findEntry(*result, "a.txt");
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->status, GitFileStatus::Modified);
-    EXPECT_EQ(entry->absolutePath, dir / "a.txt");
+    // WI-17e/CI gotcha: NOT EXPECT_EQ(entry->absolutePath, dir / "a.txt") -
+    // on the GitHub Actions Windows runner (runneradmin account), libgit2's
+    // own git_repository_workdir() resolves the LONG form
+    // (C:/Users/runneradmin/...) while fs::temp_directory_path() (this
+    // fixture's own dir) resolves the legacy 8.3 SHORT form
+    // (C:\Users\RUNNER~1\...) for the identical physical directory - the
+    // same file, two lexically different path spellings. Never reproduced
+    // locally (this dev machine's profile has no 8.3 short name for its
+    // own user account). fs::equivalent() compares file IDENTITY (resolves
+    // both through the OS), not string form, so it is immune to this.
+    EXPECT_TRUE(fs::equivalent(entry->absolutePath, dir / "a.txt"))
+        << entry->absolutePath << " vs " << (dir / "a.txt");
 
     fs::remove_all(dir);
 }
@@ -429,7 +440,10 @@ TEST_F(GitRepositoryTest, StatusListClassifiesRenamedFileAsOneEntry) {
     const GitStatusEntry* entry = findEntry(*result, "newname.txt");
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->status, GitFileStatus::Renamed);
-    EXPECT_EQ(entry->absolutePath, dir / "newname.txt");
+    // Same CI-only 8.3-short-name gotcha as StatusListClassifiesModifiedFile
+    // above - see that test's own comment.
+    EXPECT_TRUE(fs::equivalent(entry->absolutePath, dir / "newname.txt"))
+        << entry->absolutePath << " vs " << (dir / "newname.txt");
 
     fs::remove_all(dir);
 }
