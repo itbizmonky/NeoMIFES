@@ -82,7 +82,11 @@ inline constexpr std::array<MenuItemSpec, 6> kSearchMenuItems = {{
 
 inline constexpr std::array<MenuItemSpec, 3> kViewMenuItems = {{
     {ui::CommandId::OutlineToggle, L"アウトライン(&O)\tCtrl+Shift+O"},
-    {ui::CommandId::JsonTreeToggle, L"JSON構造ツリー(&J)\tCtrl+Shift+J"},
+    // WI-15h: label genericized from "JSON構造ツリー" - the same toggle now
+    // auto-detects JSON vs XML documents (see normal_mode_wiring.cpp's
+    // refreshStructureTreePane()). CommandId::JsonTreeToggle's own
+    // identifier is left unrenamed (not user-visible).
+    {ui::CommandId::JsonTreeToggle, L"構造ツリー(&J)\tCtrl+Shift+J"},
     {ui::CommandId::CsvGridToggle, L"CSVグリッド(&G)\tCtrl+Shift+G"},
 }};
 

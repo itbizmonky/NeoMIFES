@@ -277,6 +277,22 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // the worker + EditorSession + kMsgXmlTreeReady routing, no command calls
 // beginXmlTreeIndexing() yet (mirrors WI-15b/WI-17b's own scoping - UI is a
 // later sub-WI).
+//
+// WI-15h: xmlTreeWorker now feeds the SAME jsonTreePane/
+// jsonTreePanePendingSessionToken pair JSON already uses - no new pane
+// parameter was added. ui::JsonTreePane was designed from the start (WI-15c,
+// see that class's own header comment: "the JSON/XML structure tree panel")
+// to serve either format via the generic ui::OutlineItem it already takes,
+// and the single Ctrl+Shift+J toggle auto-detects JSON vs XML via
+// EditorSession::language() (see normal_mode_wiring.cpp's
+// refreshStructureTreePane()). jsonTreePanePendingSessionToken is shared,
+// not duplicated, between the two paths - safe because a session's
+// language() is fixed at toggle-time, so exactly ONE of
+// beginJsonTreeIndexing()/beginXmlTreeIndexing() is ever kicked off per
+// toggle-on, meaning the token can only ever be satisfied by that one
+// request's own result message (kMsgJsonTreeReady XOR kMsgXmlTreeReady) -
+// the same "at most one pending expectation, anything else is stale" logic
+// this token already relies on across ordinary tab switches.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,

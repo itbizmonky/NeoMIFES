@@ -37,6 +37,8 @@
 #include "neomifes/app/tab_index_math.h"
 #include "neomifes/app/tag_jump.h"
 #include "neomifes/app/theme_settings.h"
+#include "neomifes/app/xml_fold_bridge.h"
+#include "neomifes/app/xml_tree_bridge.h"
 #include "neomifes/core/bookmark_manager.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -470,6 +472,68 @@ void refreshJsonTreePane(HWND hwnd, EditorSession& session, JsonTreePane& jsonTr
     }
 }
 
+// XML counterpart of refreshJsonTreePane() above (WI-15h) - full sibling,
+// not a templated/shared body, matching this file's own established
+// "small duplicated toggle body per pane" convention (see
+// appendStructuralViewCommands()'s own comment below on why
+// JsonTreeToggle/CsvGridToggle's action bodies duplicate their handleXxxKey()
+// counterparts rather than calling them).
+//
+// Asymmetry worth noting: parseXmlTree() never fails (WI-15f/g) - an
+// unparseable document still produces a real XmlTree with
+// root.kind == XmlNodeKind::Error, not a dropped/absent result. So
+// session.xmlTree().has_value() becomes permanently true after the FIRST
+// successful indexing round, even for garbage XML input - unlike JSON
+// (where an invalid document leaves jsonTree() perpetually nullopt, so
+// every toggle-on re-attempts indexing and shows an empty pane), a
+// malformed XML document's pane shows one cached "[parse error] ..." row
+// from then on. This is the intended consequence of WI-15f's "always
+// return a real XmlTree" design, not a bug.
+void refreshXmlTreePane(HWND hwnd, EditorSession& session, JsonTreePane& jsonTreePane,
+                        std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, RenderPipeline& renderPipeline,
+                        const void*& jsonTreePanePendingSessionToken) {
+    if (session.xmlTree().has_value()) {
+        jsonTreePanePendingSessionToken = nullptr;
+        const auto& tree                = *session.xmlTree();
+        jsonTreePane.showWith({neomifes::app::buildXmlTreeItems(tree.root)});
+        session.folding().setFoldableRegions(neomifes::app::buildXmlFoldRegions(tree.root, session.document()));
+        syncFoldingState(hwnd, renderPipeline, session.folding());
+        return;
+    }
+
+    jsonTreePane.showWith({});
+    if (!session.xmlTreeIndexInFlight() && xmlTreeWorker) {
+        session.beginXmlTreeIndexing(*xmlTreeWorker);
+    }
+    if (session.xmlTreeIndexInFlight()) {
+        jsonTreePanePendingSessionToken = &session;
+    }
+}
+
+// Single toggle entry point (Ctrl+Shift+J / view menu / command palette)
+// for BOTH JSON and XML documents (WI-15h) - ui::JsonTreePane was designed
+// from the start (WI-15c) to serve either format (see that class's own
+// header comment: "the JSON/XML structure tree panel"), so this dispatch
+// is the only new branching logic WI-15h adds; every other language
+// (including JSON itself) falls through to the pre-existing,
+// UNCHANGED refreshJsonTreePane() path below. jsonTreePanePendingSessionToken
+// is safely shared between the two paths - see this file's normal_mode_wiring.h
+// comment on why (a session's language() is fixed at toggle-time, so exactly
+// one of beginJsonTreeIndexing()/beginXmlTreeIndexing() is ever kicked off
+// per toggle-on, and the token can only ever be satisfied by that one
+// request's own result message).
+void refreshStructureTreePane(HWND hwnd, EditorSession& session, JsonTreePane& jsonTreePane,
+                              std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                              std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, RenderPipeline& renderPipeline,
+                              const void*& jsonTreePanePendingSessionToken) {
+    if (session.language() == neomifes::syntax::Language::Xml) {
+        refreshXmlTreePane(hwnd, session, jsonTreePane, xmlTreeWorker, renderPipeline,
+                           jsonTreePanePendingSessionToken);
+        return;
+    }
+    refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline, jsonTreePanePendingSessionToken);
+}
+
 // Ctrl+Shift+J while the document editing area has focus (WI-15c) - same
 // toggle shape as handleOutlineKey() above (see that function's own comment
 // for why this TOGGLES rather than only ever showing). Clears
@@ -479,8 +543,8 @@ void refreshJsonTreePane(HWND hwnd, EditorSession& session, JsonTreePane& jsonTr
 // open (see normal_mode_wiring.h's own comment on this hazard).
 bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
                        JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
-                       RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings,
-                       const void*& jsonTreePanePendingSessionToken) {
+                       std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, RenderPipeline& renderPipeline,
+                       const core::KeyBindings& keyBindings, const void*& jsonTreePanePendingSessionToken) {
     if (!chordMatches(keyBindings, CommandId::JsonTreeToggle, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
@@ -488,8 +552,8 @@ bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
         jsonTreePane.hide();
         jsonTreePanePendingSessionToken = nullptr;
     } else {
-        refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
-                            jsonTreePanePendingSessionToken);
+        refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
+                                 jsonTreePanePendingSessionToken);
     }
     return true;
 }
@@ -1515,6 +1579,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
                         RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
                         JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                        std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                         const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                         std::optional<csvmode::CsvModelWorker>& csvModelWorker,
                         const void*& csvGridPanePendingSessionToken, bool freeCursorModeEnabled, bool imeComposing,
@@ -1556,8 +1621,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, renderPipeline, keyBindings)) {
         return;
     }
-    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, jsonTreeWorker, renderPipeline,
-                          keyBindings, jsonTreePanePendingSessionToken)) {
+    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker,
+                          renderPipeline, keyBindings, jsonTreePanePendingSessionToken)) {
         return;
     }
     if (handleCsvGridKey(vkCode, shiftDown, ctrlDown, session, csvGridPane, csvModelWorker, keyBindings,
@@ -2069,22 +2134,23 @@ void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, 
 void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
                                   RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings,
                                   JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                                  std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                                   const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                                   std::optional<csvmode::CsvModelWorker>& csvModelWorker,
                                   const void*& csvGridPanePendingSessionToken) {
     commands.push_back(CommandDescriptor{
-        .id = u"view.jsonTree.toggle", .title = u"Toggle JSON Tree",
+        .id = u"view.jsonTree.toggle", .title = u"Toggle Structure Tree",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"view.jsonTree.toggle"),
         .commandId = CommandId::JsonTreeToggle,
-        .action = [hwnd, &workspace, &jsonTreePane, &jsonTreeWorker, &renderPipeline,
+        .action = [hwnd, &workspace, &jsonTreePane, &jsonTreeWorker, &xmlTreeWorker, &renderPipeline,
                   &jsonTreePanePendingSessionToken]() {
             EditorSession& session = workspace.active();
             if (jsonTreePane.isVisible()) {
                 jsonTreePane.hide();
                 jsonTreePanePendingSessionToken = nullptr;
             } else {
-                refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
-                                   jsonTreePanePendingSessionToken);
+                refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
+                                        jsonTreePanePendingSessionToken);
             }
         }});
     commands.push_back(CommandDescriptor{
@@ -2110,8 +2176,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const MenuBarHandles& menuHandles, AutosaveContext& autosave,
     std::optional<LogIndexWorker>& logIndexWorker, std::vector<LogPatternRule>& userLogPatterns,
     const std::optional<std::filesystem::path>& logPatternsDir, JsonTreePane& jsonTreePane,
-    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, const void*& jsonTreePanePendingSessionToken,
-    CsvGridPane& csvGridPane, std::optional<csvmode::CsvModelWorker>& csvModelWorker,
+    std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
+    const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
+    std::optional<csvmode::CsvModelWorker>& csvModelWorker,
     const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, git::GitDiffWorker& gitDiffWorker) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
@@ -2399,7 +2466,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
-                   &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
+                   &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
                    &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
             if (!keyBindingsPath) {
                 return;
@@ -2409,7 +2476,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
+                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker, xmlTreeWorker,
                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
                 jsonPathBar, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -2442,8 +2509,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
-                       &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                       &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker,
+                       &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
+                       &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker,
                        presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
@@ -2453,9 +2520,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 commandPalette.setCommands(buildCommandRegistry(
                     hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
-                    menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
-                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                jsonPathBar, gitDiffWorker));
+                    menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
+                    jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                    csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2477,7 +2544,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
-                   &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
+                   &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
                    &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
             if (!logPatternsDir) {
                 return;
@@ -2486,7 +2553,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
+                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker, xmlTreeWorker,
                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
                 jsonPathBar, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
@@ -2496,7 +2563,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     // appendStructuralViewCommands()'s own doc comment for why this block
     // lives in its own function rather than inline here.
     appendStructuralViewCommands(commands, hwnd, workspace, renderPipeline, keyBindings, jsonTreePane, jsonTreeWorker,
-                                 jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                                  csvGridPanePendingSessionToken);
 
     // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
@@ -3496,6 +3563,7 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
                                FindBar& findBar, CommandPalette& commandPalette, GrepBar& grepBar,
                                GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane,
                                JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                               std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                                const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                                std::optional<csvmode::CsvModelWorker>& csvModelWorker,
                                const void*& csvGridPanePendingSessionToken) {
@@ -3537,8 +3605,8 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
                 jsonTreePane.hide();
                 jsonTreePanePendingSessionToken = nullptr;
             } else {
-                refreshJsonTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, renderPipeline,
-                                   jsonTreePanePendingSessionToken);
+                refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
+                                        jsonTreePanePendingSessionToken);
             }
             return true;
         }
@@ -3761,24 +3829,43 @@ void applyCsvIndexReadyMessage(Workspace& workspace, CsvGridPane& csvGridPane,
     }
 }
 
-// WI-15g: XmlTreeWorker's background-thread indexing completion signal
+// WI-15g/h: XmlTreeWorker's background-thread indexing completion signal
 // receiver (wireNormalMode()'s cfg.onAppMessage kMsgXmlTreeReady branch) -
-// mirrors applyJsonTreeReadyMessage() above at its WI-15b-era shape (plain
-// workspace/wParam/lParam, no pane concerns - no UI consumes xmlTree() yet,
-// that's WI-15h). `lParam` is always non-null (XmlTreeWorker always posts -
-// see xml_tree_worker.h's header comment) and owns a heap-allocated
-// XmlTree* (not std::optional<XmlTree>*, since parseXmlTree() itself never
-// returns std::optional - see xml_tree.h) that must be reconstructed into a
-// unique_ptr immediately to avoid leaking it.
-void applyXmlTreeReadyMessage(Workspace& workspace, WPARAM wParam, LPARAM lParam) {
+// mirrors applyJsonTreeReadyMessage() above at its WI-15c-era shape
+// (jsonTreePane/renderPipeline/hwnd/jsonTreePanePendingSessionToken added in
+// WI-15h - the WI-15g-era shape was plain workspace/wParam/lParam, "no UI
+// consumes xmlTree() yet"). `lParam` is always non-null (XmlTreeWorker
+// always posts - see xml_tree_worker.h's header comment) and owns a heap-
+// allocated XmlTree* (not std::optional<XmlTree>*, since parseXmlTree()
+// itself never returns std::optional - see xml_tree.h) that must be
+// reconstructed into a unique_ptr immediately to avoid leaking it.
+// jsonTreePanePendingSessionToken is shared with applyJsonTreeReadyMessage()
+// (see refreshStructureTreePane()'s own comment on why this is safe: a
+// session's language() is fixed at toggle-time, so exactly one of
+// kMsgJsonTreeReady/kMsgXmlTreeReady can ever satisfy a given token).
+void applyXmlTreeReadyMessage(Workspace& workspace, JsonTreePane& jsonTreePane, RenderPipeline& renderPipeline,
+                              HWND hwnd, const void*& jsonTreePanePendingSessionToken, WPARAM wParam,
+                              LPARAM lParam) {
     const std::unique_ptr<neomifes::xmltree::XmlTree> result(
         reinterpret_cast<neomifes::xmltree::XmlTree*>(lParam));
     const auto* const token = reinterpret_cast<const void*>(wParam);
     for (std::size_t i = 0; i < workspace.sessionCount(); ++i) {
-        if (static_cast<const void*>(&workspace.sessionAt(i)) == token) {
-            workspace.sessionAt(i).applyXmlTreeResult(std::move(*result));
-            break;
+        if (static_cast<const void*>(&workspace.sessionAt(i)) != token) {
+            continue;
         }
+        EditorSession& session = workspace.sessionAt(i);
+        session.applyXmlTreeResult(std::move(*result));
+        if (token == jsonTreePanePendingSessionToken) {
+            jsonTreePanePendingSessionToken = nullptr;
+            if (i == workspace.activeIndex() && session.xmlTree().has_value()) {
+                const auto& tree = *session.xmlTree();
+                jsonTreePane.showWith({neomifes::app::buildXmlTreeItems(tree.root)});
+                session.folding().setFoldableRegions(
+                    neomifes::app::buildXmlFoldRegions(tree.root, session.document()));
+                syncFoldingState(hwnd, renderPipeline, session.folding());
+            }
+        }
+        break;
     }
 }
 
@@ -3822,7 +3909,8 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
         return;
     }
     if (msg == kMsgXmlTreeReady) {
-        applyXmlTreeReadyMessage(workspace, wParam, lParam);
+        applyXmlTreeReadyMessage(workspace, jsonTreePane, renderPipeline, hwnd, jsonTreePanePendingSessionToken,
+                                 wParam, lParam);
     }
 }
 
@@ -4106,8 +4194,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
                                              commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
                                              userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
-                                             jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                                             csvGridPanePendingSessionToken, jsonPathBar, *gitDiffWorker);
+                                             xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
+                                             csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar,
+                                             *gitDiffWorker);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -4194,9 +4283,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         statusBar.onParentResized(w, h, dpiScale);
     };
     cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &jsonTreePane,
-                     &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                     &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles, menuHandles,
-                     &settings, &autosave, &gitDiffWorker](HWND hwnd, WPARAM wParam, LPARAM lParam) {
+                     &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
+                     &csvModelWorker, &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
+                     menuHandles, &settings, &autosave, &gitDiffWorker](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
@@ -4242,7 +4331,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // falls through to dispatchCommand() for everything else.
         if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, commandPalette,
                                       grepBar, gotoLineBar, outlinePane, jsonTreePane, jsonTreeWorker,
-                                      jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                                      xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                                       csvGridPanePendingSessionToken)) {
             return;
         }
@@ -4320,13 +4409,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
     cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &jsonTreePane, &jsonTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
-                     &csvModelWorker, &csvGridPanePendingSessionToken, &freeCursorModeEnabled, &imeComposing,
-                     &keyBindings, &recentFiles, menuHandles, &settings, &autosave,
+                     &outlinePane, &jsonTreePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
+                     &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &freeCursorModeEnabled,
+                     &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings, &autosave,
                      &gitDiffWorker](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                           commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, jsonTreeWorker,
-                          jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                          xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                           csvGridPanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,
                           recentFiles, menuHandles, settings, autosave, *gitDiffWorker);
     };
