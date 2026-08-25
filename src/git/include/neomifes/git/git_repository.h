@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "neomifes/document/text_pos.h"  // document::LineNumber
@@ -81,6 +82,22 @@ struct GitStatusEntry {
     GitFileStatus          status = GitFileStatus::Modified;
 
     friend bool operator==(const GitStatusEntry&, const GitStatusEntry&) = default;
+};
+
+// WI-17f: one line of a full unified diff (unifiedDiffAgainstHead() below) -
+// a DIFFERENT shape from LineDiffRegion above, which reports only HUNK
+// BOUNDARIES in the current document's own line space for the left-gutter
+// markers. This instead carries every line's own TEXT (context lines
+// included), because a Diff view has to actually show removed content that
+// the current document no longer contains at all - LineDiffRegion's point-
+// marker convention for Deleted has nowhere to put that text.
+enum class UnifiedDiffLineKind : std::uint8_t { Context, Added, Removed };
+
+struct UnifiedDiffLine {
+    UnifiedDiffLineKind kind = UnifiedDiffLineKind::Context;
+    std::u16string       text;  // this line's own content, no trailing newline
+
+    friend bool operator==(const UnifiedDiffLine&, const UnifiedDiffLine&) = default;
 };
 
 class GitRepository {
@@ -146,6 +163,30 @@ public:
     // std::bad_alloc (same documented-not-noexcept-enforced contract as
     // discover()/diffAgainstHead()).
     [[nodiscard]] std::optional<std::vector<GitStatusEntry>> statusList() const;
+
+    // WI-17f: full unified diff (HEAD's blob vs `doc`'s current in-memory
+    // text) for the Diff view - every line of the file, tagged Context/
+    // Added/Removed, in the SAME order a `git diff` unified patch would
+    // print them. Unlike diffAgainstHead()'s context_lines=0 (the gutter
+    // only needs to know WHERE a change is), this uses libgit2's own
+    // default context_lines (3, verified via this WI's own standalone
+    // probe) - a Diff view needs surrounding unchanged lines to be
+    // readable, not just the changed lines in isolation.
+    //
+    // Synchronous/UI-thread-only (document::Document&, not a
+    // BufferSnapshot) - deliberately no async worker for this feature (see
+    // this WI's own build_plan.md entry): opening the Diff view is a
+    // discrete, user-triggered, single-file action, the same class of
+    // operation as the existing synchronous "JSON: Format Document"/"JSON:
+    // Validate" commands, not a background/on-save-triggered scan like
+    // GitDiffWorker/GitStatusWorker exist to offload.
+    //
+    // Same std::nullopt contract as diffAgainstHead(): outside this
+    // repository, untracked/HEAD has no blob for this path, or a decode
+    // failure (non-UTF-8 content). An empty (non-null) vector means an
+    // empty file with an identical (empty) HEAD blob.
+    [[nodiscard]] std::optional<std::vector<UnifiedDiffLine>> unifiedDiffAgainstHead(
+        const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
 
 private:
     struct RepoDeleter {

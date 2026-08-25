@@ -28,6 +28,8 @@ using neomifes::git::GitFileStatus;
 using neomifes::git::GitRepository;
 using neomifes::git::GitStatusEntry;
 using neomifes::git::LineDiffKind;
+using neomifes::git::UnifiedDiffLine;
+using neomifes::git::UnifiedDiffLineKind;
 
 fs::path uniqueTempDir() {
     fs::path dir = fs::temp_directory_path() / (std::string("nmfs_git_") + std::to_string(std::rand()));
@@ -447,6 +449,176 @@ TEST_F(GitRepositoryTest, StatusListHandlesNonAsciiFileName) {
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->status, GitFileStatus::Untracked);
     EXPECT_TRUE(fs::exists(entry->absolutePath));
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadReturnsNulloptForUntrackedFile) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(u"anything\n");
+    const auto result  = repo->unifiedDiffAgainstHead(dir / "never-committed.txt", doc);
+    EXPECT_FALSE(result.has_value());
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadReturnsNulloptOutsideRepository) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const fs::path outsideDir = uniqueTempDir();
+    const Document  doc        = makeDoc(u"anything\n");
+    const auto      result     = repo->unifiedDiffAgainstHead(outsideDir / "a.txt", doc);
+    EXPECT_FALSE(result.has_value());
+
+    fs::remove_all(dir);
+    fs::remove_all(outsideDir);
+}
+
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadReturnsAllContextForIdenticalContent) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(u"line1\nline2\n");
+    const auto     result = repo->unifiedDiffAgainstHead(dir / "a.txt", doc);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->size(), 2U);
+    EXPECT_EQ((*result)[0].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ((*result)[0].text, u"line1");
+    EXPECT_EQ((*result)[1].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ((*result)[1].text, u"line2");
+
+    fs::remove_all(dir);
+}
+
+// Mirrors the exact scenario this WI's own standalone probe
+// (git_unified_diff_probe.cpp) verified against real libgit2 output: a
+// single-line modification decomposes into one Removed line immediately
+// followed by one Added line (not a combined "Modified" kind - unlike
+// diffAgainstHead()'s hunk-level LineDiffKind::Modified, a unified diff has
+// no such concept, only per-line Added/Removed/Context).
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadDecomposesModifiedLineIntoRemovedThenAdded) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\nline3\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(u"line1\nCHANGED\nline3\n");
+    const auto     result = repo->unifiedDiffAgainstHead(dir / "a.txt", doc);
+    ASSERT_TRUE(result.has_value());
+    const auto& lines = *result;
+    ASSERT_EQ(lines.size(), 4U);
+    EXPECT_EQ(lines[0].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ(lines[0].text, u"line1");
+    EXPECT_EQ(lines[1].kind, UnifiedDiffLineKind::Removed);
+    EXPECT_EQ(lines[1].text, u"line2");
+    EXPECT_EQ(lines[2].kind, UnifiedDiffLineKind::Added);
+    EXPECT_EQ(lines[2].text, u"CHANGED");
+    EXPECT_EQ(lines[3].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ(lines[3].text, u"line3");
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadDetectsDeletedLine) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\nline3\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(u"line1\nline3\n");
+    const auto     result = repo->unifiedDiffAgainstHead(dir / "a.txt", doc);
+    ASSERT_TRUE(result.has_value());
+    const auto& lines = *result;
+    ASSERT_EQ(lines.size(), 3U);
+    EXPECT_EQ(lines[0].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ(lines[1].kind, UnifiedDiffLineKind::Removed);
+    EXPECT_EQ(lines[1].text, u"line2");
+    EXPECT_EQ(lines[2].kind, UnifiedDiffLineKind::Context);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadDetectsAddedLine) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(u"line1\nline2\nline3\n");
+    const auto     result = repo->unifiedDiffAgainstHead(dir / "a.txt", doc);
+    ASSERT_TRUE(result.has_value());
+    const auto& lines = *result;
+    ASSERT_EQ(lines.size(), 3U);
+    EXPECT_EQ(lines[0].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ(lines[1].kind, UnifiedDiffLineKind::Context);
+    EXPECT_EQ(lines[2].kind, UnifiedDiffLineKind::Added);
+    EXPECT_EQ(lines[2].text, u"line3");
+
+    fs::remove_all(dir);
+}
+
+// The DoD-critical case (same reasoning as
+// DiffAgainstHeadUsesInMemoryDocumentNotDiskContent above): the Diff view
+// must reflect unsaved edits, not whatever happens to be on disk.
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadUsesInMemoryDocumentNotDiskContent) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\nline2\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    writeFile(dir / "a.txt", "line1\nDISK-ONLY-CHANGE\n");  // disk differs from both HEAD and the in-memory doc
+
+    const Document doc = makeDoc(u"line1\nMEMORY-CHANGE\n");
+    const auto     result = repo->unifiedDiffAgainstHead(dir / "a.txt", doc);
+    ASSERT_TRUE(result.has_value());
+    const auto& lines = *result;
+    ASSERT_EQ(lines.size(), 3U);
+    EXPECT_EQ(lines[1].kind, UnifiedDiffLineKind::Removed);
+    EXPECT_EQ(lines[1].text, u"line2");
+    EXPECT_EQ(lines[2].kind, UnifiedDiffLineKind::Added);
+    EXPECT_EQ(lines[2].text, u"MEMORY-CHANGE");
+
+    fs::remove_all(dir);
+}
+
+// Distinguishes unifiedDiffAgainstHead()'s default context_lines=3 from
+// diffAgainstHead()'s deliberate context_lines=0 (see this method's own
+// header comment) - a change on line 5 of a 10-line file must be surrounded
+// by exactly 3 Context lines on each side, not 0 and not the whole file.
+TEST_F(GitRepositoryTest, UnifiedDiffAgainstHeadIncludesThreeLinesOfContext) {
+    const fs::path dir = uniqueTempDir();
+    std::string originalUtf8;
+    for (int i = 1; i <= 10; ++i) {
+        originalUtf8 += "line" + std::to_string(i) + "\n";
+    }
+    makeRepoWithCommit(dir, "a.txt", originalUtf8);
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const Document doc = makeDoc(
+        u"line1\nline2\nline3\nline4\nline5-CHANGED\nline6\nline7\nline8\nline9\nline10\n");
+    const auto result = repo->unifiedDiffAgainstHead(dir / "a.txt", doc);
+    ASSERT_TRUE(result.has_value());
+    const auto& lines = *result;
+    // line2,line3,line4 (3 context) + line5 removed + line5-CHANGED added +
+    // line6,line7,line8 (3 context) = 8 entries. line1/line9/line10 fall
+    // outside the 3-line context window on either side and are absent.
+    ASSERT_EQ(lines.size(), 8U);
+    EXPECT_EQ(lines[0].text, u"line2");
+    EXPECT_EQ(lines[3].kind, UnifiedDiffLineKind::Removed);
+    EXPECT_EQ(lines[3].text, u"line5");
+    EXPECT_EQ(lines[4].kind, UnifiedDiffLineKind::Added);
+    EXPECT_EQ(lines[4].text, u"line5-CHANGED");
+    EXPECT_EQ(lines[7].text, u"line8");
 
     fs::remove_all(dir);
 }

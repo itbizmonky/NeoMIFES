@@ -115,6 +115,84 @@ struct StatusListDeleter {
     void operator()(git_status_list* list) const noexcept { ::git_status_list_free(list); }
 };
 
+// WI-17f: UTF-8 bytes -> UTF-16, the same neomifes::platform::
+// convertToUtf16() primitive utf8ToPath() above already reuses, just
+// returning the decoded string directly instead of wrapping it in a
+// std::filesystem::path. std::nullopt on a malformed byte sequence (should
+// not occur for libgit2's own blob content assumed UTF-8, same "this
+// project's text files are UTF-8" assumption diffAgainstHead()'s own
+// currentUtf8 conversion already makes in the opposite direction) - matches
+// unifiedDiffAgainstHead()'s own documented std::nullopt contract rather
+// than silently emitting mojibake.
+[[nodiscard]] std::optional<std::u16string> utf8ToU16(std::string_view utf8) {
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(utf8.data()), utf8.size());
+    const std::variant<std::u16string, platform::CodepageConvertError> decoded =
+        platform::convertToUtf16(bytes, CP_UTF8);
+    if (const auto* text = std::get_if<std::u16string>(&decoded)) {
+        return *text;
+    }
+    return std::nullopt;
+}
+
+// WI-17f: git_diff_line_cb for unifiedDiffAgainstHead() - one callback
+// invocation per line of the unified diff (verified via this WI's own
+// standalone probe, git_unified_diff_probe.cpp: origin is exactly ' '
+// (context), '-' (removed), or '+' (added) for the added/removed/context
+// content this method cares about; content always includes the line's own
+// trailing '\n', stripped here). A small number of other origin values
+// exist (GIT_DIFF_LINE_*_EOFNL, file-header/hunk-header markers when hunk_cb
+// is set) but are not reachable here since this method passes hunk_cb=
+// nullptr (confirmed safe via the same probe - line_cb still fires
+// normally) and never requests EOFNL markers; the default branch below
+// treats anything unrecognized as Context defensively rather than
+// mis-classifying it as a real change.
+// WI-17f: when `text` has no trailing-newline-terminated final segment
+// (i.e. it ends with '\n', this project's own line-ending convention for a
+// Document's own toU16String() output), that trailing empty segment is
+// dropped - splitting "line1\nline2\n" must yield exactly 2 lines, not a
+// bogus trailing empty 3rd one. Used only as unifiedDiffAgainstHead()'s own
+// fallback for the "identical to HEAD" case (see that method's own comment
+// on why it's needed) - not a general-purpose Document-splitting utility.
+[[nodiscard]] std::vector<UnifiedDiffLine> splitIntoContextLines(std::u16string_view text) {
+    std::vector<UnifiedDiffLine> lines;
+    std::size_t                   start = 0;
+    while (start <= text.size()) {
+        const std::size_t newlinePos = text.find(u'\n', start);
+        if (newlinePos == std::u16string_view::npos) {
+            if (start < text.size()) {
+                lines.push_back(UnifiedDiffLine{.kind = UnifiedDiffLineKind::Context,
+                                                .text = std::u16string(text.substr(start))});
+            }
+            break;
+        }
+        lines.push_back(UnifiedDiffLine{.kind = UnifiedDiffLineKind::Context,
+                                        .text = std::u16string(text.substr(start, newlinePos - start))});
+        start = newlinePos + 1;
+    }
+    return lines;
+}
+
+int onDiffLine(const git_diff_delta* /*delta*/, const git_diff_hunk* /*hunk*/, const git_diff_line* line,
+               void* payload) {
+    auto* lines = static_cast<std::vector<UnifiedDiffLine>*>(payload);
+    auto  content = std::string_view(line->content, line->content_len);
+    if (content.ends_with('\n')) {
+        content.remove_suffix(1);
+    }
+    std::optional<std::u16string> text = utf8ToU16(content);
+    if (!text.has_value()) {
+        return -1;  // abort the diff - decode failure propagates to unifiedDiffAgainstHead()'s own nullopt
+    }
+    UnifiedDiffLineKind kind = UnifiedDiffLineKind::Context;
+    if (line->origin == GIT_DIFF_LINE_ADDITION) {
+        kind = UnifiedDiffLineKind::Added;
+    } else if (line->origin == GIT_DIFF_LINE_DELETION) {
+        kind = UnifiedDiffLineKind::Removed;
+    }
+    lines->push_back(UnifiedDiffLine{.kind = kind, .text = std::move(*text)});
+    return 0;
+}
+
 }  // namespace
 
 void GitRepository::RepoDeleter::operator()(git_repository* repo) const noexcept {
@@ -219,6 +297,80 @@ std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
 std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
     const std::filesystem::path& absoluteFilePath, const document::Document& doc) const {
     return diffAgainstHead(absoluteFilePath, *doc.snapshot());
+}
+
+std::optional<std::vector<UnifiedDiffLine>> GitRepository::unifiedDiffAgainstHead(
+    const std::filesystem::path& absoluteFilePath, const document::Document& doc) const {
+    // Same workdir/relative-path/HEAD-blob resolution as diffAgainstHead()'s
+    // own BufferSnapshot overload above - deliberately NOT factored into a
+    // shared helper (this project's own established precedent leans toward
+    // small duplication across call sites over sharing that would require
+    // touching an already-shipped, already-tested method's internals for a
+    // purely internal refactor - see e.g. WI-16g's kRowNumberColumnWidthDips
+    // duplication note).
+    const char* workdir = ::git_repository_workdir(m_repo.get());
+    if (workdir == nullptr) {
+        return std::nullopt;  // bare repository - no working directory to compare against
+    }
+
+    std::error_code            ec;
+    const std::filesystem::path relative =
+        std::filesystem::relative(absoluteFilePath, std::filesystem::path(workdir), ec);
+    const std::wstring relativeGeneric = relative.generic_wstring();
+    if (ec || relative.empty() || relativeGeneric.starts_with(L"..")) {
+        return std::nullopt;  // outside this repository's working directory
+    }
+    const std::string relativeUtf8 = wideToUtf8(relativeGeneric);
+
+    const std::string revspec = "HEAD:" + relativeUtf8;
+    git_object*        headObj = nullptr;
+    if (::git_revparse_single(&headObj, m_repo.get(), revspec.c_str()) != 0) {
+        return std::nullopt;
+    }
+    if (::git_object_type(headObj) != GIT_OBJECT_BLOB) {
+        ::git_object_free(headObj);
+        return std::nullopt;
+    }
+    auto* headBlob = reinterpret_cast<git_blob*>(headObj);
+
+    const std::u16string currentText = doc.toU16String();
+    const std::string     currentUtf8 = util::toUtf8WithOffsets(currentText).utf8;
+
+    git_diff_options options;
+    ::git_diff_options_init(&options, GIT_DIFF_OPTIONS_VERSION);
+    // Deliberately NOT context_lines=0 (unlike diffAgainstHead()'s onHunk()
+    // classification, which wants only the changed lines themselves) -
+    // GIT_DIFF_OPTIONS_INIT's own default (3, confirmed via this WI's own
+    // standalone probe) is exactly what a human-readable Diff view needs:
+    // surrounding unchanged lines for context, the same convention `git
+    // diff` itself uses.
+
+    std::vector<UnifiedDiffLine> lines;
+    // hunk_cb=nullptr is safe here (confirmed via this WI's own standalone
+    // probe, git_unified_diff_probe.cpp: line_cb still fires normally with
+    // no hunk_cb) - onDiffLine() has no use for hunk boundaries, only each
+    // line's own origin/content.
+    const int rc = ::git_diff_blob_to_buffer(headBlob, relativeUtf8.c_str(), currentUtf8.data(), currentUtf8.size(),
+                                             relativeUtf8.c_str(), &options, nullptr, nullptr, nullptr, &onDiffLine,
+                                             &lines);
+    ::git_blob_free(headBlob);
+    if (rc != 0) {
+        return std::nullopt;
+    }
+    // libgit2 reports ZERO line callbacks (not one Context line per line of
+    // the file) when the blob and buffer are byte-identical - confirmed via
+    // this WI's own unit test (UnifiedDiffAgainstHeadReturnsAllContextFor
+    // IdenticalContent originally asserted otherwise and failed against the
+    // real implementation, per CLAUDE.md rule 3's "verify against reality,
+    // not assumption" spirit). diffAgainstHead()'s own empty-vector-means-
+    // identical contract is fine for a gutter (nothing to mark), but a Diff
+    // VIEW must still show the file's own full content when there is
+    // nothing to highlight - so an empty callback result falls back to the
+    // whole document as all-Context lines here.
+    if (lines.empty()) {
+        return splitIntoContextLines(currentText);
+    }
+    return lines;
 }
 
 std::optional<std::vector<GitStatusEntry>> GitRepository::statusList() const {
