@@ -32,12 +32,29 @@
 // exactly as decoupled from TabBar/StatusBar as OutlinePane/JsonTreePane
 // already are from every OTHER widget class.
 //
-// Column 0 is always a synthesized "#" (1-based row number) column this
-// class fills in directly from rowIndex+1, never routed through
-// onGetCellText()/onCellActivated() - the caller's csvmode::CsvModel-aware
-// bridge code (csv_grid_bridge.h) never needs to know this column exists.
-// Columns 1..columnCount map to the caller's own CSV columns 0..columnCount-1
-// (see onGetCellText()'s own comment for the exact index shift).
+// WI-16g: the "#" (1-based row number) column is frozen (roadmap §10.2's
+// "列固定") - it stays on screen while the real CSV columns scroll
+// horizontally. This is implemented as TWO synchronized sibling
+// WC_LISTVIEW HWNDs, not one: m_hwndFrozenList (narrow, fixed-width,
+// non-horizontally-scrolling, "#" column only) and m_hwndDataList (the
+// scrollable one, real CSV columns only - m_hwndDataList's OWN column 0 IS
+// the caller's CSV column 0, no internal shift). A single shared ListView
+// with NM_CUSTOMDRAW could not do this: native horizontal scrolling moves
+// every column's pixels, "frozen" or not, so keeping one column visually
+// fixed still requires a second, independently-positioned window. Both
+// lists stay LVS_OWNERDATA, backed by the same row data, and are kept
+// vertically scroll- and selection-synchronized (see
+// tryForwardListScrollMessage()/handleItemChanged()) so they read as ONE
+// table to the user rather than two. Both list HWNDs remain visually
+// contiguous - m_hwndListDivider (an opaque WC_STATIC, same "cover the
+// gap" pattern m_hwndFilterBackdrop below already established) fills the
+// seam between them so the Direct2D document view never shows through.
+//
+// The "#" column itself is never routed through onGetCellText()/
+// onCellActivated() - the caller's csvmode::CsvModel-aware bridge code
+// (csv_grid_bridge.h) never needs to know this column exists. Real CSV
+// columns map 1:1 onto the caller's own CSV columns 0..columnCount-1 (no
+// shift - see onGetCellText()'s own comment).
 
 #include <windows.h>
 
@@ -53,18 +70,26 @@ namespace neomifes::ui {
 
 struct CsvGridPaneConfig {
     // Called synchronously from handleNotify()'s LVN_GETDISPINFOW handling
-    // (never for the synthesized "#" column, see this header's own top
-    // comment) - `colIndex` is 0-based into the caller's OWN column space
-    // (already shifted back down from this pane's internal 1-based column
-    // slot). `rowIndex` is the data-row index the pane was given via
-    // showWith()'s dataRowCount, not a raw document::Document line number.
+    // (never for the synthesized "#" column, which lives in the separate
+    // m_hwndFrozenList and never reaches this callback - see this header's
+    // own top comment) - `colIndex` is simply 0-based into the caller's OWN
+    // CSV column space, with NO shift: it maps 1:1 onto m_hwndDataList's own
+    // column index (WI-16g - before the "#"/data split, this pane's single
+    // list needed a +1 shift here; now "#" is a different HWND entirely, so
+    // there is nothing to shift past). `rowIndex` is the data-row index the
+    // pane was given via showWith()'s dataRowCount, not a raw
+    // document::Document line number.
     std::function<std::u16string(std::size_t rowIndex, std::size_t colIndex)> onGetCellText;
     // Double-click or Enter (LVN_ITEMACTIVATE). `colIndex` is THIS pane's own
     // internal column index (0 == the "#" row-number column was activated,
-    // 1..columnCount == a real CSV column) - deliberately NOT pre-shifted
-    // the way onGetCellText's is, since "the row-number column itself was
-    // activated" is meaningful information the caller needs to distinguish
-    // (jump to the row's own first cell) from "CSV column 0 was activated".
+    // 1..columnCount == a real CSV column) - deliberately offset by +1 from
+    // onGetCellText's own (unshifted) space, reserving 0 for "#", since "the
+    // row-number column itself was activated" is meaningful information the
+    // caller needs to distinguish (jump to the row's own first cell) from
+    // "CSV column 0 was activated". WI-16g: this convention is unchanged by
+    // the frozen/data list split - "#" activation now originates from the
+    // separate m_hwndFrozenList HWND rather than column 0 of one shared
+    // list, but the numeric value the caller sees is identical.
     std::function<void(std::size_t rowIndex, std::size_t colIndex)> onCellActivated;
     // Escape (from either the ListView or the filter edit - see this
     // header's own class comment). Caller restores focus to the document
@@ -77,21 +102,25 @@ struct CsvGridPaneConfig {
     // per keystroke) OR immediately on Enter. The caller recomputes its own
     // filtered row order and reflects it via setRowCount()/showWith().
     std::function<void(std::u16string_view query)> onFilterQueryChanged;
-    // LVN_COLUMNCLICK. `colIndex` uses the SAME non-shifted space as
+    // LVN_COLUMNCLICK. `colIndex` uses the SAME +1-offset space as
     // onCellActivated's (0 == the "#" row-number column's header was
     // clicked - the caller's own convention for "reset to unsorted", since
     // that column has no real CSV data to sort by; 1..columnCount == a real
-    // CSV column).
+    // CSV column). WI-16g: as with onCellActivated, this notification can
+    // now originate from either m_hwndFrozenList's header (colIndex==0) or
+    // m_hwndDataList's own (colIndex-1 == the caller's CSV column) - the
+    // numeric contract itself is unchanged.
     std::function<void(std::size_t colIndex)> onSortColumnClicked;
     // WI-16f: fires when the cell-edit overlay (single click on a real CSV
     // cell, never the "#" column) commits - Enter, or the overlay losing
     // focus (spreadsheet-like UX; the pane cancels instead of committing on
     // Escape, see cancelCellEditor()). Only fires when `newText` differs
     // from what onGetCellText originally supplied for this cell - a no-op
-    // edit (opened, nothing changed) never reaches the caller.  `colIndex`
-    // uses the SAME shifted space onGetCellText's does (0 == the caller's
-    // own first CSV column) - the "#" column can never open an editor, see
-    // handleClick()'s own iSubItem<=0 guard.
+    // edit (opened, nothing changed) never reaches the caller. `colIndex`
+    // uses the SAME unshifted space onGetCellText's does (0 == the caller's
+    // own first CSV column) - the "#" column can never open an editor
+    // because it lives in a separate HWND (m_hwndFrozenList) entirely, see
+    // handleClick()'s own guard.
     std::function<void(std::size_t rowIndex, std::size_t colIndex, std::u16string newText)> onCellEditCommitted;
     // WI-16f: checked before opening a cell editor; unset behaves as
     // "always allowed" (matches onGetCellText/onCellActivated's own "unset
@@ -189,19 +218,76 @@ private:
     void handleColumnClick(LPARAM lParam) noexcept;
     // WI-16f: NM_CLICK - comctl32 delivers a populated NMITEMACTIVATE for
     // this notification too (same struct LVN_ITEMACTIVATE uses), so no
-    // manual LVM_SUBITEMHITTEST is needed. No-ops on the "#" column
-    // (iSubItem<=0) or when m_config.canBeginCellEdit vetoes.
+    // manual LVM_SUBITEMHITTEST is needed. No-ops on the "#" column (WI-16g:
+    // now identified by hdr.hwndFrom != m_hwndDataList, since "#" lives in a
+    // separate HWND rather than being subitem 0 of one shared list) or when
+    // m_config.canBeginCellEdit vetoes.
     void handleClick(LPARAM lParam) noexcept;
+    // WI-16g: LVN_ITEMCHANGED from either list - mirrors a selection/focus
+    // state change onto the SAME row index in the other list
+    // (ListView_SetItemState()), guarded by m_syncingSelection against
+    // re-entrant notification loops, so the two lists always show the same
+    // row highlighted (read as one table, not two independent ones). Only
+    // acts on LVIF_STATE changes to LVIS_SELECTED/LVIS_FOCUSED with a valid
+    // iItem>=0 - both lists use LVS_SINGLESEL specifically so ordinary
+    // selection changes always arrive this way rather than via the
+    // range-oriented LVN_ODSTATECHANGED (verified via this WI's own
+    // standalone probe, see this file's own header comment).
+    void handleItemChanged(LPARAM lParam) noexcept;
+    // WI-16g: intercepts WM_VSCROLL/WM_MOUSEWHEEL/list-navigation
+    // WM_KEYDOWN (arrows/PageUp/PageDown/Home/End) on either list, lets
+    // DefSubclassProc handle it first (so the source list's own scroll
+    // position updates normally), then calls syncScrollAfterMessage() to
+    // replay the resulting top-index change onto the other list. Returns
+    // true (and sets `result`) only when it actually handled `msg` for
+    // `hwnd` - handleSubclassMessage() checks this BEFORE its own switch so
+    // nav keys never reach the Escape/Enter/IME handling below (which never
+    // matches nav-key virtual-key codes anyway, but checking first keeps
+    // the two concerns visibly separate).
+    [[nodiscard]] bool tryForwardListScrollMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                                   LRESULT& result) noexcept;
+    // WI-16g: reads `source`'s current ListView_GetTopIndex(), compares
+    // against m_syncedTopIndex (the last value both lists agreed on), and -
+    // if it changed - replays that exact row-index delta onto the OTHER
+    // list via ListView_Scroll() (pixel delta = rows * rowHeightPx()).
+    // Row-index-delta (not naively re-deriving a pixel delta from the
+    // triggering message) is what stays correct across comctl32's own
+    // internal clamping at the very top/bottom of a huge list - reading
+    // back the ACTUAL resulting top index, verified via this WI's own
+    // standalone probe to clamp cleanly rather than drift, means both lists
+    // stay exactly in sync even at the boundaries.
+    void syncScrollAfterMessage(HWND source) noexcept;
+    // WI-16g: lazily measures and caches one row's pixel height via
+    // ListView_GetItemRect(m_hwndDataList, 0, ..., LVIR_BOUNDS) - both
+    // lists share one font (see ensureFont()) so their row heights match
+    // automatically. Returns 0 (verified safe by syncScrollAfterMessage()'s
+    // own guard) if there are no rows to measure yet.
+    [[nodiscard]] int rowHeightPx() noexcept;
+    // WI-16g: extracted from create() - builds m_hwndFrozenList/
+    // m_hwndDataList/m_hwndListDivider, subclasses the two lists, and
+    // applies the shared extended-style call to both (see
+    // applyListExtendedStyles() in the .cpp - a free function specifically
+    // so neither list can silently end up with a different style set than
+    // the other, the exact WI-16f dogfooding lesson this split risks
+    // repeating twice over).
+    [[nodiscard]] bool createListViews(HWND parent, HINSTANCE hInstance) noexcept;
+    // WI-16g: extracted from onParentResized() - positions the frozen list
+    // (fixed kRowNumberColumnWidthDips width), the divider strip, and the
+    // data list (the remaining width), given the vertical band
+    // onParentResized()'s own filter-row math already computed.
+    void positionListViews(int listTopPx, int listHeightPx, int widthPx, float dpiScale) noexcept;
     // Fires onFilterQueryChanged with the filter edit's current text - shared
     // by the debounce WM_TIMER and VK_RETURN's "fire now" path (mirrors
     // ui::FindBar::fireQueryChanged()).
     void fireFilterQueryChanged() noexcept;
     // WI-16f: positions+shows m_hwndCellEditor over the given cell's
-    // on-screen rect (LVM_GETSUBITEMRECT, mapped from the ListView's own
+    // on-screen rect (LVM_GETSUBITEMRECT, mapped from the data list's own
     // client coordinates into the shared parent's - m_hwndCellEditor is a
-    // sibling of m_hwndList, not its child), pre-filled via
-    // m_config.onGetCellText and remembered in m_cellEditorOriginalText for
-    // commitCellEditor()'s later no-op-edit comparison.
+    // sibling of m_hwndDataList, not its child; the "#" column can never
+    // open an editor because it lives in the separate m_hwndFrozenList, see
+    // handleClick()'s own comment), pre-filled via m_config.onGetCellText
+    // and remembered in m_cellEditorOriginalText for commitCellEditor()'s
+    // later no-op-edit comparison.
     void showCellEditor(std::size_t rowIndex, std::size_t colIndex) noexcept;
     // Reads the editor's current text; fires onCellEditCommitted only if it
     // differs from m_cellEditorOriginalText, then hides the editor. Safe to
@@ -217,7 +303,32 @@ private:
     void cancelCellEditor() noexcept;
     void ensureFont(float dpiScale) noexcept;
 
-    neomifes::platform::WindowHandle    m_hwndList;
+    // WI-16g: the "#"-only frozen list and the real-CSV-columns scrollable
+    // list - see this header's own top comment for why this is two HWNDs,
+    // not one.
+    neomifes::platform::WindowHandle    m_hwndFrozenList;
+    neomifes::platform::WindowHandle    m_hwndDataList;
+    // WI-16g: opaque WC_STATIC filling the seam between m_hwndFrozenList and
+    // m_hwndDataList - same "cover the gap so the Direct2D document view
+    // never shows through" pattern m_hwndFilterBackdrop below already
+    // established (WI-16f), applied to a second seam this WI introduces.
+    neomifes::platform::WindowHandle    m_hwndListDivider;
+    // WI-16g: the last top-visible-row index BOTH lists agree on - a single
+    // shared baseline (not one per list) because the two lists are defined
+    // to always match after any sync event, regardless of which one the
+    // user actually scrolled/navigated. Reset to 0 in showWith() (a column
+    // rebuild always resets each ListView's own top index to 0 anyway).
+    int m_syncedTopIndex = 0;
+    // WI-16g: cached row height in pixels (see rowHeightPx()) - 0 means
+    // "not yet measured". Reset to 0 whenever the font changes (ensureFont())
+    // since a different font can change row height.
+    int m_rowHeightPx = 0;
+    // WI-16g: reentrancy guard for handleItemChanged()'s cross-list
+    // ListView_SetItemState() mirroring - set while THIS class is itself
+    // the one driving a state change on the "other" list, so that list's
+    // own resulting LVN_ITEMCHANGED (if comctl32 sends one) is ignored
+    // rather than bouncing back and forth.
+    bool m_syncingSelection = false;
     // WI-16f bugfix: an opaque WC_STATIC spanning the ENTIRE filter row band
     // (behind m_hwndFilterLabel/m_hwndFilterEdit in z-order, created before
     // them so they paint on top of it), not just the sub-rects those two
