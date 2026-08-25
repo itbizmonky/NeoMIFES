@@ -285,7 +285,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | **8.6e** | **基本編集の穴埋め** (Ctrl+A、自動インデント、行複製/移動/削除) | ✅ **完了 (WI-12, 2026-08-15、🎉M3)** | §8.6 |
 | **12'** | **MVP 出荷判定** (新設。「秀丸/サクラの代替として実用に耐える」状態で一度出荷し実ユーザーの反応を得る) | ✅ **完了 (WI-13, 2026-08-16、🎉M4)** | §12.4 |
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
-| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **XML非同期化+EditorSession配線達成 (WI-15a〜g完了、2026-08-25。XPath/真の左右分割ペイン化/XMLツリーUIは未着手、WI-15h以降)** | §10.3 |
+| 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **XMLツリーUI達成、JSON/XML双方のツリーUIが完結 (WI-15a〜h完了、2026-08-25。XPath/真の左右分割ペイン化は未着手、WI-15i以降)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **セル編集達成 (WI-16a〜f完了、2026-08-24。列固定/式列は未着手、WI-16g以降)** | §10.2 |
 | 11.1 | Git 統合 | **着手 (WI-17a〜d完了、2026-08-23): ヘッドレス基盤+非同期化+EditorSession配線+左ガター差分マーカーUI(手動リフレッシュ+保存時自動トリガー)まで実装済み。残りはGitペイン・Diffビュー(WI-17e〜)が🎯現在のゴール。Blame/Commit/Branch切替/3-Way Mergeは🧊凍結 (2026-08-23)** | §11.1 |
 | 11.2 | LSP 完全実装 | 🧊 **凍結 (2026-08-23、build_plan.md §0参照)** | §11.2 |
@@ -2368,6 +2368,16 @@ WI-15gでWI-15b(JSONツリーの非同期化+配線)を直テンプレートに�
 - **`EditorSession::m_xmlTree`の型は`std::optional<xmltree::XmlTree>`とし、`jsonTree()`とは異なり`std::nullopt`は「未インデックス」のみを意味する設計にした。** JSON側はnlohmannのfail-fast契約により`std::nullopt`が「パース失敗」も兼ねるが、XML側はパース失敗という概念自体が無く(`XmlTree::hasErrors`が代わりにその情報を持つ)、こちらの方が`m_logModel`の元々の設計によりよく合致する。
 - **配線はWI-15b当時(WI-15cのUI/pane機構が乗る前)の最も単純な形をそのまま踏襲した。** `beginXmlTreeIndexing()`を呼ぶコマンド/UIは一切追加していない。
 - 詳細は`build_plan.md` WI-15gセクション参照。
+
+#### 実装後の確定事項 (WI-15h、XML ツリーUI、2026-08-25)
+
+WI-15hで`ui::JsonTreePane`をそのまま再利用したXMLツリーUIを実装し、**🎉 Phase 10.3(JSON/XML Treeモード)はJSON側・XML側とも構造ツリーUIまで完結した。**
+
+- **`ui::JsonTreePane`自体がWI-15c以来「JSON/XML構造ツリーパネル」として両対応を想定した設計だったため、本WIは新規UIクラスを一切必要としなかった。** `ui::OutlineItem`のみに依存する汎用実装に、新規`app::buildXmlTreeItems()`/`app::buildXmlFoldRegions()`ブリッジ関数でXML由来のデータを流し込むだけで完結した。
+- **`Ctrl+Shift+J`をJSON専用から「JSON/XML両対応の単一トグル」へ設計転換した(着手前にAskUserQuestionでユーザーへ確認済み)。** `EditorSession::language() == syntax::Language::Xml`の場合のみ新規`refreshXmlTreePane()`へ分岐し、それ以外(JSON含む全言語)は既存の`refreshJsonTreePane()`を無変更のまま通す。`jsonTreePanePendingSessionToken`は新設せずJSON/XML間で共用する設計にした — セッションの`language()`はトグル時点で固定されるため、1回のトグルONでどちらか一方のワーカーしか発火せず、JSON⇄JSON間の既存のトークン再利用と同じ安全性がJSON⇄XML間にもそのまま成立する。
+- **ラベルテキストのみ汎用化し(「JSON構造ツリー」→「構造ツリー」)、内部識別子(`CommandId::JsonTreeToggle`本体等)は一切リネームしなかった。** ユーザー非可視かつ、既存のプリセット・テスト・ドキュメントへの影響範囲を最小化するため。
+- **実機ドッグフーディングで一時的な診断ログ手法(`JsonTreePane::showWith()`が受け取った`OutlineItem`ツリーをファイルへダンプ)を新たに確立した。** `WM_COMMAND`をPowerShell経由で実際のNeoMIFES.exeへ送信し、XML文書・JSON文書の両方で非同期ワーカー経由の正しい構造ツリー表示(回帰なし)を確認した。
+- 詳細は`build_plan.md` WI-15hセクション参照。
 
 ---
 

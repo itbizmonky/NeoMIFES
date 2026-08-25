@@ -150,7 +150,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) に続き WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) まで進行、XPath・真の左右分割ペイン化・XMLツリーUIは残り(WI-15h以降)。CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) に続き WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) → WI-15h (XML側: ツリーUI、`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一) まで進行、JSON/XML双方のツリーUIが完結。XPath・真の左右分割ペイン化は残り(WI-15i以降)。CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -177,8 +177,9 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-16f** CSV セル単位クリック編集 (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、`applyCsvCellEdit()`、実機ドッグフーディングで`LVS_EX_FULLROWSELECT`未設定というWI-16c以来の既存バグを発見・解消) → コミット: `932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`
 - [ ] **WI-16g以降** Phase 10.2 の残り (列固定・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: `9470227`/`7cd90a3`
-- [x] **WI-15g** XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし、`XmlTreeWorker`+`EditorSession`4点、WI-15b直テンプレート) → コミット: (このセッション内、詳細は本書 §5 参照)
-- [ ] **WI-15h以降** Phase 10.3 の残り (XPath・真の左右分割ペイン化・XMLツリーUI) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-15g** XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし、`XmlTreeWorker`+`EditorSession`4点、WI-15b直テンプレート) → コミット: `ca4f6f5`/`38f1590`/`fb5e00d`
+- [x] **WI-15h** XML ツリーUI (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用、🎉Phase 10.3 XMLツリーUI達成) → コミット: `76e8f0e`/`c7ad615`
+- [ ] **WI-15i以降** Phase 10.3 の残り (XPath・真の左右分割ペイン化) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
@@ -2021,6 +2022,51 @@ Debug/Release/ubsan全1473/1473件green(バックグラウンドエージェン�
 Debug/Release/ubsan全1474/1474件green(3構成とも自身で直接ビルド・実行し確定)。clang-tidy新規警告0(対象6ファイル: `xml_tree_worker.h`/`.cpp`、`editor_session.h`/`.cpp`、`normal_mode_wiring.h`/`.cpp`、`main.cpp`、`xmltree_xml_tree_worker_test.cpp` — 後者で発見した5件(`cppcoreguidelines-special-member-functions`、`cppcoreguidelines-prefer-member-initializer`、`misc-const-correctness`×5箇所、`readability-function-cognitive-complexity`)を全て解消)。
 
 pushはユーザーの明示指示待ち。Phase 10.3はJSON側・XML側とも「ヘッドレス基盤+非同期化+EditorSession配線」まで対称的に完了 — XPath・真の左右分割ペイン化・XMLツリーUIは全て後続サブWI(WI-15h以降)へ。次はWI-15h(XMLツリーUI、`ui::JsonTreePane`がJSON非依存と判明済みのため`app::buildXmlTreeItems()`ブリッジだけで再利用できる見込み)、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+---
+
+## WI-15h — XML ツリーUI
+
+**目的:** WI-15g完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15h: XMLツリーUI/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し「WI-15h: XMLツリーUI(推奨)」が選ばれた。着手前調査で決定的な事実が判明した — `ui::JsonTreePane`自体が最初から「JSON/XML構造ツリーパネル」として両対応を想定した設計だった(WI-15cのクラスコメントに明記)。そのため新規UIクラスは不要、ヘッドレスブリッジ関数2つで完結すると判明した。
+
+**UI入口の設計についてAskUserQuestionで確認。** 「統一: 同一コマンドで自動判別(推奨)」/「分離: XML専用の別コマンド追加」の2択を提示し、**「統一(推奨)」**が選ばれた。既存の`Ctrl+Shift+J`をそのまま単一の入口とし、`EditorSession::language() == syntax::Language::Xml`の場合のみXML経路へ分岐、それ以外は既存のJSON経路を無変更のまま通す設計に確定、Plan Modeで詳細計画を承認された。
+
+### 設計
+
+- `app::buildXmlTreeItems()`/`app::buildXmlFoldRegions()`(`json_tree_bridge.h`/`json_fold_bridge.h`の機械的な移植、明示スタックによる反復実装)。Elementのラベルは`<tag attr="v"> {N}`、リーフは区切り文字込みの生テキスト、Errorは`[parse error] `プレフィックス。XMLのText/Comment/Cdata/PIは生の改行を含みうるため新規`previewOneLine()`で単一行へ正規化(JSON側には無かった機構)、空白のみのTextノードは`(whitespace)`プレースホルダ。
+- `normal_mode_wiring.cpp`に新規`refreshXmlTreePane()`(`refreshJsonTreePane()`の完全な兄弟関数)+`refreshStructureTreePane()`(言語で分岐するディスパッチ、認知的複雑度ごく小さい)。3箇所の呼び出し元(`handleJsonTreeKey()`/`appendStructuralViewCommands()`/`dispatchWidgetShowCommand()`)を`refreshStructureTreePane()`呼び出しへ置き換え。
+- `applyXmlTreeReadyMessage()`(WI-15gの最小形)を`applyJsonTreeReadyMessage()`と同じ形へ拡張、ペインへの自動反映を追加。`jsonTreePanePendingSessionToken`は新設せずJSON/XML間で共用(セッションの`language()`はトグル時点で固定されるため、1回のトグルONでどちらか一方のワーカーしか発火せず安全 — `normal_mode_wiring.h`のこのトークンに関する既存コメント群にWI-15h段落を追記)。
+- ラベルテキストの汎用化(「JSON構造ツリー」→「構造ツリー」、"Toggle JSON Tree"→"Toggle Structure Tree")。内部識別子(`CommandId::JsonTreeToggle`本体等)はユーザー非可視のためリネームしない。
+
+### 実施内容 (2コミット、当初計画の3コミットからラベル変更をwiring変更と統合)
+
+1. `feat(app)`: ブリッジ関数`buildXmlTreeItems()`/`buildXmlFoldRegions()`+単体テスト16件
+2. `feat(app)`: XML経路配線+単一トグル統一+ラベル汎用化+最終ゲート+実機ドッグフーディング
+
+### 実機ドッグフーディング
+
+一時的な診断ログ(`JsonTreePane::showWith()`が受け取った`OutlineItem`ツリーをファイルへダンプ、コミット前に削除済み)を仕込み、`WM_COMMAND`(`CommandId::JsonTreeToggle`=40007)をPowerShell経由で実際のNeoMIFES.exeへ送信して検証した。
+
+- **XML文書**: `<catalog>`ルート+2つの`<book id="N">`要素(タイトル・著者テキスト含む)+コメント+空白ノードが、非同期ワーカー経由で正確な構造・属性・子数({N}表示)・空白プレースホルダ付きで表示されることを確認。
+- **JSON文書**: 同じ手順で既存のJSON経路(`{3}`/`name: "Alice"`/`tags: [2]`等)が完全に無変更で動作することを確認 — 回帰なし。
+
+### DoD
+
+- [x] `buildXmlTreeItems()`/`buildXmlFoldRegions()`が明示スタックによる反復実装(`misc-no-recursion`警告なし)
+- [x] `Ctrl+Shift+J`がXML文書で構造ツリーを表示する(実機確認)
+- [x] 同じ`Ctrl+Shift+J`がJSON文書で既存経路を無変更のまま実行する(実機確認、回帰なし)
+- [x] 不正なXMLでも`[parse error]`ラベルを持つErrorノードが表示され、クラッシュしない(単体テストで検証)
+- [x] 折り畳み統合(`buildXmlFoldRegions()`→`FoldingModel`)が機能する
+- [x] 単体テスト16件(構造/属性/リーフ種別/Error/トリム/空白プレースホルダ/ネスト、fold側7件)が全てpass
+- [x] Debug/Release/ubsan全1490/1490件green、clang-tidy新規警告0
+- [x] 実機ドッグフーディング(XML/JSON両方)
+- [x] ドキュメント同期
+
+### 最終ゲート
+
+Debug/Release/ubsan全1490/1490件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `xml_tree_bridge.h`/`xml_fold_bridge.h`/`app_xml_tree_bridge_test.cpp`/`app_xml_fold_bridge_test.cpp`/`normal_mode_wiring.cpp`/`.h`/`menu_bar.h`)。
+
+コミット済み(`76e8f0e`/`c7ad615`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)は両フォーマットのツリーUIまで完結。** 残りはXPath・真の左右分割ペイン化のみ(WI-15i以降)。次はWI-15i、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 ---
 

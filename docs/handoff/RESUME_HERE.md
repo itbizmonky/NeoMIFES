@@ -14,7 +14,7 @@
 >
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: セル編集はWI-16f(2026-08-24)で完了済み。残りは列固定・式列 (WI-16g以降)
-> - Phase 10.3 (JSON/XML Tree) 残り: XMLヘッドレス基盤(WI-15f)+非同期化・EditorSession配線(WI-15g)は完了済み(2026-08-25)。残りはXPath・真の左右分割ペイン化・XMLツリーUI (WI-15h以降)
+> - Phase 10.3 (JSON/XML Tree) 残り: XMLヘッドレス基盤(WI-15f)+非同期化・EditorSession配線(WI-15g)+ツリーUI(WI-15h)は完了済み(2026-08-25、🎉JSON/XML双方のツリーUIが完結)。残りはXPath・真の左右分割ペイン化のみ (WI-15i以降)
 > - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
@@ -2901,6 +2901,18 @@ WI-15b(JSONツリーの非同期化+配線)を直テンプレートに、`XmlTre
 
 ---
 
+### 3.102 WI-15h (XML ツリーUI) 完了記録 (2026-08-25)
+
+WI-15g完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15h: XMLツリーUI/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15h: XMLツリーUI(推奨)」**が選ばれた。着手前調査で`ui::JsonTreePane`自体が最初から「JSON/XML構造ツリーパネル」として両対応を想定した設計だったと判明(WI-15cのクラスコメントに明記)、新規UIクラス不要と確定。UI入口の設計(単一コマンド自動判別 vs XML専用別コマンド)をAskUserQuestionで確認し「統一(推奨)」を選択、Plan Modeで詳細計画を承認された。
+
+**設計:** 新規`app::buildXmlTreeItems()`/`app::buildXmlFoldRegions()`(JSONブリッジの機械的な移植、`previewOneLine()`で複数行テキストを単一行へ正規化する新規機構、空白のみTextノードは`(whitespace)`プレースホルダ)。`normal_mode_wiring.cpp`に新規`refreshXmlTreePane()`+`refreshStructureTreePane()`(`session.language() == syntax::Language::Xml`で分岐、それ以外は既存JSON経路を無変更のまま通す)。`jsonTreePanePendingSessionToken`はJSON/XML間で共用(セッションのlanguage()はトグル時点で固定されるため安全)。ラベルのみ汎用化(「JSON構造ツリー」→「構造ツリー」)、内部識別子は無変更。
+
+**実施は2コミット**(当初計画の3コミットからラベル変更をwiring変更へ統合)。**実機ドッグフーディングで新しい安全な検証手法を確立した** — `JsonTreePane::showWith()`へ一時的な診断ログ(受け取った`OutlineItem`ツリーをファイルへダンプ)を仕込み、`WM_COMMAND`(`CommandId::JsonTreeToggle`=40007)をPowerShell経由で実際のNeoMIFES.exeへ送信。XML文書(`<catalog>`+2つの`<book id="N">`+コメント+空白ノード)で非同期ワーカー経由の正確な構造表示を確認、同じ手順でJSON文書も検証し既存経路への回帰が無いことを確認した。診断ログはコミット前に削除済み。
+
+最終ゲート: Debug/Release/ubsan全1490/1490件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット済み(`76e8f0e`/`c7ad615`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)は両フォーマットのツリーUIまで完結。** 次はWI-15i(XPath・真の左右分割ペイン化)、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2957,10 +2969,10 @@ v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
 LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
 着手しないこと。目安+10〜15 WI。
 
-続けてRESUME_HERE.md §3.101 (WI-15g XML ツリー 非同期化+EditorSession
-配線完了記録)を読んで詳細な現状を把握せよ。§3.100 (WI-15f、
-pugixml→tree-sitter-xml設計転換)、§3.99 (WI-16f、CSVセル編集)も
-背景として参照。
+続けてRESUME_HERE.md §3.102 (WI-15h XML ツリーUI完了記録、
+JSON/XML双方のツリーUI完結)を読んで詳細な現状を把握せよ。§3.101
+(WI-15g、非同期化+EditorSession配線)、§3.100 (WI-15f、
+pugixml→tree-sitter-xml設計転換)も背景として参照。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
