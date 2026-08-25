@@ -30,6 +30,11 @@ target_link_libraries(neomifes_git
     PRIVATE
         neomifes::compile_options
         neomifes::util
+        # WI-17e: statusList()'s own UTF-8(libgit2 path)->UTF-16 decode
+        # reuses neomifes::platform::convertToUtf16() (codepage_convert.h)
+        # rather than hand-rolling a second MultiByteToWideChar() call site -
+        # never exposed in git_repository.h's own public API, so PRIVATE.
+        neomifes::platform
         libgit2package
 )
 

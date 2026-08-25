@@ -60,6 +60,29 @@ struct LineDiffRegion {
     friend bool operator==(const LineDiffRegion&, const LineDiffRegion&) = default;
 };
 
+// WI-17e: one file's status in a repo-wide "git status" scan (statusList()
+// below) - a DIFFERENT feature from LineDiffRegion/diffAgainstHead() above,
+// which is scoped to a single file's line-level hunks. Collapses libgit2's
+// many GIT_STATUS_* bits (see statusList()'s own .cpp comment for the
+// priority order) into one value per file - a Git pane listing changed
+// files needs "what kind of change is this file" as a single glyph, not a
+// bitmask.
+enum class GitFileStatus : std::uint8_t { Modified, Added, Deleted, Renamed, Untracked };
+
+struct GitStatusEntry {
+    // Workdir-joined - ready to pass straight to Workspace::openFile(). For
+    // a Renamed entry, this is the NEW (current) path, matching what a user
+    // clicking this entry to open the file would expect.
+    std::filesystem::path absolutePath;
+    // Workdir-relative - display-only, matches `git status`'s own
+    // convention of showing paths relative to the repository root rather
+    // than the (possibly deeply nested) absolute path.
+    std::filesystem::path relativePath;
+    GitFileStatus          status = GitFileStatus::Modified;
+
+    friend bool operator==(const GitStatusEntry&, const GitStatusEntry&) = default;
+};
+
 class GitRepository {
 public:
     // Walks upward from startPath (a file OR directory path) looking for a
@@ -105,6 +128,24 @@ public:
     // above. Same shape as jsontree::parseJsonTree()'s Document overload.
     [[nodiscard]] std::optional<std::vector<LineDiffRegion>> diffAgainstHead(
         const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
+
+    // WI-17e: repo-wide "git status" scan (HEAD vs index vs working
+    // directory) - powers the Git pane's changed-file list. Deliberately
+    // does NOT take a document::BufferSnapshot/Document the way
+    // diffAgainstHead() does: that method diffs against a document's live,
+    // possibly-unsaved in-memory text because "the gutter reacts as you
+    // type" is its whole point, but there is no sane way to synthesize "as
+    // if every open tab were saved" for a repo-wide scan covering
+    // potentially dozens of files most of which aren't even open - this
+    // always reports real, on-disk status, exactly like running `git
+    // status` in a terminal or VSCode's own Source Control view.
+    //
+    // std::nullopt only for a bare repository (no working directory to
+    // scan) - same guard diffAgainstHead() already uses. An empty
+    // (non-null) vector means a clean working tree. Never throws except
+    // std::bad_alloc (same documented-not-noexcept-enforced contract as
+    // discover()/diffAgainstHead()).
+    [[nodiscard]] std::optional<std::vector<GitStatusEntry>> statusList() const;
 
 private:
     struct RepoDeleter {

@@ -24,11 +24,24 @@ namespace fs = std::filesystem;
 namespace {
 
 using neomifes::document::Document;
+using neomifes::git::GitFileStatus;
 using neomifes::git::GitRepository;
+using neomifes::git::GitStatusEntry;
 using neomifes::git::LineDiffKind;
 
 fs::path uniqueTempDir() {
     fs::path dir = fs::temp_directory_path() / (std::string("nmfs_git_") + std::to_string(std::rand()));
+    // std::rand() is never seeded here, so the sequence of names this
+    // function hands out is IDENTICAL across every process run of this test
+    // binary. A gtest ASSERT_* failure skips the caller's trailing
+    // fs::remove_all(dir), so a run that fails partway through can leave a
+    // stale directory that a LATER run's same-numbered call collides with
+    // (found via StatusListHandlesNonAsciiFileName colliding with its own
+    // leftover .git from an earlier failed run of itself). Clearing any
+    // pre-existing contents here - rather than trying to make the name
+    // itself collision-proof - guarantees every test starts from a truly
+    // empty directory regardless of what a previous run left behind.
+    fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
 }
@@ -63,6 +76,22 @@ void makeRepoWithCommit(const fs::path& dir, std::string_view filename, std::str
     ASSERT_EQ(::git_index_add_bypath(index, std::string(filename).c_str()), 0);
     git_oid treeOid;
     ASSERT_EQ(::git_index_write_tree(&treeOid, index), 0);
+    // WI-17e: git_index_write_tree() builds a tree object in the object
+    // database directly from the in-memory index state - it does NOT also
+    // persist that state to the on-disk .git/index file (confirmed against
+    // libgit2's own doc comment on git_index_write_tree(), per CLAUDE.md
+    // rule 3). Every pre-existing test in this file only ever exercises
+    // diffAgainstHead(), which never reads the on-disk index at all (it
+    // resolves "HEAD:path" directly against the commit tree and compares
+    // against an in-memory Document/BufferSnapshot) - so this gap was
+    // invisible until statusList()'s own tests below, the first in this
+    // file to actually call git_status_list_new(), which DOES read
+    // .git/index from disk. Without this call, every file this fixture
+    // just committed shows as GIT_STATUS_INDEX_DELETED (HEAD has it, the
+    // stale/empty on-disk index does not) regardless of what the test
+    // itself does afterward - discovered via a real, unexplained test
+    // failure, not anticipated in advance.
+    ASSERT_EQ(::git_index_write(index), 0);
     ::git_index_free(index);
 
     git_tree* tree = nullptr;
@@ -242,6 +271,182 @@ TEST_F(GitRepositoryTest, DiffAgainstHeadUsesInMemoryDocumentNotDiskContent) {
     ASSERT_TRUE(result.has_value());
     ASSERT_EQ(result->size(), 1U);
     EXPECT_EQ((*result)[0].kind, LineDiffKind::Added);
+
+    fs::remove_all(dir);
+}
+
+// WI-17e: finds the entry whose relativePath matches `name` (path
+// comparison, not string comparison, so platform separator differences
+// don't matter) - shared by the statusList() tests below, same "small
+// local test-only helper" shape uniqueTempDir()/writeFile()/makeDoc() above
+// already establish for this file.
+//
+// `name`'s bytes are UTF-8 (this file compiles with /utf-8, so both the
+// source and the narrow-literal execution charset are UTF-8) - but
+// fs::path's own std::string_view constructor decodes narrow sources using
+// the OS-native (ANSI codepage) encoding on Windows, not UTF-8, silently
+// mis-decoding non-ASCII names like "日本語ファイル.txt" into a DIFFERENT
+// wide string than the one GitRepository::statusList() itself produces via
+// platform::convertToUtf16(..., CP_UTF8). Routing through fs::path's
+// char8_t constructor instead - which the standard guarantees always
+// decodes as UTF-8 regardless of locale - fixes this (found via
+// StatusListHandlesNonAsciiFileName failing even after ruling out every
+// other cause).
+[[nodiscard]] const GitStatusEntry* findEntry(const std::vector<GitStatusEntry>& entries, std::string_view name) {
+    const std::u8string_view utf8Name(reinterpret_cast<const char8_t*>(name.data()), name.size());
+    for (const auto& entry : entries) {
+        if (entry.relativePath == fs::path(utf8Name)) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+TEST_F(GitRepositoryTest, StatusListReturnsEmptyVectorForCleanWorkingTree) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "line1\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->empty());
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, StatusListReturnsNulloptForBareRepository) {
+    const fs::path    dir     = uniqueTempDir();
+    const std::string dirUtf8 = dir.string();
+    git_repository*    rawRepo = nullptr;
+    ASSERT_EQ(::git_repository_init(&rawRepo, dirUtf8.c_str(), /*is_bare=*/1), 0);
+    ::git_repository_free(rawRepo);
+
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const auto result = repo->statusList();
+    EXPECT_FALSE(result.has_value());
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, StatusListClassifiesModifiedFile) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "original\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    writeFile(dir / "a.txt", "changed\n");
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    const GitStatusEntry* entry = findEntry(*result, "a.txt");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->status, GitFileStatus::Modified);
+    EXPECT_EQ(entry->absolutePath, dir / "a.txt");
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, StatusListClassifiesUntrackedFile) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "original\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    writeFile(dir / "new.txt", "brand new\n");
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    const GitStatusEntry* entry = findEntry(*result, "new.txt");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->status, GitFileStatus::Untracked);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, StatusListClassifiesStagedAddedFile) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "original\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    writeFile(dir / "staged.txt", "staged content\n");
+    git_repository* rawRepo = nullptr;
+    ASSERT_EQ(::git_repository_open(&rawRepo, dir.string().c_str()), 0);
+    git_index* index = nullptr;
+    ASSERT_EQ(::git_repository_index(&index, rawRepo), 0);
+    ASSERT_EQ(::git_index_add_bypath(index, "staged.txt"), 0);
+    ASSERT_EQ(::git_index_write(index), 0);
+    ::git_index_free(index);
+    ::git_repository_free(rawRepo);
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    const GitStatusEntry* entry = findEntry(*result, "staged.txt");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->status, GitFileStatus::Added);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, StatusListClassifiesDeletedFile) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "original\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    fs::remove(dir / "a.txt");
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    const GitStatusEntry* entry = findEntry(*result, "a.txt");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->status, GitFileStatus::Deleted);
+
+    fs::remove_all(dir);
+}
+
+// WI-17e: without GIT_STATUS_OPT_RENAMES_*, a worktree rename decomposes
+// into a Deleted+Untracked pair instead (verified via this WI's own
+// standalone probe, git_status_probe.cpp) - this test confirms
+// statusList() sets the flags needed to collapse that pair into ONE
+// Renamed entry.
+TEST_F(GitRepositoryTest, StatusListClassifiesRenamedFileAsOneEntry) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "oldname.txt", "renamed content, long enough for rename detection\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    fs::rename(dir / "oldname.txt", dir / "newname.txt");
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(findEntry(*result, "oldname.txt"), nullptr);
+    const GitStatusEntry* entry = findEntry(*result, "newname.txt");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->status, GitFileStatus::Renamed);
+    EXPECT_EQ(entry->absolutePath, dir / "newname.txt");
+
+    fs::remove_all(dir);
+}
+
+TEST_F(GitRepositoryTest, StatusListHandlesNonAsciiFileName) {
+    const fs::path dir = uniqueTempDir();
+    makeRepoWithCommit(dir, "a.txt", "original\n");
+    auto repo = GitRepository::discover(dir);
+    ASSERT_TRUE(repo.has_value());
+
+    const fs::path japaneseName = fs::path(u8"日本語ファイル.txt");
+    writeFile(dir / japaneseName, "japanese filename test\n");
+
+    const auto result = repo->statusList();
+    ASSERT_TRUE(result.has_value());
+    const GitStatusEntry* entry = findEntry(*result, "日本語ファイル.txt");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->status, GitFileStatus::Untracked);
+    EXPECT_TRUE(fs::exists(entry->absolutePath));
 
     fs::remove_all(dir);
 }
