@@ -71,7 +71,7 @@ ctest --preset debug --output-on-failure
 > **やる (残りスコープ):**
 > - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16gで完了済み)
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
-> - Phase 11.1 (Git統合) の UI 化残り: Gitペイン・最小限のDiffビュー (WI-17e以降。左ガター差分マーカー・保存時自動再diffトリガーはWI-17c/dで完了済み)
+> - Phase 11.1 (Git統合) の UI 化残り: 最小限のDiffビューのみ (WI-17f以降。左ガター差分マーカー・保存時自動再diffトリガー・Gitペイン(変更ファイル一覧)はWI-17c/d/eで完了済み)
 > - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。
 >
 > **凍結する (🧊、着手しない):**
@@ -182,7 +182,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-15h** XML ツリーUI (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用、🎉Phase 10.3 XMLツリーUI達成) → コミット: `76e8f0e`/`c7ad615`
 - [x] **WI-15i** XPath自前実装 + 真の左右分割ペイン化 (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」、🎉Phase 10.3 完結) → コミット: `e17015f`/`6c6c761`/`3a246b8`
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
-- [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
+- [x] **WI-17e** Git統合 Gitペイン (変更ファイル一覧) (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングでM/U混在の変更一覧が`git status --short`と一致することを確認) → コミット: `fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`
+- [ ] **WI-17f以降** Git統合の UI化残り (最小限のDiffビューのみ) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガー+Gitペインは WI-17c/d/e で完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
   - 🎉 **M5 達成目標: v1出荷 (軽量版)**
 
@@ -1624,7 +1625,7 @@ items/s がほぼ一定 (ドキュメントサイズにほぼ比例した時間)
 
 | WI | 内容 | roadmap 章 | 状態 |
 |---|---|---|---|
-| WI-17a〜 | Phase 11.1 — Git 統合(UI化まで継続、詳細下記) | §11.1 | 着手中(ヘッドレス基盤→非同期化+EditorSession配線は完了。UI化がWI-17c〜) |
+| WI-17a〜 | Phase 11.1 — Git 統合(UI化まで継続、詳細下記) | §11.1 | 着手中(ヘッドレス基盤→非同期化+EditorSession/Workspace配線→左ガター+Gitペインまで完了。残りDiffビューがWI-17f〜) |
 | — | Phase 11.2 — LSP 完全実装 | §11.2 | 🧊 凍結 (2026-08-23) |
 | — | Phase 11.3 — マクロ | §11.3 | 🧊 凍結 (2026-08-23) |
 | — | Phase 9 — AI プラグイン | §9 | 🧊 凍結 (2026-08-23) |
@@ -2167,6 +2168,41 @@ Debug/Release/ubsan全1490/1490件green(3構成とも自身で直接ビルド・
 Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `message_dialogs.cpp`/`normal_mode_wiring.cpp`/`main.cpp`、コミット1・2は各コミット時点で個別確認済み)。
 
 コミット済み(`e17015f`/`6c6c761`/`3a246b8`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)が完結。** 次はWI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+---
+
+## WI-17e — Git統合 Gitペイン (変更ファイル一覧)
+
+**目的:** WI-17d完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17e: Gitペイン/WI-16h: CSV式列/その他)を提示し、**「WI-17e: Gitペイン(推奨)」**が選ばれた。着手前に2点をAskUserQuestionで確認: (1) roadmap原案の`Ctrl+Shift+G`は既に`CsvGridToggle`が使用しており衝突するため**「コマンドパレット限定(推奨)」**を選択。(2) 「Gitペイン」(変更ファイル一覧)と「Diffビュー」(差分描画サーフェース)は別機能と判明し**「Gitペインのみ今回、Diffビューは別WIへ(推奨)」**を選択。
+
+### 設計 (Plan Mode で承認済み)
+
+1. `GitRepository::statusList()`(新規、libgit2の`git_status_list_new()`) + `GitStatusEntry`/`GitFileStatus` — diffAgainstHead()と異なり常にディスク上の状態を見る(BufferSnapshotは関与しない)
+2. `GitStatusWorker`(新規、`GitDiffWorker`の直接テンプレート、`WM_APP+8`) — 「常にpost、握りつぶさない」契約もGitDiffWorkerと同じ
+3. `Workspace`への配線(`gitStatus()`/`gitStatusInFlight()`/`beginGitStatusIndexing()`/`applyGitStatusResult()`) — **`EditorSession`ではなく`Workspace`に配置する意図的な設計判断**(Gitステータスはリポジトリに属する情報でありドキュメントに属さないため)
+4. `ui::GitPane`(新規、`ui::OutlinePane`直接テンプレート、`WC_LISTVIEW`実項目、NM_CLICK単一クリック起動) + `git_pane_bridge.h` + コマンド配線(`git.togglePane`)
+
+### 実施内容 (4コミット)
+
+- [x] **コミット1** `GitRepository::statusList()`headless API + 単体テスト → コミット: `fb533a3`
+- [x] **コミット2** `GitStatusWorker`背景ワーカー + 統合テスト → コミット: `06c7c4b`
+- [x] **コミット3** `Workspace`へのGitステータス配線 → コミット: `1fbe29a`
+- [x] **コミット4** `ui::GitPane` + `git_pane_bridge.h` + コマンド配線 + 最終ゲート + 実機ドッグフーディング → コミット: `79fbf71`
+
+### 実装後の確定事項
+
+- **Gitステータス状態を`EditorSession`ではなく`Workspace`に配置した。** `gitDiff()`/`csvModel()`/`jsonTree()`は全てper-タブ(ドキュメント由来のデータ)だが、Gitステータスは「リポジトリ」に属する情報であり「開いているドキュメント」に属さない。同一リポジトリの2タブが独立に再フェッチ・再キャッシュするのは無駄で、フェッチタイミングのズレで食い違う表示をする実害もあるため。この配置により、`beginGitStatusIndexing()`は`EditorSession::beginGitDiffIndexing()`の単純なno-op(Untitledなら何もしない)とは異なり、アクティブセッションがUntitledのとき`m_gitStatus`を積極的にnulloptへクリアする必要があった — Workspaceレベルのキャッシュには「そのセッション自身のキャッシュだから安全」という前提が無いため。
+- **既存の共有テストフィクスチャ`makeRepoWithCommit()`(git_repository_test.cpp)の潜在バグを発見・解消した。** `git_index_write_tree()`はオブジェクトDBにツリーを書くだけでディスク上の`.git/index`へは永続化しない。`diffAgainstHead()`は一度もディスク上のインデックスを読まないため無症状だったが、`git_status_list_new()`は読むため`statusList()`系テストで初めて露呈した。共有ヘルパーへ`git_index_write()`を追加して解消。
+- **同じデバッグ過程で`uniqueTempDir()`のテスト環境フレーキネスも発見・解消した。** unseeded `std::rand()`により失敗したテスト実行の残置ディレクトリが後続実行の同一番目呼び出しと衝突しうる問題 — ディレクトリ内容を毎回`fs::remove_all()`してから使う設計に変更。
+- **`ui::GitPane`は`ui::CsvGridPane`(WI-16g、10万行スケール要件で`LVS_OWNERDATA`仮想モード必須)ではなく`ui::OutlinePane`(260dip右ドッキング、実項目)を直接テンプレートにした。** 変更ファイル数は現実的な規模(数十〜低千)のため仮想モードの複雑さは不要と判断。`LVS_EX_FULLROWSELECT`はWI-16c/WI-16f由来の既知の必須スタイル(無いとNM_CLICKのヒットテストがsubitem 0の列内でしか有効なiItemを返さない)として着手前から適用した。
+- **実機ドッグフーディングで、`Ctrl+Shift+P`(コマンドパレット)自体の合成入力がこの環境では届かないことが判明した(既知の修飾キー合成入力の制約、`reference_no_win32_gui_automation.md`参照)。** `wireNormalMode()`の`onDeferredInit`へ一時的な直接呼び出しフック(`toggleGitPane()`)を挿入して同じコード経路を検証し、確認後に除去した。このリポジトリ自身(README.md追跡ファイル)を対象にGitペインをトグルし、`git status --short`の出力(M 4件/U 3件)と完全に一致する変更ファイル一覧を確認。クリックで新規タブとしてファイルが開くこと(`main.cpp`クリック→C++シンタックスハイライト付きで新規タブに開いた)、リポジトリ外ファイルでの「Not a Git repository」プレースホルダも確認済み。「変更0件」プレースホルダの実機確認は行わず、単体テスト(`StatusListReturnsEmptyVectorForCleanWorkingTree`)+コードレビューでの確信度に留めた(正直に記録)。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17e、2026-08-25)」参照。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1511/1511件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `git_repository.cpp`/`git_status_worker.cpp`/`git_pane.cpp`/`workspace.cpp`/`normal_mode_wiring.cpp`/`main.cpp`、コミット1〜3は各コミット時点で個別確認済み)。
+
+コミット済み(`fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)のGitペインが完結、2026-08-23合意の確定スコープはDiffビューのみ残り。** 次はWI-17f(Diffビュー)、WI-16h(CSV式列)、またはユーザー指定の次項目。
 
 ---
 

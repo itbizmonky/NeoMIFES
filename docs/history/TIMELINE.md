@@ -3516,4 +3516,24 @@ Plan Modeへ移行し、Explore agent2件を並行起動して着手前調査を
 
 次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
+## Session 113 (2026-08-25): WI-17e(Git統合 Gitペイン、変更ファイル一覧)完了、🎉Phase 11.1 Gitペイン達成
+
+WI-16g完了・push確認後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17e: Gitペイン/WI-16h: CSV式列/その他)を提示し、**「WI-17e: Gitペイン(推奨)」**が選ばれた。着手前に2点をAskUserQuestionで確認した。(1) roadmap原案は`Ctrl+Shift+G`をGitペインに割り当てていたが、実際には既に`CsvGridToggle`(WI-16c)が使用しており衝突すると調査で判明、**「コマンドパレット限定(推奨)」**が選ばれた。(2) 「Gitペイン」(変更ファイル一覧、ヘッドレス状態一覧)と「Diffビュー」(差分描画サーフェース、新規描画基盤が必要)は別機能と判明、**「Gitペインのみ今回、Diffビューは別WIへ(推奨)」**が選ばれた。
+
+Plan Modeで設計を確定・承認を得た: 新規`GitRepository::statusList()`(libgit2の`git_status_list_new()`)+`GitStatusWorker`(`WM_APP+8`、`GitDiffWorker`の直接テンプレート)+**Gitステータス状態を`EditorSession`ではなく`Workspace`に配置する意図的な設計判断**(Gitステータスは「リポジトリ」に属する情報でありドキュメントに属さないため、同一リポジトリの複数タブが独立に再フェッチするのは無駄で表示の食い違いという実害もある)+`ui::GitPane`(`ui::OutlinePane`の直接テンプレート、`ui::CsvGridPane`ではない — 変更ファイル数は現実的な規模のため仮想モードは不要)。標準プローブ(`git_status_probe.cpp`)でlibgit2ステータスAPIの挙動(rename検出フラグの必要性、`head_to_index`/`index_to_workdir`のどちらか一方のみ埋まること)を実装前に確認した。4コミット構成で計画。
+
+**コミット1(`GitRepository::statusList()`)の実装中、既存の共有テストフィクスチャの潜在バグを発見・解消した。** `git_repository_test.cpp`の`makeRepoWithCommit()`は`git_index_write_tree()`(オブジェクトDBへの書き込みのみ)は呼んでいたが`git_index_write()`(ディスク上`.git/index`への永続化)を呼んでいなかった。`diffAgainstHead()`は一度もディスク上のインデックスを読まないため8フェーズ・複数WIにわたって無症状だったが、`git_status_list_new()`は読むため、新規`statusList()`系テスト4件が謎の失敗(`GIT_EMODIFIED`等)を示して初めて露呈した。デバッグの過程で、同じファイルの`uniqueTempDir()`(unseeded `std::rand()`)が失敗したテスト実行の残置ディレクトリと後続実行の同一番目呼び出しが衝突するという別のテスト環境フレーキネスも発見し、ディレクトリ内容を毎回`fs::remove_all()`してから使う設計へ変更して併せて解消した。1つのバグを追ってもう1つを発見する、というこのプロジェクトで繰り返し起きているパターンがここでも再現した。
+
+コミット2(`GitStatusWorker`)・コミット3(`Workspace`配線)は計画通り進み、新規の設計上の判断は不要だった。コミット3では`beginGitStatusIndexing()`が`EditorSession::beginGitDiffIndexing()`の単純なno-op(Untitledなら何もしない)とは異なり、アクティブセッションがUntitledのとき`m_gitStatus`を積極的にnulloptへクリアする必要があるという、Workspaceレベルキャッシュ特有の正しさ要件を計画通り実装・単体テストで確認した。
+
+コミット4(`ui::GitPane`+コマンド配線)は、`ui::CsvGridPane`(WI-16g、10万行スケール要件で`LVS_OWNERDATA`仮想モード必須)ではなく`ui::OutlinePane`(260dip右ドッキング、実項目)を直接テンプレートにし、`LVS_EX_FULLROWSELECT`(WI-16c/WI-16f由来の既知の必須スタイル、無いとNM_CLICKのヒットテストがsubitem 0の列内でしか有効なiItemを返さない)を着手前から適用した。`syncRightPaneWidthDips()`/`handleOutlineKey()`/`handleJsonTreeKey()`/`dispatchWidgetShowCommand()`/`handleKeyDownEvent()`/`buildCommandRegistry()`(3箇所の再帰呼び出し含む)への`GitPane&`引数の追加という、この規模のコードベースらしい広範なリップル配線が発生した。
+
+**実機ドッグフーディングで、コマンドパレット(`Ctrl+Shift+P`)自体の合成入力がこの環境では届かないことが判明した(既知の修飾キー合成入力の制約 — `SetForegroundWindow`+`GetForegroundWindow`でフォーカスがターゲットウィンドウに正しく設定されていることを確認した上でCtrl+Shift+Pを送信しても、コマンドパレットが一切開かなかった)。** `wireNormalMode()`の`onDeferredInit`へ一時的な直接呼び出しフック(`toggleGitPane()`、コメントで`DOGFOOD-TEMP`と明示)を挿入して同じコード経路を検証し、確認後に完全に除去した(`git diff`で残留無しを確認)。このリポジトリ自身(README.md追跡ファイル、`--open`起動フラグで直接ロード)を対象にGitペインをトグルし、`git status --short`の出力(M 4件/U 3件)と完全一致する変更ファイル一覧を確認した。クリックで`main.cpp`が新規タブとしてC++シンタックスハイライト付きで開くこと(Gitペイン自身は開いたまま維持されること)、リポジトリ外ファイルでの「Not a Git repository」プレースホルダも実機で確認した。「変更0件」プレースホルダの実機確認は行わず、単体テスト(`StatusListReturnsEmptyVectorForCleanWorkingTree`)+コードレビューでの確信度に留めたと正直に記録する。
+
+**副次的に、WI-17c/d完了時点の作業ツリーに残っていた`detailed_design.md` §11.6の未コミット反映(左ガター差分マーカーUI・保存時自動再diffトリガーの設計判断根拠)を発見し、本WIの作業とは別のコミット(`84d0843`)として先に解消した。** ただし、WI-16g完了時にこの節の陳腐化を`spawn_task`で起票していたところ、そのタスクが既にユーザーによって開始済み(＝別セッションが並行してこの節を編集している可能性がある)と判明した。同一ファイル・同一節への二重編集の可能性をRESUME_HERE.md §3.105に明記し、次回セッションへ`git log`での競合確認を申し送った。
+
+最終ゲート: Debug/Release/ubsan全1511/1511件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット4件(`fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`)+別件ドキュメントコミット1件(`84d0843`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)のGitペインが完結、2026-08-23合意の確定スコープはDiffビューのみ残り。** ドキュメント同期(build_plan.md新規WI-17eセクション+§0/§3更新、master_roadmap.md §11.1実装後の確定事項+フェーズ状況表、RESUME_HERE.md §1テーブル1行追加+§3.105新設+冒頭コールアウト+§6更新、detailed_design.md §11.6追記)は本セッション内で完了。
+
+次はWI-17f(Diffビュー)、WI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)、またはユーザー指定の次項目。
+
 <!-- 次セッションはここに追記 -->

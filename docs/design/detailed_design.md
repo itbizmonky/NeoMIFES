@@ -3724,7 +3724,7 @@ private:
 - **実機ドッグフーディングで、`showWith()`が2回目以降呼ばれると「#」列が画面上ずっと空白になる重大バグを発見・解消した。** `LVN_GETDISPINFOW`は正しい`mask`で発火し続けテキストも正しく書き込まれているにも関わらず画面に反映されないという不可解な状態で、`InvalidateRect`による強制再描画も無効だった。「#」列の内容は実CSV列と異なり常に不変(常に"#"という見出し、常に同じ50dip幅)であり再構築する理由が無いと気づき、`createListViews()`で1回だけ挿入し`showWith()`では二度と触らない設計へ変更して解消した — comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避した形。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-25、WI-16g完了)」参照。
 
-### 11.6 `neomifes::git` リファレンス (WI-17a〜d実装、Phase 11.1 左ガター差分マーカーUI+保存時自動トリガー達成)
+### 11.6 `neomifes::git` リファレンス (WI-17a〜e実装、Phase 11.1 Gitペイン達成でGit統合の確定スコープが完結)
 
 `src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化(`GitDiffWorker`)+`EditorSession`配線(`gitDiff()`系4点)はWI-17bで実装済み。左ガター差分マーカーUI+コマンドパレット限定の手動リフレッシュコマンド(「Git: Refresh Diff Markers」)はWI-17cで、保存時の自動再diffトリガー(`dispatchSaveCommand()`)はWI-17dで実装済み。Gitペイン(`Ctrl+Shift+G`)・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17e以降、Blame/Commit/Branch切替/3-Way Mergeは🧊凍結)。
 
@@ -3856,6 +3856,58 @@ struct CommandDispatchContext {
 - 新規レンダリング/新規ヘッドレスロジックが無く`EditorSession::beginGitDiffIndexing()`(既に単体テスト済み)への1行の呼び出しのみのため、新規単体テストは追加せず動作確認は実機ドッグフーディングのみで行った。
 - **実機ドッグフーディングで、追跡済みファイルの編集→保存(WM_COMMAND直接送信でCtrl+Sを再現)→手動コマンド無しでのガター自動更新を、ピクセル単位で確認した。** ガターのx=9座標でRGB(229,155,53)(WI-17cの`diffModified`テーマ色そのもの)を確認、他の行は背景色のまま。Untitledバッファ→Save Asの経路も確認したが、保存先が未追跡ファイルのためマーカー無し(`GitDiffWorker`の既存契約通りの正しい挙動、バグではない)。副次的にNeoMIFESがシングルインスタンス制約を持つことをドッグフーディング中に確認した。
 - 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17d、2026-08-23)」参照。
+
+```cpp
+// neomifes/git/git_repository.h (WI-17e追加分)
+enum class GitFileStatus : std::uint8_t { Modified, Added, Deleted, Renamed, Untracked };
+
+struct GitStatusEntry {
+    std::filesystem::path absolutePath;   // Workspace::openFile()にそのまま渡せる
+    std::filesystem::path relativePath;   // 表示用、workdir相対
+    GitFileStatus          status = GitFileStatus::Modified;
+};
+
+// リポジトリ全体の「git status」スキャン。diffAgainstHead()と異なり常に
+// ディスク上の状態を見る(BufferSnapshotは一切関与しない)。std::nullopt
+// はベアリポジトリのみ、空(非null)vectorはクリーンな作業ツリー。
+[[nodiscard]] std::optional<std::vector<GitStatusEntry>> statusList() const;
+
+// neomifes/git/git_status_worker.h (WI-17e、GitDiffWorkerの直接テンプレート)
+inline constexpr UINT kMsgGitStatusReady = WM_APP + 8;
+class GitStatusWorker { /* requestStatus(path, sessionToken) - 常にpost */ };
+
+// neomifes/app/include/neomifes/app/workspace.h (WI-17e追加分 - EditorSession
+// ではなくWorkspaceに配置する意図的な設計判断)
+class Workspace {
+public:
+    // ...
+    [[nodiscard]] const std::optional<std::vector<git::GitStatusEntry>>& gitStatus() const noexcept;
+    [[nodiscard]] bool gitStatusInFlight() const noexcept;
+    void beginGitStatusIndexing(git::GitStatusWorker& worker);
+    void applyGitStatusResult(std::optional<std::vector<git::GitStatusEntry>> result) noexcept;
+private:
+    std::optional<std::vector<git::GitStatusEntry>> m_gitStatus;
+    bool                                              m_gitStatusInFlight = false;
+};
+
+// neomifes/ui/include/neomifes/ui/git_pane.h (WI-17e、OutlinePaneと同じ
+// 260dip右ドッキング型、ただしWC_LISTVIEW・実項目のみ・NM_CLICK単一起動)
+struct GitPaneItem {
+    std::u16string        statusGlyph;   // "M"/"A"/"D"/"R"/"U"、プレースホルダ行は空
+    std::u16string        displayPath;
+    std::filesystem::path absolutePath;  // プレースホルダ行は空
+};
+class GitPane { /* create/showWith/hide/isVisible/onParentResized/widthDips()/handleNotify() */ };
+```
+
+**設計上の要点 (WI-17e、Gitペイン):**
+- **Gitステータス状態を`EditorSession`ではなく`Workspace`に配置した。** `gitDiff()`/`csvModel()`/`jsonTree()`は全て per-タブ(ドキュメント由来のデータ)だが、Gitステータスは「リポジトリ」に属する情報であり「開いているドキュメント」に属さない。同一リポジトリの2タブが独立に再フェッチ・再キャッシュするのは無駄で、フェッチタイミングのズレで食い違う表示をする実害もある。この配置により`beginGitStatusIndexing()`は`EditorSession::beginGitDiffIndexing()`の単純なno-op(Untitledなら何もしない)とは異なり、アクティブセッションがUntitledのとき`m_gitStatus`を積極的にnulloptへクリアする必要があった — Workspaceレベルのキャッシュには「そのセッション自身のキャッシュだから安全」という前提が無いため。
+- `GitRepository::statusList()`の単体テストが、既存の共有フィクスチャ`makeRepoWithCommit()`の潜在バグ(`git_index_write_tree()`はオブジェクトDBにツリーを書くだけで、ディスク上の`.git/index`へは永続化しない)を初めて露呈させた。`diffAgainstHead()`はディスク上のインデックスを一切読まないため無症状だったが、`git_status_list_new()`は読むため発覚した。共有ヘルパーへ`git_index_write()`を追加して解消。
+- `uniqueTempDir()`(unseeded `std::rand()`)が失敗したテスト実行の残置ディレクトリと衝突する潜在的なテスト環境フレーキネスも同じデバッグ過程で発見・解消(ディレクトリ内容を毎回`fs::remove_all()`してから使う設計に変更)。
+- `ui::GitPane`は`ui::CsvGridPane`(WI-16g、10万行スケール要件で`LVS_OWNERDATA`仮想モード必須)ではなく`ui::OutlinePane`(260dip右ドッキング、実項目)を直接テンプレートにした — 変更ファイル数は現実的な規模(数十〜低千)のため仮想モードの複雑さは不要と判断。`LVS_EX_FULLROWSELECT`はWI-16c/WI-16f由来の既知の必須スタイル(無いとNM_CLICKのヒットテストがsubitem 0の列内でしか有効なiItemを返さない)として着手前から適用した。
+- コマンドは新規「Git: Toggle Changed Files」(`git.togglePane`、`CommandId::None`、コマンドパレット限定)のみ — `Ctrl+Shift+G`は既に`CsvGridToggle`が使用しており衝突するため、着手前のAskUserQuestionで「コマンドパレット限定」が選ばれた。トグルONで常に`Workspace::gitStatus()`を即座に表示した上で未取得(`gitStatusInFlight()`が偽)なら非同期リフレッシュを開始する(`refreshGitPane()`)。専用の「Git: Refresh Status」コマンドは無く、トグルOFF→ONが手動リフレッシュの経路(既存の右ドッキングペインと同じ「タブ切替では自動更新しない」前例に合わせた)。
+- **実機ドッグフーディングで、README.md(このリポジトリ自身の追跡ファイル)を開いた状態でGitペインをトグルし、実際のM(4件)/U(3件)混在の変更一覧が`git status --short`の出力と完全に一致することを確認した。** クリックで新規タブとしてファイルが開くこと、リポジトリ外のファイルで「Not a Git repository」プレースホルダが表示されることも確認済み。`Ctrl+Shift+P`(コマンドパレット)自体の合成入力がこの環境では届かなかったため(既知の修飾キー合成入力の制約)、`wireNormalMode()`の`onDeferredInit`へ一時的な直接呼び出しフックを挿入して同じコード経路(`toggleGitPane()`)を検証し、確認後に除去した。「変更0件」プレースホルダは`buildGitPaneItems()`の単純な早期分岐であり、`StatusListReturnsEmptyVectorForCleanWorkingTree`単体テストと「Not a Git repository」分岐の実機確認から十分な確信度と判断し、実機での個別確認は行っていない。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17e、2026-08-25)」参照。
 
 ---
 

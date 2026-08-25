@@ -15,7 +15,7 @@
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16g(2026-08-25)で完了済み)
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜i完了(2026-08-25)で🎉完結。** XPath自前実装+`RenderPipeline`の真の右ペイン予約幅まで到達、Phase 10.3はこれ以上の残作業なし
-> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
+> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で、Gitペイン(変更ファイル一覧)はWI-17e(2026-08-25)で完了済み。残りは最小限のDiffビューのみ (WI-17f以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
 > **🧊 凍結(着手しない、商用配布を将来検討する際に再評価):**
@@ -207,7 +207,8 @@
 | **10.3g** | **XML ツリー 非同期インデックス化+EditorSession配線** (`XmlTreeWorker`、UIなし、WI-15b直テンプレート) | ✅ **完了 (WI-15g、2026-08-25、§3.101参照)** |
 | **10.3h** | **XML ツリーUI 🎉** (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用) | ✅ **完了 (WI-15h、2026-08-25、§3.102参照)。🎉 Phase 10.3 XMLツリーUI達成** |
 | **10.3i** | **XPath自前実装 + 真の左右分割ペイン化 🎉** (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」) | ✅ **完了 (WI-15i、2026-08-25、§3.103参照)。🎉 Phase 10.3 完結** |
-| 10.2残り、11.1残り → v1出荷判定 | CSV(式列)/Git(Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16h/WI-17e以降で確定予定) |
+| **11.1e** | **Git統合 Gitペイン (変更ファイル一覧) 🎉** (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングで`git status --short`と一致するM/U混在一覧を確認) | ✅ **完了 (WI-17e、2026-08-25、§3.105参照)。🎉 Phase 11.1 Gitペイン達成** |
+| 10.2残り、11.1残り → v1出荷判定 | CSV(式列)/Git(Diffビューのみ) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16h/WI-17f以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2946,6 +2947,22 @@ WI-15i完了後、ユーザーの「次のPhaseに進め」への回答として
 
 ---
 
+### 3.105 WI-17e (Git統合 Gitペイン、変更ファイル一覧) 完了記録 (2026-08-25)
+
+WI-16g完了・push確認後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-17e: Gitペイン/WI-16h: CSV式列/その他)を提示し、**「WI-17e: Gitペイン(推奨)」**が選ばれた。着手前に2点をAskUserQuestionで確認: (1) `Ctrl+Shift+G`は既に`CsvGridToggle`が使用しており衝突するため**「コマンドパレット限定(推奨)」**を選択、(2) 「Gitペイン」と「Diffビュー」は別機能と判明し**「Gitペインのみ今回、Diffビューは別WIへ(推奨)」**を選択。
+
+**設計(Plan Modeで承認済み):** 新規`GitRepository::statusList()`(libgit2の`git_status_list_new()`、`GitDiffWorker`と対になる「常にpost、握りつぶさない」契約)+`GitStatusWorker`(`WM_APP+8`、`GitDiffWorker`直接テンプレート)+**`Workspace`への配線(`EditorSession`ではなく、Gitステータスはリポジトリに属する情報でありドキュメントに属さないため)**+`ui::GitPane`(`ui::OutlinePane`直接テンプレート、実項目`WC_LISTVIEW`、`NM_CLICK`単一クリック起動)。4コミット構成: (1) `statusList()`+単体テスト、(2) `GitStatusWorker`+統合テスト、(3) `Workspace`配線+単体テスト、(4) `ui::GitPane`+コマンド配線+最終ゲート+ドッグフーディング。
+
+**コミット1で標準プローブに続き、既存の共有テストフィクスチャの潜在バグを発見・解消した。** `git_repository_test.cpp`の`makeRepoWithCommit()`は`git_index_write_tree()`(オブジェクトDBへの書き込みのみ)は呼んでいたが`git_index_write()`(ディスク上`.git/index`への永続化)を呼んでいなかった — `diffAgainstHead()`は一度もディスク上のインデックスを読まないため無症状だったが、`git_status_list_new()`は読むため`statusList()`系の新規テスト4件が謎の失敗を示して初めて露呈した。同じデバッグ過程で`uniqueTempDir()`(unseeded `std::rand()`)の失敗実行時の残置ディレクトリが後続実行の同一番目呼び出しと衝突するテスト環境フレーキネスも発見・解消(ディレクトリを毎回`fs::remove_all()`してから使う設計へ変更)。
+
+**実機ドッグフーディングで、コマンドパレット(`Ctrl+Shift+P`)自体の合成入力がこの環境では届かないことが判明した(既知の修飾キー合成入力の制約)。** `wireNormalMode()`の`onDeferredInit`へ一時的な直接呼び出しフック(`toggleGitPane()`)を挿入して同じコード経路を検証し、確認後に完全に除去した(`git diff`で残留無しを確認)。このリポジトリ自身(README.md追跡ファイル、`--open`起動フラグで直接ロード)を対象にGitペインをトグルし、`git status --short`の出力(M 4件/U 3件)と完全一致する変更ファイル一覧を確認。クリックで`main.cpp`が新規タブとしてC++シンタックスハイライト付きで開くこと、リポジトリ外ファイルでの「Not a Git repository」プレースホルダも確認済み。「変更0件」プレースホルダの実機確認は行わず単体テスト(`StatusListReturnsEmptyVectorForCleanWorkingTree`)+コードレビューでの確信度に留めたと正直に記録する。
+
+副次的に、既にWI-17c/d完了時点で作業ツリーに残っていた`detailed_design.md` §11.6の未コミット反映(WI-17c/dの設計判断根拠)を発見し、本WIの作業とは別のコミットとして先に解消した — なお、この節を対象とする別セッション(WI-16g完了時に`spawn_task`で起票していたもの)が既にユーザーによって開始されていたため、同一ファイル同一節を2セッションが並行編集している可能性がある。次回セッションは`git log docs/design/detailed_design.md`で競合の有無を確認すること。
+
+最終ゲート: Debug/Release/ubsan全1511/1511件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット済み(`fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`、加えて別件`84d0843`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)のGitペインが完結、2026-08-23合意の確定スコープはDiffビューのみ残り。** 次はWI-17f(Diffビュー)、WI-16h(CSV式列)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2995,7 +3012,7 @@ WI-15i完了後、ユーザーの「次のPhaseに進め」への回答として
 ```
 本ファイル冒頭の「🎯 最重要 (2026-08-23 スコープ確定)」を必ず先に読め。
 2026-08-23、ユーザーとの合意で残りスコープを確定した: Phase 10.2残り
-(式列)+Phase 11.1のUI化残り(Gitペイン・Diffビュー)まで完成させたら、
+(式列)+Phase 11.1のUI化残り(Diffビューのみ)まで完成させたら、
 v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
 LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
 着手しないこと。
@@ -3008,15 +3025,17 @@ Phase 10.1(ログ解析)はWI-14a〜dで🎉完結(2026-08-18)。
 UI→XPath+真の左右分割ペイン化)とも全機能実装済み、残作業なし。
 詳細は本書§1の10.3a〜iの各行、および§3.85〜§3.103参照。
 **Phase 10.2(CSV)はWI-16a〜gで式列を除き完了した(列固定まで、
-2026-08-25、§3.104参照)。** Phase 11.1(Git統合)はWI-17a〜dで左ガター
-差分マーカーUI+保存時自動トリガーまで完了(2026-08-23)。
+2026-08-25、§3.104参照)。** **Phase 11.1(Git統合)はWI-17a〜eで
+左ガター差分マーカーUI+保存時自動トリガー+Gitペイン(変更ファイル
+一覧)まで完了した(2026-08-25、§3.105参照)。** 残りはDiffビューのみ。
 
 次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する
 必要あり — roadmapに「SUM/AVG/COUNTIF等」以上の仕様が無いため)、
-WI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレスAPI
-追加から)、またはユーザー指定の次項目 — Phase 10.3は完結したため
-候補から外れる。着手前にbuild_plan.md §5とmaster_roadmap.md §10.2
-(または§11.1)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
+WI-17f(Diffビュー)、またはユーザー指定の次項目 — Phase 10.3は完結
+したため候補から外れる。着手前にbuild_plan.md §5とmaster_roadmap.md
+§10.2(または§11.1)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
+**注意: detailed_design.md §11.6は別セッションが並行編集している
+可能性がある(§3.105参照)。着手前に`git log`で競合有無を確認せよ。**
 
 **繰り返し登場した技術的教訓 (今後も適用可能、詳細は該当WIの
 TIMELINE.md/build_plan.mdセクション参照):**
