@@ -3724,9 +3724,9 @@ private:
 - **実機ドッグフーディングで、`showWith()`が2回目以降呼ばれると「#」列が画面上ずっと空白になる重大バグを発見・解消した。** `LVN_GETDISPINFOW`は正しい`mask`で発火し続けテキストも正しく書き込まれているにも関わらず画面に反映されないという不可解な状態で、`InvalidateRect`による強制再描画も無効だった。「#」列の内容は実CSV列と異なり常に不変(常に"#"という見出し、常に同じ50dip幅)であり再構築する理由が無いと気づき、`createListViews()`で1回だけ挿入し`showWith()`では二度と触らない設計へ変更して解消した — comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避した形。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-25、WI-16g完了)」参照。
 
-### 11.6 `neomifes::git` リファレンス (WI-17a〜b実装、Phase 11.1 非同期化+EditorSession配線達成)
+### 11.6 `neomifes::git` リファレンス (WI-17a〜d実装、Phase 11.1 左ガター差分マーカーUI+保存時自動トリガー達成)
 
-`src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化(`GitDiffWorker`)+`EditorSession`配線(`gitDiff()`系4点)はWI-17bで実装済み。左ガター差分マーカーUI・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17c以降)。
+`src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化(`GitDiffWorker`)+`EditorSession`配線(`gitDiff()`系4点)はWI-17bで実装済み。左ガター差分マーカーUI+コマンドパレット限定の手動リフレッシュコマンド(「Git: Refresh Diff Markers」)はWI-17cで、保存時の自動再diffトリガー(`dispatchSaveCommand()`)はWI-17dで実装済み。Gitペイン(`Ctrl+Shift+G`)・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17e以降、Blame/Commit/Branch切替/3-Way Mergeは🧊凍結)。
 
 ```cpp
 // neomifes/git/git_init.h (WI-17a)
@@ -3796,6 +3796,66 @@ public:
 - `applyGitDiffReadyMessage()`(`normal_mode_wiring.cpp`)はUIなしの最小形にした — `applyLogIndexReadyMessage()`のWI-14b時点の形(hwnd/renderPipeline無し)を踏襲、`Workspace`を線形走査しトークン一致するセッションへ結果を適用するのみ。
 - `beginGitDiffIndexing()`を呼び出すコマンド/UIは本サブWIに含めなかった(WI-14b/15b/16bの前例と同じ「配線のみ先行」)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17b、2026-08-22)」参照。
+
+```cpp
+// neomifes/render/render_pipeline.h (WI-17c、FoldVisualと同じrender::-local
+// ミラー型 - RenderPipelineをneomifes::gitに依存させないための独立エンジン
+// 原則の維持)
+enum class GitDiffKind : std::uint8_t { Added, Modified, Deleted };
+
+struct GitDiffMarker {
+    document::LineNumber startLine = 0;
+    document::LineNumber lineCount = 0;  // Deletedは常に0(点マーカー)
+    GitDiffKind           kind      = GitDiffKind::Added;
+
+    friend constexpr bool operator==(const GitDiffMarker&, const GitDiffMarker&) = default;
+};
+
+class RenderPipeline {
+public:
+    // ...
+    // setFoldRegions()と同型 - app層がEditorSession::gitDiff()変更のたびに
+    // 全体を再構築してpushする非所有の値渡し。空でクリア(Untitled/未diff/
+    // Gitリポジトリ外の3ケースをdrawGutterOnLine()側では区別しない)。
+    void setGitDiffRegions(std::vector<GitDiffMarker> markers) noexcept;
+};
+
+// neomifes/app/include/neomifes/app/git_diff_bridge.h (WI-17c)
+// git::LineDiffRegion(WI-17a/b)をrender::GitDiffMarkerへ変換する純関数。
+// json_tree_bridge.hと同じ理由でsrc/app/配下に置く(RenderPipeline側に
+// neomifes::gitへの依存を持ち込まないため)。buildJsonTreeItems()と異なり
+// 両者とも既に同じ「フラットなhunkのvector」形状なため1:1要素変換のみ。
+[[nodiscard]] std::vector<render::GitDiffMarker> buildGitDiffMarkers(
+    const std::vector<git::LineDiffRegion>& regions);
+```
+
+**設計上の要点 (WI-17c、左ガター差分マーカーUI):**
+- `RenderPipeline`に`neomifes::git`への依存を持ち込まないよう、`FoldVisual`(`core::FoldRegion`のrender::-localミラー型)と同じパターンで新規`render::GitDiffMarker`/`GitDiffKind`を定義した。変換は新規ブリッジ関数`app::buildGitDiffMarkers()`が`src/app/`側で担う(`json_tree_bridge.h`/`csv_grid_bridge.h`と同じ配置理由)。
+- 自動トリガー(保存時/ファイルを開いた時)は本WIではやらないと決めた — ファイルを開く経路が`Workspace::openFile()`/`openFileAndSyncView()`/起動時ドキュメント/クラッシュ復旧の4箇所以上に分散しており単一のフック点が存在しないため。新規コマンド「Git: Refresh Diff Markers」(`CommandId::None`、パレット限定)を`beginGitDiffIndexing()`を呼ぶ唯一の経路にした(`dispatchGitRefreshDiffCommand()`)。CSV/JSONモードの「手動トグルでのみ再取得」という既存の前例をそのまま踏襲。
+- 結果到着時は`pushGitDiffVisualsForSession()`が`InvalidateRect`で即座に反映、タブ切替時は`syncViewForActiveSession()`から、文書スワップ時は`resetViewAfterDocumentSwap()`の`setGitDiffRegions({})`から呼ばれ、古いマーカーの取り違え・残留を防ぐ。
+- **実機ドッグフーディング(本WIが初めてUIを持つGit統合サブWIのため必須)で、単体テスト・ビルドでは検出できない重大なバグを2件発見した。**
+  1. `RenderPipeline::drawGutterOnLine()`の新規Git差分マーカー描画ループを、既存の折り畳みマーカーブロック(2箇所の早期`return`を持つ)より**後ろ**に置いてしまい、折り畳み領域を持たない行(=折り畳み機能を使わない大半のファイルの事実上全ての行)で常に到達不能になっていた。ブックマークブロック直後・折り畳みブロックの早期returnより**前**へ移動して解消。
+  2. `neomifes::git::initializeLibgit2()`(WI-17a実装)が3件のテストフィクスチャの`SetUp()`内でのみ呼ばれており、`src/app/`のどこからも呼ばれていなかった — `GitRepository::discover()`が実アプリの全実行で未初期化のlibgit2ランタイムに対して動作し常に静かに失敗していたことを意味し、**WI-17a/b/cを通じてGit統合機能はテストスイート以外の実際のNeoMIFES.exe実行では一度も正しく動作していなかった可能性が高い。** `main.cpp`の`wWinMain()`に新規RAII `Libgit2Guard`(コピー/move全削除)+`initializeLibgit2()`呼び出しを追加して解消。
+  (1)の修正直後の再ドッグフーディングでもマーカーが表示されず、そこから(2)を発見した — 1つのバグを直して満足せず再検証したことでより深刻な2つ目のバグを発見できた。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17c、2026-08-23)」参照。
+
+```cpp
+// neomifes/app/include/neomifes/app/command_dispatch.h (WI-17d追加分)
+struct CommandDispatchContext {
+    // ...(既存フィールドは前述の通り)
+    // csvGridPane(WI-16c)と同じパターン - dispatchCommand()を呼ぶ6箇所
+    // 全ての構築サイトに追加。Copy/Cut/Paste/Undo/Redo等、触れないコマンド
+    // ファミリーに個別パラメータを増やすより安価という判断。
+    git::GitDiffWorker& gitDiffWorker;
+};
+```
+
+**設計上の要点 (WI-17d、保存時の自動再diffトリガー):**
+- 保存の呼び出し経路は「ファイルを開く」と異なり真に単一の合流点だった — `document::saveFile()`の呼び出し元は自動保存(対象外)と`performSave()`(唯一のユーザー起動保存経路)の2箇所のみ、`performSave()`の呼び出し元も`dispatchSaveCommand()`(Ctrl+S/Ctrl+Shift+S/メニューの唯一の経路、本WIの対象)と`confirmDiscardIfDirty()`のSaveブランチ(タブ/ウィンドウクローズ時の確認ダイアログ経由、セッション破棄直前で再diffが無意味なため**意図的に対象外**)の2つだけ。この単一合流点ゆえ、WI-17cが見送った自動トリガーを本WIで実現できた。
+- `dispatchSaveCommand()`の`performSave()`成功後に`session.beginGitDiffIndexing(ctx.gitDiffWorker)`を無条件で呼ぶ — Untitledバッファの初回Save-Asでも、直前の`performSave()`内で`session.setSavedPath()`が同期的に完了(`isUntitled()`をfalseへ反映済み)しているため特別扱い不要、`beginGitDiffIndexing()`自身の`pathIfNamed()`ガードがそのまま正しく機能する。
+- 新規レンダリング/新規ヘッドレスロジックが無く`EditorSession::beginGitDiffIndexing()`(既に単体テスト済み)への1行の呼び出しのみのため、新規単体テストは追加せず動作確認は実機ドッグフーディングのみで行った。
+- **実機ドッグフーディングで、追跡済みファイルの編集→保存(WM_COMMAND直接送信でCtrl+Sを再現)→手動コマンド無しでのガター自動更新を、ピクセル単位で確認した。** ガターのx=9座標でRGB(229,155,53)(WI-17cの`diffModified`テーマ色そのもの)を確認、他の行は背景色のまま。Untitledバッファ→Save Asの経路も確認したが、保存先が未追跡ファイルのためマーカー無し(`GitDiffWorker`の既存契約通りの正しい挙動、バグではない)。副次的にNeoMIFESがシングルインスタンス制約を持つことをドッグフーディング中に確認した。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17d、2026-08-23)」参照。
 
 ---
 
