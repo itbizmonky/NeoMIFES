@@ -1,6 +1,7 @@
 add_library(neomifes_xmltree STATIC
     src/xml_tree.cpp
     src/xml_tree_worker.cpp
+    src/xpath.cpp
 )
 add_library(neomifes::xmltree ALIAS neomifes_xmltree)
 

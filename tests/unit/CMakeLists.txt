@@ -91,6 +91,7 @@ add_executable(neomifes_unit_tests
     jsontree_json_validate_test.cpp
     jsontree_json_path_test.cpp
     xmltree_xml_tree_test.cpp
+    xmltree_xpath_test.cpp
     app_json_tree_bridge_test.cpp
     app_json_fold_bridge_test.cpp
     app_xml_tree_bridge_test.cpp
