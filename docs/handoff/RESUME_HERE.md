@@ -14,7 +14,7 @@
 >
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: セル編集はWI-16f(2026-08-24)で完了済み。残りは列固定・式列 (WI-16g以降)
-> - Phase 10.3 (JSON/XML Tree) 残り: XMLヘッドレス基盤(WI-15f)+非同期化・EditorSession配線(WI-15g)+ツリーUI(WI-15h)は完了済み(2026-08-25、🎉JSON/XML双方のツリーUIが完結)。残りはXPath・真の左右分割ペイン化のみ (WI-15i以降)
+> - Phase 10.3 (JSON/XML Tree): **WI-15a〜i完了(2026-08-25)で🎉完結。** XPath自前実装+`RenderPipeline`の真の右ペイン予約幅まで到達、Phase 10.3はこれ以上の残作業なし
 > - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
@@ -202,7 +202,11 @@
 | **11.1c** | **Git統合 左ガター差分マーカーUI 🎉** (手動リフレッシュコマンド「Git: Refresh Diff Markers」、`GitDiffMarker`/`GitDiffKind`、実機ドッグフーディングで重大バグ2件発見・解消) | ✅ **完了 (WI-17c、2026-08-23、§3.97参照)。🎉 Phase 11.1 左ガターUI達成** |
 | **11.1d** | **Git統合 保存時の自動再diffトリガー** (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) | ✅ **完了 (WI-17d、2026-08-23、§3.98参照)** |
 | **10.2f** | **CSV セル単位クリック編集 🎉** (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、実機ドッグフーディングでWI-16c以来の既存バグ`LVS_EX_FULLROWSELECT`未設定を発見・解消) | ✅ **完了 (WI-16f、2026-08-24、§3.99参照)。🎉 Phase 10.2 セル編集達成** |
-| 10.2/10.3残り、11.1残り → v1出荷判定 | CSV(列固定/式列)/JSON-XML Tree(XML対応/XPath/真の左右分割ペイン化)/Git(Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16g/WI-15f/WI-17e以降で確定予定) |
+| **10.3f** | **XML ツリーモデル ヘッドレス基盤** (`neomifes::xmltree`、原案`pugixml`から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) | ✅ **完了 (WI-15f、2026-08-25、§3.100参照)** |
+| **10.3g** | **XML ツリー 非同期インデックス化+EditorSession配線** (`XmlTreeWorker`、UIなし、WI-15b直テンプレート) | ✅ **完了 (WI-15g、2026-08-25、§3.101参照)** |
+| **10.3h** | **XML ツリーUI 🎉** (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用) | ✅ **完了 (WI-15h、2026-08-25、§3.102参照)。🎉 Phase 10.3 XMLツリーUI達成** |
+| **10.3i** | **XPath自前実装 + 真の左右分割ペイン化 🎉** (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」) | ✅ **完了 (WI-15i、2026-08-25、§3.103参照)。🎉 Phase 10.3 完結** |
+| 10.2残り、11.1残り → v1出荷判定 | CSV(列固定/式列)/Git(Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16g/WI-17e以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2913,6 +2917,20 @@ WI-15g完了後、ユーザーの「次のPhaseに進め」への回答として
 
 ---
 
+### 3.103 WI-15i (XPath自前実装 + 真の左右分割ペイン化) 完了記録 (2026-08-25)
+
+WI-15h完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15i: XPath・分割ペイン化/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15i: XPath・分割ペイン化」**が選ばれた。Phase 10.3の残りスコープはXPathと、`OutlinePane`/`JsonTreePane`が「右端オーバーレイ」方式(ドキュメントビュー自体の描画幅は縮まない)のままである既知のギャップの2点。
+
+スコープについてAskUserQuestionで2回確認した。1回目: 「分割ペイン化は別WIへ先送りすべきか」に対し**「いいえ、分割ペイン化も今回含めたい」**(提案していたスコープ縮小の明示的な却下)。2回目: XPathのコマンド入口(統一 vs 分離)を確認し**「分離: "XML: Evaluate XPath"を新規追加(推奨)」**が選ばれた(WI-15hの統一方針とは逆の判断 — クエリ構文自体がパネルトグルより強くユーザーに見えるコマンドであるため)。Plan Mode(Explore agent 2件並行調査込み)で詳細計画を承認された。
+
+**設計:** 新規`RenderPipeline::setRightPaneWidthDips()`(`gutterWidthDips()`の左側クリップ+`visibleColumnCount()`減算パターンを右側へ対称適用、`FrameState`へ含める判断は`m_leftColumn`の教訓を踏襲)。着手前調査で「ネイティブ子ウィンドウは常にD2Dスワップチェーンの上に正しく重なる(視覚バグは無い)」ことを確認済みで、本変更の実質的な目的は`visibleColumnCount()`が見えない列までスクロール可能と計算してしまう機能的な不整合の修正。新規`neomifes::xmltree::xpath`(`json_path.h`の直テンプレート、`/`・`/tag`・`/*`・`/tag[N]`・`/*[N]`のみサポート)。**設計上の要点:** 位置述語`[N]`は独立したセグメント種別ではなく`TagName`/`Wildcard`セグメントへの任意フィールドとして畳み込んだ — 実装中に自己発見・訂正した設計判断(詳細はbuild_plan.md WI-15iセクション参照)。`XPathBar`は新設せず`ui::JsonPathBar`を再利用、JSON/XMLの判別は`main.cpp`ローカルの`bool jsonPathBarIsForXml`で行う。
+
+**実施は3コミット**(`e17015f`/`6c6c761`/`3a246b8`)。**実機ドッグフーディングで新しい自動化ハーネスの落とし穴を発見した。** コマンドパレットが開いている間にキー入力をメインウィンドウのHWNDへ直接`PostMessage`すると、パレットの入力欄ではなくドキュメント本文へ挿入されてしまう(パレットが最前面に見えていてもフォーカスベースの経路には乗らない) — パレット/バー自身のEditコントロールのHWNDを`EnumChildWindows`で見つけて直接ターゲットする必要がある。1回目の検証でこれを踏み抜きドキュメント本文を汚したが保存前だったためディスク上のファイルは無傷、2回目は正しいHWNDへ直接送って再現・確認した。ペイン幅縮小(`Ctrl+Shift+J`でvisibleColumnCount()が135→101→135)、XML文書での`/book[2]`評価(2番目の`<book id="2">`要素の直前へ正確にジャンプ、スクリーンショットで確認)、JSON文書での既存JSONPathへの無回帰(`$.users[*].name`が従来通り動作)の3点を確認した。
+
+最終ゲート: Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット済み(`e17015f`/`6c6c761`/`3a246b8`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)が完結、これ以上の残作業なし。** 次はWI-16g(CSV列固定・式列)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2957,217 +2975,60 @@ WI-15g完了後、ユーザーの「次のPhaseに進め」への回答として
 
 ## 6. 次回の推奨最初のプロンプト例
 
-> **2026-08-04 更新:** 従来この節には過去 10 フェーズ分の経緯が累積して 100 行以上に膨れていた。中間レビューを機に「次に何をするか」だけを残す形へ全面圧縮した。過去の経緯は [`TIMELINE.md`](../history/TIMELINE.md) が一次資料。
+> **2026-08-25 更新:** この節は「次に何をするか」だけを残す運用のはずが再び200行超まで膨れていたため全面圧縮した(2026-08-04に一度同じ圧縮を行った経緯があり、再発)。個々のWIの詳細経緯はTIMELINE.mdとbuild_plan.md §5の各WIセクションが一次資料 — この節はそれらへのポインタに徹する。
 
 ```
 本ファイル冒頭の「🎯 最重要 (2026-08-23 スコープ確定)」を必ず先に読め。
-2026-08-23、ユーザーとの合意で残りスコープを確定した: Phase 10残り
-(CSV列固定・セル編集・式列/JSON XML対応・XPath・左右分割ペイン)+
-Git統合のUI化残り(自動再diffトリガー・Gitペイン・Diffビュー、左ガター
-差分マーカー+手動リフレッシュはWI-17cで完了済み)まで完成させたら、
-v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
-LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
-着手しないこと。目安+10〜15 WI。
-
-続けてRESUME_HERE.md §3.102 (WI-15h XML ツリーUI完了記録、
-JSON/XML双方のツリーUI完結)を読んで詳細な現状を把握せよ。§3.101
-(WI-15g、非同期化+EditorSession配線)、§3.100 (WI-15f、
-pugixml→tree-sitter-xml設計転換)も背景として参照。
+2026-08-23、ユーザーとの合意で残りスコープを確定した: Phase 10.2残り
+(CSV列固定・式列)+Phase 11.1のUI化残り(Gitペイン・Diffビュー)まで
+完成させたら、v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切り
+とする。LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は
+🧊凍結、着手しないこと。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
-Phase 10.1(ログ解析モード)はWI-14a〜dの4サブWIで🎉完結した
-(2026-08-18)。Phase 10.3(JSON/XML Treeモード)はWI-15a→b→c
-(ツリーUI、Ctrl+Shift+Jでトグル・折り畳み統合)→WI-15d(コマンド
-パレット限定「JSON: Format Document」/「JSON: Validate」、
-`core::ReplaceRangeCommand`初の文書全体書き換え消費者)→WI-15e
-(自前実装JSONPath、`neomifes::jsontree::json_path`+`ui::JsonPathBar`、
-コマンドパレット限定「JSON: Evaluate JSONPath」)まで完了し
-🎉JSONPathを達成(2026-08-22)。XML対応・XPath・真の左右分割
-ペイン化はWI-15f以降へ未着手のまま保留。Phase 10.2(CSVモード)は
-WI-16a→b→c(グリッドUI、Ctrl+Shift+Gでトグル・全画面置き換え表示・
-セルダブルクリックジャンプ)→WI-16d(フィルタ・ソートのヘッドレス
-計算基盤`computeCsvRowOrder()`、100万行フィルタ569ms/ソート1,214ms
-を実測しroadmap目標を達成)→WI-16e(フィルタ編集欄150msデバウンス+
-列ヘッダクリックで3段階ソートサイクル、実機ドッグフーディング
-確認済み)まで完了し🎉フィルタ・ソートUIを達成(いずれも
-2026-08-19)。列固定・セル編集・式列はWI-16f以降へ未着手のまま保留。
+Phase 10.1(ログ解析)はWI-14a〜dで🎉完結(2026-08-18)。
+**Phase 10.3(JSON/XML Treeモード)はWI-15a〜iで🎉完結した
+(2026-08-25)** — JSON側(ヘッドレス基盤→非同期化→ツリーUI→整形/
+バリデーション→JSONPath)・XML側(ヘッドレス基盤→非同期化→ツリー
+UI→XPath+真の左右分割ペイン化)とも全機能実装済み、残作業なし。
+詳細は本書§1の10.3a〜iの各行、および§3.85〜§3.103参照。
+Phase 10.2(CSV)はWI-16a〜fで列固定・式列を除き完了(セル編集まで、
+2026-08-24)。Phase 11.1(Git統合)はWI-17a〜dで左ガター差分マーカー
+UI+保存時自動トリガーまで完了(2026-08-23)。
 
-**2026-08-22、ユーザーの選択でPhase 10の残り(WI-16f/WI-15e以降)より
-先にPhase 11(Git統合/LSP/マクロ)へ進み、続けてPhase 11の3本柱のうち
-「Git統合」から着手、WI-17aで以下を完了:**
-- ADR-022でlibgit2 v1.9.7をFetchContent採用(着手前にscratchpadで
-  実機検証済み、Windows長パス問題→`core.longpaths`必須・
-  `STATIC_CRT=OFF`必須・インクルードディレクトリ手動追加必須の
-  3点を確認)
-- 新規`neomifes::git`モジュール、`GitRepository::discover()`/
-  `diffAgainstHead()`(現在のメモリ上ドキュメントとHEADブロブの
-  ファイル単位Diff計算、`git_diff_blob_to_buffer()`使用)
-- 単体テストが`git_diff_options.context_lines`既定値3による
-  Added/Deleted誤分類バグを発見、`context_lines=0`で解消
-- 非同期化・EditorSession配線・UI(左ガター/Gitペイン/Diffビュー/
-  Blame/Commit/Branch切替)は全て未着手のままWI-17b以降へ
+次はWI-16g(CSV列固定・式列)、WI-17e(Gitペイン、
+`GitRepository::statusList()`相当のヘッドレスAPI追加から)、または
+ユーザー指定の次項目 — Phase 10.3は完結したため候補から外れる。
+着手前にbuild_plan.md §5とmaster_roadmap.md §10.2(または§11.1)を
+読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
-**同日、続けてユーザーがWI-17b(Git統合の続き)ではなくWI-15e
-(JSON/XML Treeの続き)を選択、JSONPathを実装:**
-- 新規`neomifes::jsontree::json_path`(`parseJsonPath()`/
-  `evaluateJsonPath()`、`$`/`.key`/`['key']`/`[0]`/`[*]`とその連鎖の
-  サブセット、再帰下降/フィルタ式/スライスは非対応)
-- 新規`ui::JsonPathBar`(`ui::GotoLineBar`の直複製)+コマンド
-  パレット限定「JSON: Evaluate JSONPath」(`json.jsonpath`、
-  `CommandId::None`)
-- 最終ゲートでclang-tidy/clang-cl固有の問題3件(cognitive-complexity
-  超過/bugprone-unchecked-optional-access/designated-field-
-  initializer省略)を検出・解消、いずれもDebug構成では検出されず
-  ubsan構成で初めて発覚
-- 実機ドッグフーディングでワイルドカード+キーチェーンでのカーソル
-  ジャンプ・構文エラー/JSON以外/マッチ0件の各ダイアログを確認、
-  TaskDialogIndirectのモーダル性による新しい自動化ハーネス制約
-  (同期SendMessageが最大120秒ブロック)を発見・回避
-
-**同日、続けてユーザーがWI-17b(Git統合の続き、推奨)を選択、
-非同期化+EditorSession配線を実装:**
-- `diffAgainstHead()`にBufferSnapshotオーバーロードを追加(スレッド
-  安全性のため、`jsontree::parseJsonTree()`と同型)、既存Document版は
-  それへ委譲する利便オーバーロードに変更
-- 新規`GitDiffWorker`(`CsvModelWorker`の構造+`JsonTreeWorker`の
-  「失敗時も常にpost」のハイブリッド、リポジトリに属さない/未追跡
-  ファイルは日常的な正常系のため握りつぶさない)
-- `EditorSession::gitDiff()`/`gitDiffIndexInFlight()`/
-  `beginGitDiffIndexing()`/`applyGitDiffResult()`を`csvModel()`系と
-  同型で追加。`beginGitDiffIndexing()`はUntitledバッファに対して
-  無条件no-op(既存4ワーカー中初の「無効化」ガード)
-- `beginGitDiffIndexing()`を呼び出すコマンド/UIは本WIでは一切追加
-  せず(WI-14b/15b/16bの前例と同じ「配線のみ先行」)
-- 最終ゲートでclang-tidyが新規テストコードに複数の問題(bugprone-
-  unchecked-optional-access/misc-misplaced-const/special-member-
-  functions等)を検出・解消、2件はWI-17a由来の既存未修正パターンと
-  の一貫性を優先し意図的に据え置き
-
-Debug/Release/ubsan全1447/1447件green、clang-tidy新規警告0(src/側
-5ファイル)を確認済み。
-
-**副産物issue: 末尾改行のあるCSVでグリッドの「#」列が実データ行数+1
-(暗黙の空行)を表示する(WI-16aで既に文書化済みの既存仕様がグリッド
-UIで視覚的に露呈したもの、実装ミスではない)。**
-docs/issues/csv_grid_shows_trailing_implicit_empty_row.md(P2)として
-起票済み、対応方針は未確定。
-
-**WI-15b最終ゲートで発見したP1 issueはWI-15cで解消した。**
-`nlohmann::ordered_json::parse()`自体(再帰下降パーサ、深度上限を
-設定するAPI無し)が病的に深いネストでスタックオーバーフローしうる
-問題を、`DepthLimitSax`(SAXベースの事前深度チェック、
-`kMaxJsonNestingDepth=200`)で解消。
-docs/issues/json_tree_worker_deep_nesting_stack_overflow.md は解決済み
-セクションへ移動済み。
-
-**WI-15cの最終ゲートで`.clang-tidy`に`portability-template-virtual-
-member-function`チェックの除外を追加した(プロジェクト全体)。**
-今後同種の`nlohmann::json_sax<T>`派生クラスを追加する際もこの除外が
-既に効いていることに注意。
-
-**WI-15c(JsonTreeToggle)のコマンドパレット登録漏れをWI-16c配線中に
-発見・是正した(§3.90参照)。** 計画・完了報告に反して実際には未登録
-だった。「計画/完了報告に書いた」は「実装した」の証明にならない、
-という教訓として記録。新規`appendStructuralViewCommands()`で
-JsonTreeToggle/CsvGridToggle両方を登録済み。
-
-**WI-16cで`CommandDispatchContext`(command_dispatch.h)に
-`csvGridPane`/`csvGridPanePendingSessionToken`の2フィールドを追加した。**
-`syncViewForActiveSession()`/`resetViewAfterDocumentSwap()`(タブ切替・
-文書スワップの集約点)を拡張する際、この2関数を`CommandDispatchContext`
-経由で呼ぶ5つの`dispatch*Command()`関数への個別パラメータ追加を避ける
-ための設計判断。今後この2関数のシグネチャを変更する際は、直接呼び出し
-箇所(7+2箇所)と`CommandDispatchContext`構築箇所(6箇所)の両方を
-確認すること。
-
-**WI-16eで`EditorSession::csvRowOrder()`を新設し、WI-16d完了記録が
-残した「非同期化の要否」を「同期のまま」と確定した。** `CsvGridPane`の
-`LVN_GETDISPINFOW`は可視セル1つにつき再描画のたびに発火するため、
-`computeCsvRowOrder()`(WI-16d実測: 100万行で最大1.2秒)はその場で
-呼ばずキャッシュを返す設計にした。`setCsvFilter()`/`setCsvSort()`/
-`applyCsvIndexResult()`のいずれかを呼ぶと同じ呼び出しの中で必ず
-再計算される(別途dirtyフラグ無し)。今後CSVフィルタ/ソートの入力
-経路を追加する際は、必ずこの3関数のいずれか経由にすること(直接
-`m_csvFilter`等を書き換える経路を新設しない)。
-
-**WI-15dで`formatJsonNode()`がclang-tidyの`misc-no-recursion`に抵触し、
-NOLINT抑制ではなく反復実装への全面書き換えで解消した。** `json_tree.cpp`
-の`buildTree()`が同じ理由で採用済みの明示スタックパターンに倣った
-判断 — このプロジェクトの`.clang-tidy`は`misc-no-recursion`をプロジェクト
-全体で有効化しているため、200段のネスト上限(安全マージンとしては
-十分)があっても再帰実装は今後も同じ指摘を受ける。今後`JsonNode`を
-再帰的に処理する新規関数を書く際は、最初から明示スタックで書くことを
-検討すること。
-
-**WI-15dでダイアログ表示の設計を実装中に訂正した。** 当初計画は
-MessageBoxW(「バージョン情報」ダイアログの前例)だったが、着手中に
-より確立された`message_dialogs.h`(TaskDialogIndirectベース、
-`showLogFormatNotDetectedDialog()`等の前例)の存在に気づき、そちらへ
-設計を訂正した。今後ユーザー向けの一回限りの通知ダイアログを追加する
-際は、まず`message_dialogs.h`に既存の型が無いか確認すること。
-
-**WI-15eで、`= u""`のような明示デフォルトを持たない集約フィールドを
-部分的な指定初期化子(designated initializer)で省略すると、clang-cl
-`-Wmissing-designated-field-initializers`がMSVCでは無診断のままビルド
-失敗を起こすことを再確認した。** `render_pipeline.h`のCursorVisualで
-既に確立済みの「集約の全フィールドに明示デフォルトを付与する」規約
-(reference_windows_cpp_ci_gotchas.mdにも記録済み)を、新規struct
-(`JsonPathSegment`)を書く際にうっかり踏み外した実例。新規struct/
-JsonNode系の値型を書くたびに全フィールドへ明示デフォルトを付ける
-ことを最初から徹底すること。
-
-**WI-15eで、`TaskDialogIndirect`のモーダル性が同期`SendMessage`
-ベースの自動化ハーネスを最大120秒ブロックする、この種のダイアログ
-機能では初めての制約が見つかった。** ダイアログを表示させるSubmit
-操作は非同期`PostMessage`で送り、ダイアログ自体は`EnumWindows`で
-独立に(メインウィンドウの子ではないクラス`#32770`として)発見して
-スクリーンショット・操作すること。今後`message_dialogs.h`系のダイアログ
-を実機ドッグフーディングする際は最初からこの手法を使うこと。
-
-**WI番号の注記:** roadmap原案がPhase 10全体を「WI-14」1本と見込んで
-いたのに対し実際は複数サブWIに分かれたため、Phase 11/9/12の当初割当
-(WI-15/16/17)を2026-08-18にWI-16/17/18へ、CSV側のWI-16a新設で衝突した
-ため2026-08-19にさらにWI-17/18/19へ繰り下げた(build_plan.md §5
-「WI-17〜19」節)。WI-15c/WI-15d/WI-15e/WI-16b/WI-16c/WI-16d/WI-16e/
-WI-17a/WI-17bはこの番号割当に影響しない(既存の番号の続き、または
-WI-17自体が「WI-17a〜」という複数サブWIに分割されたもの)。Phase 11
-自体もPhase 10と同様3本柱それぞれが複数サブWIに分かれる規模と判明
-したため、LSP・マクロ側の番号割当はまだ確定していない(build_plan.md
-「WI-17〜19」節参照)。
-
-WI-17c(Git統合 左ガター差分マーカーUI、手動リフレッシュ)は完了・
-push済み(2026-08-23、コミット`aae50cb`/`43d99c6`、CI green確認済み)。
-実機ドッグフーディングで発見した重大バグ2件(ガター描画ブロックの
-配置順序/`initializeLibgit2()`未呼び出し)の詳細はRESUME_HERE.md
-§3.97参照。
-
-続けてWI-17d(Git統合 保存時の自動再diffトリガー)も完了した
-(2026-08-23、コミット`cdb9c66`、実機ドッグフーディングでピクセル
-単位確認済み)。詳細はRESUME_HERE.md §3.98参照。
-
-続けてWI-16f(CSV セル単位クリック編集)も完了した(2026-08-24、
-コミット`932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`)。実機ドッグフーディング
-でWI-16c(2026-08-19)以来の既存バグ(`LVS_EX_FULLROWSELECT`未設定で
-セルクリックが実質「#」列にしか反応しない)を発見・解消した。詳細は
-RESUME_HERE.md §3.99参照。**このセッションでCLAUDE.md 絶対ルール12
-(プロジェクト外への無断フォルダ/ファイル作成禁止)が新設された
-(コミット`5878d44`) — 比較検証等で一時チェックアウトが必要な場合は
-必ずスクラッチパッドかプロジェクト内一時ディレクトリを使うこと。**
-
-push前、ユーザーが実機でCSVグリッドのフィルタ行付近の描画リーク
-(既存バグ、WI-16c由来)を発見・修正要請し追加対応した(コミット
-`25f0414`)。原因はWM_PAINTがcsvGridPane.isVisible()に関わらず裏の
-Direct2D文書ビューを常に描画していたこと。新規`m_hwndFilterBackdrop`
-でフィルタ行バンド全体を隙間なく覆う根本修正、実機で解消確認済み。
-詳細はRESUME_HERE.md §3.99の追記参照。
-
-push はユーザーの明示指示待ち。
-
-次はWI-16g(CSV列固定)、Phase 10.3の残り(WI-15f以降: XML対応・XPath・
-真の左右分割ペイン化)、WI-17e(Gitペイン、`GitRepository::statusList()`
-相当のヘッドレスAPI追加から)、またはユーザー指定の次項目。着手前に
-build_plan.md §5とmaster_roadmap.md §10.2(または§10.3/§11.1)を読み、
-本書§5と同じ形式でサブWIへ切り直すこと。
+**繰り返し登場した技術的教訓 (今後も適用可能、詳細は該当WIの
+TIMELINE.md/build_plan.mdセクション参照):**
+- 新規`CommandId::None`パレット限定コマンドを追加したら、
+  `appendStructuralViewCommands()`等コマンド登録関数への実際の登録を
+  忘れていないか確認する(WI-15cで登録漏れが発生し、計画・完了報告
+  に反して実際には未登録だった実例あり — 「書いた」は「実装した」
+  の証明にならない)
+- `CommandDispatchContext`(command_dispatch.h)へフィールドを追加
+  したら、直接呼び出し箇所と構築箇所の両方を確認する(WI-16c以来の
+  パターン)
+- 新規struct/値型を書く際は集約の全フィールドに明示デフォルトを
+  付与する(clang-cl `-Wmissing-designated-field-initializers`は
+  MSVCでは無診断のままビルド失敗を起こす、`reference_windows_cpp_
+  ci_gotchas.md`参照)
+- `JsonNode`/`XmlNode`等のツリーを再帰的に処理する新規関数は最初
+  から明示スタックで書く(`.clang-tidy`が`misc-no-recursion`を
+  プロジェクト全体で有効化済み)
+- `TaskDialogIndirect`系ダイアログの実機ドッグフーディングは
+  Submit操作を非同期`PostMessage`で送り、ダイアログ自体は
+  `EnumWindows`でクラス`#32770`として独立に発見する(同期
+  `SendMessage`は最大120秒ブロックしうる)
+- コマンドパレットが開いている間のキー入力は、パレット/バー自身の
+  Editコントロール(HWND)を`EnumChildWindows`で見つけて直接
+  ターゲットする(メインウィンドウのHWNDへ直接`PostMessage`すると
+  ドキュメント本文へ挿入されてしまう、WI-15i参照)
+- ユーザー向けの一回限りの通知ダイアログを追加する際は、まず
+  `message_dialogs.h`に既存の型が無いか確認する
 
 git log origin/main..HEAD で未pushの差分が無いことを確認してから
 作業を開始すること。

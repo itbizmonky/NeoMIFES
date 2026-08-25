@@ -150,7 +150,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) に続き WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) → WI-15h (XML側: ツリーUI、`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一) まで進行、JSON/XML双方のツリーUIが完結。XPath・真の左右分割ペイン化は残り(WI-15i以降)。CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) → WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) → WI-15h (XML側: ツリーUI、`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一) → WI-15i (XPath自前実装+`RenderPipeline`の真の右ペイン予約幅) まで進行、🎉 **Phase 10.3 (JSON/XML Treeモード) が完結。** CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -179,7 +179,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: `9470227`/`7cd90a3`
 - [x] **WI-15g** XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし、`XmlTreeWorker`+`EditorSession`4点、WI-15b直テンプレート) → コミット: `ca4f6f5`/`38f1590`/`fb5e00d`
 - [x] **WI-15h** XML ツリーUI (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用、🎉Phase 10.3 XMLツリーUI達成) → コミット: `76e8f0e`/`c7ad615`
-- [ ] **WI-15i以降** Phase 10.3 の残り (XPath・真の左右分割ペイン化) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-15i** XPath自前実装 + 真の左右分割ペイン化 (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」、🎉Phase 10.3 完結) → コミット: `e17015f`/`6c6c761`/`3a246b8`
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [ ] **WI-17e以降** Git統合の UI化残り (Gitペイン・最小限のDiffビュー) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガーはWI-17c/dで完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
 - [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
@@ -2067,6 +2067,51 @@ pushはユーザーの明示指示待ち。Phase 10.3はJSON側・XML側とも�
 Debug/Release/ubsan全1490/1490件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `xml_tree_bridge.h`/`xml_fold_bridge.h`/`app_xml_tree_bridge_test.cpp`/`app_xml_fold_bridge_test.cpp`/`normal_mode_wiring.cpp`/`.h`/`menu_bar.h`)。
 
 コミット済み(`76e8f0e`/`c7ad615`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)は両フォーマットのツリーUIまで完結。** 残りはXPath・真の左右分割ペイン化のみ(WI-15i以降)。次はWI-15i、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+## WI-15i — XPath自前実装 + 真の左右分割ペイン化
+
+**目的:** WI-15h完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15i: XPath・分割ペイン化/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し「WI-15i: XPath・分割ペイン化」が選ばれた。Phase 10.3(JSON/XML Treeモード)の要件定義書§10・master_roadmap.md §10.3が挙げる残りスコープはXPathと、`OutlinePane`/`JsonTreePane`が現在「右端オーバーレイ」方式(ドキュメントビュー自体の描画幅は縮まず、ネイティブ子ウィンドウが単に右端260dipを覆うだけ)のままである既知のギャップの2点。
+
+スコープについてAskUserQuestionで2回確認した。1回目: 「分割ペイン化は別WIへ先送りすべきか」に対し**「いいえ、分割ペイン化も今回含めたい」**(提案していたスコープ縮小の明示的な却下)。2回目: XPathのコマンド入口について「統一(WI-15hと同じ方針)」か「分離(XML専用の新規コマンド)」かを確認し、**「分離: "XML: Evaluate XPath"を新規追加(推奨)」**が選ばれた — クエリ構文自体(`$.key` vs `/tag[1]`)がパネルトグルより強くユーザーに見えるコマンドであるため、統一よりも分かりやすいという判断。Plan Mode(2件のExplore agent並行調査込み)で詳細計画を承認された。
+
+### 設計
+
+- **`RenderPipeline`の右ペイン予約幅** (`render_pipeline.h`/`.cpp`): 新規`setRightPaneWidthDips(float)`。`m_tabBarHeightDips`/`m_statusBarHeightDips`(起動時1回だけ設定、`FrameState`比較対象外)と異なり、`m_leftColumn`と同じ「トグルのたびに動的に変わる」値のため`FrameState`へ`rightPaneWidthDips`フィールドとして含める(含めないと粗粒度フレームスキップでペインを開いてもテキスト幅が古いまま再描画されないバグになる)。ガター(`gutterWidthDips()`)の左側クリップ+`visibleColumnCount()`減算パターンを右側へ対称的に適用。着手前調査で「ネイティブ子ウィンドウは常にD2Dスワップチェーンの上に正しく重なる(視覚的バグは無い)」ことを確認済みで、本変更の実質的な目的は`visibleColumnCount()`(水平スクロールバー範囲・折り返し判定)がペイン分の幅を考慮しておらず見えない列までスクロール可能と計算してしまう機能的な不整合の修正。
+- `ui::OutlinePane::widthDips()`/`ui::JsonTreePane::widthDips()`(`TabBar::heightDips()`と同じ形の`static constexpr`アクセサ)を新規公開。
+- `normal_mode_wiring.cpp`に新規`syncRightPaneWidthDips(HWND, RenderPipeline&, const OutlinePane&, const JsonTreePane&)`。両ペインの`isVisible()`から`max()`で予約幅を決め`setRightPaneWidthDips()`+`InvalidateRect()`。両ペインのトグルON/OFF全呼び出し箇所(show/hide各分岐)+`cfg.onResize`(防御的な再同期)から呼び出す。
+- **XPath自前実装** (`neomifes::xmltree::xpath`、新規`xpath.h`/`.cpp`): `json_path.h`の直テンプレートだが対応構文は`/`、`/tag`、`/*`、`/tag[N]`、`/*[N]`(1始まり、本物のXPath慣習)のみ。属性選択・述語・`//`子孫軸・関数・和集合は非対応。**設計上の要点:** `/tag[N]`の位置述語は独立した`Index`セグメントではなく、同じ`TagName`/`Wildcard`セグメントへの**任意フィールド**として畳み込んだ(`struct XPathSegment { kind; tagName; index = 0; }`) — 本物のXPathの`[N]`は「そのステップ自身のタグ名/ワイルドカードフィルタに一致した中でN番目、親ごとに独立して計算」という意味であり、JSONPathの配列インデックス降下とは根本的に演算の形が異なるため。実装中に自己発見・訂正した設計上の欠陥で、`/book/*[1]`が2つの`<book>`親それぞれで独立に「その親の最初の子」を返すことを専用テストで検証済み。
+- **`XPathBar`は新設せず`ui::JsonPathBar`をそのまま再利用。** JSON/XML判別は`main.cpp`ローカルの`bool jsonPathBarIsForXml`(`freeCursorModeEnabled`と同じ配置)で行い、`onSubmit`時点(表示時点ではない)で読む — 閉じずに片方→もう片方のコマンドへ切り替えても常に最後にトリガーされた方を反映する設計。新規`dispatchXPathCommand()`は`dispatchJsonPathCommand()`の直接の兄弟だが、「整形式でない」判定が`tree.root.kind == XmlNodeKind::Error`(`parseXmlTree()`は`std::optional`を返さない設計のため)。
+
+### 実施内容 (3コミット)
+
+1. `feat(render)`: `RenderPipeline`右ペイン予約幅+`OutlinePane`/`JsonTreePane`の`widthDips()`公開+`normal_mode_wiring.cpp`の同期配線+単体テスト2件
+2. `feat(xmltree)`: XPath自前実装(`xpath.h`/`.cpp`)+単体テスト25件
+3. `feat(app)`: 「XML: Evaluate XPath」コマンド配線+最終ゲート+実機ドッグフーディング
+
+### 実機ドッグフーディング
+
+一時的な診断ログ(`syncRightPaneWidthDips()`へ`widthDips`/`visibleColumnCount()`のダンプ、`dispatchXPathCommand()`へマッチ結果のダンプ、いずれもコミット前に削除済み)を仕込み、`WM_COMMAND`(`CommandId::JsonTreeToggle`=40007、`CommandPaletteShow`=40005)をPowerShell経由で実際のNeoMIFES.exeへ送信して検証した。
+
+- **ペイン幅縮小**: `Ctrl+Shift+J`でJsonTreePaneを開くと`visibleColumnCount()`が135→101(`widthDips`260)へ正しく減少、閉じると135へ復帰することを確認。
+- **XML文書でのXPath**: コマンドパレットから「XML: Evaluate XPath」→`/book[2]`を評価し、カーソルが2番目の`<book id="2">`要素の直前へ正確にジャンプすることをスクリーンショットで確認。**検証中に新しい自動化ハーネスの落とし穴を発見した**: コマンドパレットが開いている間にキー入力をメインウィンドウのHWNDへ直接`PostMessage`すると、パレットの入力欄ではなくドキュメント本文へ挿入されてしまう(パレットが最前面に見えていてもフォーカスベースの経路には乗らない) — パレット/バー自身のEditコントロールのHWNDを`EnumChildWindows`で見つけて直接ターゲットする必要がある。1回目の検証でこれを踏み抜きドキュメント本文を汚したが、保存前だったためディスク上のファイルは無傷 (未保存のため`git status`にも影響なし)。2回目は正しいHWNDへ直接送って再現・確認した。副次的に、直前のセッションで汚したドキュメントの自動保存が原因でクラッシュ復旧ダイアログ(`TaskDialogIndirect`)がメインウィンドウ作成前にブロックする場面に遭遇、既知のパターン通り`PostMessage`で非同期にボタンをクリックして回避した。
+- **JSON文書での既存JSONPathへの無回帰確認**: 新規インスタンス・クリーンな文書で「JSON: Evaluate JSONPath」→`$.users[*].name`がWI-15e確立当時と同じ挙動(最初の一致キーへジャンプ)のまま動作することを確認 — `jsonPathBarIsForXml`共有の追加がJSON経路に影響していないことの直接確認。
+
+### DoD
+
+- [x] `JsonTreePane`/`OutlinePane`を開いた状態でドキュメントビューが実際に狭まる(`visibleColumnCount()`減算、単体テスト+実機確認)
+- [x] `visibleColumnCount()`がペイン表示中は正しく減算された値を返す(単体テスト`SetRightPaneWidthDipsNarrowsVisibleColumnCount`)
+- [x] ペインのトグルON/OFFで`FrameState`の再描画スキップが発生しない(単体テスト`RightPaneWidthOnlyChangeForcesRedrawInsteadOfFrameSkip`)
+- [x] `parseXPath()`/`evaluateXPath()`がJSONPathと対称的なサブセットを正しく解釈する(単体テスト25件)
+- [x] 「XML: Evaluate XPath」がXML文書で動作しJSON文書には影響しない(実機確認)
+- [x] Debug/Release/ubsan全1515/1515件green、clang-tidy新規警告0
+- [x] 実機ドッグフーディング(ペイン幅・XPath・JSONPath無回帰)
+- [x] ドキュメント同期
+
+### 最終ゲート
+
+Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `message_dialogs.cpp`/`normal_mode_wiring.cpp`/`main.cpp`、コミット1・2は各コミット時点で個別確認済み)。
+
+コミット済み(`e17015f`/`6c6c761`/`3a246b8`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)が完結。** 次はWI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 ---
 

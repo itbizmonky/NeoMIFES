@@ -3255,9 +3255,9 @@ inline constexpr std::uint8_t kAllLogLevelsVisible = 0x7FU;  // 7レベル全ビ
 - `main.cpp`の`resolveLogPatternsStartupState()`が`resolveAutosaveStartupState()`と同型で`%APPDATA%\NeoMIFES\log_patterns\`を起動時に作成+スキャンし、`LogPatternsStartupState{logPatternsDir, userLogPatterns}`を`wireNormalMode()`へ可変参照で渡す。`logmode.patterns.reload`コマンド(`keybindings.reload`と同型)が`userLogPatterns`を再構築し`buildCommandRegistry()`を再帰呼び出しする。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.1「実装後の確定事項 (WI-14d)」参照。**Phase 10.1(ログ解析モード)完結。**
 
-### 11.4 `neomifes::jsontree` リファレンス (WI-15a〜e実装、Phase 10.3 JSONPath達成)
+### 11.4 `neomifes::jsontree` / `neomifes::xmltree` リファレンス (WI-15a〜i実装、🎉 Phase 10.3 完結)
 
-`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15c、整形(`json.format`)・バリデーション(`json.validate`)はWI-15d、JSONPath(`json.jsonpath`、いずれもコマンドパレット限定)はWI-15eで実装済み。XML対応/XPath/真の左右分割ペイン化は未実装(WI-15f以降へ)。
+`src/jsontree/` (`neomifes_jsontree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`nlohmann_json::nlohmann_json`/`neomifes::util`/`neomifes::encoding`)。ツリーUI(`Ctrl+Shift+J`)・折り畳み統合はWI-15c、整形(`json.format`)・バリデーション(`json.validate`)はWI-15d、JSONPath(`json.jsonpath`、いずれもコマンドパレット限定)はWI-15eで実装済み。XML対応(`src/xmltree/`、`neomifes_xmltree` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`tree_sitter`/`tree-sitter-xml`)はWI-15f(ヘッドレス基盤)→WI-15g(非同期化+EditorSession配線)→WI-15h(ツリーUI、`ui::JsonTreePane`を無変更のまま再利用)、XPath(`xml.xpath`)+`RenderPipeline`の真の右ペイン予約幅はWI-15iで実装済み。これによりPhase 10.3(JSON/XML Treeモード)は完結、残作業なし。
 
 ```cpp
 // neomifes/jsontree/json_tree.h (WI-15a、WI-15bでBufferSnapshotオーバーロード追加)
@@ -3410,6 +3410,87 @@ void showJsonPathNoMatchDialog(HWND owner);
 - コマンド`json.jsonpath`は`json.format`/`json.validate`と違い引数(式文字列)が必要なため、パレットのactionは`jsonPathBar.show()`を呼ぶだけに留め、実際の評価は`onSubmit`から呼ばれる`dispatchJsonPathCommand()`が担う2段構成にした。
 - 最終ゲートで3件のclang-tidy/clang-cl固有の問題を検出・解消: `evaluateJsonPath()`のcognitive-complexity超過(31/25、3ヘルパー関数への抽出で解消)、テストの`bugprone-unchecked-optional-access`5件(参照束縛パターンへの変更で解消)、clang-cl固有の`-Wmissing-designated-field-initializers`(`JsonPathSegment::key`への`= u""`明示デフォルト付与で解消、`render_pipeline.h`のCursorVisualフィールドと同じ規約)。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15e)」参照。
+
+```cpp
+// neomifes/xmltree/xml_tree.h (WI-15f)
+enum class XmlNodeKind : std::uint8_t {
+    Element, Text, Comment, Cdata, ProcessingInstruction, EntityReference, Error
+};
+
+struct XmlAttribute {
+    std::u16string name  = u"";
+    std::u16string value = u"";  // 引用符を含む生ソーステキストのまま(JsonNode::keyと違い非デコード)
+    document::TextPos startPos = 0;
+};
+
+struct XmlNode {
+    XmlNodeKind kind = XmlNodeKind::Element;
+    std::u16string tagName = u"";               // Elementのみ、生ソーステキスト
+    std::vector<XmlAttribute> attributes = {};    // Elementのみ、出現順
+    bool selfClosing = false;                     // <foo/>とexplicitly-closed <foo></foo>を区別
+    std::u16string text = u"";                    // 非Element種別のみ、区切り文字込みの生ソース
+    document::TextPos startPos = 0;
+    document::TextPos endPos   = 0;               // exclusive
+    std::vector<XmlNode> children = {};
+};
+
+struct XmlTree {
+    XmlNode root;
+    bool hasErrors = false;
+};
+
+// JsonNode系と異なりstd::optionalを返さない — tree-sitterのエラー耐性を
+// 活かし、不整形式な入力でもXmlNodeKind::Errorセンチネルを含む実体のある
+// 木を常に返す設計(呼び出し側の「未インデックス」と「パース失敗」を
+// 区別できるようにするため、xml_tree_worker.h参照)。
+[[nodiscard]] XmlTree parseXmlTree(const document::BufferSnapshot& snapshot);
+[[nodiscard]] XmlTree parseXmlTree(const document::Document& doc);
+
+// neomifes/xmltree/xml_tree_worker.h (WI-15g、JsonTreeWorkerの機械的な型)
+inline constexpr UINT kMsgXmlTreeReady = WM_APP + 7;
+class XmlTreeWorker { /* JsonTreeWorkerと同型、失敗時ドロップ判断は不要 */ };
+
+// src/app/include/neomifes/app/xml_tree_bridge.h / xml_fold_bridge.h (WI-15h)
+[[nodiscard]] ui::OutlineItem buildXmlTreeItems(const xmltree::XmlNode& root);
+[[nodiscard]] std::vector<core::FoldRegion> buildXmlFoldRegions(
+    const xmltree::XmlNode& root, const document::Document& document);
+
+// neomifes/xmltree/xpath.h (WI-15i、json_path.hの直テンプレート)
+enum class XPathSegmentKind : std::uint8_t { TagName, Wildcard };
+
+struct XPathSegment {
+    XPathSegmentKind kind = XPathSegmentKind::Wildcard;
+    std::u16string   tagName = u"";
+    std::size_t       index = 0;  // 0=述語なし。1始まり(本物のXPath慣習)
+};
+using XPathExpression = std::vector<XPathSegment>;
+
+// /, /tag, /*, /tag[N], /*[N] とその連鎖のみサポート。属性選択/述語・
+// //子孫軸・関数・和集合は非対応。
+[[nodiscard]] std::optional<XPathExpression> parseXPath(std::u16string_view expression) noexcept;
+[[nodiscard]] std::vector<const XmlNode*> evaluateXPath(const XmlNode& root,
+                                                          const XPathExpression& expression);
+```
+
+**設計上の要点 (WI-15f、XML ツリーモデル ヘッドレス基盤):**
+- 本節冒頭の原案`pugixml`採用を覆し、Phase 7rで既にベンダリング済みの`tree-sitter-xml`を再利用する設計に転換した(新規依存・新規ADR不要、ADR-014が既に承認済み)。`pugixml`はノード単位の位置復元APIを一切公開しない一方、既存のtree-sitter利用がUTF-16LEでパーサへ入力を渡しているため`ts_node_start_byte(node)/2`が直接`document::TextPos`になり、位置復元パスが実質無料で手に入ると判明した。
+- `parseXmlTree()`は`std::optional`を返さない — tree-sitterはエラー耐性のあるパーサであり、不整形式な入力でも部分的な木(問題箇所は`XmlNodeKind::Error`センチネル)を返せるため、この耐性をそのまま活かした。
+- **既知の限界(P2、対応不要と判断):** tree-sitter-xml自体がXMLタグ深さ約505〜510階層を境に整形式入力でも誤検知することを二分探索で発見。クラッシュはせず既存Errorセンチネル設計が安全に縮退するため`docs/issues/xmltree_deep_nesting_misparse_limit.md`として記録のみ。
+
+**設計上の要点 (WI-15g、非同期化+EditorSession配線):**
+- `XmlTreeWorker`は`JsonTreeWorker`の機械的な型だが、`parseXmlTree()`が`std::optional`を返さない設計のため、JsonTreeWorkerが抱えていた「失敗時に投函するかドロップするか」の判断自体が不要になった。
+- `EditorSession::m_xmlTree`は`std::optional<xmltree::XmlTree>`とし、`jsonTree()`と異なり`std::nullopt`は「未インデックス」のみを意味する(パース失敗は`XmlTree::hasErrors`が別途表現するため)。
+
+**設計上の要点 (WI-15h、ツリーUI):**
+- `ui::JsonTreePane`自体がWI-15c以来「JSON/XML構造ツリーパネル」として両対応を想定した設計だったため、新規UIクラスは不要だった。`ui::OutlineItem`のみに依存する汎用実装に、`app::buildXmlTreeItems()`/`app::buildXmlFoldRegions()`ブリッジ関数でXML由来のデータを流し込むだけで完結した。
+- `Ctrl+Shift+J`を「JSON/XML両対応の単一トグル」へ設計転換(`EditorSession::language() == syntax::Language::Xml`で分岐)。`jsonTreePanePendingSessionToken`はJSON/XML間で共用 — セッションの`language()`はトグル時点で固定されるため、1回のトグルONでどちらか一方のワーカーしか発火せず安全。
+- XMLのText/Comment/Cdata/PIノードは生の改行を含みうるため(JSON側のリーフには無かった性質)、`previewOneLine()`で単一行へ正規化する新規機構を追加。空白のみのTextノードは`(whitespace)`プレースホルダで表示。
+
+**設計上の要点 (WI-15i、XPath + 真の左右分割ペイン化):**
+- **位置述語`[N]`は独立したセグメント種別ではなく、`TagName`/`Wildcard`セグメントへの任意フィールドとして畳み込んだ。** 本物のXPathの`/tag[N]`は「そのステップ自身のタグ名/ワイルドカードフィルタに一致した中でN番目、親ごとに独立して計算」という意味であり、JSONPathの単純な配列インデックス降下とは演算の形が根本的に異なるため。実装中に自己発見・訂正した設計判断。
+- `ui::XPathBar`は新設せず`ui::JsonPathBar`をそのまま再利用。JSON/XMLの判別は`main.cpp`ローカルの`bool jsonPathBarIsForXml`で行い、`onSubmit`時点(表示時点ではない)で読む。コマンドは統一(`Ctrl+Shift+J`と同方針)ではなく「JSON: Evaluate JSONPath」/「XML: Evaluate XPath」の2つの分離したパレットエントリにした — クエリ構文自体がパネルトグルより強くユーザーに見えるコマンドであるため。
+- `RenderPipeline::setRightPaneWidthDips()`を新設し、`OutlinePane`/`JsonTreePane`が右端を占有している間`visibleColumnCount()`(水平スクロールバー範囲・折り返し判定)が正しく減算値を返すようにした。`gutterWidthDips()`の左側クリップ+`visibleColumnCount()`減算パターンを右側へ対称適用。ネイティブ子ウィンドウは元々Win32のZオーダーによりD2Dスワップチェーンの上に正しく重なっていた(視覚バグは無かった)ため、本変更は視覚バグ修正ではなく`visibleColumnCount()`の機能的な不整合の修正。`FrameState`へ`rightPaneWidthDips`を含めた判断は`m_leftColumn`と同じ教訓(トグルのたびに動的に変わる値を含めないと粗粒度フレームスキップで再描画が古いまま固まる)を踏襲。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15f〜i)」参照。
 
 ### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜e実装、Phase 10.2 フィルタ・ソートUI達成)
 
@@ -3691,10 +3772,7 @@ public:
 
 ## 13. JSON / XML モード
 
-- パーサ: 自作 pull parser (依存無し) / 大規模は SIMDJSON 検討 (ADR)
-- Tree View + テキストビューの同期
-- XPath: 自作最小実装 or pugixml (ADR)
-- JSONPath: goessner 仕様準拠
+> **本節は実装着手前(v0)の粗いスケッチであり、現時点では歴史的記録として凍結されている。実装済みの正確なリファレンスは §11.4 `neomifes::jsontree` / `neomifes::xmltree` リファレンス を参照すること(WI-15a〜i、🎉 Phase 10.3 完結)。** 実際の採否は原案と異なる — パーサはJSON側`nlohmann::ordered_json`(SIMDJSONは不採用)+独自`PositionScanner`、XML側`tree-sitter-xml`(`pugixml`は不採用)、XPathは自作最小実装(ADR不要、既存tree-sitter依存の範囲内)。Tree View⇄テキストビューの双方向ハイライト同期はWI-15iで意図的に非スコープとし未実装のまま。
 
 ---
 

@@ -3430,7 +3430,7 @@ WI-17d完了後、ユーザーの「次のPhaseに進め」への回答として
 
 最終ゲート: Debug/Release/ubsan全1462/1462件green、clang-tidy新規警告0。ドキュメント同期(build_plan.md/master_roadmap.md/RESUME_HERE.mdへ追記、issueを解決済みへ更新)も完了。
 
-## Session 112 (2026-08-25): WI-15f(XML ツリーモデル ヘッドレス基盤)完了、pugixml→tree-sitter-xml設計転換
+## Session 112 (2026-08-25): WI-15f〜i(XML対応・XPath・分割ペイン化)完了、🎉Phase 10.3完結
 
 WI-16f push後(コミット`932d0f4`〜`08322ca`、CI green確認)、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15f: JSON/XML Treeの続き/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15f: JSON/XML Treeの続き(推奨)」**が選ばれた。
 
@@ -3473,5 +3473,27 @@ WI-16f push後(コミット`932d0f4`〜`08322ca`、CI green確認)、ユーザ�
 **🎉 Phase 10.3(JSON/XML Treeモード)は、JSON側・XML側とも構造ツリーUIまで対称的に完結した(WI-15a〜h)。** ドキュメント同期(build_plan.md WI-15hセクション新設+§0/§5要約更新、master_roadmap.md §10.3実装後の確定事項+フェーズ状況表、RESUME_HERE.md §3.102新設+冒頭コールアウト+§6更新)は本セッション内で完了。
 
 次はWI-15i(Phase 10.3の残り: XPath・真の左右分割ペイン化)、WI-16g(CSV列固定)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+続けて同じセッション内、ユーザーから「今後の開発計画を提示せよ」と指示され、残りスコープ(WI-15i以降/WI-16g/WI-17e)と2026-08-23合意の全体像を提示した。続けて「次のPhaseに進め」と指示され、AskUserQuestionで3択(WI-15i: XPath・分割ペイン化/WI-16g: CSV列固定/WI-17e: Gitペイン)を提示し**「WI-15i: XPath・分割ペイン化」**が選ばれた。
+
+スコープの確定にAskUserQuestionを2回使った。1回目は「分割ペイン化は別WIへ先送りすべきか」という提案に対し、ユーザーが**「いいえ、分割ペイン化も今回含めたい」**と明示的に却下した。2回目はXPathのコマンド入口(WI-15hの「統一」方針を踏襲するか、XML専用の新規コマンドへ「分離」するか)を確認し、**「分離: "XML: Evaluate XPath"を新規追加(推奨)」**が選ばれた — WI-15hの`Ctrl+Shift+J`パネルトグルとは逆方向の判断だが、クエリ構文自体(`$.key` vs `/tag[1]`)がパネルトグルより強くユーザーに見えるコマンドであるため、統一よりも分かりやすいという理由。
+
+Plan Modeへ移行し、Explore agent 2件を並行起動して着手前調査を行った。1件は`RenderPipeline`のレイアウト/ジオメトリ系統、もう1件は`OutlinePane`/`JsonTreePane`のドッキング機構を調査した。この調査で、**「真の左右分割ペイン化」は視覚バグ修正ではなく機能修正である**ことが判明した — ネイティブ子ウィンドウ(`OutlinePane`/`JsonTreePane`)は現状でもWin32の子ウィンドウZオーダーにより常にD2Dスワップチェーンの上に正しく重なっており、「テキストが透けて見える」視覚的バグは存在しない。実際の不整合は`RenderPipeline::visibleColumnCount()`(水平スクロールバー範囲・折り返し判定に使用)がペイン分の幅を考慮しておらず、実際には見えない列までスクロール可能と計算してしまう点にあった。`gutterWidthDips()`(左側クリップ+`visibleColumnCount()`減算)が直接のテンプレートとして使えると確認、ミニマップは対照的に「クリップ不要、`visibleColumnCount()`減算のみ」という別パターンだと確認した。詳細な設計をまとめ、`ExitPlanMode`でユーザー承認を得た。
+
+**実装は3コミットに分けた。**
+
+**コミット1(`e17015f`):** `RenderPipeline`に新規`setRightPaneWidthDips(float)`を追加。`m_tabBarHeightDips`/`m_statusBarHeightDips`(起動時1回だけ設定、`FrameState`比較対象外)とは異なり、この値はペインのトグルのたびに動的に変わるため`FrameState`へ`rightPaneWidthDips`として含めた(`m_leftColumn`の既存の教訓と同型 — 含めないと粗粒度フレームスキップでペインを開いてもテキスト幅が古いまま再描画されないバグになる)。`drawVisibleLines()`のクリップと`visibleColumnCount()`の両方へガター同様に適用。`OutlinePane`/`JsonTreePane`へ`widthDips()`公開アクセサ(`TabBar::heightDips()`と同じ形)を追加。`normal_mode_wiring.cpp`に新規`syncRightPaneWidthDips()`を追加し、両ペインのトグルON/OFF全箇所(show/hide各分岐)+`cfg.onResize`から呼び出すよう配線。単体テスト2件追加。
+
+**コミット2(`6c6c761`):** 新規`neomifes::xmltree::xpath`(`json_path.h`の直テンプレート、`/`・`/tag`・`/*`・`/tag[N]`・`/*[N]`のみサポート、属性選択・述語・`//`子孫軸・関数・和集合は非対応)。**実装中に自己発見・訂正した設計上の欠陥がある。** 当初のプラン案は位置述語`[N]`を独立した`Index`セグメント種別として表現していたが、これは`/tag[N]`の本物のXPathにおける意味(「そのステップ自身のタグ名/ワイルドカードフィルタに一致した中でN番目、親ごとに独立して計算」)を正しく表現できず、JSONPathの単純な配列インデックス降下とは演算の形が根本的に異なると気づいた。テストを書く前に設計を訂正し、`XPathSegment`へ`index`を任意フィールドとして畳み込む形へ変更、`/book/*[1]`が2つの`<book>`親それぞれで独立に「その親の最初の子」を返すことを専用テスト(`IndexPredicateIsComputedIndependentlyPerFannedOutParent`)で検証した。単体テスト25件、4件の`bugprone-unchecked-optional-access`をWI-15e確立済みの参照束縛パターンで解消。
+
+**コミット3(`3a246b8`):** 新規コマンドパレット限定「XML: Evaluate XPath」(`xml.xpath`)。`ui::JsonPathBar`を新設せず再利用し、JSON/XMLの判別を`main.cpp`ローカルの`bool jsonPathBarIsForXml`(`freeCursorModeEnabled`と同じ配置)で行う設計にした。実装の過程で`wireNormalMode()`/`buildCommandRegistry()`のシグネチャへこのフラグを追加し忘れ、3箇所の自己再帰呼び出し(`keybindings.reload`/`keybindings.preset.*`/`logmode.patterns.reload`)への伝播も含めて配線し直す一幕があった(WI-15eで一度踏んだのと同型の「自己再帰呼び出しの見落とし」パターン)。`message_dialogs.h`/`.cpp`へXPath用の3ダイアログ(invalid-XML/構文エラー/無マッチ)を追加。
+
+**最終ゲート:** Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0(`message_dialogs.cpp`/`normal_mode_wiring.cpp`/`main.cpp`)。
+
+**実機ドッグフーディングで新しい自動化ハーネスの落とし穴を発見した。** コマンドパレットが開いている間にキー入力をメインウィンドウのHWNDへ直接`PostMessage`すると、パレットの入力欄ではなくドキュメント本文へ挿入されてしまう(パレットが最前面に見えていてもフォーカスベースの経路には乗らない、PostMessageは実際のフォーカス状態を経由しないため)。1回目の検証でこれを踏み抜き、テスト用のXMLファイルのドキュメント本文へ「XML: Evaluate XPath」と「/book[2]」という2行が誤って挿入されてしまったが、保存前だったためディスク上のファイルは無傷だった(タイトルバーの`*`で未保存を確認、force-killで破棄)。この「事故」自体が、その後に送信した`/book[2]`のXPath評価が正しく2番目の`<book id="2">`要素の直前へジャンプしたことの間接的な証拠にもなった(汚染後の文書に対しても正しいオフセットで動作したため)。原因を理解した後、パレット/バー自身のEditコントロールのHWNDを`EnumChildWindows`で見つけて直接ターゲットする方式へ切り替え、クリーンな文書で再検証: ペイン幅縮小(`visibleColumnCount()`が135→101→135)、XML文書での`/book[2]`評価(スクリーンショットでカーソル位置`5:3`を確認)、JSON文書での既存JSONPath(`$.users[*].name`)への無回帰、の3点全てを確認した。検証中、直前のXML文書汚染の自動保存が原因でクラッシュ復旧ダイアログ(`TaskDialogIndirect`)がメインウィンドウ作成前にブロックする場面にも遭遇し、既知のパターン通り非同期`PostMessage`でボタンをクリックして回避した。
+
+コミット済み(`e17015f`/`6c6c761`/`3a246b8`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)が完結した(WI-15a〜i) — これ以上の残作業なし。** ドキュメント同期(build_plan.md WI-15iセクション新設+§0/§5/§6要約更新、master_roadmap.md §10.3実装後の確定事項+フェーズ状況表、RESUME_HERE.md §1テーブル4行追加+§3.103新設+冒頭コールアウト+肥大化していた§6の全面圧縮)は本セッション内で完了。
+
+次はWI-16g(CSV列固定・式列)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 <!-- 次セッションはここに追記 -->
