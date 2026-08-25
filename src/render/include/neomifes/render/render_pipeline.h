@@ -247,6 +247,26 @@ public:
     // exists instead of overloading the same one for both edges.
     void setStatusBarHeightDips(float heightDips) noexcept { m_statusBarHeightDips = heightDips; }
 
+    // WI-15i: DIP width reserved at the RIGHT edge for whichever right-
+    // docked native sibling pane (ui::OutlinePane/ui::JsonTreePane) is
+    // currently visible - the gutter's exact mirror image on the opposite
+    // edge (see gutterWidthDips()). Subtracted from drawVisibleLines()'s own
+    // clip (so glyphs stop being drawn into a region the pane's own opaque
+    // HWND already covers - a wasted-work optimization, not a visual-bleed
+    // fix; a native child HWND always paints over this class's D2D surface
+    // regardless) and from visibleColumnCount() (the actual functional fix -
+    // without this, the horizontal scrollbar/line-wrap math believes more
+    // columns are visible than truly are, since it never learns the pane
+    // exists). UNLIKE m_tabBarHeightDips/m_statusBarHeightDips above (each
+    // set exactly once before the window is created and never again), this
+    // value changes every time a pane is toggled open/closed - the caller
+    // (normal_mode_wiring.cpp's syncRightPaneWidthDips()) must re-call this
+    // at every toggle transition, not just from the WM_SIZE resize path.
+    // Deliberately included in FrameState's coarse-frame-skip comparison for
+    // exactly that reason - see FrameState::rightPaneWidthDips's own
+    // comment.
+    void setRightPaneWidthDips(float widthDips) noexcept { m_rightPaneWidthDips = widthDips; }
+
     // WI-08: changes the font family/size used by ensureTextFormat(). No-op
     // if both are already the current values (avoids needless invalidation,
     // e.g. an app-startup call that happens to match the built-in default).
@@ -618,6 +638,18 @@ private:
         // FrameState happens to change) - leftColumn is added here the
         // moment m_leftColumn is introduced, not after the fact.
         std::uint32_t leftColumn = 0;
+        // WI-15i: same rationale as leftColumn above - a right-pane-width-
+        // only change (OutlinePane/JsonTreePane toggled open/closed, with
+        // document/topLine/etc all otherwise unchanged) must not be coarse-
+        // frame-skipped either, or the document view would keep rendering at
+        // its OLD (wider or narrower) clip width until some unrelated state
+        // change happened to force a real repaint. Unlike m_tabBarHeightDips/
+        // m_statusBarHeightDips (deliberately excluded below, see
+        // setTabBarHeightDips()'s own comment), this value is NOT set once at
+        // startup and left alone - it changes every time a right-docked pane
+        // is toggled, exactly the "mutated field not in FrameState silently
+        // disables redraw" hazard leftColumn's own comment warns about.
+        float rightPaneWidthDips = 0.0F;
         // WI-06: same rationale as leftColumn above - a composition-only
         // change (the user keeps typing into an active IME session, with
         // topLine/cursor/document all otherwise unchanged) must not be
@@ -1150,6 +1182,8 @@ private:
     float                                              m_tabBarHeightDips     = 0.0F;
     // WI-07 step4: see setStatusBarHeightDips()'s own comment.
     float                                              m_statusBarHeightDips  = 0.0F;
+    // WI-15i: see setRightPaneWidthDips()'s own comment.
+    float                                              m_rightPaneWidthDips   = 0.0F;
     std::vector<CursorVisual>                         m_cursorVisuals;  // empty: no cursors to draw
     std::vector<MatchVisual>                          m_matchVisuals;   // empty: no match highlights (Phase 5b3a)
     std::vector<document::LineNumber>                 m_bookmarkedLines;  // empty: no bookmarks (Phase 4b8c)

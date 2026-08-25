@@ -414,23 +414,55 @@ void refreshOutlinePane(EditorSession& session, neomifes::ui::OutlinePane& outli
     session.folding().setFoldableRegions(neomifes::app::buildFoldRegions(nodes, session.document()));
 }
 
+// WI-15i: keeps RenderPipeline's reserved right-hand width in sync with
+// whichever right-docked pane (OutlinePane/JsonTreePane) is currently
+// visible - see RenderPipeline::setRightPaneWidthDips()'s own comment for
+// why this must be called at EVERY toggle transition (both the show and the
+// hide branch, at every one of their call sites below), not just from
+// cfg.onResize's WM_SIZE path: unlike m_tabBarHeightDips/
+// m_statusBarHeightDips (set once at startup and never again), this value
+// changes whenever a pane opens or closes, and a stale value would leave
+// the document view rendering at the wrong width until some unrelated
+// resize happened to correct it. Takes the max() of the two panes' own
+// widthDips() rather than assuming mutual exclusivity - both dock to the
+// SAME right edge, so this is still correct even if they were ever
+// simultaneously visible (today they are not, by construction of every
+// toggle path below, but this doesn't rely on that). Always invalidates -
+// the document view must reflow immediately, not wait for the next paint.
+void syncRightPaneWidthDips(HWND hwnd, RenderPipeline& renderPipeline, const neomifes::ui::OutlinePane& outlinePane,
+                            const JsonTreePane& jsonTreePane) {
+    float widthDips = 0.0F;
+    if (outlinePane.isVisible()) {
+        widthDips = std::max(widthDips, neomifes::ui::OutlinePane::widthDips());
+    }
+    if (jsonTreePane.isVisible()) {
+        widthDips = std::max(widthDips, JsonTreePane::widthDips());
+    }
+    renderPipeline.setRightPaneWidthDips(widthDips);
+    ::InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 // Ctrl+Shift+O while the document editing area has focus (Phase 7g) -
 // unlike handleCommandPaletteKey()/handleGrepKey(), this TOGGLES (a second
 // press while visible hides it) rather than only ever showing. An outline
 // view is a persistent navigation aid the user dismisses with the same key
 // they opened it with, not a one-shot search/command tool - see
 // outline_pane.h's class comment. WI-04: takes EditorSession& (document/
-// path/folding - 3 members).
+// path/folding - 3 members). WI-15i: takes JsonTreePane& too, purely to pass
+// through to syncRightPaneWidthDips() (see that function's own comment) -
+// this function itself never touches jsonTreePane otherwise.
 bool handleOutlineKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                      neomifes::ui::OutlinePane& outlinePane, RenderPipeline& renderPipeline,
-                      const core::KeyBindings& keyBindings) {
+                      neomifes::ui::OutlinePane& outlinePane, JsonTreePane& jsonTreePane,
+                      RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings) {
     if (!chordMatches(keyBindings, CommandId::OutlineToggle, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
     if (outlinePane.isVisible()) {
         outlinePane.hide();
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
     } else {
         refreshOutlinePane(session, outlinePane);
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
         syncFoldingState(hwnd, renderPipeline, session.folding());
     }
     return true;
@@ -542,7 +574,8 @@ void refreshStructureTreePane(HWND hwnd, EditorSession& session, JsonTreePane& j
 // the pane would still match the stale token and silently pop the pane back
 // open (see normal_mode_wiring.h's own comment on this hazard).
 bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, EditorSession& session,
-                       JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                       JsonTreePane& jsonTreePane, const neomifes::ui::OutlinePane& outlinePane,
+                       std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                        std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, RenderPipeline& renderPipeline,
                        const core::KeyBindings& keyBindings, const void*& jsonTreePanePendingSessionToken) {
     if (!chordMatches(keyBindings, CommandId::JsonTreeToggle, ctrlDown, shiftDown, false, vkCode)) {
@@ -551,9 +584,11 @@ bool handleJsonTreeKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Ed
     if (jsonTreePane.isVisible()) {
         jsonTreePane.hide();
         jsonTreePanePendingSessionToken = nullptr;
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
     } else {
         refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
                                  jsonTreePanePendingSessionToken);
+        syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
     }
     return true;
 }
@@ -1618,11 +1653,12 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     if (handleGrepKey(vkCode, shiftDown, ctrlDown, grepBar, keyBindings)) {
         return;
     }
-    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, renderPipeline, keyBindings)) {
+    if (handleOutlineKey(hwnd, vkCode, shiftDown, ctrlDown, session, outlinePane, jsonTreePane, renderPipeline,
+                        keyBindings)) {
         return;
     }
-    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker,
-                          renderPipeline, keyBindings, jsonTreePanePendingSessionToken)) {
+    if (handleJsonTreeKey(hwnd, vkCode, shiftDown, ctrlDown, session, jsonTreePane, outlinePane, jsonTreeWorker,
+                          xmlTreeWorker, renderPipeline, keyBindings, jsonTreePanePendingSessionToken)) {
         return;
     }
     if (handleCsvGridKey(vkCode, shiftDown, ctrlDown, session, csvGridPane, csvModelWorker, keyBindings,
@@ -2133,7 +2169,8 @@ void appendLogModeCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, 
 // own case bodies for the same commands.
 void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
                                   RenderPipeline& renderPipeline, const core::KeyBindings& keyBindings,
-                                  JsonTreePane& jsonTreePane, std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
+                                  JsonTreePane& jsonTreePane, const neomifes::ui::OutlinePane& outlinePane,
+                                  std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
                                   std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                                   const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                                   std::optional<csvmode::CsvModelWorker>& csvModelWorker,
@@ -2142,15 +2179,17 @@ void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND
         .id = u"view.jsonTree.toggle", .title = u"Toggle Structure Tree",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"view.jsonTree.toggle"),
         .commandId = CommandId::JsonTreeToggle,
-        .action = [hwnd, &workspace, &jsonTreePane, &jsonTreeWorker, &xmlTreeWorker, &renderPipeline,
+        .action = [hwnd, &workspace, &jsonTreePane, &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &renderPipeline,
                   &jsonTreePanePendingSessionToken]() {
             EditorSession& session = workspace.active();
             if (jsonTreePane.isVisible()) {
                 jsonTreePane.hide();
                 jsonTreePanePendingSessionToken = nullptr;
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
             } else {
                 refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
                                         jsonTreePanePendingSessionToken);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
             }
         }});
     commands.push_back(CommandDescriptor{
@@ -2176,6 +2215,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     const MenuBarHandles& menuHandles, AutosaveContext& autosave,
     std::optional<LogIndexWorker>& logIndexWorker, std::vector<LogPatternRule>& userLogPatterns,
     const std::optional<std::filesystem::path>& logPatternsDir, JsonTreePane& jsonTreePane,
+    const neomifes::ui::OutlinePane& outlinePane,
     std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker, std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
     const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
     std::optional<csvmode::CsvModelWorker>& csvModelWorker,
@@ -2466,8 +2506,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
-                   &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                   &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
+                   &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
+                   &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2476,9 +2516,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker, xmlTreeWorker,
-                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                jsonPathBar, gitDiffWorker));
+                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
+                xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2509,8 +2549,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
-                       &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
-                       &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker,
+                       &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
+                       &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker,
                        presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
@@ -2521,8 +2561,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
-                    jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                    csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
+                    outlinePane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
+                    csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2544,8 +2584,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
-                   &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane, &csvModelWorker,
-                   &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
+                   &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
+                   &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &gitDiffWorker]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2553,18 +2593,18 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             commandPalette.setCommands(buildCommandRegistry(
                 hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
-                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker, xmlTreeWorker,
-                jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
-                jsonPathBar, gitDiffWorker));
+                logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
+                xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
+                csvGridPanePendingSessionToken, jsonPathBar, gitDiffWorker));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
     // WI-16c: "view.jsonTree.toggle"/"view.csvGrid.toggle" - see
     // appendStructuralViewCommands()'s own doc comment for why this block
     // lives in its own function rather than inline here.
-    appendStructuralViewCommands(commands, hwnd, workspace, renderPipeline, keyBindings, jsonTreePane, jsonTreeWorker,
-                                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                                 csvGridPanePendingSessionToken);
+    appendStructuralViewCommands(commands, hwnd, workspace, renderPipeline, keyBindings, jsonTreePane, outlinePane,
+                                 jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
+                                 csvModelWorker, csvGridPanePendingSessionToken);
 
     // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
     // appendLogModeCommands()'s own doc comment for why this block lives in
@@ -3593,8 +3633,10 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             EditorSession& session = workspace.active();
             if (outlinePane.isVisible()) {
                 outlinePane.hide();
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
             } else {
                 refreshOutlinePane(session, outlinePane);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
                 syncFoldingState(hwnd, renderPipeline, session.folding());
             }
             return true;
@@ -3604,9 +3646,11 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             if (jsonTreePane.isVisible()) {
                 jsonTreePane.hide();
                 jsonTreePanePendingSessionToken = nullptr;
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
             } else {
                 refreshStructureTreePane(hwnd, session, jsonTreePane, jsonTreeWorker, xmlTreeWorker, renderPipeline,
                                         jsonTreePanePendingSessionToken);
+                syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
             }
             return true;
         }
@@ -4193,10 +4237,10 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
                                              keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
                                              commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
-                                             userLogPatterns, logPatternsDir, jsonTreePane, jsonTreeWorker,
-                                             xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
-                                             csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar,
-                                             *gitDiffWorker);
+                                             userLogPatterns, logPatternsDir, jsonTreePane, outlinePane,
+                                             jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
+                                             csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
+                                             jsonPathBar, *gitDiffWorker);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -4264,12 +4308,20 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     cfg.onResize = [&renderPipeline, &findBar, &commandPalette, &gotoLineBar, &jsonPathBar, &grepBar,
                     &outlinePane,
                     &jsonTreePane, &csvGridPane, &tabBar,
-                    &statusBar](HWND, std::uint32_t w, std::uint32_t h, float dpiScale) {
+                    &statusBar](HWND hwnd, std::uint32_t w, std::uint32_t h, float dpiScale) {
         if (renderPipeline.isAttached()) {
             const auto resized = renderPipeline.resize(w, h, dpiScale);
             if (!resized) {
                 debugLogRenderError("RenderPipeline::resize", resized.error());
             }
+            // WI-15i: re-applies whichever right-pane reservation was already
+            // in effect - resize() itself doesn't touch m_rightPaneWidthDips,
+            // but a fresh WM_SIZE is also a safe, low-cost point to
+            // re-synchronize it in case it was ever missed at a toggle site
+            // (defense in depth, not the primary sync path - see
+            // syncRightPaneWidthDips()'s own comment for the toggle sites
+            // that ARE the primary path).
+            syncRightPaneWidthDips(hwnd, renderPipeline, outlinePane, jsonTreePane);
         }
         findBar.onParentResized(w, dpiScale);
         commandPalette.onParentResized(w, dpiScale);

@@ -1973,4 +1973,75 @@ TEST(RenderTextSmokeTest, SetMinimapVisibleFalseWidensVisibleColumnCount) {
         << "hiding the minimap did not widen the visible column count";
 }
 
+// WI-15i: setRightPaneWidthDips() (OutlinePane/JsonTreePane's reserved
+// width) subtracts from visibleColumnCount() the same way gutter/minimap
+// already do - same indirect-assertion shape as the two tests above.
+TEST(RenderTextSmokeTest, SetRightPaneWidthDipsNarrowsVisibleColumnCount) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, u"hello world\n");
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const std::uint32_t columnsBeforePane = pipeline.visibleColumnCount();
+
+    pipeline.setRightPaneWidthDips(260.0F);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "render() after setRightPaneWidthDips() failed: "
+        << neomifes::render::describe(second.error());
+    EXPECT_LT(pipeline.visibleColumnCount(), columnsBeforePane)
+        << "reserving right-pane width did not narrow the visible column count";
+}
+
+// WI-15i: FrameState::rightPaneWidthDips must be included in the coarse
+// frame-skip comparison (Phase 3c/ADR-011) - same hazard class
+// LeftColumnOnlyChangeForcesRedraw above guards against (see that field's
+// own declaration comment on why this differs from m_tabBarHeightDips/
+// m_statusBarHeightDips, which are deliberately excluded).
+TEST(RenderTextSmokeTest, RightPaneWidthOnlyChangeForcesRedrawInsteadOfFrameSkip) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, std::u16string(200, u'x'));
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto statsAfterFirst = pipeline.layoutCacheStats();
+
+    // rightPaneWidthDips only - Document/topLine/size/cursor/selection/etc
+    // all unchanged (mirrors a JsonTreePane/OutlinePane toggle-open with no
+    // other simultaneous state change).
+    pipeline.setRightPaneWidthDips(260.0F);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (rightPaneWidthDips changed) failed: "
+        << neomifes::render::describe(second.error());
+    const auto statsAfterSecond = pipeline.layoutCacheStats();
+    EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
+                statsAfterSecond.misses != statsAfterFirst.misses)
+        << "rightPaneWidthDips-only change was frame-skipped instead of triggering a redraw";
+}
+
 }  // namespace

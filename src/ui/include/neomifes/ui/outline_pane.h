@@ -73,6 +73,18 @@ public:
     void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight,
                          float dpiScale) noexcept;
 
+    // WI-15i: the panel's own fixed DIP width - same "public static
+    // constexpr accessor" shape as ui::TabBar::heightDips()/ui::StatusBar::
+    // heightDips(), so normal_mode_wiring.cpp's syncRightPaneWidthDips() can
+    // learn how much of RenderPipeline's own right edge to reserve without
+    // this class exposing anything else about its own layout. Deliberately
+    // duplicates outline_pane.cpp's own private kPanelWidthDips constant
+    // (same value, 260.0F) rather than sharing storage across the header/.cpp
+    // boundary - this codebase's established "small duplicated constant over
+    // premature cross-TU sharing" precedent (see build_plan.md's Phase 7e
+    // kTabWidth history).
+    [[nodiscard]] static constexpr float widthDips() noexcept { return 260.0F; }
+
     // Routes a WM_NOTIFY the owning MainWindow received (TVN_SELCHANGEDW
     // arrives here, not at the child itself - same routing MainWindow
     // already uses for WM_COMMAND, see MainWindowConfig::onNotify's doc

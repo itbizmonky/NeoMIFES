@@ -74,6 +74,12 @@ public:
 
     void onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight, float dpiScale) noexcept;
 
+    // WI-15i: see ui::OutlinePane::widthDips()'s own comment - same shape,
+    // same duplicated-constant reasoning, same 260.0F value as this class's
+    // own private json_tree_pane.cpp kPanelWidthDips (both panes share the
+    // identical docked-strip layout, see this class's own header comment).
+    [[nodiscard]] static constexpr float widthDips() noexcept { return 260.0F; }
+
     // Routes a WM_NOTIFY the owning MainWindow received (TVN_SELCHANGEDW
     // arrives here, not at the child itself - same routing OutlinePane
     // already uses, see MainWindowConfig::onNotify's doc comment). Call from

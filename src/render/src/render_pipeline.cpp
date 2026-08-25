@@ -131,6 +131,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .foldRegions     = m_foldRegions,
         .gitDiffMarkers  = m_gitDiffMarkers,
         .leftColumn      = m_leftColumn,
+        .rightPaneWidthDips = m_rightPaneWidthDips,
         .imeComposition  = m_imeComposition,
         .themeKind       = m_themeKind,
         .logLevelFilterMask = m_logLevelFilterMask,
@@ -895,10 +896,16 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     // Breadcrumb/Sticky scroll (all drawn AFTER drawVisibleLines() in
     // renderOnce() and self-overpaint any bleed-through - this asymmetry is
     // why only the gutter needs an explicit clip).
+    // WI-15i: the right bound is similarly narrowed by m_rightPaneWidthDips
+    // when a right-docked pane (OutlinePane/JsonTreePane) is open - purely a
+    // wasted-work optimization here (the pane's own opaque native HWND
+    // already covers this region regardless of whether glyphs are drawn
+    // into it), NOT a visual-bleed fix like the gutter's clip above.
     const float widthDips  = static_cast<float>(m_width) / m_dpiScale;
     const float heightDips = static_cast<float>(m_height) / m_dpiScale;
-    dc.PushAxisAlignedClip(D2D1::RectF(gutterWidthDips(), 0.0F, widthDips, heightDips),
-                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    dc.PushAxisAlignedClip(
+        D2D1::RectF(gutterWidthDips(), 0.0F, widthDips - m_rightPaneWidthDips, heightDips),
+        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     // Drawn before DrawTextLayout so glyphs render on top of the highlight
     // (Phase 4b2, N-cursor generalization Phase 4b7a). Matches drawn first
     // (Phase 5b3a) so an active text selection layers visibly above match
@@ -1462,8 +1469,8 @@ std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
     if (m_dpiScale <= 0.0F) {
         return 0;
     }
-    const float availableWidthDips =
-        (static_cast<float>(m_width) / m_dpiScale) - gutterWidthDips() - minimapWidthDips();
+    const float availableWidthDips = (static_cast<float>(m_width) / m_dpiScale) - gutterWidthDips() -
+                                     minimapWidthDips() - m_rightPaneWidthDips;
     return computeVisibleColumnCount(availableWidthDips, m_charWidthDips);
 }
 
