@@ -3430,7 +3430,7 @@ WI-17d完了後、ユーザーの「次のPhaseに進め」への回答として
 
 最終ゲート: Debug/Release/ubsan全1462/1462件green、clang-tidy新規警告0。ドキュメント同期(build_plan.md/master_roadmap.md/RESUME_HERE.mdへ追記、issueを解決済みへ更新)も完了。
 
-## Session 112 (2026-08-25): WI-15f〜i(XML対応・XPath・分割ペイン化)完了、🎉Phase 10.3完結
+## Session 112 (2026-08-25): WI-15f〜i(XML対応・XPath・分割ペイン化)完了、🎉Phase 10.3完結 / WI-16g(CSV列固定)完了、🎉Phase 10.2列固定達成
 
 WI-16f push後(コミット`932d0f4`〜`08322ca`、CI green確認)、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで3択(WI-15f: JSON/XML Treeの続き/WI-16g: CSVの続き/WI-17e: Gitペイン)を提示し、**「WI-15f: JSON/XML Treeの続き(推奨)」**が選ばれた。
 
@@ -3495,5 +3495,25 @@ Plan Modeへ移行し、Explore agent 2件を並行起動して着手前調査�
 コミット済み(`e17015f`/`6c6c761`/`3a246b8`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.3(JSON/XML Treeモード)が完結した(WI-15a〜i) — これ以上の残作業なし。** ドキュメント同期(build_plan.md WI-15iセクション新設+§0/§5/§6要約更新、master_roadmap.md §10.3実装後の確定事項+フェーズ状況表、RESUME_HERE.md §1テーブル4行追加+§3.103新設+冒頭コールアウト+肥大化していた§6の全面圧縮)は本セッション内で完了。
 
 次はWI-16g(CSV列固定・式列)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+続けて同じセッション内(コンテキスト圧縮を挟んで継続)、ユーザーから「次のPhaseに進め」と指示され、AskUserQuestionで2択(WI-16g: CSV列固定・式列/WI-17e: Gitペイン)を提示し**「WI-16g: CSV列固定・式列(推奨)」**が選ばれた。
+
+master_roadmap.md §10.2・2026-08-23合意の残りスコープ(列固定・式列)についてAskUserQuestionで確認し、**「列固定のみ今回、式列は別WIへ(推奨)」**が選ばれた — 式列はroadmapに「SUM/AVG/COUNTIF等」以上の具体的な文法・構文が一切無く(既存issueも無し)、このまま実装するとCLAUDE.md絶対ルール3(推測実装をしない)に違反するため。列固定の対象範囲(「#」列のみ/「#」+先頭データ列/ユーザー選択式)についてもAskUserQuestionで確認したが、ユーザーが未回答のまま「継続せよ」の指示を受けたため、推奨案(**「#」列のみ固定**)を採用して進めた。
+
+Plan Modeへ移行し、Explore agent2件を並行起動して着手前調査を行った。1件目は`CsvGridPane`の現行実装(単一`WC_LISTVIEW`仮想モード、「#」列がsubItem 0として内部合成されている構造、`showCellEditor()`の`ListView_GetSubItemRect`依存)、2件目はCSV式列の仕様具体度(結論: roadmapに具体的な文法・構文なし)を調査した。この調査で、**列固定を実現する標準的なWin32手法は「2つの同期`SysListView32`」であり、`NM_CUSTOMDRAW`単体では実現できない(ネイティブ水平スクロールが固定したい列のピクセルごと動かしてしまうため)**ことと、完全自前描画への転換は10M行スケールで実証済みの`LVS_OWNERDATA`機構を丸ごと捨てることになり過大であることが判明した。続けてPlan agent1件でこの2リスト分割設計の詳細(スクロール同期・選択同期の具体的メカニズム、`handleNotify()`のルーティング変更、公開APIの列インデックス規約維持)を検証、詳細な計画をまとめ`ExitPlanMode`でユーザー承認を得た。
+
+**実装前に標準プローブ(`csv_freeze_scroll_probe.cpp`、既存`listview_ownerdata_probe.cpp`と同じ`cl.exe`直接コンパイル手法)で5点を実機検証した。** ①`ListView_GetItemRect`が`LVM_SETITEMCOUNT`直後(`WM_PAINT`前)に有効な行高さを返す、②`ListView_Scroll`が10,000,000行規模で境界を正確にクランプする、③`LVS_SINGLESEL`付きオーナーデータリストの単一選択が確実に`LVN_ITEMCHANGED`(範囲通知`LVN_ODSTATECHANGED`ではなく)で届く、④`ShowScrollBar(FALSE)`は`LVM_SETITEMCOUNT`を跨いで永続しない、⑤**`ListView_GetSubItemRect(subItem=0)`が列0ではなく行全体の矩形を返す**(計画時点では未知だった新事実、WI-16g以前は「#」列専用スロットだったため到達しなかった経路)。⑤の発見により`showCellEditor()`へ`ListView_GetColumnWidth()`による矩形の狭め処理を実装前に追加できた。
+
+実装は`m_hwndFrozenList`(「#」列のみ)+`m_hwndDataList`(実CSV列のみ、シフト無しの列空間)への分割、`tryForwardListScrollMessage()`/`syncScrollAfterMessage()`(行インデックス差分方式の垂直スクロール同期)、`handleItemChanged()`(`LVN_ITEMCHANGED`+`m_syncingSelection`再入防止による選択状態同期)、両リストへの新規`LVS_SINGLESEL`付与、継ぎ目を覆う`m_hwndListDivider`を実装した。プランの「2コミット(構造分割/同期+ゲート)」から実際には1コミットへ統合した(すでに完成・テスト済みのコードを人為的に2分割する意義が薄いと判断)。
+
+**実機ドッグフーディングで重大バグを1件発見・解消した。** ソートヘッダクリック等で`showWith()`が2回目以降呼ばれると「#」列が画面上ずっと空白のままになる — 一時的な診断ログ(`handleGetDispInfo()`が受け取る`hwndFrom`/`mask`/`iItem`/`iSubItem`をファイルへ記録)で調査したところ、`LVN_GETDISPINFOW`は正しい`mask`(`LVIF_TEXT`込み)で発火し続けこのクラス自身も正しくテキストを書き込んでいるにも関わらず、画面に一切反映されないという不可解な状態だった。`InvalidateRect`+`UpdateWindow`での強制再描画も無効だった。原因を「#」列特有の`LVM_DELETECOLUMN`+`LVM_INSERTCOLUMNW`の繰り返しに絞り込み、**「#」列の内容は実CSV列と異なり常に不変(常に"#"、常に同じ50dip幅)であり、そもそも再構築する理由が無い**と気づき、`createListViews()`で1回だけ挿入し`showWith()`では二度と触らない設計へ変更したところ解消した — comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避した形。ソートクリックの複数回連続動作・フィルタ(`setRowCount()`経路)いずれでも再発しないことを確認済み。
+
+**実機ドッグフーディング中に自動化ハーネス起因のプロセスクラッシュが1回発生した。** 選択同期の検証のため`LVM_SETITEMSTATE`へ自作の生ポインタを直接渡すクロスプロセスメッセージ送信を試みたところ、`COMCTL32.dll`内でアクセス違反(Windowsイベントログで0xc0000005を確認、直後に0xc000041dのプロセス強制終了)が発生しNeoMIFES.exeがクラッシュした。ポインタはプロセス境界を越えて有効でないという既知のWin32制約が原因であり、自動化ハーネス側の限界であって本実装のバグではないと判断した。以降はキーボードナビゲーション(仮想キーコードのみで安全)と`SendInput`による実クリックへ切り替えて検証を継続した。**`SendInput`自体にも新しい落とし穴が見つかった** — この環境の仮想デスクトップ(幅4880px、複数モニタ相当)では`MOUSEEVENTF_ABSOLUTE`単体だと座標がプライマリモニタ基準(幅1440px)にずれ、意図した座標と大きく異なる位置をクリックしてしまう。`MOUSEEVENTF_VIRTUALDESK`フラグを追加することで解消し、以降はピクセル単位で正確なクリック座標を実現できた。
+
+実機ドッグフーディングでは、水平スクロールでも「#」列が固定されたまま見えること、マウスホイール/矢印キーいずれの操作でも双方向(データ側→frozen側、frozen側→データ側)に両リストの垂直位置が一致し続けること、選択ハイライトの相互反映(`LVM_GETNEXTITEM`で両リストが同一indexを報告することを確認)、セル編集がデータ列のみで開き「#」列では開かないこと、列0(name列)でのセルエディタが列全体ではなく列0の幅だけに正しく収まること(⑤の修正の直接確認)、ソートヘッダクリックの複数回連続動作、フィルタ(`setRowCount()`経路)、いずれもスクリーンショット+直接クエリで確認した。
+
+最終ゲート: Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0(`csv_grid_pane.h`/`.cpp`)。コミット済み(`6ae086d`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.2(CSVモード)は列固定まで完結。** 残りは式列のみ(WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり)。ドキュメント同期(build_plan.md新規WI-16gセクション+§0/§5要約更新、master_roadmap.md §10.2実装後の確定事項+フェーズ状況表、RESUME_HERE.md §1テーブル1行追加+§3.104新設+冒頭コールアウト+§6教訓追記)は本セッション内で完了。
+
+次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 <!-- 次セッションはここに追記 -->

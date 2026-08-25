@@ -69,8 +69,8 @@ ctest --preset debug --output-on-failure
 > MVP達成後、差別化機能の追加に終わりの定義が無いまま作業が続いていたため、ユーザーとの合意でスコープを確定した。**新しいセッションは必ずこのゴールを起点に「次に何をすべきか」を判断すること。**
 >
 > **やる (残りスコープ):**
-> - Phase 10.2 (CSV) 残り: 列固定・式列 (WI-16g以降。セル編集はWI-16fで完了済み)
-> - Phase 10.3 (JSON/XML Tree) 残り: XPath・真の左右分割ペイン化・XMLツリーUI (WI-15g以降。XMLヘッドレス基盤自体はWI-15fで完了済み)
+> - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16gで完了済み)
+> - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
 > - Phase 11.1 (Git統合) の UI 化残り: Gitペイン・最小限のDiffビュー (WI-17e以降。左ガター差分マーカー・保存時自動再diffトリガーはWI-17c/dで完了済み)
 > - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。
 >
@@ -150,7 +150,7 @@ ctest --preset debug --output-on-failure
 
 ## Phase 10 — ログ解析 / CSV / JSON-XML Tree (最大の差別化点、WI-13完了により着手解禁)
 
-roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) → WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) → WI-15h (XML側: ツリーUI、`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一) → WI-15i (XPath自前実装+`RenderPipeline`の真の右ペイン予約幅) まで進行、🎉 **Phase 10.3 (JSON/XML Treeモード) が完結。** CSV (§10.2) は WI-16a〜f (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集) まで進行、列固定・式列は残り(WI-16g以降)。
+roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直し完結した (詳細は §5)。JSON-XML Tree (§10.3) は WI-15a〜e (JSON側: ヘッドレス基盤→非同期化+配線→ツリーUI MVP→整形・バリデーション→JSONPath) → WI-15f (XML側: ヘッドレス基盤、原案の`pugixml`から`tree-sitter-xml`再利用へ設計転換) → WI-15g (XML側: 非同期化+EditorSession配線、UIなし) → WI-15h (XML側: ツリーUI、`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一) → WI-15i (XPath自前実装+`RenderPipeline`の真の右ペイン予約幅) まで進行、🎉 **Phase 10.3 (JSON/XML Treeモード) が完結。** CSV (§10.2) は WI-16a〜g (ヘッドレス解析モデル→非同期ワーカー+配線→グリッドUI MVP→フィルタ・ソート基盤→フィルタ・ソートUI→セル編集→「#」列固定) まで進行、式列のみ残り(WI-16h以降)。
 
 - [x] **WI-14a** ログ解析モード ヘッドレス基盤 (`LogPatternRule`/`LogModel`、スレッド/UI なし) → コミット: `2512c76`
 - [x] **WI-14b** 非同期インデックス構築 + フォーマット自動検出 + `EditorSession`配線 + ピース単位ストリーミング最適化 → コミット: `4f55d8b`/`062bfd9`/`9c5c982`/`2f856b1`/`a6c1849`/`525e0f1`
@@ -175,7 +175,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 **2026-08-23、ユーザーとの合意でスコープを確定した。** LSP完全実装・マクロ・AIプラグイン・元々の§12.3フル版(22項目、Google/MSリリース品質基準)は🧊凍結。以下が残りスコープの全て。
 
 - [x] **WI-16f** CSV セル単位クリック編集 (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、`applyCsvCellEdit()`、実機ドッグフーディングで`LVS_EX_FULLROWSELECT`未設定というWI-16c以来の既存バグを発見・解消) → コミット: `932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`
-- [ ] **WI-16g以降** Phase 10.2 の残り (列固定・式列) — 着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-16g** CSV グリッド「#」列固定 (2つの同期`SysListView32`、垂直スクロール・選択状態の相互同期、🎉Phase 10.2 列固定達成) → コミット: `6ae086d`
+- [ ] **WI-16h以降** Phase 10.2 の残り (式列) — 着手前に具体的な文法・構文をユーザーへ確認する必要あり、着手時に本書 §5 と同じ形式でサブ WI を切り直す
 - [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: `9470227`/`7cd90a3`
 - [x] **WI-15g** XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし、`XmlTreeWorker`+`EditorSession`4点、WI-15b直テンプレート) → コミット: `ca4f6f5`/`38f1590`/`fb5e00d`
 - [x] **WI-15h** XML ツリーUI (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用、🎉Phase 10.3 XMLツリーUI達成) → コミット: `76e8f0e`/`c7ad615`
@@ -1930,6 +1931,60 @@ push前、ユーザーが実機でCSVグリッドのフィルタ行付近に表�
 2. **根本修正:** 新規`m_hwndFilterBackdrop`(無地の`WC_STATIC`)を`m_hwndFilterLabel`/`m_hwndFilterEdit`より先に生成しz-order背面に配置、フィルタ行バンド全体を隙間なく覆うようにした。
 
 コミット`25f0414`。Debug/Release/ubsan全1462/1462件green、clang-tidy新規警告0。実機ドッグフーディングでユーザー自身が解消を確認済み(2026-08-25)。
+
+---
+
+## WI-16g — CSV グリッド「#」列固定 (列固定)
+
+**目的:** WI-15i(XPath・分割ペイン化)完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで2択(WI-16g: CSV列固定・式列/WI-17e: Gitペイン)を提示し、**「WI-16g: CSV列固定・式列(推奨)」**が選ばれた。
+
+master_roadmap.md §10.2・2026-08-23合意の残りスコープ(列固定・式列)についてAskUserQuestionで確認し、**「列固定のみ今回、式列は別WIへ(推奨)」**が選ばれた — 式列はroadmapに「SUM/AVG/COUNTIF等」以上の具体的な文法・構文が一切無く、このまま実装するとCLAUDE.md絶対ルール3(推測実装をしない)に違反するため。列固定の対象範囲(「#」列のみ固定/「#」+先頭データ列固定/ユーザーが選択可能)についてもAskUserQuestionで確認したが、ユーザーが未回答のまま「継続せよ」の指示を受けたため、推奨案(**「#」列のみ固定**)を採用して進めた — 常に存在する行番号列だけを常時可視にする設計で、新規トグルUI・セッションごとの状態保持が不要、仕様が一意に定まるため。
+
+### 設計 (Explore agent 2件+Plan agent1件による着手前調査+Plan Mode)
+
+`ui::CsvGridPane`の単一`WC_LISTVIEW`(`LVS_REPORT|LVS_OWNERDATA`仮想モード)を2つの同期`SysListView32`兄弟HWNDへ分割: `m_hwndFrozenList`(「#」列のみ、固定50dip幅、非水平スクロール)+`m_hwndDataList`(実CSV列のみ、シフト無しの列空間、`m_hwndList`から改名)。`NM_CUSTOMDRAW`単体では列固定を実現できない(ネイティブ水平スクロールが固定したい列のピクセルごと動かしてしまう)ため2HWND分割が必要、完全自前描画(Direct2D/GDI)は10M行スケールで実証済みの`LVS_OWNERDATA`機構を丸ごと捨てることになり過大と判断。
+
+- 垂直スクロール同期: `tryForwardListScrollMessage()`が両リストの`WM_VSCROLL`/`WM_MOUSEWHEEL`/ナビゲーションキー(↑↓PageUp/PageDown/Home/End)を捕捉、`DefSubclassProc`実行後に`syncScrollAfterMessage()`が`ListView_GetTopIndex()`の差分を`ListView_Scroll()`で相手リストへ反映。行インデックス差分方式(ピクセル差分を毎回再計算せず、実際の結果値を読み戻す)により、標準プローブで確認済みの境界クランプ挙動(10,000,000行規模でも先頭/末尾で正確にクランプ)に対しても両リストが乖離しない。
+- 選択状態同期: `handleItemChanged()`が`LVN_ITEMCHANGED`を`m_syncingSelection`で再入防止しつつ相手リストの同じ行へ`ListView_SetItemState()`反映。両リストへ新規`LVS_SINGLESEL`を付与(旧単一リストには無く複数選択が未検証のまま有効だった副作用) — オーナーデータリストは範囲選択(Shift+クリック/Ctrl+A)時に`LVN_ITEMCHANGED`ではなく範囲指向の`LVN_ODSTATECHANGED`(本実装は非対応)を送る仕様のため、`LVS_SINGLESEL`化により範囲選択自体を発生させないことで単純化した。標準プローブで単一選択が確実に`LVN_ITEMCHANGED`のみを介することを確認済み。
+- 2リスト間の継ぎ目は`m_hwndListDivider`(不透明`WC_STATIC`)で覆う — WI-16fの`m_hwndFilterBackdrop`と同じ「ネイティブ子ウィンドウの隙間をDirect2D文書ビューが透けて見える」対策を新しい継ぎ目へ予防的に適用。
+- `showCellEditor()`: `ListView_GetSubItemRect(subItem=0)`が(WI-16g以前は「#」列専用スロットだったため到達しなかった)列0全体ではなく**行全体**の矩形を返すという標準プローブで新たに発覚した挙動へ対処 — `ListView_GetColumnWidth()`で列0の幅へ矩形を狭める修正を追加。
+- 公開API(`CsvGridPaneConfig`の各コールバック)の列インデックス規約は変更しない — `csv_grid_bridge.h`/`normal_mode_wiring.cpp`の呼び出し側は無変更で済むことを設計段階で確認済み。
+
+### 実施前の標準プローブ (CLAUDE.mdルール3)
+
+スクラッチパッドへ標準プローブ(`csv_freeze_scroll_probe.cpp`、既存`listview_ownerdata_probe.cpp`と同じ`cl.exe`直接コンパイル手法)を書き、実装着手前に5点を実機検証した: ①`ListView_GetItemRect`が`LVM_SETITEMCOUNT`直後(`WM_PAINT`前)に有効な行高さを返す、②`ListView_Scroll`が10,000,000行規模で境界を正確にクランプする、③`LVS_SINGLESEL`付きオーナーデータリストの単一選択が確実に`LVN_ITEMCHANGED`(範囲通知`LVN_ODSTATECHANGED`ではなく)で届く、④`ShowScrollBar(FALSE)`は`LVM_SETITEMCOUNT`を跨いで永続しない(comctl32が再表示する、`showWith()`/`setRowCount()`のたびに再呼び出しが必要と判明)、⑤`ListView_GetSubItemRect(subItem=0)`が列0ではなく行全体の矩形を返す(上記`showCellEditor()`修正の根拠)。全て実装前に確認済みで、実装中の設計変更は不要だった。
+
+### 実機ドッグフーディングで発見・解消した重大バグ
+
+**ソートヘッダクリック等で`showWith()`が2回目以降呼ばれると、「#」列が画面上ずっと空白のままになるバグを発見した。** 一時的な診断ログ(`handleGetDispInfo()`が受け取る`hwndFrom`/`mask`/`iItem`/`iSubItem`をファイルへ記録)を仕込んで調査したところ、`LVN_GETDISPINFOW`は「#」列に対しても正しい`mask`(`LVIF_TEXT`込み)で発火し続けており、このクラス自身のコードも正しくテキストを`pszText`へ書き込んでいるにも関わらず、画面には一切反映されないという不可解な状態だった。`InvalidateRect`+`UpdateWindow`での強制再描画も効果が無かった。
+
+原因を「#」列特有の`LVM_DELETECOLUMN`+`LVM_INSERTCOLUMNW`の繰り返し(`showWith()`が呼ばれるたびに実行)に絞り込み、**「#」列の内容は実CSV列と異なり常に不変(常に"#"という1文字の見出し、常に同じ50dip幅)であるため、そもそも再構築する理由が無い**と気づいた。`createListViews()`で「#」列を1回だけ挿入し、`showWith()`では二度と削除・再挿入しない設計へ変更したところ解消した — comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避した形。ソートクリックの複数回連続動作・フィルタ(`setRowCount()`経路)いずれでも再発しないことを確認済み。
+
+**実機ドッグフーディング中の別件:** `LVM_SETITEMSTATE`へ自作の生ポインタを直接渡すクロスプロセスメッセージ送信を試みたところ、`COMCTL32.dll`内でアクセス違反を起こしNeoMIFES.exeプロセスをクラッシュさせる事故が1回発生した(Windowsイベントログで`COMCTL32.dll`内0xc0000005を確認)。ポインタはプロセス境界を越えて有効でないという既知のWin32制約が原因で、これは自動化ハーネス側の限界であり本実装のバグではないと判断 — 以降は`SendInput`による実クリック/キーボードナビゲーションへ切り替えて検証を継続した。副次的に、この環境の仮想デスクトップ(複数モニタ相当、幅4880px)では`MOUSEEVENTF_ABSOLUTE`単体だと座標がプライマリモニタ基準にずれることも発見し、`MOUSEEVENTF_VIRTUALDESK`を追加して解消した。
+
+### DoD
+
+- [x] 「#」列が2つ目のネイティブ`WC_LISTVIEW`として分離され、実CSV列側を水平スクロールしても「#」列が画面に固定されたまま見える(実機確認、スクリーンショットで id列がスクロールで消えても#列の行番号は不変であることを確認)
+- [x] マウスホイール・矢印キー/PageUp/PageDown/Home/Endのいずれで操作しても両リストの垂直位置が一致し続ける(実機確認、双方向: データ側→frozen側、frozen側→データ側)
+- [x] 一方のリストで行を選択すると両リストで同じ行がハイライトされる(実機確認、キーボードナビゲーションで7行分移動し両リストが`item=7`で一致することを`LVM_GETNEXTITEM`で確認)
+- [x] 8桁行番号相当のクリップが起きない設計(50dip幅+スクロールバー非表示の再適用)
+- [x] 2リスト間の継ぎ目でDirect2D文書ビューの透けが発生しない(実機確認)
+- [x] 「#」列ヘッダクリックでのソートリセット・セル編集(データ列のみ開く、「#」列では開かない)など既存機能に回帰が無い(実機確認、列0(name列)でのセルエディタが列全体ではなく列0の幅だけに正しく収まることも確認)
+- [x] `csv_grid_bridge.h`/`normal_mode_wiring.cpp`は無変更のまま
+- [x] Debug/Release/ubsan全1515/1515件green、clang-tidy新規警告0
+- [x] 実機ドッグフーディング(ペイン幅縮小・スクロール同期・選択同期・セル編集・ソート複数回連続・フィルタ)
+- [x] ドキュメント同期
+
+### 非スコープ (意図的)
+
+- 「#」以外の列を固定する機能・固定列数のユーザー選択UI(スコープ確定時にAskUserQuestionで却下)
+- 式列(別WIへ、仕様未確定のため)
+
+### 最終ゲート
+
+Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0(対象: `csv_grid_pane.h`/`.cpp`)。
+
+コミット済み(`6ae086d`)、pushはユーザーの明示指示待ち。Phase 10.2は列固定まで完了 — 式列のみ後続サブWI(WI-16h以降)へ。次はWI-16h(式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)、WI-17e(Gitペイン)、またはユーザー指定の次項目。
 
 ---
 

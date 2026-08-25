@@ -13,7 +13,7 @@
 > **MVP(WI-13、2026-08-16、🎉M4)達成後、差別化機能(Phase 10)とGit統合(Phase 11.1)の追加を続けていたが、「次に何をもって完成とするか」の定義が無いまま作業が続いている、とユーザーから指摘された。** 残作業量(§12.3フル版=Google/MSリリース品質基準を目指す場合、35〜50 WI規模=数十セッション)を提示し、AskUserQuestionで今後の方針を確認した結果、以下でスコープを確定した(2026-08-23)。
 >
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
-> - Phase 10.2 (CSV) 残り: セル編集はWI-16f(2026-08-24)で完了済み。残りは列固定・式列 (WI-16g以降)
+> - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16g(2026-08-25)で完了済み)
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜i完了(2026-08-25)で🎉完結。** XPath自前実装+`RenderPipeline`の真の右ペイン予約幅まで到達、Phase 10.3はこれ以上の残作業なし
 > - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で完了済み。残りはGitペイン・最小限のDiffビュー (WI-17e以降)
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
@@ -202,11 +202,12 @@
 | **11.1c** | **Git統合 左ガター差分マーカーUI 🎉** (手動リフレッシュコマンド「Git: Refresh Diff Markers」、`GitDiffMarker`/`GitDiffKind`、実機ドッグフーディングで重大バグ2件発見・解消) | ✅ **完了 (WI-17c、2026-08-23、§3.97参照)。🎉 Phase 11.1 左ガターUI達成** |
 | **11.1d** | **Git統合 保存時の自動再diffトリガー** (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) | ✅ **完了 (WI-17d、2026-08-23、§3.98参照)** |
 | **10.2f** | **CSV セル単位クリック編集 🎉** (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、実機ドッグフーディングでWI-16c以来の既存バグ`LVS_EX_FULLROWSELECT`未設定を発見・解消) | ✅ **完了 (WI-16f、2026-08-24、§3.99参照)。🎉 Phase 10.2 セル編集達成** |
+| **10.2g** | **CSV グリッド「#」列固定 🎉** (2つの同期`SysListView32`、垂直スクロール・選択状態の相互同期、実機ドッグフーディングで「#」列空白化の重大バグを発見・解消) | ✅ **完了 (WI-16g、2026-08-25、§3.104参照)。🎉 Phase 10.2 列固定達成** |
 | **10.3f** | **XML ツリーモデル ヘッドレス基盤** (`neomifes::xmltree`、原案`pugixml`から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) | ✅ **完了 (WI-15f、2026-08-25、§3.100参照)** |
 | **10.3g** | **XML ツリー 非同期インデックス化+EditorSession配線** (`XmlTreeWorker`、UIなし、WI-15b直テンプレート) | ✅ **完了 (WI-15g、2026-08-25、§3.101参照)** |
 | **10.3h** | **XML ツリーUI 🎉** (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用) | ✅ **完了 (WI-15h、2026-08-25、§3.102参照)。🎉 Phase 10.3 XMLツリーUI達成** |
 | **10.3i** | **XPath自前実装 + 真の左右分割ペイン化 🎉** (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」) | ✅ **完了 (WI-15i、2026-08-25、§3.103参照)。🎉 Phase 10.3 完結** |
-| 10.2残り、11.1残り → v1出荷判定 | CSV(列固定/式列)/Git(Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16g/WI-17e以降で確定予定) |
+| 10.2残り、11.1残り → v1出荷判定 | CSV(式列)/Git(Gitペイン・Diffビュー) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16h/WI-17e以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2931,6 +2932,20 @@ WI-15h完了後、ユーザーの「次のPhaseに進め」への回答として
 
 ---
 
+### 3.104 WI-16g (CSV グリッド「#」列固定) 完了記録 (2026-08-25)
+
+WI-15i完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで2択(WI-16g: CSV列固定・式列/WI-17e: Gitペイン)を提示し、**「WI-16g: CSV列固定・式列(推奨)」**が選ばれた。master_roadmap.md §10.2の残りスコープ(列固定・式列)についてAskUserQuestionで確認し、**「列固定のみ今回、式列は別WIへ(推奨)」**が選ばれた — 式列はroadmapに「SUM/AVG/COUNTIF等」以上の具体的な文法・構文が一切無く、このまま実装するとCLAUDE.md絶対ルール3(推測実装をしない)に違反するため。列固定の対象範囲(「#」列のみ/「#」+先頭データ列/ユーザー選択式)についてもAskUserQuestionで確認したが未回答のまま「継続せよ」の指示を受けたため、推奨案(**「#」列のみ固定**)を採用した。
+
+**設計(Explore agent2件+Plan agent1件+Plan Mode):** `ui::CsvGridPane`の単一`WC_LISTVIEW`を`m_hwndFrozenList`(「#」列のみ、固定50dip幅)+`m_hwndDataList`(実CSV列のみ)の2つの同期`SysListView32`兄弟HWNDへ分割。垂直スクロール同期は行インデックス差分方式(`tryForwardListScrollMessage()`/`syncScrollAfterMessage()`)、選択状態同期は`LVN_ITEMCHANGED`相互反映(`handleItemChanged()`、`m_syncingSelection`で再入防止)。両リストへ新規`LVS_SINGLESEL`を付与し、オーナーデータリストの範囲選択が`LVN_ODSTATECHANGED`(本実装は非対応)ではなく`LVN_ITEMCHANGED`のみを介することを標準プローブ(`csv_freeze_scroll_probe.cpp`)で実装前に確認した。同じプローブで`ListView_GetSubItemRect(subItem=0)`が列0ではなく行全体の矩形を返す挙動も発見し、`showCellEditor()`へ`ListView_GetColumnWidth()`による矩形の狭め処理を追加した。
+
+**実機ドッグフーディングで重大バグを1件発見・解消した。** ソートヘッダクリック等で`showWith()`が2回目以降呼ばれると「#」列が画面上ずっと空白のままになる — `LVN_GETDISPINFOW`は正しい`mask`で発火し続けテキストも正しく書き込まれているにも関わらず画面に反映されない不可解な状態で、`InvalidateRect`による強制再描画も無効だった。診断ログでの調査の結果、「#」列の内容は実CSV列と異なり常に不変(常に"#"、常に同じ幅)であるため`showWith()`のたびに`LVM_DELETECOLUMN`+`LVM_INSERTCOLUMNW`で再構築する理由が無いと気づき、`createListViews()`で1回だけ挿入する設計へ変更して解消した(comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避)。
+
+**実機ドッグフーディング中に自動化ハーネス起因のプロセスクラッシュが1回発生した。** `LVM_SETITEMSTATE`へ自作の生ポインタをクロスプロセス送信したところ`COMCTL32.dll`内でアクセス違反(Windowsイベントログで0xc0000005確認)。ポインタはプロセス境界を越えて有効でないという既知のWin32制約が原因で本実装のバグではないと判断、以降は`SendInput`(`MOUSEEVENTF_VIRTUALDESK`付き)による実クリック/キーボードナビゲーションへ切り替えた。副次的に、この環境の仮想デスクトップ(幅4880px、複数モニタ相当)では`MOUSEEVENTF_ABSOLUTE`単体だと座標がプライマリモニタ基準にずれることも発見・解消した。
+
+最終ゲート: Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット済み(`6ae086d`)、pushはユーザーの明示指示待ち。**🎉 Phase 10.2(CSVモード)は列固定まで完結。** 残りは式列のみ(WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり)。次はWI-16h、WI-17e(Gitペイン)、またはユーザー指定の次項目。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -2980,10 +2995,10 @@ WI-15h完了後、ユーザーの「次のPhaseに進め」への回答として
 ```
 本ファイル冒頭の「🎯 最重要 (2026-08-23 スコープ確定)」を必ず先に読め。
 2026-08-23、ユーザーとの合意で残りスコープを確定した: Phase 10.2残り
-(CSV列固定・式列)+Phase 11.1のUI化残り(Gitペイン・Diffビュー)まで
-完成させたら、v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切り
-とする。LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は
-🧊凍結、着手しないこと。
+(式列)+Phase 11.1のUI化残り(Gitペイン・Diffビュー)まで完成させたら、
+v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
+LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
+着手しないこと。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析)はWI-14a〜dで🎉完結(2026-08-18)。
@@ -2992,15 +3007,16 @@ Phase 10.1(ログ解析)はWI-14a〜dで🎉完結(2026-08-18)。
 バリデーション→JSONPath)・XML側(ヘッドレス基盤→非同期化→ツリー
 UI→XPath+真の左右分割ペイン化)とも全機能実装済み、残作業なし。
 詳細は本書§1の10.3a〜iの各行、および§3.85〜§3.103参照。
-Phase 10.2(CSV)はWI-16a〜fで列固定・式列を除き完了(セル編集まで、
-2026-08-24)。Phase 11.1(Git統合)はWI-17a〜dで左ガター差分マーカー
-UI+保存時自動トリガーまで完了(2026-08-23)。
+**Phase 10.2(CSV)はWI-16a〜gで式列を除き完了した(列固定まで、
+2026-08-25、§3.104参照)。** Phase 11.1(Git統合)はWI-17a〜dで左ガター
+差分マーカーUI+保存時自動トリガーまで完了(2026-08-23)。
 
-次はWI-16g(CSV列固定・式列)、WI-17e(Gitペイン、
-`GitRepository::statusList()`相当のヘッドレスAPI追加から)、または
-ユーザー指定の次項目 — Phase 10.3は完結したため候補から外れる。
-着手前にbuild_plan.md §5とmaster_roadmap.md §10.2(または§11.1)を
-読み、本書§5と同じ形式でサブWIへ切り直すこと。
+次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する
+必要あり — roadmapに「SUM/AVG/COUNTIF等」以上の仕様が無いため)、
+WI-17e(Gitペイン、`GitRepository::statusList()`相当のヘッドレスAPI
+追加から)、またはユーザー指定の次項目 — Phase 10.3は完結したため
+候補から外れる。着手前にbuild_plan.md §5とmaster_roadmap.md §10.2
+(または§11.1)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
 
 **繰り返し登場した技術的教訓 (今後も適用可能、詳細は該当WIの
 TIMELINE.md/build_plan.mdセクション参照):**
@@ -3029,6 +3045,19 @@ TIMELINE.md/build_plan.mdセクション参照):**
   ドキュメント本文へ挿入されてしまう、WI-15i参照)
 - ユーザー向けの一回限りの通知ダイアログを追加する際は、まず
   `message_dialogs.h`に既存の型が無いか確認する
+- `LVM_SETITEMSTATE`等ポインタを要求するWin32メッセージをPowerShell
+  等の別プロセスから直接SendMessageするとポインタがプロセス境界を
+  越えて無効なままターゲットプロセスをクラッシュさせる(WI-16g、
+  `COMCTL32.dll`内0xc0000005)。ドッグフーディングでの状態変更は
+  キーボードナビゲーション(仮想キーコードのみ)か`SendInput`
+  (`MOUSEEVENTF_ABSOLUTE`だけでなく`MOUSEEVENTF_VIRTUALDESK`も付与
+  しないと多モニタ相当の仮想デスクトップ環境で座標がずれる)を使う
+- 複数の`SysListView32`等ネイティブコントロールを新設する際、片方の
+  列/内容が実質不変(例: 行番号のみの列)なら、変化するもう片方と
+  同じ「毎回delete+insertで再構築」パターンを機械的に踏襲しない
+  — comctl32のreport-view単一列delete+insertには未特定の内部挙動
+  があり、2回目以降の呼び出しで描画が消える実例が見つかった
+  (WI-16g)。不変な列は初回だけ挿入し二度と触らない設計にする
 
 git log origin/main..HEAD で未pushの差分が無いことを確認してから
 作業を開始すること。

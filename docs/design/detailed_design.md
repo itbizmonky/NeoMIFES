@@ -3492,9 +3492,9 @@ using XPathExpression = std::vector<XPathSegment>;
 - `RenderPipeline::setRightPaneWidthDips()`を新設し、`OutlinePane`/`JsonTreePane`が右端を占有している間`visibleColumnCount()`(水平スクロールバー範囲・折り返し判定)が正しく減算値を返すようにした。`gutterWidthDips()`の左側クリップ+`visibleColumnCount()`減算パターンを右側へ対称適用。ネイティブ子ウィンドウは元々Win32のZオーダーによりD2Dスワップチェーンの上に正しく重なっていた(視覚バグは無かった)ため、本変更は視覚バグ修正ではなく`visibleColumnCount()`の機能的な不整合の修正。`FrameState`へ`rightPaneWidthDips`を含めた判断は`m_leftColumn`と同じ教訓(トグルのたびに動的に変わる値を含めないと粗粒度フレームスキップで再描画が古いまま固まる)を踏襲。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.3「実装後の確定事項 (WI-15f〜i)」参照。
 
-### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜e実装、Phase 10.2 フィルタ・ソートUI達成)
+### 11.5 `neomifes::csvmode` リファレンス (WI-16a〜g実装、🎉 Phase 10.2 列固定達成)
 
-`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16c、フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)はWI-16d、EditorSession配線+フィルタ入力欄/列ヘッダクリックソートのUIはWI-16eで実装済み。列固定・式列・セル編集は未実装(WI-16f以降へ)。
+`src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16c、フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)はWI-16d、EditorSession配線+フィルタ入力欄/列ヘッダクリックソートのUIはWI-16eで実装済み。セル単位クリック編集はWI-16f、`ui::CsvGridPane`の2`SysListView32`分割による「#」列固定はWI-16gで実装済み。式列のみ未実装(WI-16h以降、着手前に具体的な文法・構文の確認が必要)。
 
 ```cpp
 // neomifes/csvmode/csv_model.h (WI-16a)
@@ -3676,6 +3676,53 @@ public:
 - **実機ドッグフーディングで確認: `EditorSession::csvRowOrder()[displayRowIndex]`の変換が、フィルタ+ソート適用状態でのセルジャンプでも正しいドキュメント位置を指すこと。** `SendInput`合成マウスクリックがリスト選択状態を変えなかったためキーボード選択(`VK_HOME`+`VK_RETURN`)で代替確認。
 - 副産物として、末尾改行のあるCSVでグリッドの「#」列が実データ行数+1(暗黙の空行)を表示することを発見(WI-16aで既に文書化済みの仕様がグリッドUIで初めて視覚的に露呈したもの、WI-16eの実装ミスではない) - `docs/issues/csv_grid_shows_trailing_implicit_empty_row.md`(P2)として起票。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-19、WI-16e完了)」参照。
+
+```cpp
+// neomifes/csvmode/csv_delimiter_detection.h (既存、csv_cell_encoding.h相当・WI-16f追加分)
+[[nodiscard]] std::u16string escapeCsvCellText(std::u16string_view value, char16_t delimiter);
+// csvCellValue()のエンコード側の対 - RFC4180準拠、区切り文字/引用符/CR/LF
+// を含む値のみ引用符化(不要な引用符は付けない)。
+
+// src/ui/include/neomifes/ui/csv_grid_pane.h (WI-16f追加分)
+struct CsvGridPaneConfig {
+    // ...(WI-16c/eぶんは前述の通り)
+    std::function<void(std::size_t rowIndex, std::size_t colIndex, std::u16string newText)> onCellEditCommitted;
+    std::function<bool()> canBeginCellEdit;  // 再インデックス中の二重編集をveto
+};
+```
+
+**設計上の要点 (WI-16f、セル単位クリック編集):**
+- セルクリック(`NM_CLICK`)→`WC_EDIT`オーバーレイ(`m_hwndCellEditor`、フィルタ編集欄と同型、`create()`時に1回だけ生成)を`ListView_GetSubItemRect`+`MapWindowPoints`で位置決め→`onGetCellText`でプリフィル。Enter/フォーカス喪失でコミット、Escapeでキャンセル。
+- app層`applyCsvCellEdit()`: 表示行インデックス→`session.csvRowOrder()`→データ行インデックス→`CsvCell`→`escapeCsvCellText()`→`core::ReplaceRangeCommand`をdispatch→区切り文字を再検出し`beginCsvIndexing()`で全体再インデックス。
+- `canBeginCellEdit`: 再インデックス中(`csvIndexInFlight()`)は新規セル編集を開始できないようveto — 二重編集による文書破壊(古い位置への誤った書き込み)を防止。
+- **実機ドッグフーディングでWI-16c(2026-08-19)以来の既存バグを発見・解消した。** `LVS_EX_FULLROWSELECT`拡張スタイル未設定によりListViewの行ヒットテストが実質「#」列にしか反応しない、というWin32の既知の落とし穴 — WI-16c自身は「セルダブルクリックのみ自動化ハーネスの制約で未確認」と正直に記録しており、本物の人間の手によるマウスクリックでの検証はWI-16fが初めてだった。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-24、WI-16f完了)」参照。
+
+```cpp
+// src/ui/include/neomifes/ui/csv_grid_pane.h (WI-16g、「#」列固定)
+class CsvGridPane {
+    // ...
+private:
+    // 2つの同期SysListView32 - m_hwndFrozenList(「#」列のみ、固定
+    // 50dip幅、非水平スクロール)+m_hwndDataList(実CSV列のみ、シフト
+    // 無しの列空間)。単一WC_LISTVIEWからの分割(WI-16c〜fはこの単一
+    // リスト構成を前提としていた)。
+    neomifes::platform::WindowHandle m_hwndFrozenList;
+    neomifes::platform::WindowHandle m_hwndDataList;
+    neomifes::platform::WindowHandle m_hwndListDivider;  // 継ぎ目の不透明WC_STATIC
+    int  m_syncedTopIndex   = 0;      // 両リストが最後に合意した先頭可視行
+    int  m_rowHeightPx      = 0;      // ListView_GetItemRectで実測、キャッシュ
+    bool m_syncingSelection = false;  // LVN_ITEMCHANGED相互反映の再入防止
+};
+```
+
+**設計上の要点 (WI-16g、「#」列固定、🎉 Phase 10.2 完結):**
+- **列固定はネイティブ`WC_LISTVIEW`の拡張スタイルには存在せず、2つの同期`SysListView32`への分割が標準的な実現手段と判明した。** `NM_CUSTOMDRAW`単体では、ネイティブ水平スクロールが「固定したい」列のピクセルごと動かしてしまうため実現できない。完全自前描画(Direct2D/GDI)は10M行スケールで実証済みの`LVS_OWNERDATA`機構を丸ごと捨てることになり、本機能には過大と判断した。
+- 垂直スクロール同期は行インデックス差分方式(`ListView_GetTopIndex()`の差分を`ListView_Scroll()`で相手リストへ反映) — ピクセル差分を毎回再計算せず実際の結果値を読み戻すことで、標準プローブで確認済みの境界クランプ挙動(10,000,000行規模でも先頭/末尾で正確にクランプ)に対しても両リストが乖離しない。
+- 選択状態同期は`LVN_ITEMCHANGED`の相互反映、`m_syncingSelection`で再入防止。両リストへ新規`LVS_SINGLESEL`を付与 — オーナーデータリストの範囲選択(Shift+クリック/Ctrl+A)は`LVN_ITEMCHANGED`ではなく範囲指向の`LVN_ODSTATECHANGED`(本実装は非対応)を送る仕様のため、単一選択に限定することで単純化した。
+- **`ListView_GetSubItemRect(subItem=0)`が列0ではなく行全体の矩形を返すという、WI-16g以前は到達しなかった経路の挙動を標準プローブで発見した。** WI-16g以前は「#」列(subItem 0)が常に非編集対象だったため、実CSV列の`showCellEditor()`が`subItem=0`で呼ばれることは無かった。`showWith()`(WI-16gでデータ列の列0が「#」を挟まなくなったため、実CSV列の先頭がsubItem 0になった)以降はこの経路に到達するため、`ListView_GetColumnWidth()`で列0の幅へ矩形を狭める修正を追加した。
+- **実機ドッグフーディングで、`showWith()`が2回目以降呼ばれると「#」列が画面上ずっと空白になる重大バグを発見・解消した。** `LVN_GETDISPINFOW`は正しい`mask`で発火し続けテキストも正しく書き込まれているにも関わらず画面に反映されないという不可解な状態で、`InvalidateRect`による強制再描画も無効だった。「#」列の内容は実CSV列と異なり常に不変(常に"#"という見出し、常に同じ50dip幅)であり再構築する理由が無いと気づき、`createListViews()`で1回だけ挿入し`showWith()`では二度と触らない設計へ変更して解消した — comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避した形。
+- 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-25、WI-16g完了)」参照。
 
 ### 11.6 `neomifes::git` リファレンス (WI-17a〜b実装、Phase 11.1 非同期化+EditorSession配線達成)
 
