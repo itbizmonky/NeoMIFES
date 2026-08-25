@@ -71,7 +71,7 @@ ctest --preset debug --output-on-failure
 > **やる (残りスコープ):**
 > - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16gで完了済み)
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
-> - Phase 11.1 (Git統合) の UI 化残り: 最小限のDiffビューのみ (WI-17f以降。左ガター差分マーカー・保存時自動再diffトリガー・Gitペイン(変更ファイル一覧)はWI-17c/d/eで完了済み)
+> - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
 > - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。
 >
 > **凍結する (🧊、着手しない):**
@@ -183,8 +183,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-15i** XPath自前実装 + 真の左右分割ペイン化 (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」、🎉Phase 10.3 完結) → コミット: `e17015f`/`6c6c761`/`3a246b8`
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [x] **WI-17e** Git統合 Gitペイン (変更ファイル一覧) (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングでM/U混在の変更一覧が`git status --short`と一致することを確認) → コミット: `fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`
-- [ ] **WI-17f以降** Git統合の UI化残り (最小限のDiffビューのみ) — 左ガター差分マーカー+手動リフレッシュ+保存時自動トリガー+Gitペインは WI-17c/d/e で完了済み。Blame/Commit/Branch切替/3-Way Mergeは対象外(🧊凍結)
-- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施
+- [x] **WI-17f** Git統合 Diffビュー (インライン統合diff) (`GitRepository::unifiedDiffAgainstHead()`+`render::DiffViewLineMarker`(GitDiffMarkerとは別型)+コマンドパレット限定「Git: Toggle Diff View」、実機ドッグフーディングで追加/削除行の色分け表示・Escape復帰・入力ブロックを確認、🎉 **Phase 11.1(Git統合)完結**) → コミット: `7c396c0`/`62b2418`
+- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施。**残作業はWI-16h(CSV式列)のみ。**
   - 🎉 **M5 達成目標: v1出荷 (軽量版)**
 
 **🧊 凍結 (着手しない、商用配布を将来検討する際に再評価):**
@@ -2203,6 +2203,43 @@ Debug/Release/ubsan全1515/1515件green(3構成とも自身で直接ビルド・
 Debug/Release/ubsan全1511/1511件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `git_repository.cpp`/`git_status_worker.cpp`/`git_pane.cpp`/`workspace.cpp`/`normal_mode_wiring.cpp`/`main.cpp`、コミット1〜3は各コミット時点で個別確認済み)。
 
 コミット済み(`fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)のGitペインが完結、2026-08-23合意の確定スコープはDiffビューのみ残り。** 次はWI-17f(Diffビュー)、WI-16h(CSV式列)、またはユーザー指定の次項目。
+
+---
+
+## WI-17f — Git統合 Diffビュー (インライン統合diff)
+
+**目的:** WI-17e完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで2択(WI-17f: Diffビュー/WI-16h: CSV式列)を提示し、**「WI-17f: Diffビュー(推奨)」**が選ばれた。着手前調査で、roadmap原案の「side-by-side / inline切替」のうちside-by-sideは既存`RenderPipeline`(単一Document・単一Direct2D描画のみ)に前例が一切無いと判明、AskUserQuestionで**「インライン統合diffのみ(推奨)、side-by-sideは対象外」**を選択。**これで2026-08-23合意の確定スコープにおけるGit統合部分が完結、v1出荷判定前の残作業はWI-16h(CSV式列)のみとなった。**
+
+### 設計 (Explore agent2件+Plan agent1件による着手前調査・検証済み)
+
+1. `GitRepository::unifiedDiffAgainstHead()`(新規、`git_diff_blob_to_buffer()`へ`line_cb`を渡す) — 標準プローブ(`git_unified_diff_probe.cpp`)で`context_lines`既定値3・`hunk_cb=nullptr`でも`line_cb`は正しく発火・origin文字が`' '`/`'-'`/`'+'`であることを実装前に確認
+2. `render::DiffViewLineMarker`(新規、`GitDiffMarker`とは別型) + `setDiffViewLineRegions()`/`setDiffViewActive()`/`isDiffViewActive()` + `drawDiffViewLineBackground()`(新規描画パス、既存`drawGutterOnLine()`は無変更) + `ensureDiffViewBrushes()`(低アルファ専用ブラシ)
+3. `git_diff_view_bridge.h`(新規、`buildDiffViewDocumentText()`/`buildDiffViewLineMarkers()`)
+4. コマンド配線(`git.toggleDiffView`、パレット限定)+入力ガード(`handleKeyDownEvent()`/`handleCharEvent()`/`dispatchCommand()`)
+
+### 実施内容 (2コミット)
+
+- [x] **コミット1** `GitRepository::unifiedDiffAgainstHead()`headless API + 単体テスト → コミット: `7c396c0`
+- [x] **コミット2** render::新規追加 + `git_diff_view_bridge.h` + コマンド配線+入力ガード + 最終ゲート + 実機ドッグフーディング → コミット: `62b2418`
+
+### 実装後の確定事項
+
+- **`RenderPipeline`は単一Document・単一Direct2D描画のみで、side-by-side分割描画の前例がコードベース内に一切無いと着手前調査で判明した。** AskUserQuestionで「インライン統合diffのみ」を選択、side-by-sideはWI-17f自体の対象外(将来検討)とした。
+- **`render::DiffViewLineMarker`を`GitDiffMarker`の再利用ではなく完全に別の新規型にした。** 既存`drawGutterOnLine()`のDeleted分岐(`marker.startLine != line`という点マーカー専用の特殊扱い、`lineCount`を無視)は、Diffビューの削除行(合成ドキュメント内に実在する複数行範囲)には流用できない。出荷済みの既存コード(WI-17c)を一切変更せず、独立した新規マーカー型・セッター・描画パスを追加した。
+- **色は`theme.diffAdded`/`diffDeleted`と同じRGB値を低アルファ(0.18)で複製した専用ブラシにした。** 既存の完全不透明ブラシ(ガターの細い帯用)をそのまま全行背景塗りに流用するとテキストが完全に隠れてしまうため。
+- **libgit2が完全一致するblob/bufferに対して1行もline_cbを呼ばないという事実を単体テスト(`UnifiedDiffAgainstHeadReturnsAllContextForIdenticalContent`)で発見した。** 空の結果を検出した場合にDocument全文を全行Contextとして分割する`splitIntoContextLines()`フォールバックを追加して解消 — これが無いと変更の無いファイルでDiffビューが空白になっていた。
+- **非同期ワーカーを作らなかった。** Diffビューを開く操作はdiscreteなユーザー起動アクションであり、`GitDiffWorker`/`GitStatusWorker`のような自動・頻発トリガーとは性質が異なると判断し、「JSON: Format Document」/「JSON: Validate」と同じ同期実行の扱いにした。
+- **`diffViewDocument`(合成ドキュメントの実体を所有する唯一の変数)以外は全て`RenderPipeline::isDiffViewActive()`経由で状態を判定する設計にした。** `handleKeyDownEvent()`/`dispatchCommand()`は既にubiquitousな`renderPipeline`引数経由でこの問い合わせができるため、WI-17eの`gitPane`のような深いパラメータのリップル配線を避けられた。
+- **着手前調査で`resetViewAfterDocumentSwap()`が元々`setDocument()`を一度も呼ばない実バグ相当のギャップを発見・修正した。** 「Documentのアドレスがスワップを跨いで不変」という既存の暗黙前提に依存しており、`diffViewDocument`が別オブジェクトへ`m_document`を向け替える初めての機能だったため、この前提を破ってしまう。
+- **入力ガードを`handleKeyDownEvent()`/`handleCharEvent()`(WM_KEYDOWN/WM_CHAR経路)に加えて`dispatchCommand()`(WM_COMMAND経路)にも追加した。** Save/Undo/Redo等がアクセラレータ/メニュー経由でこの別経路に到達しガードを迂回しうると着手前調査で判明したため、「Diffビュー表示中に実コマンドが来たら閉じてから実行する」という一貫した挙動にした。
+- **実機ドッグフーディングで、実際に変更されたヘッダファイル(`normal_mode_wiring.h`)を対象にDiffビューをトグルし、追加行(緑)・削除行(赤)の半透明背景+既存シンタックスハイライトの正しい表示を確認した。** Escapeでライブ文書(実カーソル位置表示)へ復帰することも確認。表示中に「ZZZINJECTIONTEST」を打鍵してからEscapeで閉じ、タイトルバーに未保存インジケータが一切現れないこと(=入力が実文書に一切到達していないこと)を確認した。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17f、2026-08-25)」参照。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1526/1526件green(3構成とも自身で直接ビルド・実行して確定)。clang-tidy新規警告0(対象: `git_repository.cpp`/`render_pipeline.cpp`/`normal_mode_wiring.cpp`/`main.cpp`)。
+
+コミット済み(`7c396c0`/`62b2418`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)がWI-17a〜fで完結。2026-08-23合意の確定スコープの残りはWI-16h(CSV式列)のみ。** 次はWI-16h(着手前に具体的な文法・構文をユーザーへ確認する必要あり)、または残作業完了後のv1出荷判定(軽量版、master_roadmap.md §12.5)。
 
 ---
 

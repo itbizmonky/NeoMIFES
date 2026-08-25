@@ -3724,7 +3724,7 @@ private:
 - **実機ドッグフーディングで、`showWith()`が2回目以降呼ばれると「#」列が画面上ずっと空白になる重大バグを発見・解消した。** `LVN_GETDISPINFOW`は正しい`mask`で発火し続けテキストも正しく書き込まれているにも関わらず画面に反映されないという不可解な状態で、`InvalidateRect`による強制再描画も無効だった。「#」列の内容は実CSV列と異なり常に不変(常に"#"という見出し、常に同じ50dip幅)であり再構築する理由が無いと気づき、`createListViews()`で1回だけ挿入し`showWith()`では二度と触らない設計へ変更して解消した — comctl32のreport-view単一列delete+insertに関する未特定の内部挙動を、対症療法ではなく再構築自体をやめることで回避した形。
 - 詳細な設計判断の根拠は`master_roadmap.md` §10.2「実装後の確定事項/変更点 (2026-08-25、WI-16g完了)」参照。
 
-### 11.6 `neomifes::git` リファレンス (WI-17a〜e実装、Phase 11.1 Gitペイン達成でGit統合の確定スコープが完結)
+### 11.6 `neomifes::git` リファレンス (WI-17a〜f実装、🎉Phase 11.1 完結)
 
 `src/git/` (`neomifes_git` STATIC ライブラリ、PUBLIC=`neomifes::document`、PRIVATE=`neomifes::util`/`libgit2package`)。ADR-022でlibgit2 v1.9.7をFetchContent採用。非同期化(`GitDiffWorker`)+`EditorSession`配線(`gitDiff()`系4点)はWI-17bで実装済み。左ガター差分マーカーUI+コマンドパレット限定の手動リフレッシュコマンド(「Git: Refresh Diff Markers」)はWI-17cで、保存時の自動再diffトリガー(`dispatchSaveCommand()`)はWI-17dで実装済み。Gitペイン(`Ctrl+Shift+G`)・Diffビュー・Blame・Commit・Branch切替は未実装(WI-17e以降、Blame/Commit/Branch切替/3-Way Mergeは🧊凍結)。
 
@@ -3908,6 +3908,52 @@ class GitPane { /* create/showWith/hide/isVisible/onParentResized/widthDips()/ha
 - コマンドは新規「Git: Toggle Changed Files」(`git.togglePane`、`CommandId::None`、コマンドパレット限定)のみ — `Ctrl+Shift+G`は既に`CsvGridToggle`が使用しており衝突するため、着手前のAskUserQuestionで「コマンドパレット限定」が選ばれた。トグルONで常に`Workspace::gitStatus()`を即座に表示した上で未取得(`gitStatusInFlight()`が偽)なら非同期リフレッシュを開始する(`refreshGitPane()`)。専用の「Git: Refresh Status」コマンドは無く、トグルOFF→ONが手動リフレッシュの経路(既存の右ドッキングペインと同じ「タブ切替では自動更新しない」前例に合わせた)。
 - **実機ドッグフーディングで、README.md(このリポジトリ自身の追跡ファイル)を開いた状態でGitペインをトグルし、実際のM(4件)/U(3件)混在の変更一覧が`git status --short`の出力と完全に一致することを確認した。** クリックで新規タブとしてファイルが開くこと、リポジトリ外のファイルで「Not a Git repository」プレースホルダが表示されることも確認済み。`Ctrl+Shift+P`(コマンドパレット)自体の合成入力がこの環境では届かなかったため(既知の修飾キー合成入力の制約)、`wireNormalMode()`の`onDeferredInit`へ一時的な直接呼び出しフックを挿入して同じコード経路(`toggleGitPane()`)を検証し、確認後に除去した。「変更0件」プレースホルダは`buildGitPaneItems()`の単純な早期分岐であり、`StatusListReturnsEmptyVectorForCleanWorkingTree`単体テストと「Not a Git repository」分岐の実機確認から十分な確信度と判断し、実機での個別確認は行っていない。
 - 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17e、2026-08-25)」参照。
+
+```cpp
+// neomifes/git/git_repository.h (WI-17f追加分)
+enum class UnifiedDiffLineKind : std::uint8_t { Context, Added, Removed };
+struct UnifiedDiffLine {
+    UnifiedDiffLineKind kind = UnifiedDiffLineKind::Context;
+    std::u16string       text;  // この行自身のテキスト、末尾改行なし
+};
+// HEADのブロブとcurrent Documentの完全な統合diff。diffAgainstHead()の
+// ハンク境界のみのLineDiffRegionとは異なり、コンテキスト行も含む全行の
+// テキストを持つ。context_linesは既定値3のまま(diffAgainstHead()の0とは
+// 意図的に異なる)。同期・UIスレッド専用、非同期ワーカーは作らない
+// (discreteなユーザー操作、JSON Format/Validateと同じ扱い)。
+[[nodiscard]] std::optional<std::vector<UnifiedDiffLine>> unifiedDiffAgainstHead(
+    const std::filesystem::path& absoluteFilePath, const document::Document& doc) const;
+
+// neomifes/render/include/neomifes/render/render_pipeline.h (WI-17f追加分)
+// GitDiffMarkerとは別型 - drawGutterOnLine()のDeleted点マーカー専用分岐
+// (lineCountを無視しstartLine一致のみで3dip帯を描く)を一切変更せず、
+// 全く独立した全行背景塗り描画パスを追加するための意図的な分離。
+struct DiffViewLineMarker {
+    document::LineNumber startLine = 0;
+    document::LineNumber lineCount = 0;  // 実在する範囲(点マーカーではない)
+    GitDiffKind            kind      = GitDiffKind::Added;  // Added/Deletedのみ使用
+};
+void setDiffViewLineRegions(std::vector<DiffViewLineMarker> markers) noexcept;
+void setDiffViewActive(bool active) noexcept;  // falseでマーカーも即座にクリア
+[[nodiscard]] bool isDiffViewActive() const noexcept;
+
+// neomifes/app/include/neomifes/app/git_diff_view_bridge.h (WI-17f)
+[[nodiscard]] std::u16string buildDiffViewDocumentText(const std::vector<git::UnifiedDiffLine>& lines);
+[[nodiscard]] std::vector<render::DiffViewLineMarker> buildDiffViewLineMarkers(
+    const std::vector<git::UnifiedDiffLine>& lines);
+```
+
+**設計上の要点 (WI-17f、Diffビュー、🎉Phase 11.1 完結):**
+- **Side-by-side表示は対象外、インライン統合diffのみを実装した。** 着手前調査で`RenderPipeline`が単一Document・単一Direct2D描画のみでside-by-side分割描画の前例がコードベース内に一切無いと判明、AskUserQuestionで「インライン統合diffのみ(推奨)」が選ばれた。
+- **`DiffViewLineMarker`を`GitDiffMarker`の再利用ではなく完全に別の新規型にした。** 既存`drawGutterOnLine()`の`Deleted`分岐は`marker.startLine != line`という点マーカー専用の特殊扱いで`lineCount`を無視する(WI-17c由来、ライブ文書には削除された行の実体が無いための設計)。Diffビューの削除行は合成ドキュメント内に実在する複数行範囲であり、この点マーカー専用コードを流用すると1行しかマークされない。出荷済みの既存コードを変更するリスクを避け、完全に独立した新規マーカー型・新規セッター・新規描画パス(`drawDiffViewLineBackground()`、全行背景の半透明塗り)を追加した。`GitDiffKind`列挙自体はAdded/Deletedの値のみ再利用。
+- **色は`theme.diffAdded`/`diffDeleted`と同じRGB値を低アルファ(0.18)で複製した専用ブラシにした。** 両テーマ値はアルファ1.0(ガターの細い帯用)であり、全行背景塗りにそのまま流用するとテキストが完全に隠れてしまうため。
+- **非同期ワーカーを作らなかった。** Diffビューを開く操作はdiscreteなユーザー起動アクションであり、`GitDiffWorker`/`GitStatusWorker`のような自動・頻発トリガーとは性質が異なる。既存の同期実行コマンド(「JSON: Format Document」/「JSON: Validate」)と同じ扱いにした。
+- **libgit2が完全一致するblobとbufferに対して1行もline_cbを呼ばないという事実を単体テストで発見した。** `diffAgainstHead()`の「空vector=変更なし」という契約はガター用途では正しいが、Diffビュー用途では「合成ドキュメントが空になる」という誤った結果を招く。`unifiedDiffAgainstHead()`自身が空の結果を検出した場合にDocumentの全文を全行Contextとして分割する`splitIntoContextLines()`フォールバックを追加して解消した。
+- **`diffViewDocument`(`std::optional<document::Document>`、`main.cpp`のwWinMainローカル)は合成ドキュメントの実体を所有する唯一の変数にし、コマンドのaction以外のどこにも触れさせない設計にした。** `RenderPipeline::isDiffViewActive()`が既にubiquitousな`renderPipeline`引数経由で到達可能なため、`handleKeyDownEvent()`/`dispatchCommand()`のガードはこの状態問い合わせだけで足り、WI-17eの`gitPane`のような深いパラメータのリップル配線を避けられた。
+- **着手前調査で`resetViewAfterDocumentSwap()`が元々`RenderPipeline::setDocument()`を一度も呼ばない実バグ相当のギャップを発見した。** 「スワップを跨いでDocumentのアドレスが不変」という既存の暗黙前提に依存しており、`diffViewDocument`が別オブジェクトへ`m_document`を向け替える初めての機能だったため、この前提を破ってしまう。`setDocument(&session.document())`+`setDiffViewActive(false)`を明示的に追加して解消した。
+- 入力ガードは`handleKeyDownEvent()`/`handleCharEvent()`(WM_KEYDOWN/WM_CHAR経路)に加えて`dispatchCommand()`(WM_COMMAND経路、Save/Undo/Redo等)にも追加した — 「Diffビュー表示中に実コマンドが来たら閉じてから実行する」という一貫した挙動にすることで、Ctrl+Sがライブ(不可視)文書を静かに保存してしまう等の穴を塞いだ。
+- **実機ドッグフーディングで、実際に変更されたヘッダファイル(`normal_mode_wiring.h`)を対象にDiffビューをトグルし、追加行(緑)・削除行(赤)が読みやすい半透明背景+既存シンタックスハイライトとともに正しく表示されることを確認した。** Escapeでライブ文書(実カーソル位置)へ復帰することも確認。表示中に「ZZZINJECTIONTEST」を打鍵してからEscapeで閉じ、タイトルバーに未保存インジケータが一切現れないこと(=入力が実文書に一切到達していないこと)を確認した。
+- 詳細な設計判断の根拠は`master_roadmap.md` §11.1「実装後の確定事項 (WI-17f、2026-08-25)」参照。
 
 ---
 

@@ -15,7 +15,7 @@
 > **やる(🎯現在のゴール、目安+10〜15 WI):**
 > - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16g(2026-08-25)で完了済み)
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜i完了(2026-08-25)で🎉完結。** XPath自前実装+`RenderPipeline`の真の右ペイン予約幅まで到達、Phase 10.3はこれ以上の残作業なし
-> - Phase 11.1 (Git統合) のUI化: 左ガター差分マーカー(手動リフレッシュ+保存時自動トリガー)はWI-17c/d(2026-08-23)で、Gitペイン(変更ファイル一覧)はWI-17e(2026-08-25)で完了済み。残りは最小限のDiffビューのみ (WI-17f以降)
+> - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
 > - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
 >
 > **🧊 凍結(着手しない、商用配布を将来検討する際に再評価):**
@@ -208,7 +208,8 @@
 | **10.3h** | **XML ツリーUI 🎉** (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用) | ✅ **完了 (WI-15h、2026-08-25、§3.102参照)。🎉 Phase 10.3 XMLツリーUI達成** |
 | **10.3i** | **XPath自前実装 + 真の左右分割ペイン化 🎉** (`RenderPipeline::setRightPaneWidthDips()`、`neomifes::xmltree::xpath`、コマンドパレット限定「XML: Evaluate XPath」) | ✅ **完了 (WI-15i、2026-08-25、§3.103参照)。🎉 Phase 10.3 完結** |
 | **11.1e** | **Git統合 Gitペイン (変更ファイル一覧) 🎉** (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングで`git status --short`と一致するM/U混在一覧を確認) | ✅ **完了 (WI-17e、2026-08-25、§3.105参照)。🎉 Phase 11.1 Gitペイン達成** |
-| 10.2残り、11.1残り → v1出荷判定 | CSV(式列)/Git(Diffビューのみ) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16h/WI-17f以降で確定予定) |
+| **11.1f** | **Git統合 Diffビュー (インライン統合diff) 🎉** (`GitRepository::unifiedDiffAgainstHead()`+`render::DiffViewLineMarker`(GitDiffMarkerとは別型、既存drawGutterOnLine()無変更)+コマンドパレット限定「Git: Toggle Diff View」、実機ドッグフーディングで追加/削除行の色分け・Escape復帰・入力ブロックを確認) | ✅ **完了 (WI-17f、2026-08-25、§3.106参照)。🎉 Phase 11.1 完結** |
+| 10.2残り → v1出荷判定 | CSV(式列) → v1出荷判定(軽量版、§12.5) | 未着手 (WI番号はWI-16h以降で確定予定) |
 | (凍結) | 8g AppContainer / 7z 大規模文書 DoD | 🧊 Phase 12 まで凍結 |
 
 ---
@@ -2963,6 +2964,24 @@ WI-16g完了・push確認後、ユーザーの「次のPhaseに進め」への�
 
 ---
 
+### 3.106 WI-17f (Git統合 Diffビュー、インライン統合diff) 完了記録 (2026-08-25、🎉 Phase 11.1 完結)
+
+WI-17e完了後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで2択(WI-17f: Diffビュー/WI-16h: CSV式列)を提示し、**「WI-17f: Diffビュー(推奨)」**が選ばれた。着手前のExplore agent調査で、roadmap原案「side-by-side / inline切替」のうちside-by-sideは既存`RenderPipeline`(単一Document・単一Direct2D描画のみ)に前例が一切無いと判明、AskUserQuestionで**「インライン統合diffのみ(推奨)、side-by-sideは対象外」**が選ばれた。**これで2026-08-23合意の確定スコープにおけるGit統合部分が完結し、v1出荷判定前の残作業はWI-16h(CSV式列)のみとなった。**
+
+**設計(Explore agent2件+Plan agent1件+Plan Mode):** 新規`GitRepository::unifiedDiffAgainstHead()`(libgit2の`git_diff_blob_to_buffer()`へ新規`line_cb`を渡す)+`render::DiffViewLineMarker`(既存`GitDiffMarker`とは完全に別の新規型)+`git_diff_view_bridge.h`+コマンドパレット限定「Git: Toggle Diff View」。標準プローブ(`git_unified_diff_probe.cpp`)で`context_lines`既定値3・`hunk_cb=nullptr`でも`line_cb`は正しく発火・origin文字(`' '`/`'-'`/`'+'`)を実装前に確認。
+
+**Plan agentの検証で4件の実際の問題を発見し、設計に反映してから実装した。** (1) `theme.diffAdded`/`diffDeleted`はアルファ値1.0(完全不透明)であり、行全体の背景塗りにそのまま流用するとテキストが隠れてしまう → 低アルファ(0.18)の専用ブラシを新規に用意。(2) 既存`drawGutterOnLine()`のDeleted分岐は`marker.startLine != line`という点マーカー専用の特殊扱いで`lineCount`を無視するため、実在する複数行範囲を表現できない → `GitDiffMarker`の再利用ではなく完全に別の新規マーカー型・セッター・描画パスを追加し、出荷済みの既存コードを一切変更しない設計にした。(3) `resetViewAfterDocumentSwap()`が元々`setDocument()`を一度も呼ばない実バグ相当のギャップ(「Documentのアドレスがスワップを跨いで不変」という既存の暗黙前提に依存)を発見 → `diffViewDocument`が初めてこの前提を破る機能のため、`setDocument()`+`setDiffViewActive(false)`を明示的に追加。(4) Save/Undo/Redo等がWM_COMMAND経由で`handleKeyDownEvent()`のガードを迂回しうる → `dispatchCommand()`自体にも「Diffビュー表示中なら先に閉じる」ガードを追加。
+
+**単体テスト作成中に、libgit2が完全一致するblob/bufferに対して1行もline_cbを呼ばないという事実を発見した。** `diffAgainstHead()`の「空vector=変更なし」という契約はガター用途では正しいが、Diffビュー用途では「合成ドキュメントが空になり画面が真っ白になる」という誤った結果を招く。空の結果を検出した場合にDocument全文を全行Contextとして分割する`splitIntoContextLines()`フォールバックを追加して解消した。
+
+**設計上、`diffViewDocument`(合成ドキュメントの実体を所有する唯一の変数)以外は全て`RenderPipeline::isDiffViewActive()`経由で状態を判定するようにした。** `handleKeyDownEvent()`/`dispatchCommand()`は既にubiquitousな`renderPipeline`引数経由でこの問い合わせができるため、WI-17eの`gitPane`のような深いパラメータのリップル配線(`handleOutlineKey()`/`handleJsonTreeKey()`/`dispatchWidgetShowCommand()`等への配線)を今回は避けられた。
+
+**実機ドッグフーディングで、実際に変更されたヘッダファイル(`normal_mode_wiring.h`、`--open`起動フラグで直接ロード)を対象にDiffビューをトグルし、追加行(緑)・削除行(赤)の半透明背景+既存シンタックスハイライトが正しく表示されることを確認した。** クリック+Escapeでライブ文書(実カーソル位置表示)へ復帰することも確認 — 1回目の検証では合成Escapeがフォーカス不足で効かず旧来の表示が残っているように見える偽陽性を経験したが、ドキュメント領域へクリックしてフォーカスを取ってから再検証し、行1(`#pragma once`)へ正しく戻ることを確認した。表示中に「ZZZINJECTIONTEST」を打鍵してからEscapeで閉じ、タイトルバーに未保存インジケータが一切現れないこと(=入力が実文書に一切到達していないこと)を確認した。
+
+最終ゲート: Debug/Release/ubsan全1526/1526件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット済み(`7c396c0`/`62b2418`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)がWI-17a〜fで完結。2026-08-23合意の確定スコープの残りはWI-16h(CSV式列)のみ。** 次はWI-16h(着手前に具体的な文法・構文をユーザーへ確認する必要あり)、またはユーザー指定の次項目 — それが完了すればv1出荷判定(軽量版、master_roadmap.md §12.5)を実施できる。
+
+---
+
 ## 4. Phase 2a のコンテキスト圧縮版
 
 ### 4.1 意図的な MVP 縮退 (Phase 2b で解消したもの / まだ残るもの)
@@ -3012,10 +3031,9 @@ WI-16g完了・push確認後、ユーザーの「次のPhaseに進め」への�
 ```
 本ファイル冒頭の「🎯 最重要 (2026-08-23 スコープ確定)」を必ず先に読め。
 2026-08-23、ユーザーとの合意で残りスコープを確定した: Phase 10.2残り
-(式列)+Phase 11.1のUI化残り(Diffビューのみ)まで完成させたら、
-v1出荷判定(軽量版、master_roadmap.md §12.5)で一区切りとする。
-LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目フル版は🧊凍結、
-着手しないこと。
+(式列)まで完成させたら、v1出荷判定(軽量版、master_roadmap.md §12.5)
+で一区切りとする。LSP完全実装・マクロ・AIプラグイン・§12.3の元22項目
+フル版は🧊凍結、着手しないこと。
 
 WI-01〜WI-13は全て完了、🎉M4(MVP出荷判定)達成済み(2026-08-16)。
 Phase 10.1(ログ解析)はWI-14a〜dで🎉完結(2026-08-18)。
@@ -3025,17 +3043,23 @@ Phase 10.1(ログ解析)はWI-14a〜dで🎉完結(2026-08-18)。
 UI→XPath+真の左右分割ペイン化)とも全機能実装済み、残作業なし。
 詳細は本書§1の10.3a〜iの各行、および§3.85〜§3.103参照。
 **Phase 10.2(CSV)はWI-16a〜gで式列を除き完了した(列固定まで、
-2026-08-25、§3.104参照)。** **Phase 11.1(Git統合)はWI-17a〜eで
-左ガター差分マーカーUI+保存時自動トリガー+Gitペイン(変更ファイル
-一覧)まで完了した(2026-08-25、§3.105参照)。** 残りはDiffビューのみ。
+2026-08-25、§3.104参照)。** **Phase 11.1(Git統合)はWI-17a〜fで
+🎉完結した(2026-08-25、§3.106参照)** — ヘッドレス基盤→非同期化→
+左ガターUI→保存時自動トリガー→Gitペイン→Diffビュー(インライン
+統合diff)まで全機能実装済み、残作業なし(Side-by-side表示/Blame/
+Commit/Branch切替/3-Way Mergeは🧊凍結のまま)。
 
-次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する
-必要あり — roadmapに「SUM/AVG/COUNTIF等」以上の仕様が無いため)、
-WI-17f(Diffビュー)、またはユーザー指定の次項目 — Phase 10.3は完結
-したため候補から外れる。着手前にbuild_plan.md §5とmaster_roadmap.md
-§10.2(または§11.1)を読み、本書§5と同じ形式でサブWIへ切り直すこと。
-**注意: detailed_design.md §11.6は別セッションが並行編集している
-可能性がある(§3.105参照)。着手前に`git log`で競合有無を確認せよ。**
+**次はWI-16h(CSV式列)のみ** — 着手前に具体的な文法・構文をユーザーへ
+確認する必要がある(roadmapに「SUM/AVG/COUNTIF等」以上の仕様が無いため)。
+これが完了すればv1出荷判定(軽量版、master_roadmap.md §12.5)を実施
+できる、もしくはユーザー指定の次項目。着手前にbuild_plan.md §5と
+master_roadmap.md §10.2を読み、本書§5と同じ形式でサブWIへ切り直す
+こと。
+**注意: detailed_design.md §11.6を対象とする`spawn_task`起票済みの
+別セッションが存在した(WI-16g完了時に起票)。本セッション(WI-17e/f)
+は同じ節を先に更新・コミット済みだが、あのセッションの成果がまだ
+反映されていない可能性がある。着手前に`git log docs/design/
+detailed_design.md`で最新状態を確認せよ。**
 
 **繰り返し登場した技術的教訓 (今後も適用可能、詳細は該当WIの
 TIMELINE.md/build_plan.mdセクション参照):**

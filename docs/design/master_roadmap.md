@@ -287,7 +287,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 | 10.1 | ログ解析モード ヘッドレス基盤 (**最大の差別化点。v2.1 で AI より前倒し**) | 🎉 **完結 (WI-14a〜d完了、2026-08-18)** | §10.1 |
 | 10.3 | JSON/XML Tree モード (**三大エディタが持たない差別化点**) | 🎉 **完結 (WI-15a〜i完了、2026-08-25。XPath自前実装+真の左右分割ペイン化まで到達)** | §10.3 |
 | 10.2 | CSV モード | 🎉 **列固定達成 (WI-16a〜g完了、2026-08-25。式列のみ未着手、WI-16h以降)** | §10.2 |
-| 11.1 | Git 統合 | **着手 (WI-17a〜e完了、2026-08-25): ヘッドレス基盤+非同期化+EditorSession/Workspace配線+左ガター差分マーカーUI(手動リフレッシュ+保存時自動トリガー)+Gitペイン(変更ファイル一覧)まで実装済み。残りはDiffビュー(WI-17f〜)が🎯現在のゴール。Blame/Commit/Branch切替/3-Way Mergeは🧊凍結 (2026-08-23)** | §11.1 |
+| 11.1 | Git 統合 | **🎉 完結 (WI-17a〜f完了、2026-08-25): ヘッドレス基盤+非同期化+EditorSession/Workspace配線+左ガター差分マーカーUI+Gitペイン+Diffビュー(インライン統合diff)まで全実装済み。Blame/Commit/Branch切替/3-Way Merge/Side-by-side表示は🧊凍結 (2026-08-23)** | §11.1 |
 | 11.2 | LSP 完全実装 | 🧊 **凍結 (2026-08-23、build_plan.md §0参照)** | §11.2 |
 | 11.3 | マクロ (Lua + JS + 秀丸互換レイヤ) | 🧊 **凍結 (2026-08-23)** | §11.3 |
 | 9 | AI プラグイン (Claude + Copilot 型補完 + RAG) | 🧊 **凍結 (2026-08-23。「本体はAI無しでも100%動作」原則自体は維持、単に本体側の機能追加を優先しAI実装は見送り)** | §9 |
@@ -2407,7 +2407,7 @@ WI-15iでWI-15hの残り2項目(XPath・真の左右分割ペイン化)を両方
 
 ### 11.1 Git 統合 (要件定義書 §11)
 
-> **実装状況 (2026-08-25、WI-17e完了):** ヘッドレス基盤+非同期化+EditorSession/Workspace配線+左ガター差分マーカーUI(手動リフレッシュ+保存時自動トリガー)+Gitペイン(変更ファイル一覧、コマンドパレット限定)まで実装済み。2026-08-23合意の確定スコープ(build_plan.md §0)のうちDiffビューのみ未着手(次期WI候補)。Blame・インラインBlame・Commit・Branch切替/3-Way Mergeは🧊凍結。詳細は本節末尾の「実装後の確定事項」参照。
+> **実装状況 (2026-08-25、WI-17f完了):** 🎉 **Phase 11.1(Git統合)が完結した。** ヘッドレス基盤+非同期化+EditorSession/Workspace配線+左ガター差分マーカーUI(手動リフレッシュ+保存時自動トリガー)+Gitペイン(変更ファイル一覧)+Diffビュー(インライン統合diff、コマンドパレット限定)まで全て実装済み。2026-08-23合意の確定スコープはこれで達成。Blame・インラインBlame・Commit・Branch切替/3-Way Merge/Side-by-side表示は🧊凍結(対象外)。詳細は本節末尾の「実装後の確定事項」参照。
 
 #### 機能ビジョン
 - **凌駕元:** 秀丸の DIFF ビュー、VSCode の GitLens
@@ -2476,6 +2476,20 @@ WI-17eでGitペイン(変更ファイル一覧)を実装した(Diffビューは�
 - テスト中に2件の副次的なバグ/フレーキネスを発見・解消した: 既存の共有テストフィクスチャ`makeRepoWithCommit()`が`git_index_write()`を呼んでおらず(`git_index_write_tree()`のみではディスク上の`.git/index`へ永続化されない)`statusList()`系テストでのみ露呈した点、および`uniqueTempDir()`のunseeded `std::rand()`による失敗実行時の残置ディレクトリ衝突。
 - **実機ドッグフーディングで、このリポジトリ自身(README.md追跡ファイル)を対象にGitペインをトグルし、`git status --short`と完全一致するM(4件)/U(3件)の変更一覧を確認した。** クリックで新規タブとしてファイルが開くこと、リポジトリ外ファイルでの「Not a Git repository」プレースホルダも確認済み。「変更0件」プレースホルダの実機確認は行わず、単体テスト+コードレビューでの確信度に留めた(正直に記録)。`Ctrl+Shift+P`の合成入力がこの環境では届かなかったため(既知の修飾キー合成入力の制約)、`onDeferredInit`への一時的な直接呼び出しフックで同じコード経路を検証し、確認後に除去した。
 - 詳細は`build_plan.md` WI-17eセクション参照。
+
+#### 実装後の確定事項 (WI-17f、2026-08-25、🎉 Phase 11.1 完結)
+
+WI-17fでDiffビューを実装した(インライン統合diffのみ、Side-by-sideは対象外)。着手前調査で`RenderPipeline`が単一Document・単一Direct2D描画のみでside-by-side分割描画の前例がコードベース内に一切無いと判明、AskUserQuestionで「インライン統合diffのみ(推奨)」を選択。**これで2026-08-23合意の確定スコープにおけるGit統合部分が完結した。**
+
+- **新規`GitRepository::unifiedDiffAgainstHead()`(libgit2の`git_diff_blob_to_buffer()`へ新規`line_cb`を渡す、既存`diffAgainstHead()`はhunk_cbのみ)を追加した。** context_linesは既定値3のまま(diffAgainstHead()の0とは意図的に異なる — Diffビューは周辺文脈が必要)。同期・UIスレッド専用、discreteなユーザー操作のため非同期ワーカーは作らなかった(JSON Format/Validateと同じ扱い)。
+- **`render::DiffViewLineMarker`を`GitDiffMarker`の再利用ではなく完全に別の新規型にした。** 既存`drawGutterOnLine()`のDeleted分岐は点マーカー専用の特殊扱い(lineCountを無視)であり、Diffビューの削除行(合成ドキュメント内に実在する複数行範囲)には流用できない。出荷済みの既存コードを一切変更せず、独立した新規マーカー型・セッター・描画パス(全行背景の半透明塗り)を追加した。
+- **色は`theme.diffAdded`/`diffDeleted`と同じRGB値を低アルファ(0.18)で複製した専用ブラシにした。** 既存の完全不透明ブラシをそのまま流用するとテキストが隠れてしまうため。
+- **libgit2が完全一致するblob/bufferに対して1行もline_cbを呼ばないという事実を単体テストで発見した。** 空の結果を検出した場合にDocument全文を全行Contextとして分割するフォールバックを追加して解消。
+- **`diffViewDocument`(合成ドキュメントの実体を所有する唯一の変数)以外は全て`RenderPipeline::isDiffViewActive()`経由で状態を判定する設計にした。** WI-17eの`gitPane`のような深いパラメータのリップル配線を避けられた。
+- **着手前調査で`resetViewAfterDocumentSwap()`が元々`setDocument()`を一度も呼ばない実バグ相当のギャップを発見・修正した。** 「Documentのアドレスがスワップを跨いで不変」という既存の暗黙前提を`diffViewDocument`が初めて破るため。
+- 入力ガードは`handleKeyDownEvent()`/`handleCharEvent()`に加えて`dispatchCommand()`(WM_COMMAND経路)にも追加し、Diffビュー表示中の実コマンド(Save/Undo/Redo等)は先に閉じてから実行する一貫した挙動にした。
+- **実機ドッグフーディングで、実際に変更されたヘッダファイルを対象にDiffビューをトグルし、追加行(緑)・削除行(赤)の半透明背景+既存シンタックスハイライトの正しい表示、Escapeでのライブ文書復帰、表示中の打鍵(「ZZZINJECTIONTEST」)が実文書に一切到達しないこと(タイトルバーの未保存インジケータ無しで確認)を確認した。**
+- 詳細は`build_plan.md` WI-17fセクション参照。
 
 ### 11.2 LSP 統合 — 完全実装 (v2.0 大幅拡張)
 

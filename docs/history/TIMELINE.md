@@ -3536,4 +3536,27 @@ Plan Modeで設計を確定・承認を得た: 新規`GitRepository::statusList(
 
 次はWI-17f(Diffビュー)、WI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)、またはユーザー指定の次項目。
 
+## Session 114 (2026-08-25): WI-17f(Git統合 Diffビュー、インライン統合diff)完了、🎉Phase 11.1 完結
+
+WI-17e完了・ドキュメント同期後、ユーザーの「次のPhaseに進め」への回答としてAskUserQuestionで2択(WI-17f: Diffビュー/WI-16h: CSV式列)を提示し、**「WI-17f: Diffビュー(推奨)」**が選ばれた。着手前にExplore agentでroadmap原案「Diff: `Alt+D` — 現在ファイルとHEAD、side-by-side / inline切替」を調査したところ、既存`RenderPipeline`は単一Document・単一Direct2D描画のみでside-by-side分割描画の前例がコードベース内に一切無いと判明。AskUserQuestionで**「インライン統合diffのみ(推奨)、side-by-sideは対象外」**が選ばれた。**これで2026-08-23合意の確定スコープにおけるGit統合部分が完結し、v1出荷判定前の残作業はWI-16h(CSV式列)のみとなった。**
+
+Plan Modeで設計を確定: 新規`GitRepository::unifiedDiffAgainstHead()`(libgit2の`git_diff_blob_to_buffer()`へ新規`line_cb`を渡す、既存`diffAgainstHead()`はhunk_cbのみ)+`render::DiffViewLineMarker`(新規、`GitDiffKind`列挙は再利用するが型自体は完全に別)+`git_diff_view_bridge.h`+コマンドパレット限定「Git: Toggle Diff View」。Plan agentによる検証で、着手前の設計案には無かった4件の実際の問題を発見し、実装前に設計へ反映した:
+
+1. **`theme.diffAdded`/`diffDeleted`はアルファ値1.0(完全不透明)** — ガターの細い帯用の値であり、行全体の背景塗りにそのまま流用するとテキストが完全に隠れる。低アルファ(0.18)の専用ブラシ(`ensureDiffViewBrushes()`)を新規に用意する設計へ修正。
+2. **既存`drawGutterOnLine()`のDeleted分岐は`marker.startLine != line`という点マーカー専用の特殊扱いで`lineCount`を無視する**(WI-17c由来、ライブ文書には削除された行の実体が無いための設計) — Diffビューの削除行は合成ドキュメント内に実在する複数行範囲であり、この既存コードを流用すると1行しかマークされない。`GitDiffMarker`の再利用ではなく完全に独立した新規マーカー型・セッター・描画パスを追加し、出荷済みの既存コード(WI-17c)を一切変更しない設計に修正。
+3. **`resetViewAfterDocumentSwap()`が元々`RenderPipeline::setDocument()`を一度も呼ばない実バグ相当のギャップ** — 「Documentのアドレスがスワップを跨いで不変」という既存の暗黙前提に依存しており、`diffViewDocument`が別オブジェクトへ`m_document`を向け替える初めての機能だったため、この前提を破ってしまう。`setDocument(&session.document())`+`setDiffViewActive(false)`を明示的に追加する設計へ修正。
+4. **Save/Undo/Redo等はWM_COMMAND経由で`dispatchCommand()`に到達し、`handleKeyDownEvent()`独自のガードを迂回しうる** — `dispatchCommand()`自体にも「Diffビュー表示中なら先に閉じてから実行する」ガードを追加する設計へ修正。
+
+標準プローブ(`git_unified_diff_probe.cpp`)でlibgit2の`git_diff_line_cb`の挙動(`context_lines`既定値3、`hunk_cb=nullptr`でも`line_cb`は正しく発火、origin文字が`' '`/`'-'`/`'+'`)を実装前に確認した。
+
+**単体テスト作成中に、libgit2が完全一致するblobとbufferに対して1行もline_cbを呼ばないという事実を発見した。** `diffAgainstHead()`の「空vector=変更なし」という契約はガター用途では正しいが、Diffビュー用途では「合成ドキュメントが空になり画面が真っ白になる」という誤った結果を招く。テストの期待値側のバグかと最初は疑ったが、実装を確認すると本当にlibgit2側がコールバックを一切発火させていないと判明し、`unifiedDiffAgainstHead()`自身が空の結果を検出した場合にDocument全文を全行Contextとして分割する`splitIntoContextLines()`フォールバックを追加して解消した。
+
+**設計上、`diffViewDocument`(合成ドキュメントの実体を所有する唯一の変数)以外は全て`RenderPipeline::isDiffViewActive()`経由で状態を判定するようにした。** `handleKeyDownEvent()`/`dispatchCommand()`は既にubiquitousな`renderPipeline`引数経由でこの問い合わせができるため、WI-17eの`gitPane`のような深いパラメータのリップル配線(`handleOutlineKey()`/`handleJsonTreeKey()`/`dispatchWidgetShowCommand()`等の多数の関数への配線)を今回は避けられた — `diffViewDocument`自体は`buildCommandRegistry()`(トグルコマンドのaction)と`wireNormalMode()`/`main.cpp`のみに留まった。
+
+**実機ドッグフーディングで、実際に変更されたヘッダファイル(`normal_mode_wiring.h`、`--open`起動フラグで直接ロード)を対象にDiffビューをトグルし、追加行(緑)・削除行(赤)の半透明背景+既存シンタックスハイライトが正しく表示されることを確認した。** 1回目のEscape検証では合成キー入力がフォーカス不足で効かず、直前の画面がそのまま残っているように見える偽陽性を経験した(ドキュメント領域を一度もクリックしていなかったため) — ドキュメント領域へクリックしてフォーカスを取ってから再検証したところ、行1(`#pragma once`)・実カーソル位置表示への正しい復帰を確認できた。表示中に「ZZZINJECTIONTEST」という16文字を打鍵してからEscapeで閉じ、タイトルバーに未保存インジケータ(ファイル名の前後のマーク)が一切現れないこと、すなわち入力が実文書に一切到達していないことを確認した。
+
+最終ゲート: Debug/Release/ubsan全1526/1526件green(3構成とも自身で直接ビルド・実行して確定)、clang-tidy新規警告0。コミット2件(`7c396c0`/`62b2418`)、pushはユーザーの明示指示待ち。**🎉 Phase 11.1(Git統合)がWI-17a〜fで完結。2026-08-23合意の確定スコープの残りはWI-16h(CSV式列)のみ。** ドキュメント同期(build_plan.md新規WI-17fセクション+§0/§3更新、master_roadmap.md §11.1実装後の確定事項+フェーズ状況表(🎉Phase 11.1完結)、RESUME_HERE.md §1テーブル1行追加+§3.106新設+冒頭コールアウト+§6更新、detailed_design.md §11.6追記)は本セッション内で完了。
+
+次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)のみ、またはユーザー指定の次項目 — WI-16h完了後にv1出荷判定(軽量版、master_roadmap.md §12.5)を実施できる。
+
 <!-- 次セッションはここに追記 -->
