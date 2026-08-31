@@ -12,18 +12,33 @@
 >
 > **MVP(WI-13、2026-08-16、🎉M4)達成後、差別化機能(Phase 10)とGit統合(Phase 11.1)の追加を続けていたが、「次に何をもって完成とするか」の定義が無いまま作業が続いている、とユーザーから指摘された。** 残作業量(§12.3フル版=Google/MSリリース品質基準を目指す場合、35〜50 WI規模=数十セッション)を提示し、AskUserQuestionで今後の方針を確認した結果、以下でスコープを確定した(2026-08-23)。
 >
-> **やる(🎯現在のゴール、目安+10〜15 WI):**
-> - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16g(2026-08-25)で完了済み)
+> **やる(🎯現在のゴール):**
+> - Phase 10.2 (CSV): 🎉 **WI-16gの列固定達成をもって完結扱い。式列(WI-16h)は2026-08-30、roadmap原案が元々「式列 (v2.0)」と明記していた点を理由にAskUserQuestionでユーザー承認のもと見送り確定。**
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜i完了(2026-08-25)で🎉完結。** XPath自前実装+`RenderPipeline`の真の右ペイン予約幅まで到達、Phase 10.3はこれ以上の残作業なし
 > - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
-> - 上記完了後、**v1出荷判定(軽量版、`master_roadmap.md` §12.5)** を実施して一区切りとする
+> - **v1出荷判定(軽量版、`master_roadmap.md` §12.5)に2026-08-30着手、進行中。** 17項目中9項目達成、fuzz testは同じくv2.0起源のため見送り確定(ユーザー承認)。**検証中にシステムメモリを枯渇させる重大バグ(`decode_cache_unbounded_growth.md`)を発見・修正した — 詳細は次の callout 参照。** 残りタスク: 初期メモリの余裕確保(現状19.92MBで目標20MBに対し薄いマージン)、数GB Grep実測、24時間ソーク、Application Verifier、基本アクセシビリティ、Windowsバージョン明記、10GBファイル対応の残り2モード(CSV/JSON-XML Tree、下記issue参照)
 >
 > **🧊 凍結(着手しない、商用配布を将来検討する際に再評価):**
 > - Phase 11.2 LSP完全実装、Phase 11.3 マクロ(Lua+JS+秀丸互換)、Phase 9 AIプラグイン
 > - Git統合のBlame/Commit/Branch切替/3-Way Merge
 > - `master_roadmap.md` §12.3の元22項目フル版(NVDA/JAWS専門認証・本物のAuthenticode証明書配布・SBOM/CVE継続運用・自動更新機構など、このワークフロー単独では完結できない項目を含む)
+> - CSV式列(WI-16h)、fuzz test 24時間クラッシュ0 (いずれもroadmap原案がv2.0機能として明記)
 >
 > **反映済みドキュメント:** `build_plan.md` §0(新規「🎯現在のゴール」ボックス)+§3(進捗チェックリスト全面更新)、`master_roadmap.md`(フェーズ状況表+Phase 9/11.2/11.3/12へ🧊凍結注記+新規§12.5軽量版チェックリスト)。詳細な経緯は`docs/history/TIMELINE.md`の該当セッション記録を参照。
+>
+> ---
+
+> # 🔴 最重要 (2026-08-31) — `decode_cache_unbounded_growth.md` 重大バグ発見・修正
+>
+> **v1出荷判定の10GBファイル検証中、システムメモリを枯渇させる重大バグを発見・修正した。** `OriginalBuffer`(mmap + Lazy Decode)のデコードキャッシュが永久保持され追い出されない設計だったため、`document::LineIndex::build()`(**あらゆるファイルを開いた際に必ず発火**)を含む9箇所の全体走査系消費者(ログ解析/CSV/JSON-XML Tree/検索/保存/Git差分/構文ハイライト再パース)が、10GBファイルでシステムメモリを数十GB規模で消費し得る状態だった。
+>
+> **修正:** 非キャッシュAPI(`OriginalBuffer::viewNoCache()`/`BufferSnapshot::pieceTextNoCache()`/`extractNoCache()`)+ストリーミングAPI(`viewStreamed()`/`pieceTextStreamed()`、固定チャンク単位)を追加し、9箇所を切り替えた。10GBファイルでのPrivateメモリは20GB超(強制終了)→**1.22GB**、初回インデックス構築は113.7秒→**26.99秒**へ改善。
+>
+> **未対応のまま残る2件のissue(次のPhase候補):**
+> - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — CSVモードのper-cellインデックスが10GB規模で恒常的に大きなメモリを消費(一時バッファの問題とは別)
+> - [`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1) — JSON/XMLツリーUIが100MB/145万要素で3分以上UIハング(原因未調査、推定は`ui::JsonTreePane`の非仮想化`WC_LISTVIEW`)
+>
+> 詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)、`docs/history/TIMELINE.md` Session 115参照。
 >
 > ---
 

@@ -130,24 +130,40 @@ std::expected<LogModel, LogPatternError> LogModel::build(const document::BufferS
     model.m_lines.reserve(snapshot.lineCount());
 
     // Single linear pass over the piece list (mirrors LineIndex::build()'s
-    // pieceView()-based walk, line_index.cpp) - `currentLine` accumulates
-    // one line's content at a time, correctly spanning piece boundaries
-    // (a line's text may straddle two pieces after edits), and is cleared
-    // after every '\n'. Never holds more than one line's worth of text,
-    // unlike Document::lineText()'s per-line snapshot()+extract() cost.
+    // pieceTextStreamed()-based walk, line_index.cpp) - `currentLine`
+    // accumulates one line's content at a time, correctly spanning piece
+    // AND chunk boundaries (a line's text may straddle two pieces after
+    // edits, or two streamed chunks within one large piece), and is
+    // cleared after every '\n'. Never holds more than one line's worth of
+    // text, unlike Document::lineText()'s per-line snapshot()+extract()
+    // cost. pieceTextStreamed() rather than pieceTextNoCache(): the latter
+    // still materializes an entire piece as one std::u16string before this
+    // loop can start walking it - fine for a small edited piece, but for a
+    // freshly opened multi-GB file (one single huge Original piece) that
+    // transiently reserves ~2x the file's own size in one allocation just
+    // to scan through and discard it, the same problem LineIndex::build()
+    // had (measured: a 10GB file's one-shot decode took over 50s and
+    // approached the system's physical memory ceiling before being
+    // streamed instead). See docs/issues/decode_cache_unbounded_growth.md.
     std::u16string        currentLine;
     document::LineNumber  lineNumber = 0;
     for (const document::Piece& piece : snapshot.pieces()) {
-        for (const char16_t ch : snapshot.pieceView(piece)) {
-            if (ch == u'\n') {
-                model.m_lines.push_back(
-                    matchLine(*re, indices, rule.timestampFormat, assumedYear, lineNumber, currentLine));
-                currentLine.clear();
-                ++lineNumber;
-            } else {
-                currentLine.push_back(ch);
-            }
-        }
+        [[maybe_unused]] const bool streamedOk =
+            snapshot.pieceTextStreamed(piece, [&](std::u16string_view chunk) {
+                for (const char16_t ch : chunk) {
+                    if (ch == u'\n') {
+                        model.m_lines.push_back(matchLine(*re, indices, rule.timestampFormat, assumedYear,
+                                                          lineNumber, currentLine));
+                        currentLine.clear();
+                        ++lineNumber;
+                    } else {
+                        currentLine.push_back(ch);
+                    }
+                }
+            });
+        // Same "best-effort, no crash" contract as before this streaming
+        // rewrite - a page error mid-piece simply leaves the remainder of
+        // this piece (and any following pieces) unscanned.
     }
     // Final line, whether or not it ends in '\n' (BufferSnapshot::lineCount()
     // == newlineCount()+1 always counts it, matching the empty-document ->

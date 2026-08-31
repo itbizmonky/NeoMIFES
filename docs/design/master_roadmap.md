@@ -2708,25 +2708,25 @@ neomifes.showToast("Inserted!")
 **§12.3フル版との違い:** このワークフロー(Claude Codeエージェント+ユーザーのローカル開発機)単独では完結できない項目 — 専門機関によるNVDA/JAWSアクセシビリティ認証、本物のAuthenticode証明書での署名配布、SBOM/CVEスキャンの継続運用体制、自動更新機構(canary→stableのサーバインフラ)、中国語/韓国語IMEの実機確認(該当IME環境が無い可能性が高い) — を除外し、**ローカル環境だけで実際に検証・達成できる項目**に絞った。商用配布を将来検討する際は §12.3 を再評価すること。
 
 **チェックリスト (§12.3から引き継ぎ・簡略化した項目):**
-- [ ] 起動時間 ≤ 300ms (Release、実機実測) — WI-13時点で29.3ms実測済み、維持確認のみ
-- [ ] 初期メモリ ≤ 20MB (Release、Working Set)
-- [ ] 60fps スクロール (10GB ファイル、Release)
-- [ ] 100 万 Undo (24 時間ソーク、メモリ膨張無し) — WI-13は8時間実施済み、24時間へ延長
-- [ ] 10GB ファイル対応 (通常編集 + ログ解析モード + CSV モード + JSON/XML Tree モード)
-- [ ] 数 GB Grep ≤ 30 秒
-- [ ] クラッシュ 0 (24 時間ソーク)
-- [ ] メモリリーク 0 (Application Verifier、ローカル実行)
-- [ ] clang-tidy 新規指摘 0 (毎WIで既に実施中の運用を維持)
-- [ ] ASan/UBSan クラッシュ 0 (毎WIで既に実施中の運用を維持)
-- [ ] 全単体テスト pass
-- [ ] AI プラグイン無効時に本体 100% 動作 (AIプラグイン自体を作らない選択のため設計上自明に真)
-- [ ] fuzz test 24 時間クラッシュ 0 (対象は encoding パーサ・regex コンパイルのみ。LSP JSON パーサは§12.3のLSP実装が前提のため対象外)
-- [ ] 基本アクセシビリティ (キーボード完結ナビゲーション・高コントラストモード動作・スクリーンリーダーでの基本疎通確認。専門認証は求めない)
-- [ ] 日本語 IME でインライン変換が正しく表示される (実機手動確認、WI-06で実績あり)
-- [ ] 動作確認した Windows バージョンを明記する (開発機で確認できた範囲のみ、未確認バージョンは「未確認」と正直に記載)
-- [ ] Portable Zip 版配布 (WI-13で実証済みの自己署名を維持。本物のAuthenticode証明書取得は商用配布時の別課題として`docs/issues/`に残す)
+- [x] 起動時間 ≤ 300ms (Release、実機実測) — **実測35.38ms**(`--measure-startup`、2026-08-30再測定。WI-13時点29.3msから微増だが目標の1/8で余裕あり)
+- [x] 初期メモリ ≤ 20MB (Release、Working Set) — **実測19.92MB**(`workingSetBytesAtFirstPaint`=20,885,504バイト、2026-08-30測定)。目標をわずか0.08MB下回るのみの薄いマージンであり、今後の機能追加で超過しうる点に注意
+- [x] 60fps スクロール (10GB ファイル、Release) — **実測p50=16.66ms/p95=16.78ms**(≈60fps、2026-08-31、`decode_cache_unbounded_growth.md`修正後の再測定。WI-13実測とほぼ同水準を維持)
+- [ ] 100 万 Undo (24 時間ソーク、メモリ膨張無し) — 100万Undo自体の能力は`BM_UndoStack_PushOneMillion`(412.5ms)/`BM_UndoStack_UndoOneMillion`(267.1ms)で既に実測済み。24時間ソーク自体は未実施(WI-13は8時間実施済み)
+- [x]/[ ] 10GB ファイル対応 (通常編集 + ログ解析モード + CSV モード + JSON/XML Tree モード) — **通常編集/ログ解析モードは`decode_cache_unbounded_growth.md`修正後に実機再検証済み**(通常編集: p50/p95維持、ログ解析モード: 10GB/1.23億行でPrivate 4.54GBに収まり応答性維持を確認)。**CSVモードは一時デコードバッファの問題は解消したが、恒常的なper-cellインデックスのメモリコストが別途残る**([csv_per_cell_index_memory_scaling.md](../issues/csv_per_cell_index_memory_scaling.md)、P1、未対応)。**JSON/XMLTreeモードは100MB規模で3分以上のUIハングを確認**([json_tree_ui_population_hang.md](../issues/json_tree_ui_population_hang.md)、P1、原因未調査)、10GB規模の検証は未実施
+- [ ] 数 GB Grep ≤ 30 秒 — 未実測(Phase 5aの`search_find_all_bench.cpp`は200,000行規模のベンチのみ、数GB規模の実測は未実施)
+- [ ] クラッシュ 0 (24 時間ソーク) — 未実施
+- [ ] メモリリーク 0 (Application Verifier、ローカル実行) — 未実施(`appverif.exe`は開発機に標準搭載を確認済み)
+- [x] clang-tidy 新規指摘 0 (毎WIで既に実施中の運用を維持)
+- [x] ASan/UBSan クラッシュ 0 (毎WIで既に実施中の運用を維持)
+- [x] 全単体テスト pass
+- [x] AI プラグイン無効時に本体 100% 動作 (AIプラグイン自体を作らない選択のため設計上自明に真)
+- [x] ~~fuzz test 24 時間クラッシュ 0~~ — **🧊 対象外確定 (2026-08-30、ユーザー承認)。** 本節冒頭の元ネタである§12.6動的解析節がこの項目自体を「(v2.0 追加)」と明記しており、libFuzzer/AFL++ハーネスは未整備(新規構築が必要)。式列(WI-16h)と同じ「v2.0起源」パターンのため、CSV式列と同じ理由で見送りとした
+- [ ] 基本アクセシビリティ (キーボード完結ナビゲーション・高コントラストモード動作・スクリーンリーダーでの基本疎通確認。専門認証は求めない) — 未実施
+- [x] 日本語 IME でインライン変換が正しく表示される (実機手動確認、WI-06で実績あり)
+- [ ] 動作確認した Windows バージョンを明記する (開発機で確認できた範囲のみ、未確認バージョンは「未確認」と正直に記載) — 未実施
+- [x] Portable Zip 版配布 (WI-13で実証済みの自己署名を維持。本物のAuthenticode証明書取得は商用配布時の別課題として`docs/issues/`に残す)
 
-**達成状況:** 未着手(Phase 10残り+Git統合UI化の完了後に着手)。着手時は各項目の実測値をこの節に追記する(CLAUDE.md絶対ルール10)。
+**達成状況 (2026-08-31時点):** 着手中。17項目中9項目達成、1項目対象外確定(fuzz test)、10GBファイル対応は部分達成(2/4モード)、残り6項目は未着手。**検証中に`decode_cache_unbounded_growth.md`(重大、Private メモリが数十GB規模で無制限に増加しシステムメモリを枯渇させるバグ)を発見し修正した** — `OriginalBuffer`のデコードキャッシュ無制限蓄積+文書全体の一括デコードという2段階の根本原因を特定し、非キャッシュAPI+ストリーミングAPIを`LineIndex::build()`(あらゆるファイル読込)を含む9箇所へ適用、10GBファイルでのPrivateメモリを20GB超→1.22GBへ削減した。副産物として2件の未対応issue(CSVモードのper-cellメモリスケーリング、JSON/XMLツリーUIの大規模ファイルハング)を新規起票した。詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)参照。
 
 ---
 

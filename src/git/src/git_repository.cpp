@@ -260,7 +260,13 @@ std::optional<std::vector<LineDiffRegion>> GitRepository::diffAgainstHead(
     auto* headBlob = reinterpret_cast<git_blob*>(headObj);
 
     const document::TextPos    length      = snapshot.length();
-    const std::u16string        currentText = snapshot.extract(document::TextRange{.start = 0, .end = length});
+    // extractNoCache(), not extract(): `currentText` is converted to UTF-8
+    // and discarded a few lines below, and this runs on every Save
+    // (WI-17d's auto re-diff trigger) - extract() would permanently retain
+    // the whole file as decoded UTF-16 in OriginalBuffer on every save of a
+    // tracked file, just to compute a diff - see
+    // docs/issues/decode_cache_unbounded_growth.md.
+    const std::u16string        currentText = snapshot.extractNoCache(document::TextRange{.start = 0, .end = length});
     const std::string           currentUtf8 = util::toUtf8WithOffsets(currentText).utf8;
 
     git_diff_options options;
@@ -333,7 +339,13 @@ std::optional<std::vector<UnifiedDiffLine>> GitRepository::unifiedDiffAgainstHea
     }
     auto* headBlob = reinterpret_cast<git_blob*>(headObj);
 
-    const std::u16string currentText = doc.toU16String();
+    // doc.snapshot()->extractNoCache(...), not doc.toU16String(): the latter
+    // goes through BufferSnapshot::extract()'s caching path, which would
+    // permanently retain the whole file as decoded UTF-16 in OriginalBuffer
+    // every time the Diff view is toggled on a tracked file - see
+    // docs/issues/decode_cache_unbounded_growth.md.
+    const auto            snap        = doc.snapshot();
+    const std::u16string currentText = snap->extractNoCache(document::TextRange{.start = 0, .end = snap->length()});
     const std::string     currentUtf8 = util::toUtf8WithOffsets(currentText).utf8;
 
     git_diff_options options;

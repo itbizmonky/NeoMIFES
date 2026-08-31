@@ -122,8 +122,14 @@ constexpr std::uint64_t kMaxChunkCodeUnits = 1ULL << 20;
 
         for (TextPos pos = windowStart; pos < windowEnd;) {
             const TextPos        subEnd = nextSubChunkEnd(snap, pos, windowEnd);
+            // extractNoCache(), not extract(): across the whole save, this
+            // loop's sub-chunks cover the ENTIRE document exactly once each
+            // (encode-and-write, then discard). Using the caching extract()
+            // here would permanently retain the whole file as decoded UTF-16
+            // in OriginalBuffer just from saving it - see
+            // docs/issues/decode_cache_unbounded_growth.md.
             const std::u16string text   = encoding::convertLineEndings(
-                snap.extract(TextRange{.start = pos, .end = subEnd}), lineEnding);
+                snap.extractNoCache(TextRange{.start = pos, .end = subEnd}), lineEnding);
             const auto  encoded = encoding::encode(text, bodyEncoding);
             const auto* bytes   = std::get_if<std::vector<std::byte>>(&encoded);
             if (bytes == nullptr) {

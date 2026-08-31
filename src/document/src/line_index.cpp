@@ -18,15 +18,42 @@ void LineIndex::build(const BufferSnapshot& snapshot) {
         // Only pieces that contain at least one '\n' need to be scanned. The
         // cached count on the Piece struct lets us skip large runs cheaply.
         if (p.newlineCount > 0) {
-            // Directly walk the piece's backing buffer - no allocation and no
-            // O(N) re-walk of the piece list (unlike the previous MVP path
-            // which went through BufferSnapshot::extract).
-            const std::u16string_view v = snapshot.pieceView(p);
-            for (std::size_t i = 0; i < v.size(); ++i) {
-                if (v[i] == u'\n') {
-                    m_lineStarts.push_back(cursor + i + 1);
-                }
-            }
+            // pieceTextStreamed(), not pieceTextNoCache(): this loop only
+            // ever needs one character at a time (looking for '\n'), so
+            // materializing the WHOLE piece as one std::u16string first -
+            // which pieceTextNoCache() does - would transiently reserve
+            // ~2x the piece's byte size (UTF-8 -> UTF-16) in one allocation
+            // just to immediately scan through and discard it. For a single
+            // multi-GB Original piece (the common case: a freshly opened
+            // file with no edits yet), that one-shot reserve+decode was
+            // measured to both take much longer than its size would
+            // suggest (non-linear past ~1GB, likely from the system
+            // approaching its physical memory ceiling under the pressure of
+            // one huge allocation) and transiently peak at close to the
+            // file's own size in bytes again - see
+            // docs/issues/decode_cache_unbounded_growth.md's follow-up
+            // finding. pieceTextStreamed() bounds this function's peak
+            // memory to one bounded chunk (OriginalBuffer::
+            // kStreamChunkCodeUnits) regardless of the piece's size.
+            // withinPieceOffset accumulates across chunks so `i` below
+            // stays relative to the whole piece, matching the pre-streaming
+            // code's indexing.
+            TextPos withinPieceOffset = 0;
+            [[maybe_unused]] const bool streamedOk = snapshot.pieceTextStreamed(
+                p, [&](std::u16string_view chunk) {
+                    for (std::size_t i = 0; i < chunk.size(); ++i) {
+                        if (chunk[i] == u'\n') {
+                            m_lineStarts.push_back(cursor + withinPieceOffset + i + 1);
+                        }
+                    }
+                    withinPieceOffset += chunk.size();
+                });
+            // A page error mid-stream (network drive dropped, etc.) simply
+            // leaves this piece's remaining newlines unindexed - the same
+            // "best-effort, no crash" contract pieceTextNoCache()'s empty-
+            // string-on-error return already had here (an all-zero/short
+            // result was silently treated as "no more newlines found" even
+            // before this streaming rewrite).
         }
         cursor += p.length;
     }

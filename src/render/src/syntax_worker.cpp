@@ -101,13 +101,21 @@ void SyntaxWorker::workerLoop() {
             parserLanguage = language;
         }
 
-        // Neither extract() nor IncrementalParser::reparseRange() is noexcept; a
-        // genuine std::bad_alloc is allowed to propagate and terminate the
-        // process rather than being swallowed here, matching
-        // BufferSnapshot::pieceView()'s own documented stance on this
+        // Neither extractNoCache() nor IncrementalParser::reparseRange() is
+        // noexcept; a genuine std::bad_alloc is allowed to propagate and
+        // terminate the process rather than being swallowed here, matching
+        // BufferSnapshot::pieceTextNoCache()'s own documented stance on this
         // (CLAUDE.md forbids unconditional catch(...)).
+        //
+        // extractNoCache(), not extract(): this reparse runs on every edit,
+        // and the document's total length changes with every edit, so the
+        // caching extract()'s (offset, length) cache key would be different
+        // on every single call - meaning every keystroke on a large document
+        // would add a NEW, never-reclaimed ~2x-document-size entry to
+        // OriginalBuffer's decode cache, unboundedly, for the lifetime of
+        // the editing session. See docs/issues/decode_cache_unbounded_growth.md.
         const std::u16string text =
-            snapshot->extract(document::TextRange{.start = 0, .end = snapshot->length()});
+            snapshot->extractNoCache(document::TextRange{.start = 0, .end = snapshot->length()});
 
         std::vector<syntax::ReparseEdit> reparseEdits;
         reparseEdits.reserve(edits.size());

@@ -154,12 +154,16 @@ void findAllInBuffer(const re2::RE2& re, const util::Utf8Conversion& conv,
 // search_service.h's scope comment for the memory-vs-document-size tradeoff
 // this implies). Deliberately does NOT use BufferSnapshot::extract() -
 // extract() re-walks the full piece list from cursor=0 on every call (its
-// own doc comment says so); pieceView() is O(1) per piece, the same
-// primitive LineIndex::build() already uses to stay O(document length).
+// own doc comment says so); pieceTextNoCache() is O(1) per piece, the same
+// primitive LineIndex::build() already uses to stay O(document length) -
+// and, unlike pieceView(), doesn't ALSO permanently retain this transient
+// per-call `buffer` copy a second time inside OriginalBuffer's decode
+// cache (this scan visits every piece once and moves on - see
+// docs/issues/decode_cache_unbounded_growth.md).
 void scanDocument(const re2::RE2& re, const document::BufferSnapshot& snapshot, std::vector<Match>& matches) {
     std::u16string buffer;
     for (const auto& piece : snapshot.pieces()) {
-        buffer.append(snapshot.pieceView(piece));
+        buffer.append(snapshot.pieceTextNoCache(piece));
     }
     findAllInBuffer(re, util::toUtf8WithOffsets(buffer), /*bufferStart=*/0, matches);
 }

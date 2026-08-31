@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-25 (WI-15f、`tree-sitter-xml`深いネスト誤検知issueを起票)
+**最終更新:** 2026-08-31 (v1出荷判定、`decode_cache_unbounded_growth.md`解決・`csv_per_cell_index_memory_scaling.md`/`json_tree_ui_population_hang.md`起票)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -21,6 +21,8 @@
 |---|---|---|
 | [検索が CRLF 行末を考慮しない](search_crlf_line_ending.md) | 正規表現の `$`/`^` が `\r` を行内容として扱う | 未定 (Phase 12 前) |
 | [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
+| [CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費する](csv_per_cell_index_memory_scaling.md) | 10GB・多列CSVでシステムメモリを圧迫(セーフティ監視で強制終了、危険は回避)。1GBでも8倍のメモリ膨張を確認 | 未定 (`CsvModel`内部データ構造の再設計が必要) |
+| [JSON/XMLツリーUIが大規模ファイルでUIスレッドを長時間ハングさせる](json_tree_ui_population_hang.md) | 100MB/145万要素で3分以上UIハング。推定原因は`ui::JsonTreePane`の非仮想化`WC_LISTVIEW` | 未定 (原因調査未着手) |
 
 ## P2 — 凍結 / 再評価待ち
 
@@ -62,6 +64,7 @@
 | [`parseJsonTree()`が病的に深いネストでスタックオーバーフローしうる](json_tree_worker_deep_nesting_stack_overflow.md) | 🟢 WI-15c (2026-08-19)。`DepthLimitSax`によるSAX事前深度チェック(`kMaxJsonNestingDepth=200`)を追加、`nlohmann::ordered_json::parse()`を呼ぶ前に弾く設計に確定 |
 | [設定システムが存在しない](no_settings_system.md) | 🟢 WI-08 (2026-08-13)。`core::Settings`実装、`kTabWidth`二重定義解消(`SetIncrementalTabStop()`未着手ギャップも同時発見・解消)、フォント/タブ幅/行番号/ミニマップがsettings.json経由で再起動なしに反映されることを実機ドッグフーディングで確認 |
 | [CSVグリッドのフィルタ行付近に表示異常](csv_grid_filter_row_visual_glitch.md) | 🟢 WI-16f (2026-08-25)。原因はWM_PAINTが常に裏のテキストビューを描画しフィルタ行の余白から透けて見えていたこと。背景パネル(`m_hwndFilterBackdrop`)追加で解消、実機確認済み |
+| [`OriginalBuffer` のデコードキャッシュ無制限蓄積による OOM](decode_cache_unbounded_growth.md) | 🟢 v1出荷判定 (2026-08-31)。10GBファイルのログ解析モードでシステムメモリ枯渇を実機で確認、非キャッシュAPI+ストリーミングAPI追加で解消(10GBファイルのPrivateメモリ 20GB超→1.22GB、初回インデックス構築113.7秒→26.99秒)。`LineIndex::build()`等9箇所を修正 |
 
 ---
 

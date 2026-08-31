@@ -148,10 +148,14 @@ private:
 
 // Shared by parseJsonTree() and validateJson() - both need the document's
 // full UTF-16 text materialized once before UTF-8 conversion.
+// pieceTextNoCache() rather than pieceView(): this walk visits every piece
+// exactly once and discards `buffer` once parsing finishes, so caching the
+// decoded text in OriginalBuffer would only inflate memory - see
+// docs/issues/decode_cache_unbounded_growth.md.
 [[nodiscard]] std::u16string bufferFromSnapshot(const document::BufferSnapshot& snapshot) {
     std::u16string buffer;
     for (const auto& piece : snapshot.pieces()) {
-        buffer.append(snapshot.pieceView(piece));
+        buffer.append(snapshot.pieceTextNoCache(piece));
     }
     return buffer;
 }

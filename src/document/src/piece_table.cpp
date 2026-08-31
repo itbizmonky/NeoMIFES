@@ -47,11 +47,19 @@ void PieceTable::ensureBoundary(TextPos pos) {
     const Piece& piece      = lookup->piece;
     const TextPos withinLen = pos - lookup->pieceStart;
 
-    const std::u16string_view leftView =
+    // m_original->viewNoCache(), not view(): this only needs a newline
+    // count for the split, then discards the text - and `withinLen` can be
+    // most of a large Original piece the first time an edit lands inside
+    // it (e.g. the very first edit to a freshly opened 10GB file), so the
+    // caching view() would permanently retain that much decoded UTF-16 in
+    // OriginalBuffer just to compute a count - see
+    // docs/issues/decode_cache_unbounded_growth.md. m_add->view() is
+    // unaffected (AddBuffer holds already-decoded text; no cache exists to
+    // avoid populating there), so only the Original-sourced branch changes.
+    const std::uint32_t leftNewlines =
         (piece.source == PieceSource::Add)
-            ? m_add     ->view(piece.offset, withinLen)
-            : m_original->view(piece.offset, withinLen);
-    const std::uint32_t leftNewlines = countNewlines(leftView);
+            ? countNewlines(m_add->view(piece.offset, withinLen))
+            : countNewlines(m_original->viewNoCache(piece.offset, withinLen));
 
     m_tree.splitPieceAt(pos, leftNewlines);
 }

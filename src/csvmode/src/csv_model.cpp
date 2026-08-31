@@ -182,16 +182,34 @@ std::expected<CsvModel, CsvParseError> CsvModel::build(const document::BufferSna
 
     CsvBuilder builder;
     // Single linear pass over the piece list, index-based (not the
-    // range-for pieceView() walk logmode::LogModel::build() uses) because,
-    // unlike LogModel, every character's absolute document::TextPos is
-    // needed to record CsvCell::startPos/endPos - mirrors
+    // range-for pieceTextStreamed() walk logmode::LogModel::build() uses)
+    // because, unlike LogModel, every character's absolute document::TextPos
+    // is needed to record CsvCell::startPos/endPos - mirrors
     // document::LineIndex::build()'s own cursor+i indexing (line_index.cpp).
+    // pieceTextStreamed() rather than pieceTextNoCache(): the latter still
+    // materializes an entire piece as one std::u16string before this loop
+    // can start walking it - for a freshly opened multi-GB CSV file (one
+    // single huge Original piece) that transiently reserves ~2x the file's
+    // own size in one allocation just to scan through and discard it, the
+    // same problem LineIndex::build() had (measured: a 10GB file's one-shot
+    // decode took over 50s and approached the system's physical memory
+    // ceiling before being streamed instead). withinPieceOffset accumulates
+    // across chunks so the TextPos passed to processChar() stays relative
+    // to the whole piece, matching the pre-streaming code's `cursor + i`.
+    // See docs/issues/decode_cache_unbounded_growth.md.
     document::TextPos cursor = 0;
     for (const document::Piece& piece : snapshot.pieces()) {
-        const std::u16string_view v = snapshot.pieceView(piece);
-        for (std::size_t i = 0; i < v.size(); ++i) {
-            processChar(builder, v[i], cursor + i, options.delimiter);
-        }
+        document::TextPos withinPieceOffset = 0;
+        [[maybe_unused]] const bool streamedOk =
+            snapshot.pieceTextStreamed(piece, [&](std::u16string_view chunk) {
+                for (std::size_t i = 0; i < chunk.size(); ++i) {
+                    processChar(builder, chunk[i], cursor + withinPieceOffset + i, options.delimiter);
+                }
+                withinPieceOffset += chunk.size();
+            });
+        // Same "best-effort, no crash" contract as before this streaming
+        // rewrite - a page error mid-piece simply leaves the remainder
+        // unscanned.
         cursor += piece.length;
     }
     // Final field/row, unconditionally - mirrors document::Document's own

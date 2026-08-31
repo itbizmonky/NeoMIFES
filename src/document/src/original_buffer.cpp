@@ -532,6 +532,36 @@ std::u16string_view OriginalBuffer::view(std::uint64_t offset, std::uint64_t len
     return viewMemoryMapped(offset, length);
 }
 
+std::u16string OriginalBuffer::viewNoCache(std::uint64_t offset, std::uint64_t length) const {
+    if (offset > m_totalCuLength || length > m_totalCuLength - offset || length == 0) {
+        return {};
+    }
+    if (m_kind == Kind::InMemory) {
+        return m_inMemory.substr(offset, length);
+    }
+    return decodeMemoryMapped(offset, length).value_or(std::u16string{});
+}
+
+bool OriginalBuffer::viewStreamed(std::uint64_t offset, std::uint64_t length,
+                                  const std::function<void(std::u16string_view)>& onChunk) const {
+    if (offset > m_totalCuLength || length > m_totalCuLength - offset || length == 0) {
+        return true;  // nothing to stream - not itself an error
+    }
+    if (m_kind == Kind::InMemory) {
+        // Already fully decoded and resident - streaming it in chunks would
+        // only add call overhead with no memory benefit (the whole string
+        // is already sitting in m_inMemory regardless).
+        onChunk(std::u16string_view(m_inMemory).substr(offset, length));
+        return true;
+    }
+    switch (m_scanFamily) {
+        case ScanFamily::Utf8:  return streamUtf8(offset, length, onChunk);
+        case ScanFamily::Utf16: return streamUtf16(offset, length, onChunk);
+        case ScanFamily::Utf32: return streamUtf32(offset, length, onChunk);
+    }
+    return true;  // unreachable, all ScanFamily enumerators handled above
+}
+
 std::u16string_view OriginalBuffer::viewMemoryMapped(std::uint64_t offset, std::uint64_t length) const {
     switch (m_scanFamily) {
         case ScanFamily::Utf8:  return viewMemoryMappedUtf8(offset, length);
@@ -541,17 +571,18 @@ std::u16string_view OriginalBuffer::viewMemoryMapped(std::uint64_t offset, std::
     return {};  // unreachable, all ScanFamily enumerators handled above
 }
 
-std::u16string_view OriginalBuffer::viewMemoryMappedUtf8(std::uint64_t offset,
-                                                          std::uint64_t length) const {
-    const auto key = std::make_pair(offset, length);
-    {
-        const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
-        const auto it = m_decodeCache.find(key);
-        if (it != m_decodeCache.end()) {
-            return {it->second->data(), it->second->size()};
-        }
+std::optional<std::u16string> OriginalBuffer::decodeMemoryMapped(std::uint64_t offset,
+                                                                  std::uint64_t length) const {
+    switch (m_scanFamily) {
+        case ScanFamily::Utf8:  return decodeUtf8NoCache(offset, length);
+        case ScanFamily::Utf16: return decodeUtf16NoCache(offset, length);
+        case ScanFamily::Utf32: return decodeUtf32NoCache(offset, length);
     }
+    return std::u16string{};  // unreachable, all ScanFamily enumerators handled above
+}
 
+std::optional<std::u16string> OriginalBuffer::decodeUtf8NoCache(std::uint64_t offset,
+                                                                 std::uint64_t length) const {
     // Find the nearest checkpoint at or before `offset` (checkpoints[0] =
     // {0,0} guarantees this is never empty-range). std::ranges::upper_bound's
     // indirect_strict_weak_order constraint would require the comparator to
@@ -573,11 +604,11 @@ std::u16string_view OriginalBuffer::viewMemoryMappedUtf8(std::uint64_t offset,
         bytes, checkpoint.byteOffset, offset - checkpoint.cuOffset, nullptr, skippedCu, pageError);
     if (pageError) {
         // Network drive dropped (or similar) mid-read. Fail gracefully with
-        // an empty view rather than crash - matches this function's
-        // existing "out of range -> empty view" contract, so callers don't
-        // need a new error channel for what is, from their perspective,
-        // just "couldn't get this content."
-        return {};
+        // nullopt rather than crash - matches this function's callers'
+        // existing "out of range -> empty view/string" contract, so callers
+        // don't need a new error channel for what is, from their
+        // perspective, just "couldn't get this content."
+        return std::nullopt;
     }
     // The skip must reach exactly `offset` - it can only fall short if the
     // checkpoint index or `offset` itself is inconsistent with the content
@@ -587,17 +618,195 @@ std::u16string_view OriginalBuffer::viewMemoryMappedUtf8(std::uint64_t offset,
     assert(skippedCu == offset - checkpoint.cuOffset);
     const std::uint64_t decodeStartByte = checkpoint.byteOffset + skipBytes;
 
-    // Decode phase: produce up to `length` CUs into a fresh, cached buffer.
-    auto decoded = std::make_unique<std::u16string>();
-    decoded->reserve(static_cast<std::size_t>(length));
+    // Decode phase: produce up to `length` CUs.
+    std::u16string decoded;
+    decoded.reserve(static_cast<std::size_t>(length));
     std::uint64_t produced = 0;
-    decodeUtf8RunSafe(bytes, decodeStartByte, length, decoded.get(), produced, pageError);
+    decodeUtf8RunSafe(bytes, decodeStartByte, length, &decoded, produced, pageError);
     if (pageError) {
+        return std::nullopt;
+    }
+    return decoded;
+}
+
+std::optional<std::u16string> OriginalBuffer::decodeUtf16NoCache(std::uint64_t offset,
+                                                                  std::uint64_t length) const {
+    // No checkpoint lookup: a UTF-16 source's CU offset is always exactly
+    // byteOffset/2 (see scanUtf16's comment), so the byte range for
+    // [offset, offset+length) is computable directly.
+    const auto bytes = m_mapping.data().subspan(m_byteOffset);
+    std::u16string decoded;
+    decoded.reserve(static_cast<std::size_t>(length));
+
+    bool pageError = false;
+    decodeUtf16RunSafe(bytes, m_bigEndian, 2 * offset, 2 * length, &decoded, pageError);
+    if (pageError) {
+        return std::nullopt;
+    }
+    return decoded;
+}
+
+std::optional<std::u16string> OriginalBuffer::decodeUtf32NoCache(std::uint64_t offset,
+                                                                  std::uint64_t length) const {
+    // NOLINTNEXTLINE(modernize-use-ranges) - see decodeUtf8NoCache's identical comment.
+    const auto cpIt = std::upper_bound(
+        m_checkpoints.begin(), m_checkpoints.end(), offset,
+        [](std::uint64_t cu, const Checkpoint& c) noexcept { return cu < c.cuOffset; });
+    const Checkpoint& checkpoint = *(cpIt - 1);
+
+    const auto bytes = m_mapping.data().subspan(m_byteOffset);
+
+    std::uint64_t skippedCu = 0;
+    bool pageError = false;
+    const std::uint64_t skipBytes = decodeUtf32RunSafe(
+        bytes, m_bigEndian, checkpoint.byteOffset, offset - checkpoint.cuOffset, nullptr, skippedCu, pageError);
+    if (pageError) {
+        return std::nullopt;
+    }
+    assert(skippedCu == offset - checkpoint.cuOffset);
+    const std::uint64_t decodeStartByte = checkpoint.byteOffset + skipBytes;
+
+    std::u16string decoded;
+    decoded.reserve(static_cast<std::size_t>(length));
+    std::uint64_t produced = 0;
+    decodeUtf32RunSafe(bytes, m_bigEndian, decodeStartByte, length, &decoded, produced, pageError);
+    if (pageError) {
+        return std::nullopt;
+    }
+    return decoded;
+}
+
+bool OriginalBuffer::streamUtf8(std::uint64_t offset, std::uint64_t length,
+                                const std::function<void(std::u16string_view)>& onChunk) const {
+    // Skip phase: identical to decodeUtf8NoCache()'s - see its comments.
+    // NOLINTNEXTLINE(modernize-use-ranges) - see decodeUtf8NoCache's identical comment.
+    const auto cpIt = std::upper_bound(
+        m_checkpoints.begin(), m_checkpoints.end(), offset,
+        [](std::uint64_t cu, const Checkpoint& c) noexcept { return cu < c.cuOffset; });
+    const Checkpoint& checkpoint = *(cpIt - 1);
+    const auto bytes = m_mapping.data().subspan(m_byteOffset);
+
+    std::uint64_t skippedCu = 0;
+    bool pageError = false;
+    const std::uint64_t skipBytes = decodeUtf8RunSafe(
+        bytes, checkpoint.byteOffset, offset - checkpoint.cuOffset, nullptr, skippedCu, pageError);
+    if (pageError) {
+        return false;
+    }
+    assert(skippedCu == offset - checkpoint.cuOffset);
+
+    // Decode phase: unlike decodeUtf8NoCache()'s single unbounded call, this
+    // loop caps each decodeUtf8RunSafe() call at kStreamChunkCodeUnits CUs
+    // and hands the result to `onChunk` before decoding the next chunk - at
+    // no point does this function hold more than one chunk's worth of
+    // decoded text in memory, regardless of how large `length` is.
+    std::uint64_t currentByte = checkpoint.byteOffset + skipBytes;
+    std::uint64_t remaining   = length;
+    while (remaining > 0) {
+        const std::uint64_t chunkTarget = std::min(remaining, kStreamChunkCodeUnits);
+        std::u16string       chunk;
+        chunk.reserve(static_cast<std::size_t>(chunkTarget));
+        std::uint64_t produced = 0;
+        const std::uint64_t consumed =
+            decodeUtf8RunSafe(bytes, currentByte, chunkTarget, &chunk, produced, pageError);
+        if (pageError) {
+            return false;
+        }
+        if (produced == 0) {
+            break;  // defensive: content shorter than `length` claims - stop rather than spin
+        }
+        onChunk(chunk);
+        currentByte += consumed;
+        remaining -= produced;
+    }
+    return true;
+}
+
+bool OriginalBuffer::streamUtf16(std::uint64_t offset, std::uint64_t length,
+                                 const std::function<void(std::u16string_view)>& onChunk) const {
+    // No checkpoint lookup needed, same reasoning as decodeUtf16NoCache().
+    const auto bytes = m_mapping.data().subspan(m_byteOffset);
+    std::uint64_t currentByte = 2 * offset;
+    std::uint64_t remaining   = length;
+    bool           pageError   = false;
+    while (remaining > 0) {
+        const std::uint64_t chunkCu = std::min(remaining, kStreamChunkCodeUnits);
+        std::u16string       chunk;
+        chunk.reserve(static_cast<std::size_t>(chunkCu));
+        decodeUtf16RunSafe(bytes, m_bigEndian, currentByte, 2 * chunkCu, &chunk, pageError);
+        if (pageError) {
+            return false;
+        }
+        if (chunk.empty()) {
+            break;  // defensive: content shorter than `length` claims
+        }
+        onChunk(chunk);
+        currentByte += 2 * chunkCu;
+        remaining -= chunkCu;
+    }
+    return true;
+}
+
+bool OriginalBuffer::streamUtf32(std::uint64_t offset, std::uint64_t length,
+                                 const std::function<void(std::u16string_view)>& onChunk) const {
+    // Skip phase: identical to decodeUtf32NoCache()'s - see its comments.
+    // NOLINTNEXTLINE(modernize-use-ranges) - see decodeUtf8NoCache's identical comment.
+    const auto cpIt = std::upper_bound(
+        m_checkpoints.begin(), m_checkpoints.end(), offset,
+        [](std::uint64_t cu, const Checkpoint& c) noexcept { return cu < c.cuOffset; });
+    const Checkpoint& checkpoint = *(cpIt - 1);
+    const auto bytes = m_mapping.data().subspan(m_byteOffset);
+
+    std::uint64_t skippedCu = 0;
+    bool pageError = false;
+    const std::uint64_t skipBytes = decodeUtf32RunSafe(
+        bytes, m_bigEndian, checkpoint.byteOffset, offset - checkpoint.cuOffset, nullptr, skippedCu, pageError);
+    if (pageError) {
+        return false;
+    }
+    assert(skippedCu == offset - checkpoint.cuOffset);
+
+    std::uint64_t currentByte = checkpoint.byteOffset + skipBytes;
+    std::uint64_t remaining   = length;
+    while (remaining > 0) {
+        const std::uint64_t chunkTarget = std::min(remaining, kStreamChunkCodeUnits);
+        std::u16string       chunk;
+        chunk.reserve(static_cast<std::size_t>(chunkTarget));
+        std::uint64_t produced = 0;
+        const std::uint64_t consumed =
+            decodeUtf32RunSafe(bytes, m_bigEndian, currentByte, chunkTarget, &chunk, produced, pageError);
+        if (pageError) {
+            return false;
+        }
+        if (produced == 0) {
+            break;  // defensive: content shorter than `length` claims
+        }
+        onChunk(chunk);
+        currentByte += consumed;
+        remaining -= produced;
+    }
+    return true;
+}
+
+std::u16string_view OriginalBuffer::viewMemoryMappedUtf8(std::uint64_t offset,
+                                                          std::uint64_t length) const {
+    const auto key = std::make_pair(offset, length);
+    {
+        const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
+        const auto it = m_decodeCache.find(key);
+        if (it != m_decodeCache.end()) {
+            return {it->second->data(), it->second->size()};
+        }
+    }
+
+    std::optional<std::u16string> decoded = decodeUtf8NoCache(offset, length);
+    if (!decoded) {
         return {};
     }
 
     const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
-    const auto [insertedIt, inserted] = m_decodeCache.try_emplace(key, std::move(decoded));
+    const auto [insertedIt, inserted] =
+        m_decodeCache.try_emplace(key, std::make_unique<std::u16string>(std::move(*decoded)));
     return {insertedIt->second->data(), insertedIt->second->size()};
 }
 
@@ -612,21 +821,14 @@ std::u16string_view OriginalBuffer::viewMemoryMappedUtf16(std::uint64_t offset,
         }
     }
 
-    // No checkpoint lookup: a UTF-16 source's CU offset is always exactly
-    // byteOffset/2 (see scanUtf16's comment), so the byte range for
-    // [offset, offset+length) is computable directly.
-    const auto bytes = m_mapping.data().subspan(m_byteOffset);
-    auto decoded = std::make_unique<std::u16string>();
-    decoded->reserve(static_cast<std::size_t>(length));
-
-    bool pageError = false;
-    decodeUtf16RunSafe(bytes, m_bigEndian, 2 * offset, 2 * length, decoded.get(), pageError);
-    if (pageError) {
+    std::optional<std::u16string> decoded = decodeUtf16NoCache(offset, length);
+    if (!decoded) {
         return {};
     }
 
     const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
-    const auto [insertedIt, inserted] = m_decodeCache.try_emplace(key, std::move(decoded));
+    const auto [insertedIt, inserted] =
+        m_decodeCache.try_emplace(key, std::make_unique<std::u16string>(std::move(*decoded)));
     return {insertedIt->second->data(), insertedIt->second->size()};
 }
 
@@ -641,34 +843,14 @@ std::u16string_view OriginalBuffer::viewMemoryMappedUtf32(std::uint64_t offset,
         }
     }
 
-    // NOLINTNEXTLINE(modernize-use-ranges) - see viewMemoryMappedUtf8's identical comment.
-    const auto cpIt = std::upper_bound(
-        m_checkpoints.begin(), m_checkpoints.end(), offset,
-        [](std::uint64_t cu, const Checkpoint& c) noexcept { return cu < c.cuOffset; });
-    const Checkpoint& checkpoint = *(cpIt - 1);
-
-    const auto bytes = m_mapping.data().subspan(m_byteOffset);
-
-    std::uint64_t skippedCu = 0;
-    bool pageError = false;
-    const std::uint64_t skipBytes = decodeUtf32RunSafe(
-        bytes, m_bigEndian, checkpoint.byteOffset, offset - checkpoint.cuOffset, nullptr, skippedCu, pageError);
-    if (pageError) {
-        return {};
-    }
-    assert(skippedCu == offset - checkpoint.cuOffset);
-    const std::uint64_t decodeStartByte = checkpoint.byteOffset + skipBytes;
-
-    auto decoded = std::make_unique<std::u16string>();
-    decoded->reserve(static_cast<std::size_t>(length));
-    std::uint64_t produced = 0;
-    decodeUtf32RunSafe(bytes, m_bigEndian, decodeStartByte, length, decoded.get(), produced, pageError);
-    if (pageError) {
+    std::optional<std::u16string> decoded = decodeUtf32NoCache(offset, length);
+    if (!decoded) {
         return {};
     }
 
     const std::lock_guard<std::mutex> lock(m_decodeCacheMutex);
-    const auto [insertedIt, inserted] = m_decodeCache.try_emplace(key, std::move(decoded));
+    const auto [insertedIt, inserted] =
+        m_decodeCache.try_emplace(key, std::make_unique<std::u16string>(std::move(*decoded)));
     return {insertedIt->second->data(), insertedIt->second->size()};
 }
 

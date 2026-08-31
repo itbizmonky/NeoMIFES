@@ -46,6 +46,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -108,6 +109,42 @@ public:
     // that need a noexcept boundary should establish one explicitly rather
     // than relying on this function to provide it silently.
     [[nodiscard]] std::u16string_view view(std::uint64_t offset, std::uint64_t length) const;
+
+    // Decodes [offset, offset+length) fresh on every call and does NOT
+    // populate m_decodeCache. Returns by value (not _view) - unlike view(),
+    // nothing owns the decoded buffer once this call returns, so callers
+    // must consume it before the returned string goes out of scope.
+    //
+    // Intended for callers that walk the ENTIRE document exactly once and
+    // never revisit a given range - LineIndex::build(), LogModel::build(),
+    // SearchService's scan, and CSV/JSON/XML's whole-document extract() all
+    // fit this shape. Using view() (or BufferSnapshot::pieceView()) for a
+    // full-document walk permanently caches the whole file as decoded
+    // UTF-16 (never evicted - see this class's header comment), which for a
+    // 10GB file means retaining ~10-20GB indefinitely even though the walk
+    // itself only ever touches each byte once. See
+    // docs/issues/decode_cache_unbounded_growth.md.
+    [[nodiscard]] std::u16string viewNoCache(std::uint64_t offset, std::uint64_t length) const;
+
+    // Same purpose as viewNoCache(), but for a caller that would otherwise
+    // need to hold the ENTIRE [offset, offset+length) range decoded in
+    // memory at once just to scan through it (LineIndex::build(),
+    // LogModel::build(), CsvModel::build() only ever look at one character
+    // at a time - scanning for '\n'/a delimiter - and never need more than
+    // a small window in memory simultaneously). Invokes `onChunk` with each
+    // successive chunk's decoded text, in order, never holding more than
+    // one bounded chunk (kStreamChunkCodeUnits) in memory at a time - this
+    // is what keeps a 10GB file's line-index build from transiently
+    // reserving ~20GB for one giant decoded std::u16string. Each
+    // std::u16string_view passed to `onChunk` is only valid for the
+    // duration of that call. Returns false on a page error partway through
+    // (some chunks may already have reached `onChunk` before the failure -
+    // same "best-effort, stop early" contract viewNoCache() has for its own
+    // pageError case, just surfaced as a return value here since there is
+    // no single string result to collapse to empty). See
+    // docs/issues/decode_cache_unbounded_growth.md.
+    [[nodiscard]] bool viewStreamed(std::uint64_t offset, std::uint64_t length,
+                                    const std::function<void(std::u16string_view)>& onChunk) const;
 
     [[nodiscard]] std::uint64_t size() const noexcept { return m_totalCuLength; }
     [[nodiscard]] std::uint32_t newlineCount() const noexcept { return m_totalNewlines; }
@@ -231,6 +268,42 @@ private:
     [[nodiscard]] std::u16string_view viewMemoryMappedUtf32(std::uint64_t offset,
                                                              std::uint64_t length) const;
 
+    // Dispatches to the per-family decode helper below based on
+    // m_scanFamily, for viewNoCache()'s MemoryMapped path. Precondition:
+    // bounds already validated by viewNoCache() (mirrors viewMemoryMapped()
+    // above).
+    [[nodiscard]] std::optional<std::u16string> decodeMemoryMapped(std::uint64_t offset,
+                                                                    std::uint64_t length) const;
+
+    // Shared decode primitive: the actual skip-then-decode work that both
+    // the caching viewMemoryMappedUtfN() functions and the non-caching
+    // decodeMemoryMapped() dispatch above use. Returns nullopt on a page
+    // error (network-drive style I/O failure mid-decode) so callers can
+    // distinguish "genuinely empty" from "couldn't read this range" - the
+    // caching callers use that distinction to skip caching a page-error
+    // result (so a transient failure doesn't permanently poison the cache
+    // with an empty entry); viewNoCache() just collapses it to an empty
+    // string, same as every other "couldn't get this content" case in this
+    // class.
+    [[nodiscard]] std::optional<std::u16string> decodeUtf8NoCache(std::uint64_t offset,
+                                                                   std::uint64_t length) const;
+    [[nodiscard]] std::optional<std::u16string> decodeUtf16NoCache(std::uint64_t offset,
+                                                                    std::uint64_t length) const;
+    [[nodiscard]] std::optional<std::u16string> decodeUtf32NoCache(std::uint64_t offset,
+                                                                    std::uint64_t length) const;
+
+    // Per-family bounded-chunk streaming decode, used by viewStreamed().
+    // Each repeatedly calls its family's existing decodeUtfNRunSafe()
+    // primitive with maxCodeUnits capped at kStreamChunkCodeUnits per call
+    // (the same primitive the *NoCache() functions above call once,
+    // unbounded) - the only difference is the loop and per-chunk callback.
+    [[nodiscard]] bool streamUtf8(std::uint64_t offset, std::uint64_t length,
+                                  const std::function<void(std::u16string_view)>& onChunk) const;
+    [[nodiscard]] bool streamUtf16(std::uint64_t offset, std::uint64_t length,
+                                   const std::function<void(std::u16string_view)>& onChunk) const;
+    [[nodiscard]] bool streamUtf32(std::uint64_t offset, std::uint64_t length,
+                                   const std::function<void(std::u16string_view)>& onChunk) const;
+
     Kind       m_kind       = Kind::InMemory;
     ScanFamily m_scanFamily = ScanFamily::Utf8;
     bool       m_bigEndian  = false;
@@ -246,6 +319,12 @@ private:
 
     static constexpr std::uint64_t kCheckpointBytes = 64 * 1024;
     std::vector<Checkpoint> m_checkpoints;  // unused (empty) when m_scanFamily == Utf16
+
+    // viewStreamed()'s per-callback chunk size, in UTF-16 code units (~2MB
+    // per chunk of ASCII/BMP content). Bounds viewStreamed()'s peak memory
+    // to this constant regardless of the requested range's total length -
+    // the whole point of the streaming API over viewNoCache().
+    static constexpr std::uint64_t kStreamChunkCodeUnits = 1024ULL * 1024ULL;
 
     mutable std::mutex m_decodeCacheMutex;
     // Keyed by (offset, length); entries are never evicted (see class

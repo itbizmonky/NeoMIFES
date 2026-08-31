@@ -188,6 +188,8 @@ private:
 - **現状 UTF-8 (BOM可) 専用**。UTF-16LE/BE・Shift-JIS 等への対応は Phase 6 (Encoding Engine) で拡張予定 — それまでは `encoding::Encoding` パラメータは存在しない
 - ネットワークドライブ切断等による `EXCEPTION_IN_PAGE_ERROR` は SEH (`__try`/`__except`) で捕捉し `IoFailure` に変換する (Phase 2b3 Step 2 で実装済み。MSVC の「`__try` を含む関数はオブジェクトアンワインドを持てない」制約のため、リスクのある呼び出しはプリミティブ型ローカルのみを持つ小さなトランポリン関数に隔離している)
 
+> **2026-08-31 更新 (v1出荷判定、`decode_cache_unbounded_growth.md`):** 上記`m_decodeCache`の「追い出しなし」は、`view()`(スクロール等の反復・ランダムアクセス向け)にはそのまま残っているが、**文書全体を一度だけ走査して使い捨てる消費者**(`LineIndex::build()`等9箇所)向けに、`m_decodeCache`へ一切触れない`viewNoCache()`(単発デコード)と`viewStreamed()`(固定チャンク単位でコールバックへ渡す、`kStreamChunkCodeUnits`≒2MB)を追加した。10GBファイルで`view()`のみを使い続けると、文書全体走査のたびに実質ファイル全体が`m_decodeCache`へ永久保持され、UTF-8→UTF-16換算で最大2倍(最大20GB規模)のメモリを消費し続けることが実機で判明したため。`view()`自体のシグネチャ・追い出しなしの契約は無変更(スクロールでの反復アクセスにはキャッシュが有効に機能するため)。詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)参照。
+
 ### 3.2 LineIndex
 
 ```cpp

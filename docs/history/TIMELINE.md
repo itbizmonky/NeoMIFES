@@ -3559,4 +3559,26 @@ Plan Modeで設計を確定: 新規`GitRepository::unifiedDiffAgainstHead()`(lib
 
 次はWI-16h(CSV式列、着手前に具体的な文法・構文をユーザーへ確認する必要あり)のみ、またはユーザー指定の次項目 — WI-16h完了後にv1出荷判定(軽量版、master_roadmap.md §12.5)を実施できる。
 
+## Session 115 (2026-08-30〜31): CI修復確認、CSV式列/fuzz testを見送り確定、v1出荷判定に着手 → `decode_cache_unbounded_growth.md`(重大)発見・修正
+
+前セッション末尾で修正しpushしたCI障害(`GitRepositoryTest`の8.3ショートファイル名問題)のCI run(`32894109621`)がRelease/Debug/clang-tidy/UBSan全green(4ジョブとも)であることを確認し、正式に解消を確定した。
+
+**ユーザーの「次のPhaseに進め」を受け、残作業はWI-16h(CSV式列)のみと認識していたが、AskUserQuestionでの確認プロセスで2件の「実はv2.0機能だった」発見があった。** (1) `master_roadmap.md`§10.2の元記述を確認したところ「式列 (v2.0)」と明記されていたと判明、AskUserQuestionで**「見送ってv1出荷判定へ直行する(推奨)」**が選ばれた。(2) 続けてv1出荷判定チェックリスト(§12.5)の「fuzz test 24時間クラッシュ0」も同様に元ネタの§12.3動的解析節が「(v2.0 追加)」と明記しており、libFuzzerハーネスも未整備と判明、同じ理由でAskUserQuestionにより**「見送ってチェックリストから除外(推奨)」**が選ばれた。**この2件により、Phase 10.2は列固定(WI-16g)達成をもって完結扱いに確定し、v1出荷判定は17項目中2項目が対象外/見送りとなった。**
+
+v1出荷判定に着手し、`--measure-startup`/`--measure-frame`/`--measure-memory`の既存フラグで起動時間(35.38ms)・初期メモリ(19.92MB、目標20MBに対し極めて薄いマージン)を実測。10GBファイル対応の実機検証に進み、PowerShellでのブロック単位バルクI/O生成(1GB≒0.5秒、10GB≒4秒)で大容量テストファイルを`D:\IDE\Claude\NeoMIFES\.tmp_v1_verify\`(プロジェクト内一時ディレクトリ、`.git/info/exclude`で除外、CLAUDE.mdルール12に準拠)に生成する手法を確立した。
+
+**ログ解析モードの10GBファイル検証で、システムメモリを枯渇させる重大バグを発見した。** 10GB・約1.23億行のログファイルを開き「Log: Enable (Auto-Detect)」を実行したところ、30秒でプロセスのWorking Setが25.3GBまで増大、開発機(物理メモリ31.8GB)の空きメモリが0.3GBまで低下、UIハング。システム保護のため`taskkill`で強制終了した(メモリは23.5GBまで回復、危険な状態は解消)。当初はこの調査を別セッションへ`spawn_task`で切り出したが、続けてJSON Treeモードでも100MB/145万要素で3分以上のUIハングを発見し、**Phase 10全体の実用性に関わる重大な発見**と判断してユーザーへ状況を報告、ユーザーは**「今ここで修正に着手する」**を選択、切り出していた2件の`spawn_task`は撤回した。
+
+**根本原因の調査で、CSVモードの8倍メモリ膨張(1GBファイルでWorkingSet 8.3GB)も合わせて、単一の共通メカニズムに行き着いた。** `OriginalBuffer`(mmap + Lazy Decode、Phase 2b3実装)の`m_decodeCache`が`(offset,length)`キーでデコード結果を永久キャッシュし一度も追い出さない設計であり、これは既存issue`lazy_decode_mmap.md`が扱っていた「mmapビュー自体のLRU」とは別の、より狭い懸念(当時「実際にメモリ圧迫が計測されるまで先送り」と意図的に保留)だった。通常のスクロールでは画面内の小さい範囲しか要求しないため問題化しないが、`document::LineIndex::build()`(**あらゆるファイルを開いた際に初回の行番号参照時に必ず発火する、最も影響範囲の広い呼び出し元**)を筆頭に、`LogModel::build()`/`CsvModel::build()`/JSON-XML Treeの`bufferFromSnapshot()`/`SearchService::scanDocument()`/`file_saver.cpp`の`writeChunks()`(**保存時**)/`git_repository.cpp`の差分計算/`render::syntax_worker.cpp`の全文抽出(**編集のたびに発火、文書長が変わるためキャッシュキーも毎回変わり、古いエントリが二度と参照されないまま無制限に積み上がる最も深刻なケース**)/`PieceTable::ensureBoundary()`の計9箇所が、文書全体を一度に走査するため影響を受けていた。この原因特定には、`--measure-frame`の出力JSON+`Get-Process`のWorkingSet/PrivateMemory監視だけでなく、標準プローブ技法(`lineindex_probe.cpp`、既存git probeと同じ`cl.exe`直接コンパイル手法)による切り分けと、`render_pipeline.cpp`/`line_index.cpp`への一時的なfprintfベース診断ログ(`DOGFOOD-TEMP`と明示、経過時間+WorkingSet+PrivateUsageを記録)の埋め込みが決め手となった。
+
+ユーザーへAskUserQuestionで修正方針を確認し、**「全体走査系の呼び出し側を非キャッシュ化(推奨)」**が選ばれた。`OriginalBuffer::viewNoCache()`/`decodeUtf8NoCache()`等(既存の`viewMemoryMappedUtf8()`等から共有デコードヘルパーを抽出し、キャッシュ経路・非キャッシュ経路の両方から呼べる形へリファクタ)+`BufferSnapshot::pieceTextNoCache()`/`extractNoCache()`を追加し、9箇所全てを切り替えた。
+
+**再検証で第二の問題が判明した。** 非キャッシュ化のみでは、10GBファイルで`LineIndex::build()`が依然として50秒以上完走せず、Private メモリが20GB超(`decoded.reserve(length)`によるUTF-16換算の一時バッファサイズとほぼ一致)まで増加し続けたため、セーフティ監視スクリプト(システム空きメモリ2GB未満で強制`Stop-Process`、この調査全体を通して複数回実際に発動し危険な状態を都度回避した)により強制終了した。原因は「文書全体を1個の`std::u16string`として一括デコードする」という設計自体が10GB規模でスケールしないことで、再度AskUserQuestionでユーザーに確認し**「ストリーミング化を実装する(推奨)」**が選ばれた。`OriginalBuffer::viewStreamed()`/`streamUtf8()`等(固定チャンク単位`kStreamChunkCodeUnits`=1,048,576 CU≒2MBでコールバックへ渡す)+`BufferSnapshot::pieceTextStreamed()`を追加し、`LineIndex::build()`/`LogModel::build()`/`CsvModel::build()`(文字を1つずつ見るだけで文書全体を同時に保持する必要が無い3消費者)をこちらへ書き換えた。`SearchService`/JSON-XML Tree解析は、RE2の複数行マッチ・nlohmann/tree-sitterのDOM/AST構築が本質的に連続バッファを要求するため、真のストリーミング化は本セッションのスコープ外として非キャッシュ化のみに留めた。
+
+**実測(Release、10GBプレーンテキストファイル):** 初回インデックス構築 113.7秒(修正前)→50秒超・未完走(非キャッシュ化のみ)→**26.99秒**(ストリーミング化後)。Private メモリ ピーク 測定不能(強制終了)→20.23GB→**1.22GB**。定常スクロール性能はp50=16.66ms/p95=16.78msで無劣化を維持。ログ解析モード(10GB・1.23億行)は非キャッシュ化+ストリーミング化後、Private 4.54GBに収まり応答性を維持することを実機確認した(ただし色分け表示は今回の検証では視覚的に確認できず、本題のメモリ/ハング問題とは別軸のため深追いしなかった)。CSVモード(10GB)は一時バッファの問題は解消したが、per-cellインデックス自体の恒常的なメモリコスト(セーフティ監視によりPrivate 5.94GB到達時点で強制終了)という別の課題が残ることが判明し、`csv_per_cell_index_memory_scaling.md`として新規issue化した。JSON TreeモードのUIハングは、非キャッシュ化/ストリーミング化とは無関係な別原因(推定: `ui::JsonTreePane`の非仮想化`WC_LISTVIEW`)と判断し、`json_tree_ui_population_hang.md`として未対応のまま起票した。
+
+全ての`DOGFOOD-TEMP`診断コード(render_pipeline.cpp、line_index.cpp、normal_mode_wiring.cpp)を実装完了後に完全除去し(`grep`で残留無しを確認)、単体テスト追加(`document_buffer_snapshot_test.cpp`、非キャッシュ/ストリーミング双方の内容一致・チャンク境界跨ぎ・ページエラー処理を検証、15テスト)、Debug構成でctest 1554/1554件green。Release/UBSan/clang-tidyはサブエージェントへ検証委任(進行中)。
+
+副次的に、`.claude/worktrees/`配下に残っていた別セッション(detailed_design.md §11.6タスク)の完了済みworktreeを発見し、`git worktree remove`+ディレクトリ削除で片付けた(未コミット変更なしを確認済み)。
+
 <!-- 次セッションはここに追記 -->

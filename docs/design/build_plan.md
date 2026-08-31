@@ -69,15 +69,16 @@ ctest --preset debug --output-on-failure
 > MVP達成後、差別化機能の追加に終わりの定義が無いまま作業が続いていたため、ユーザーとの合意でスコープを確定した。**新しいセッションは必ずこのゴールを起点に「次に何をすべきか」を判断すること。**
 >
 > **やる (残りスコープ):**
-> - Phase 10.2 (CSV) 残り: 式列のみ (WI-16h以降、着手前に具体的な文法・構文をユーザーへ確認する必要あり。列固定はWI-16gで完了済み)
+> - Phase 10.2 (CSV): 🎉 **WI-16gの列固定達成をもって完結扱い。式列(WI-16h)は2026-08-30、roadmap原案が元々v2.0機能としていた点を理由にユーザー承認のもと見送り確定。**
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
 > - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
-> - 上記が終わった時点で **v1出荷判定 (軽量版、§6.5 参照)** を実施し、達成をもって開発を一区切りとする。
+> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) に2026-08-30着手、進行中。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応した。達成をもって開発を一区切りとする。
 >
 > **凍結する (🧊、着手しない):**
 > - Phase 11.2 LSP 完全実装、Phase 11.3 マクロ (Lua+JS+秀丸互換)、Phase 9 AI プラグイン
 > - Git統合の Blame / Commit / Branch切替 / 3-Way Merge
 > - master_roadmap.md §12.3 の元22項目フル版 (Google/MSリリース品質基準、NVDA/JAWS専門認証・Authenticode証明書配布・SBOM/CVE継続運用・自動更新機構など、このワークフロー単独では完結できない項目を含む) — 商用配布を将来検討する際に再評価する
+> - CSV式列 (WI-16h、v2.0機能として見送り)
 >
 > 詳細な理由と各案の比較は [`docs/history/TIMELINE.md`](../history/TIMELINE.md) の該当セッション記録、および `master_roadmap.md` の各フェーズ見出しに付けた🧊凍結注記を参照。
 
@@ -176,7 +177,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 - [x] **WI-16f** CSV セル単位クリック編集 (`escapeCsvCellText()`、`CsvGridPane`セル編集オーバーレイ、`applyCsvCellEdit()`、実機ドッグフーディングで`LVS_EX_FULLROWSELECT`未設定というWI-16c以来の既存バグを発見・解消) → コミット: `932d0f4`/`dffd0eb`/`5878d44`/`7569ec1`
 - [x] **WI-16g** CSV グリッド「#」列固定 (2つの同期`SysListView32`、垂直スクロール・選択状態の相互同期、🎉Phase 10.2 列固定達成) → コミット: `6ae086d`
-- [ ] **WI-16h以降** Phase 10.2 の残り (式列) — 着手前に具体的な文法・構文をユーザーへ確認する必要あり、着手時に本書 §5 と同じ形式でサブ WI を切り直す
+- [x] **WI-16h (式列)** 🧊 **見送り確定 (2026-08-30)。** roadmap原案が元々「式列 (v2.0)」として明記していた点を優先し、v1では対象外とすることをAskUserQuestionでユーザーに確認・承認された。Phase 10.2はWI-16gの列固定達成をもって完結扱いとする。
 - [x] **WI-15f** XML ツリーモデル ヘッドレス基盤 (`neomifes::xmltree`、原案の`pugixml`採用から`tree-sitter-xml`再利用へ設計転換、ADR新規発行不要) → コミット: `9470227`/`7cd90a3`
 - [x] **WI-15g** XML ツリー 非同期インデックス化 + EditorSession配線 (UIなし、`XmlTreeWorker`+`EditorSession`4点、WI-15b直テンプレート) → コミット: `ca4f6f5`/`38f1590`/`fb5e00d`
 - [x] **WI-15h** XML ツリーUI (`Ctrl+Shift+J`をJSON/XML両対応の単一トグルへ統一、`ui::JsonTreePane`は無変更で再利用、🎉Phase 10.3 XMLツリーUI達成) → コミット: `76e8f0e`/`c7ad615`
@@ -184,8 +185,12 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [x] **WI-17e** Git統合 Gitペイン (変更ファイル一覧) (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングでM/U混在の変更一覧が`git status --short`と一致することを確認) → コミット: `fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`
 - [x] **WI-17f** Git統合 Diffビュー (インライン統合diff) (`GitRepository::unifiedDiffAgainstHead()`+`render::DiffViewLineMarker`(GitDiffMarkerとは別型)+コマンドパレット限定「Git: Toggle Diff View」、実機ドッグフーディングで追加/削除行の色分け表示・Escape復帰・入力ブロックを確認、🎉 **Phase 11.1(Git統合)完結**) → コミット: `7c396c0`/`62b2418`
-- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施。**残作業はWI-16h(CSV式列)のみ。**
+- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施。**着手中 (2026-08-30〜)。** 検証中に重大な実装バグ(`decode_cache_unbounded_growth.md`)を発見・修正した(詳細下記)。§12.5の17項目のうち起動時間/60fpsスクロールは達成済み値を維持確認、fuzz testは元々v2.0機能のためチェックリストから除外(ユーザー承認)。残りの大半(初期メモリ実測/数GB Grep/24時間ソーク/Application Verifier/基本アクセシビリティ/Windows版明記/10GBファイル×各モードの本格検証)は未着手。
   - 🎉 **M5 達成目標: v1出荷 (軽量版)**
+
+### v1出荷判定 中間発見: `OriginalBuffer` デコードキャッシュ無制限蓄積バグ (2026-08-30〜31、修正済み)
+
+10GBファイルでのログ解析モード検証中、システムメモリを枯渇させる重大バグ(実機で空きメモリ0.3GBまで低下)を発見した。根本原因は`OriginalBuffer`のデコードキャッシュが`(offset,length)`キーで永久保持され追い出されない設計(Phase 2b3、当時は意図的に保留)で、`LineIndex::build()`(**あらゆるファイルを開いた際に発火**)を含む9箇所の全体走査系消費者が影響を受けていた。非キャッシュAPI(`viewNoCache()`/`extractNoCache()`/`pieceTextNoCache()`)追加で第一次修正したが、10GBファイルで一括デコード自体が超線形に劣化する第二の問題を発見し、ストリーミングAPI(`viewStreamed()`/`pieceTextStreamed()`、固定チャンク単位)を追加して`LineIndex::build()`/`LogModel::build()`/`CsvModel::build()`を書き換えた。10GBファイルでのPrivateメモリは20GB超(強制終了)→1.22GBへ、初回インデックス構築は113.7秒→26.99秒へ改善。詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)参照。副産物として2件のissueを新規起票: [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md)(CSVモードのper-cellインデックスが10GB規模で大きなメモリを消費、未対応)、[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md)(JSON/XMLツリーUIが100MB/145万要素で3分以上UIハング、原因未調査)。
 
 **🧊 凍結 (着手しない、商用配布を将来検討する際に再評価):**
 - Phase 11.2 LSP 完全実装
