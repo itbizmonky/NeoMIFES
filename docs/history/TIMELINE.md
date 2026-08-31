@@ -3581,4 +3581,20 @@ v1出荷判定に着手し、`--measure-startup`/`--measure-frame`/`--measure-me
 
 副次的に、`.claude/worktrees/`配下に残っていた別セッション(detailed_design.md §11.6タスク)の完了済みworktreeを発見し、`git worktree remove`+ディレクトリ削除で片付けた(未コミット変更なしを確認済み)。
 
+**Release/UBSan/clang-tidyの検証は2エージェントへ委任した(1件目が誤って「通知待ち」で早期停止する不具合があり、2件目を追加起動、両方の結果を最終的に取得・統合した)。** clang-tidyが`buffer_snapshot.cpp`の`extractWalk()`(前セッションで新設した共有ヘルパー)で`cppcoreguidelines-missing-std-forward`を1件検出 — テンプレートパラメータ`FetchChunk&&`が転送参照なのに`std::forward`されていない、という指摘。しかし`fetchChunk`はループ内で複数回呼び出されるコールバックであり、機械的に`std::forward`を挟むと1回目の呼び出しでmoveされ2回目以降が未定義動作になるという逆に危険な変更になる箇所だった。パラメータ型を`FetchChunk&&`から`const FetchChunk&`へ変更(転送不要な設計へ)して解消。Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0を自身で最終確認しコミット(`d8561ab`)・push。
+
+**続けて、v1出荷判定チェックリストの残り項目を実測した。** 起動時間31.35ms・初期メモリ18.56MB(いずれも修正後ビルドで再測定、目標クリア)。Windowsバージョンはレジストリ直接確認で「Windows 11 Pro 25H2(ビルド26200.9168)」と判明(`ProductName`は`Windows 10 Pro`という陳腐化した表記のままだが`DisplayVersion`/`CurrentBuild`が実態を示す既知のWindows仕様)。
+
+**24時間ソーク(100万Undo・クラッシュ0の兼用)にタスクスケジューラ(`NeoMIFES_V1_SoakTest`)で着手した。** WI-13(8時間)の手法を24時間へ延長、署名済みReleaseバイナリを15分おきに生存確認+WorkingSet記録(`.tmp_v1_verify\soak_log.csv`)、24時間経過を検知したら自動的に`SOAK_COMPLETE_NO_CRASH`を記録しタスク自身を削除する設計。**着手直後、Application Verifier検証のためソーク中のプロセスを一時停止する必要が生じた**(NeoMIFESのシングルインスタンス制約により、AppVerifier登録後の新規起動が既存ソークインスタンスへ転送されてしまうため) — タスクを`Disable-ScheduledTask`で一時停止、プロセスをkillしてAppVerifier監視下で再起動、検証後にAppVerifierを無効化して通常インスタンスを再起動・タスクを再開した。ソークログに`INTENTIONAL_RESTART_FOR_APPVERIFIER_TEST_NOT_A_CRASH`と明記し、後日ログを読む際に誤ってクラッシュと解釈されないようにした。
+
+Application Verifier(Handles/Heaps/Leak)は実ファイル(README.md)を開きシンタックスハイライト+SendInputでのUnicodeテキスト入力を行った上で正常終了、Windowsイベントログに違反記録が無いことを確認(検証範囲は単発の基本操作に限定される点は正直に記録)。
+
+**数GB Grepの実測で、新たな未達を発見した。** 標準プローブ(`grep_probe.cpp`、`SearchService::findAll()`/`GrepService::findAll()`を直接呼ぶスタンドアロンプログラム、`neomifes_search`/`neomifes_document`等の.libを直接リンク)を作成し、3GB単一ファイルで38.94秒(目標30秒を26%超過)、1.49GB/5000ファイルのマルチファイルGrepで23.87秒(GB単価ではさらに悪化)と実測した。原因はPhase 5a設計時点で`search_service.h`自身のヘッダコメントが「SIMD/並列化は将来の最適化、未実装」と明記していた既知の制約で、それが実際にGB規模で測定されたのは本セッションが初めてだった。`search_grep_multi_gb_performance_gap.md`として新規issue化。
+
+**基本アクセシビリティの検証では、UI Automation(`System.Windows.Automation`)を使った実機検証を行った。** メニューバー(`IsKeyboardFocusable=True`、`ExpandCollapsePattern`対応)・ステータスバー・タブ・クラッシュ復旧ダイアログ(`InvokePattern`経由のプログラム的クリックが実際に成功)はいずれも意味のある`Name`を持ち正しく公開されていた。**しかし主要なテキスト編集領域(Direct2D直接描画)が`ControlType.Custom`・`Name=''`(空文字列)としてのみ公開され、文書内容・カーソル位置・選択範囲のいずれもUI Automationから一切取得できない**ことを新規発見 — スクリーンリーダーユーザーはメニュー操作はできてもファイル内容を読めない状態。VS Code等の同種のカスタム描画エディタにも共通する構造的な課題である旨を明記した上で`text_surface_no_screen_reader_exposure.md`として新規issue化。
+
+v1出荷判定チェックリスト17項目中14項目達成(2項目は部分達成)、1項目対象外確定(fuzz test)、24時間ソークは進行中(2026-09-01完了見込み、タスクスケジューラが自動進行するため放置可)、残り1項目(数GB Grep)は未達確定。新規発見4件(CSVメモリ・JSONツリーUIハング・Grep性能・スクリーンリーダー非対応)はいずれも今回は記録のみに留め先送りする方針をユーザーから確認済み。ドキュメント同期・コミット(`be796fb`)・push完了。
+
+次はソーク完了(2026-09-01 11:04頃)を待って`.tmp_v1_verify\soak_log.csv`の`SOAK_COMPLETE_NO_CRASH`を確認し記録すること。それ以外は、新規発見4件のうちどれかへ着手するか、現状のまま(WI-13前例に倣い未達項目を正直に記録したまま)v1出荷判定の最終宣言(🎉M5)に進むかをユーザーに確認する。
+
 <!-- 次セッションはここに追記 -->
