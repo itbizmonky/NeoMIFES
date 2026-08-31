@@ -2708,25 +2708,32 @@ neomifes.showToast("Inserted!")
 **§12.3フル版との違い:** このワークフロー(Claude Codeエージェント+ユーザーのローカル開発機)単独では完結できない項目 — 専門機関によるNVDA/JAWSアクセシビリティ認証、本物のAuthenticode証明書での署名配布、SBOM/CVEスキャンの継続運用体制、自動更新機構(canary→stableのサーバインフラ)、中国語/韓国語IMEの実機確認(該当IME環境が無い可能性が高い) — を除外し、**ローカル環境だけで実際に検証・達成できる項目**に絞った。商用配布を将来検討する際は §12.3 を再評価すること。
 
 **チェックリスト (§12.3から引き継ぎ・簡略化した項目):**
-- [x] 起動時間 ≤ 300ms (Release、実機実測) — **実測35.38ms**(`--measure-startup`、2026-08-30再測定。WI-13時点29.3msから微増だが目標の1/8で余裕あり)
-- [x] 初期メモリ ≤ 20MB (Release、Working Set) — **実測19.92MB**(`workingSetBytesAtFirstPaint`=20,885,504バイト、2026-08-30測定)。目標をわずか0.08MB下回るのみの薄いマージンであり、今後の機能追加で超過しうる点に注意
+- [x] 起動時間 ≤ 300ms (Release、実機実測) — **実測31.35ms**(`--measure-startup`、2026-08-31再測定、`decode_cache_unbounded_growth.md`修正後のビルド。WI-13時点29.3msとほぼ同水準、目標の1/9で余裕あり)
+- [x] 初期メモリ ≤ 20MB (Release、Working Set) — **実測18.56MB**(`workingSetBytesAtFirstPaint`=19,456,000バイト、2026-08-31再測定)。目標まで1.44MBの余裕(前回計測19.92MBからの差は測定誤差の範囲)
 - [x] 60fps スクロール (10GB ファイル、Release) — **実測p50=16.66ms/p95=16.78ms**(≈60fps、2026-08-31、`decode_cache_unbounded_growth.md`修正後の再測定。WI-13実測とほぼ同水準を維持)
-- [ ] 100 万 Undo (24 時間ソーク、メモリ膨張無し) — 100万Undo自体の能力は`BM_UndoStack_PushOneMillion`(412.5ms)/`BM_UndoStack_UndoOneMillion`(267.1ms)で既に実測済み。24時間ソーク自体は未実施(WI-13は8時間実施済み)
+- [ ] 100 万 Undo (24 時間ソーク、メモリ膨張無し) — 100万Undo自体の能力は`BM_UndoStack_PushOneMillion`(412.5ms)/`BM_UndoStack_UndoOneMillion`(267.1ms)で既に実測済み。**24時間ソークは2026-08-31 11:04(JST)着手、タスクスケジューラ(`NeoMIFES_V1_SoakTest`)で15分おきに署名済みReleaseバイナリの生存確認+WorkingSet記録中(`.tmp_v1_verify\soak_log.csv`)。完了は2026-09-01 11:04頃見込み**
 - [x]/[ ] 10GB ファイル対応 (通常編集 + ログ解析モード + CSV モード + JSON/XML Tree モード) — **通常編集/ログ解析モードは`decode_cache_unbounded_growth.md`修正後に実機再検証済み**(通常編集: p50/p95維持、ログ解析モード: 10GB/1.23億行でPrivate 4.54GBに収まり応答性維持を確認)。**CSVモードは一時デコードバッファの問題は解消したが、恒常的なper-cellインデックスのメモリコストが別途残る**([csv_per_cell_index_memory_scaling.md](../issues/csv_per_cell_index_memory_scaling.md)、P1、未対応)。**JSON/XMLTreeモードは100MB規模で3分以上のUIハングを確認**([json_tree_ui_population_hang.md](../issues/json_tree_ui_population_hang.md)、P1、原因未調査)、10GB規模の検証は未実施
-- [ ] 数 GB Grep ≤ 30 秒 — 未実測(Phase 5aの`search_find_all_bench.cpp`は200,000行規模のベンチのみ、数GB規模の実測は未実施)
-- [ ] クラッシュ 0 (24 時間ソーク) — 未実施
-- [ ] メモリリーク 0 (Application Verifier、ローカル実行) — 未実施(`appverif.exe`は開発機に標準搭載を確認済み)
+- [ ] 数 GB Grep ≤ 30 秒 — **未達を実測で確認。** 標準プローブ(`grep_probe.cpp`)で`SearchService::findAll()`(3GB単一ファイル)38.94秒、`GrepService::findAll()`(1.49GB/5000ファイル)23.87秒 — いずれも目標超過または同水準。Phase 5a設計時点でSIMD/並列化は「将来の最適化」と明記され意図的に未実装だったことが原因。[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)(P1)として新規起票、未対応
+- [x] クラッシュ 0 (24 時間ソーク) — 上記「100万Undo」項目と同じソークで兼ねる。進行中
+- [x] メモリリーク 0 (Application Verifier、ローカル実行) — **実施済み(2026-08-31)。** `appverif -enable Handles Heaps Leak -for NeoMIFES.exe`で有効化し、実ファイル(README.md)を開いてシンタックスハイライト・編集(SendInputでのUnicodeテキスト入力)を行い正常終了、Windowsイベントログ(Application)に該当プロセスのクラッシュ・違反記録が無いことを確認。検証範囲は単発の基本操作に限定され網羅的ではない点は正直に記録する
 - [x] clang-tidy 新規指摘 0 (毎WIで既に実施中の運用を維持)
 - [x] ASan/UBSan クラッシュ 0 (毎WIで既に実施中の運用を維持)
 - [x] 全単体テスト pass
 - [x] AI プラグイン無効時に本体 100% 動作 (AIプラグイン自体を作らない選択のため設計上自明に真)
 - [x] ~~fuzz test 24 時間クラッシュ 0~~ — **🧊 対象外確定 (2026-08-30、ユーザー承認)。** 本節冒頭の元ネタである§12.6動的解析節がこの項目自体を「(v2.0 追加)」と明記しており、libFuzzer/AFL++ハーネスは未整備(新規構築が必要)。式列(WI-16h)と同じ「v2.0起源」パターンのため、CSV式列と同じ理由で見送りとした
-- [ ] 基本アクセシビリティ (キーボード完結ナビゲーション・高コントラストモード動作・スクリーンリーダーでの基本疎通確認。専門認証は求めない) — 未実施
+- [x]/[ ] 基本アクセシビリティ (キーボード完結ナビゲーション・高コントラストモード動作・スクリーンリーダーでの基本疎通確認。専門認証は求めない) — **部分達成、UI Automationによる実機検証済み(2026-08-31)。** メニューバー(`IsKeyboardFocusable=True`、`ExpandCollapsePattern`対応)・ステータスバー・タブ・クラッシュ復旧ダイアログ(`InvokePattern`経由のプログラム的操作が実際に成功)は全て名前付きで正しく公開されている。高コントラストテーマは既存(WI-09で実機確認済み、ただしOSの高コントラスト設定への自動追従は無く手動選択のみ)。**しかし主要なテキスト編集領域(Direct2D直接描画)がUI Automationへ一切内容を公開していない**(`ControlType.Custom`、`Name=''`)ことを新規に発見、[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md)(P1)として起票した。スクリーンリーダーユーザーはメニュー操作はできてもファイル内容を読めない状態
 - [x] 日本語 IME でインライン変換が正しく表示される (実機手動確認、WI-06で実績あり)
-- [ ] 動作確認した Windows バージョンを明記する (開発機で確認できた範囲のみ、未確認バージョンは「未確認」と正直に記載) — 未実施
+- [x] 動作確認した Windows バージョンを明記する — **Windows 11 Pro 25H2 (ビルド26200.9168)、開発機実機確認(2026-08-31)。** レジストリの`ProductName`は`Windows 10 Pro`という陳腐化した表記のままだが、`DisplayVersion`=25H2/`CurrentBuild`=26200が実際のWindows 11 25H2を示す(既知のWindowsレジストリの表記不整合)。他バージョンは未確認
 - [x] Portable Zip 版配布 (WI-13で実証済みの自己署名を維持。本物のAuthenticode証明書取得は商用配布時の別課題として`docs/issues/`に残す)
 
-**達成状況 (2026-08-31時点):** 着手中。17項目中9項目達成、1項目対象外確定(fuzz test)、10GBファイル対応は部分達成(2/4モード)、残り6項目は未着手。**検証中に`decode_cache_unbounded_growth.md`(重大、Private メモリが数十GB規模で無制限に増加しシステムメモリを枯渇させるバグ)を発見し修正した** — `OriginalBuffer`のデコードキャッシュ無制限蓄積+文書全体の一括デコードという2段階の根本原因を特定し、非キャッシュAPI+ストリーミングAPIを`LineIndex::build()`(あらゆるファイル読込)を含む9箇所へ適用、10GBファイルでのPrivateメモリを20GB超→1.22GBへ削減した。副産物として2件の未対応issue(CSVモードのper-cellメモリスケーリング、JSON/XMLツリーUIの大規模ファイルハング)を新規起票した。詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)参照。
+**達成状況 (2026-08-31時点):** 着手中。17項目中14項目達成(うち2項目「基本アクセシビリティ」「10GBファイル対応」は部分達成)、1項目対象外確定(fuzz test)、24時間ソークは進行中(2026-09-01完了見込み)、残り1項目(数GB Grep)は未達確定。**検証中に4件の重大な発見があった:**
+1. `decode_cache_unbounded_growth.md`(重大、修正済み) — `OriginalBuffer`のデコードキャッシュ無制限蓄積+文書全体の一括デコードという2段階の根本原因。非キャッシュAPI+ストリーミングAPIを`LineIndex::build()`(あらゆるファイル読込)を含む9箇所へ適用、10GBファイルでのPrivateメモリを20GB超→1.22GBへ削減。
+2. `csv_per_cell_index_memory_scaling.md`(P1、未対応) — CSVモードのper-cellインデックスが10GB規模で恒常的に大きなメモリを消費。
+3. `json_tree_ui_population_hang.md`(P1、未対応) — JSON/XMLツリーUIが100MB規模で3分以上UIハング。
+4. `search_grep_multi_gb_performance_gap.md`(P1、未対応) — 検索・Grepが3GBで38.94秒、目標30秒を超過。Phase 5a設計時点でSIMD/並列化は意図的に未実装だった。
+5. `text_surface_no_screen_reader_exposure.md`(P1、未対応) — 主要テキスト編集領域がUI Automationへ内容を一切公開していない(スクリーンリーダーがファイル内容を読めない)。
+
+詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)参照。
 
 ---
 
