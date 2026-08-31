@@ -185,7 +185,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [x] **WI-17e** Git統合 Gitペイン (変更ファイル一覧) (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングでM/U混在の変更一覧が`git status --short`と一致することを確認) → コミット: `fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`
 - [x] **WI-17f** Git統合 Diffビュー (インライン統合diff) (`GitRepository::unifiedDiffAgainstHead()`+`render::DiffViewLineMarker`(GitDiffMarkerとは別型)+コマンドパレット限定「Git: Toggle Diff View」、実機ドッグフーディングで追加/削除行の色分け表示・Escape復帰・入力ブロックを確認、🎉 **Phase 11.1(Git統合)完結**) → コミット: `7c396c0`/`62b2418`
-- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施。**着手中 (2026-08-30〜)。** 検証中に重大な実装バグ(`decode_cache_unbounded_growth.md`)を発見・修正した(詳細下記)。§12.5の17項目のうち起動時間/60fpsスクロールは達成済み値を維持確認、fuzz testは元々v2.0機能のためチェックリストから除外(ユーザー承認)。残りの大半(初期メモリ実測/数GB Grep/24時間ソーク/Application Verifier/基本アクセシビリティ/Windows版明記/10GBファイル×各モードの本格検証)は未着手。
+- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施。**着手中 (2026-08-30〜)。** 検証中に重大な実装バグ(`decode_cache_unbounded_growth.md`)を発見・修正した(詳細下記)。§12.5の17項目中14項目達成(3項目部分達成)、1項目対象外(fuzz test)、残り1項目(数GB Grep)は未達確定。アイドルソークは進行中(元々24時間の予定だったが、実際には入力・編集・Undo/Redo等を一切行わないアイドル放置確認に過ぎないとユーザー指摘で判明したため12時間へ短縮・再定義、詳細は`RESUME_HERE.md`参照)。
   - 🎉 **M5 達成目標: v1出荷 (軽量版)**
 
 ### v1出荷判定 中間発見: `OriginalBuffer` デコードキャッシュ無制限蓄積バグ (2026-08-30〜31、修正済み)

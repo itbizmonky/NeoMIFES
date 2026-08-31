@@ -34,15 +34,18 @@
 >
 > **修正:** 非キャッシュAPI(`OriginalBuffer::viewNoCache()`/`BufferSnapshot::pieceTextNoCache()`/`extractNoCache()`)+ストリーミングAPI(`viewStreamed()`/`pieceTextStreamed()`、固定チャンク単位)を追加し、9箇所を切り替えた。10GBファイルでのPrivateメモリは20GB超(強制終了)→**1.22GB**、初回インデックス構築は113.7秒→**26.99秒**へ改善。
 >
-> **続けてv1出荷判定の残り項目を実測(2026-08-31)。17項目中14項目達成(2項目部分達成)、1項目対象外(fuzz test)、24時間ソークは進行中(タスクスケジューラ`NeoMIFES_V1_SoakTest`、2026-09-01 11:04頃完了見込み、放置で自動進行)、残り1項目(数GB Grep)は未達確定。**
+> **続けてv1出荷判定の残り項目を実測(2026-08-31)。17項目中14項目達成(3項目部分達成)、1項目対象外(fuzz test)、アイドルソークは進行中(タスクスケジューラ`NeoMIFES_V1_SoakTest`)、残り1項目(数GB Grep)は未達確定。**
 >
-> **未対応のまま残る4件のissue(次のPhase候補、いずれもユーザー承認のもと今回は記録のみに留めた):**
+> **🔴 ソークの前提が24時間→アイドル12時間へ変更された(2026-08-31、ユーザー指摘):** 「起動放置して何の意味があるのか」との指摘を受け、`soak_monitor.ps1`の実体が**Undo/Redo等の能動的操作を一切行わないアイドル生存確認**であり、ロードマップ原案の「100万回連続Undo/Redoを24時間」という能動的ストレステストとは別物だったと判明。ユーザー承認のもと**12時間のアイドル確認として完走させる**方針に変更、`soak_monitor.ps1`の閾値を24→12へ変更済み(2026-08-31 11:04着手 → **完了予定 23:04頃**、24時間から短縮)。詳細・未実施の能動的ソークの扱いは新規[`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md)(P2)参照。
+>
+> **未対応のまま残る5件のissue(次のPhase候補、いずれもユーザー承認のもと今回は記録のみに留めた):**
 > - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — CSVモードのper-cellインデックスが10GB規模で恒常的に大きなメモリを消費(一時バッファの問題とは別)
 > - [`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1) — JSON/XMLツリーUIが100MB/145万要素で3分以上UIハング(原因未調査、推定は`ui::JsonTreePane`の非仮想化`WC_LISTVIEW`)
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 検索・Grepが3GBで38.94秒(目標30秒超過)。Phase 5a設計時点でSIMD/並列化は意図的に未実装だった
 > - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
+> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
 >
-> **次回セッション最初にやること:** `.tmp_v1_verify\soak_log.csv`を確認し`SOAK_COMPLETE_NO_CRASH`が記録されていれば24時間ソーク達成、master_roadmap.md §12.5へ実測値を転記。その後、新規発見4件のいずれかへ着手するか、WI-13前例(未達2項目を正直に記録したままユーザー承認でM4を確定)に倣い現状のままv1出荷判定(🎉M5)を宣言するかをユーザーに確認する。
+> **次回セッション最初にやること:** `.tmp_v1_verify\soak_log.csv`を確認し`SOAK_COMPLETE_NO_CRASH`が記録されていればアイドル12時間ソーク達成、master_roadmap.md §12.5へ実測値を転記(「100万Undo」「クラッシュ0/メモリ安定性」両項目、既に下書き済みの文言を実測値で更新するだけでよい)。その後、新規発見5件のいずれかへ着手するか、WI-13前例(未達2項目を正直に記録したままユーザー承認でM4を確定)に倣い現状のままv1出荷判定(🎉M5)を宣言するかをユーザーに確認する。
 >
 > 詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)、`docs/history/TIMELINE.md` Session 115参照。
 >

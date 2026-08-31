@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-08-31 (v1出荷判定、`decode_cache_unbounded_growth.md`解決・`csv_per_cell_index_memory_scaling.md`/`json_tree_ui_population_hang.md`/`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`起票)
+**最終更新:** 2026-08-31 (v1出荷判定、`decode_cache_unbounded_growth.md`解決・`csv_per_cell_index_memory_scaling.md`/`json_tree_ui_population_hang.md`/`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`undo_redo_active_usage_soak_not_performed.md`起票)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -44,6 +44,7 @@
 | [Phase 10.1 v2.0拡張候補が未実装](phase_10_1_v2_extended_patterns.md) | リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/SAP・AWS・Azure等ベンダー固有パターンは実データ入手まで意図的に先送り (WI-14a) | 待機 (WI-14c MVP達成後、実データ入手時に再評価) |
 | [CSVグリッドが末尾改行由来の暗黙の空行を表示してしまう](csv_grid_shows_trailing_implicit_empty_row.md) | `CsvModel`の既存仕様(WI-16a、Document全体と一貫)がグリッドUIで視覚的ノイズとして露呈。データ欠落・誤りは無い | 待機 (要望が出るかPhase 10.2次期UI改善サブWI着手時に再評価) |
 | [`tree-sitter-xml`が約505階層超のネストで整形式入力を誤検知する](xmltree_deep_nesting_misparse_limit.md) | クラッシュではなく`ERROR`ノードへの安全な縮退。実用上の発生頻度は極めて低いと想定 | 待機 (実例が確認された場合に再評価) |
+| [「100万Undo(24時間ソーク)」が実際にはUndo/Redoを回さないアイドル確認だった](undo_redo_active_usage_soak_not_performed.md) | ロードマップ原案は能動的なUndo/Redoストレステストを計画していたが、実装はアイドル放置確認に留まった。100万Undo自体の能力・速度はベンチマークで実測済み | 待機 (ユーザー指摘で発覚、2026-08-31。次フェーズ候補として検討) |
 
 ## 対応不能 / 外部要因待ち
 
