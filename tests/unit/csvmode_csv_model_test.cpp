@@ -83,7 +83,7 @@ TEST(CsvModelTest, QuotedFieldWithEmbeddedNewlineSpansMultipleDocumentLines) {
     // The invariant a future grid UI's "cursor position -> cell" mapping
     // depends on: this cell's own end lands on a later document line than
     // its start, because the quoted content itself contains a '\n'.
-    EXPECT_GT(doc.offsetToLine(row0[1].endPos), doc.offsetToLine(row0[1].startPos));
+    EXPECT_GT(doc.offsetToLine(row0[1].endPos()), doc.offsetToLine(row0[1].startPos));
 }
 
 TEST(CsvModelTest, DoubledQuoteInsideQuotedFieldUnescapesToOneQuote) {
@@ -113,7 +113,7 @@ TEST(CsvModelTest, CrlfRowTerminatorExcludesTheCrFromTheLastCellsSpan) {
     const auto row0 = model->row(0);
     ASSERT_EQ(row0.size(), 2U);
     EXPECT_EQ(row0[1].startPos, 2U);
-    EXPECT_EQ(row0[1].endPos, 3U);  // excludes the '\r' at position 3
+    EXPECT_EQ(row0[1].endPos(), 3U);  // excludes the '\r' at position 3
     EXPECT_EQ(csvCellValue(doc, row0[1]), u"b");
 }
 
@@ -127,7 +127,7 @@ TEST(CsvModelTest, EmptyDocumentProducesOneRowWithOneEmptyCell) {
     const auto row0 = model->row(0);
     ASSERT_EQ(row0.size(), 1U);
     EXPECT_EQ(row0[0].startPos, 0U);
-    EXPECT_EQ(row0[0].endPos, 0U);
+    EXPECT_EQ(row0[0].endPos(), 0U);
     EXPECT_FALSE(row0[0].quoted);
 }
 

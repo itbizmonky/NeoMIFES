@@ -43,7 +43,9 @@ struct CsvBuilder {
     // '"' whenever quoted==true - csvCellValue() below depends on that
     // guarantee holding exactly, not on inferring it from the text itself.
     void finalizeField(document::TextPos endPos) {
-        cells.push_back(CsvCell{.startPos = fieldStart, .endPos = endPos, .quoted = (state == FieldState::QuoteInQuoted)});
+        cells.push_back(CsvCell{.startPos = fieldStart,
+                                 .length   = static_cast<std::uint32_t>(endPos - fieldStart),
+                                 .quoted   = (state == FieldState::QuoteInQuoted)});
     }
 
     void finalizeRow() {
@@ -252,7 +254,7 @@ std::span<const CsvCell> CsvModel::dataRow(std::size_t dataRowIndex) const noexc
 }
 
 std::u16string csvCellValue(const document::BufferSnapshot& snapshot, const CsvCell& cell) {
-    std::u16string raw = snapshot.extract(document::TextRange{.start = cell.startPos, .end = cell.endPos});
+    std::u16string raw = snapshot.extract(document::TextRange{.start = cell.startPos, .end = cell.endPos()});
     if (!cell.quoted) {
         return raw;
     }

@@ -44,11 +44,27 @@ namespace neomifes::csvmode {
 // ever having been a clean quoted token.
 struct CsvCell {
     document::TextPos startPos = 0;  // inclusive
-    document::TextPos endPos   = 0;  // exclusive
-    bool               quoted   = false;
+    // csv_per_cell_index_memory_scaling.md: stored as a length rather than
+    // an absolute endPos - m_cells is one flat vector for the WHOLE
+    // document (see CsvModel's own class comment), so shrinking each
+    // CsvCell by 8 bytes (24->16, MSVC's 8-byte alignment on startPos
+    // rounds this down no further) is a real saving at scale. A single
+    // cell's raw text length safely fits uint32_t (an individual CSV field
+    // exceeding 4 billion characters is not a realistic input this parser
+    // needs to represent exactly).
+    std::uint32_t length = 0;
+    bool           quoted = false;
+
+    [[nodiscard]] document::TextPos endPos() const noexcept { return startPos + length; }
 
     friend bool operator==(const CsvCell&, const CsvCell&) = default;
 };
+
+// document::Piece (piece.h) has the same guard for the same reason: m_cells
+// is one flat vector sized to the whole document's cell count, so a future
+// field addition silently regrowing this struct back toward 24 bytes would
+// be an easy-to-miss regression at 10GB-file scale.
+static_assert(sizeof(CsvCell) <= 16, "CsvCell should stay compact (csv_per_cell_index_memory_scaling.md).");
 
 struct CsvParseOptions {
     char16_t delimiter = u',';

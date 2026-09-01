@@ -74,9 +74,29 @@
 > - [`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1、新規) — 大規模JSONファイルを開くだけでJSON構文ハイライトが約47秒UIをハングさせる
 > - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
 >
-> **次回セッション最初にやること:** 新規発見5件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い。
+> ---
+
+> # 🎯 最重要 (2026-09-01) — 次フェーズ候補②`csv_per_cell_index_memory_scaling.md`を部分対応
 >
-> 詳細は[`docs/issues/json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md)、[`docs/issues/json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md)、`docs/history/TIMELINE.md` Session 116参照。
+> **①解決後、「次のPhaseに進め」の指示で②`csv_per_cell_index_memory_scaling.md`に着手した。**
+>
+> **調査で、要件定義書§9の実際の目標(「1000万行のCSVを閲覧・軽編集できる」)は目標規模なら既存実装でも安全な範囲(1000万行×10列と仮定=1億セルで約2.4GB)に収まると判明。issueが発見されたのはその約14倍の規模(10GB・約1.4億行)だった。** `sizeof(CsvCell)`(現行24バイト、`startPos`+`endPos`+`quoted`)を実測した上で、①フィールド圧縮(24→16バイト、10GB規模のリスクは軽減のみ)/②遅延インデックス化(真の解決だがCSR/span API全面再設計)/③現状維持、の3択を実測値付きでAskUserQuestion提示し、**「フィールド圧縮のみ実施(推奨)」が選ばれた**(10GB規模の根本解消は意図的に対象外)。
+>
+> **修正:** `CsvCell::endPos`(絶対位置、8バイト)を`CsvCell::length`(`std::uint32_t`、4バイト)+計算メソッド`endPos()`へ置き換え(`src/csvmode/include/neomifes/csvmode/csv_model.h`/`.cpp`、呼び出し側2箇所`src/csvmode/src/csv_model.cpp`/`src/app/normal_mode_wiring.cpp`、テスト3箇所)、24→16バイト/セルへ圧縮した。`document::Piece`の既存`static_assert(sizeof(Piece) <= 32, ...)`と同型のガードを新規追加。
+>
+> **実機再測定(Release、662MB・1330万行・5列のCSV):** WorkingSet約1.97GB・Private約1.77GBで安定(セーフティキル不要)。issueの旧参照値(1GBでWorkingSet 8.3GB、ただしdecode_cache_unbounded_growth.md修正前の測定)から大幅に改善しているが、**この実測値から10GB・1.4億行規模へ素朴に外挿すると約18GB相当となり、10GB規模の危険自体はユーザー承認通り残存する。** 実機ドッグフーディング(スクリーンショット)でカンマを含む引用符付きセル・二重引用符エスケープ解除いずれも正しく表示されることを確認。
+>
+> Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0。issueは「🟡部分対応」として記録(完全な「解決済み」ではなく、10GB規模のリスクが意図的に残存する状態を正直に記録)。
+>
+> **未対応のまま残る4件のissue(次のPhase候補):**
+> - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 検索・Grepが3GBで38.94秒(目標30秒超過)。Phase 5a設計時点でSIMD/並列化は意図的に未実装だった
+> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
+> - [`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1) — 大規模JSONファイルを開くだけでJSON構文ハイライトが約47秒UIをハングさせる
+> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
+>
+> **次回セッション最初にやること:** 残り4件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット済み、pushはユーザー指示待ち)。
+>
+> 詳細は[`docs/issues/csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md)、`docs/history/TIMELINE.md` Session 116参照。
 >
 > ---
 

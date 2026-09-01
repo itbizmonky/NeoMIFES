@@ -3499,12 +3499,15 @@ using XPathExpression = std::vector<XPathSegment>;
 `src/csvmode/` (`neomifes_csvmode` STATIC ライブラリ、PUBLIC=`neomifes::document`のみ)。自前のRFC4180ライク状態機械が`document::Document`のUTF-16テキストを直接走査するため、`neomifes::logmode`/`neomifes::jsontree`と異なり外部パースライブラリもUTF-8変換系(`neomifes::util`/`neomifes::encoding`)も不要。グリッドUI(`Ctrl+Shift+G`)はWI-16c、フィルタ・ソートのヘッドレス計算基盤(`computeCsvRowOrder()`)はWI-16d、EditorSession配線+フィルタ入力欄/列ヘッダクリックソートのUIはWI-16eで実装済み。セル単位クリック編集はWI-16f、`ui::CsvGridPane`の2`SysListView32`分割による「#」列固定はWI-16gで実装済み。式列のみ未実装(WI-16h以降、着手前に具体的な文法・構文の確認が必要)。
 
 ```cpp
-// neomifes/csvmode/csv_model.h (WI-16a)
+// neomifes/csvmode/csv_model.h (WI-16a、csv_per_cell_index_memory_scaling.md部分対応で2026-09-01改訂)
 struct CsvCell {
-    document::TextPos startPos = 0;  // inclusive、引用符付きなら開き引用符から
-    document::TextPos endPos   = 0;  // exclusive、引用符付きなら閉じ引用符まで
-    bool quoted = false;              // finalizeField()呼び出し時点でQuoteInQuoted状態だったか(パーサの実測値、生テキストからの事後推論ではない)
+    document::TextPos startPos = 0;   // inclusive、引用符付きなら開き引用符から
+    std::uint32_t      length   = 0;  // endPosではなくlengthで保持(24→16バイト/セルへ圧縮)
+    bool                quoted   = false;  // finalizeField()呼び出し時点でQuoteInQuoted状態だったか(パーサの実測値、生テキストからの事後推論ではない)
+
+    [[nodiscard]] document::TextPos endPos() const noexcept { return startPos + length; }  // 計算プロパティ
 };
+static_assert(sizeof(CsvCell) <= 16, "...");  // document::Pieceと同型のサイズガード
 
 struct CsvParseOptions {
     char16_t delimiter = u',';

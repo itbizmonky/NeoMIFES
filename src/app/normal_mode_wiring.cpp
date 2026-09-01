@@ -3146,7 +3146,7 @@ void applyCsvCellEdit(HWND hwnd, RenderPipeline& renderPipeline, Workspace& work
     const char16_t          delimiter = csvmode::detectCsvDelimiter(session.document()).value_or(u',');
     const std::u16string    escaped   = csvmode::escapeCsvCellText(newText, delimiter);
     session.dispatcher().dispatch(
-        std::make_unique<ReplaceRangeCommand>(TextRange{.start = cell.startPos, .end = cell.endPos}, escaped));
+        std::make_unique<ReplaceRangeCommand>(TextRange{.start = cell.startPos, .end = cell.endPos()}, escaped));
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     session.beginCsvIndexing(*csvModelWorker, csvmode::CsvParseOptions{.delimiter = delimiter, .hasHeader = true});
 }

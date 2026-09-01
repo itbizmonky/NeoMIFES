@@ -3637,4 +3637,20 @@ clang-tidyはCI既存のワークアラウンド(`--extra-arg=-Wno-unused-comman
 
 次は、残り4件のissue(`csv_per_cell_index_memory_scaling.md`/`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するか、あるいは新規発見の`json_syntax_highlight_large_file_open_hang.md`を優先するかをユーザーに確認する。
 
+**コミット(`886733c`)後、ユーザーが「次のPhaseに進め」と指示、次フェーズ候補②`csv_per_cell_index_memory_scaling.md`(CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費)に着手した。**
+
+`CsvCell`(`startPos`/`endPos`/`quoted`)の構造を読み、`document::TextPos`が`uint64_t`であることから`sizeof(CsvCell)`を実測(MSVCで24バイト)。同時に要件定義書§9を確認したところ、実際の目標は「1000万行のCSVを閲覧・軽編集できる」ことであり(`master_roadmap.md`§10.2)、issueが問題を発見した10GB・約1.4億行は**目標の約14倍の規模**だったと判明した。目標規模(1000万行×10列と仮定=1億セル)は現行実装(24バイト/セル)でも約2.4GBに収まり、実は安全な範囲内だった。
+
+issue自身が提示していた3方針(①フィールド圧縮/②遅延インデックス化/③現状維持)を、この事実と実測sizeof値を踏まえて再整理し、AskUserQuestionで提示した: ①は24→16バイト/セル(33%削減)だが10GB規模(約7億セル)では16.8GB→11.2GBとなり根本解決にはならない、②は真に任意規模を解決できる唯一の方針だがCSR/span方式の公開API(`CsvGridPane`/フィルタ・ソート)を全面再設計する必要があり目標規模超過ケースのために大きなリスクを取る価値があるか要検討、と正直に提示した。**ユーザーは「フィールド圧縮のみ実施(推奨)」を選択**(遅延インデックス化は見送り)。
+
+**実装:** `CsvCell::endPos`(絶対位置`document::TextPos`、8バイト)を`CsvCell::length`(`std::uint32_t`、4バイト)+計算メソッド`endPos() const { return startPos + length; }`へ置き換えた。呼び出し側は`src/csvmode/src/csv_model.cpp`の構築箇所(`finalizeField()`)と`csvCellValue()`の2箇所、`src/app/normal_mode_wiring.cpp`のセル編集(`applyCsvCellEdit()`、WI-16f)1箇所、テストは`tests/unit/csvmode_csv_model_test.cpp`の3箇所(`.endPos`→`.endPos()`)。`endPos`/`startPos`という同名フィールドを持つ`jsontree::JsonNode`/`xmltree::XmlNode`とは無関係な別構造体であることを広域grepで確認してから着手した。既存の`document::Piece`(`piece.h`)の`static_assert(sizeof(Piece) <= 32, ...)`と同型のガード(`static_assert(sizeof(CsvCell) <= 16, ...)`)を新規追加し、将来の意図しない肥大化を防止した。
+
+**実機再測定:** 前回同様の10GB規模の試験は時間・リスクの両面で過大と判断し、issue自身が旧参照値として記録していた「1GB・約1330万行」と同規模(662MB・1330万行・5列)で安全に再測定した(セーフティ監視スクリプトを併用、システム空きメモリ19.5GB確認の上で実施)。結果: WorkingSet約1.97GB・Private約1.77GBで安定(セーフティキル不要)。issueの旧参照値(1GBでWorkingSet 8.3GB、ただし`decode_cache_unbounded_growth.md`修正前の測定であり単純比較はできない点を明記)から大幅改善しているが、**この実測値(≈26.6バイト/セル相当、セルベクタ以外のドキュメント/mmapオーバーヘッド込み)から10GB・1.4億行規模へ素朴に外挿すると約18GB相当となり、10GB規模の危険自体はユーザー承認通り意図的に残存する**ことを正直に記録した。
+
+実機ドッグフーディングはCsvGridToggle(`CommandId::CsvGridToggle`=40008)をWM_COMMAND経由で送信する手法(JsonTreeToggle検証で確立した手法の再利用)で実施。LVM_GETITEMTEXTWでのセルテキスト取得はクロスプロセスのポインタ共有ができず文字化けする(既知のWin32制約、ターゲットプロセス内のLVN_GETDISPINFOW経由でしか正しく解決できない)ため、代わりにスクリーンショットで視覚的に確認する方式へ切替 — カンマを含む引用符付きセル(`hello, world`)・二重引用符のエスケープ解除(`Carol "C"`)いずれも正しく表示されることを確認した。
+
+Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0。issueは「🟡部分対応」として記録した(完全な「解決済み」ではなく、10GB規模のリスクが意図的に残存する状態を正直に記録する扱い) — `docs/issues/csv_per_cell_index_memory_scaling.md`(完了条件更新、実測値記録)/`docs/issues/README.md`(P1テーブルの記述更新)/`master_roadmap.md`(§12.5「6件の重大な発見」item2・10GBファイル対応項目を更新)/`build_plan.md`(§0次フェーズ候補リスト更新)/`docs/design/detailed_design.md`§11.5(CsvCellコード例を圧縮後の形へ同期)/`RESUME_HERE.md`を同期。検証用スクラッチ(`.tmp_csv_verify\`)は削除済み。
+
+次は、残り4件のissue(`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`json_syntax_highlight_large_file_open_hang.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するかをユーザーに確認する。
+
 <!-- 次セッションはここに追記 -->
