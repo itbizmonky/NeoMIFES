@@ -3609,4 +3609,32 @@ AskUserQuestionで今後の扱いを確認したところ、用意した3択(そ
 
 **これにより、2026-08-23にユーザーと合意した確定スコープ(Phase 10残り+Git統合UI化+v1出荷判定)が完全に完了した。** 次のセッションは、新規発見5件のissueのうちどれに着手するか(あるいは他の方針にするか)をユーザーに確認するところから始まる。
 
+## Session 116 (2026-09-01): `json_tree_ui_population_hang.md`解決(実際の原因はWC_LISTVIEWではなくWC_TREEVIEW)、副産物issue1件発見
+
+M5達成後、ユーザーに次フェーズ候補5件の実装優先度を提示(コスト・影響・リスクを踏まえ①`json_tree_ui_population_hang.md`→②`csv_per_cell_index_memory_scaling.md`→③`search_grep_multi_gb_performance_gap.md`→④`undo_redo_active_usage_soak_not_performed.md`、⑤`text_surface_no_screen_reader_exposure.md`は規模が突出するため別フェーズへ先送りを推奨)、「進めよ」の指示で①から着手した。
+
+**着手前調査(CLAUDE.mdルール3)で、issue自身の推定原因が誤りだったと判明した。** issueは「`ui::JsonTreePane`が`WC_LISTVIEW`の非仮想化実装のはず」と推定していたが、実際のコード(`src/ui/src/json_tree_pane.cpp`)を読むと`WC_TREEVIEW`(`SysTreeView32`)を使っており、そもそもWin32のTreeViewにはListViewの`LVS_OWNERDATA`に相当する仮想モード機構が存在しない。CSVグリッド(WI-16c)の仮想化パターンをそのまま転用できないことが分かり、標準プローブ(`treeview_probe.cpp`、スクラッチパッドで`cl.exe`直接コンパイル)で`TVM_INSERTITEMW`単体の挿入コストを実測: `WM_SETREDRAW`未抑制時は約100〜150μs/件で、145万件×130μs≒188秒 — issueが報告した168秒のハングとほぼ一致し、「大量の個別`SendMessageW`呼び出しそのものが支配的コスト」と裏付けた。`TVI_LAST`/`TVI_FIRST`間の有意差は無く(現行comctl32はテール挿入をO(1)キャッシュ済みと判断)、`WM_SETREDRAW`抑制で約4.7倍高速化するが145万件では単体でも約45秒かかり不十分と判明。
+
+**issueの再現条件が「JSON配列ファイル」である点から、145万要素が1階層に横並びのフラット配列である可能性が高いと判断し、単純な「クリックまで生成しない遅延ロード」だけでは不十分(ルート展開の瞬間に145万件を一度に挿入し同じ問題が再発する)と結論した。** 複雑な設計判断(しきい値ベースの2経路切り替え・階層キャップの必要性・`TVIF_CHILDREN`/`TVN_ITEMEXPANDINGW`という本コードベース初採用のWin32パターン)が絡むため、EnterPlanModeでPlan Modeに入り、正式なプランを作成・ユーザー承認を得てから実装した(プランファイル: `eventual-crafting-lecun.md`)。
+
+**設計:** `ui::JsonTreePane::populateTree()`を総ノード数のしきい値(`kEagerFullyExpandThreshold`=20,000件)で分岐。以下の場合は従来通り全ノード挿入+全展開(動作は一切変更しない、`WM_SETREDRAW`抑制のみ追加)、超える場合はWin32標準の「子がまだ無くても展開グリフ`[+]`だけ出す」機構(`TVIF_CHILDREN`/`item.cChildren=1`)を使い、実際に展開されるまで子ノードを挿入しない遅延ロードへ切り替え、新規`TVN_ITEMEXPANDINGW`ハンドラでその場で1階層分だけ実子を挿入する。さらに1階層あたりの実挿入数を`kMaxChildrenPerLevel`(5,000件)で上限を設け、超過分は「`… 他 N 件 (省略)`」という非展開の1行に集約 — フラット配列のケースにも対応するため。lParamの意味を`targetPos`から`OutlineItem*`そのものへ変更(両経路で統一、`TVN_ITEMEXPANDINGW`が対象ノードの子リストを辿る必要があるため)。
+
+`TVIF_CHILDREN`/`TVN_ITEMEXPANDINGW`は本コードベース初採用のため、実装前にPlanの指示通り別の標準プローブ(`treeview_lazy_probe.cpp`)で機構自体を実機検証した。副次的な発見: 一度実子を挿入したノードは、再度折りたたんで再展開しても`TVN_ITEMEXPANDINGW`が再発火しない(comctl32が「既に実子がある」ことを自動的に認識するため)ことを確認 — 二重投入防止の追加ブックキーピングは不要と判断(念のため`TVM_GETNEXTITEM`/`TVGN_CHILD`の防御チェックは残した)。
+
+**実装中に発覚した実装上の見落とし:** `json_tree_pane.h`が`<windows.h>`のみで`<commctrl.h>`を含んでおらず、`HTREEITEM`型が未定義でコンパイルエラーになった(既存の`.cpp`側は`<commctrl.h>`を直接includeしていたため今まで顕在化していなかった)。ヘッダへ`#include <commctrl.h>`を追加して解消。
+
+**実機検証(Release、issueと同条件を再現):** 約74MB・145万要素のJSON配列ファイルを生成し検証したところ、**単一行(改行なし)で生成した最初のテストファイルが、`JsonTreePane`とは無関係にファイルを開くだけでハングする**という別の問題に遭遇した(構文ハイライトが原因と推定)。改行区切りの現実的なファイル(78MB・145万行)へ作り直したが、それでも約47秒間`Responding=False`が続いた。拡張子を`.txt`に変更した同一内容は約1秒で開けることを確認し、**JSON構文ハイライトが原因で、`ui::JsonTreePane`とは完全に無関係な別問題である**と結論、[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md)(P1)として新規起票した(既存の`tree_sitter_incremental_parse_cost.md`とインクリメンタル再パース vs 初回フルパースという規模感の違いがあり、関係は未調査のまま正直に記録)。
+
+この別問題を切り分けるため、ドキュメントを開いて構文ハイライトが安定するまで(47.3秒)待ってから、構造ツリーのトグルコマンド自体を単独計測する検証スクリプトへ作り直した。結果: **トグルコマンド自体9ms(即座に応答維持)、非同期インデックス構築4.4秒(UIスレッドは終始応答可能、`sawUnresponsive=False`)、インデックス完了直後のツリー状態は1件のみ(ルート、折りたたみ)、ルート(145万件配列)を実際に展開して303ms・5,002件(上限5,000件+省略行1件)** — 設計通りの結果を確認した。小規模JSON(18ノード)での回帰確認(全展開の維持、`TVM_GETCOUNT`=18が手動カウントと一致)も実施した。
+
+検証にはWM_COMMAND(`CommandId::JsonTreeToggle`=40007)を主要ウィンドウへ直接送信する手法を使用した — Ctrl+Shift+Jの修飾キー合成入力に頼らない、この環境で確立済みの手法。検証開始時、`GetDlgItem`でツリーが見つからず`MainWindowHandle`がクラッシュ復旧ダイアログを指していたトラブルに遭遇 — 原因は過去セッションの残留autosaveインデックス(`%APPDATA%\NeoMIFES\autosave\index.json`)で、`Stop-Process -Force`を使う検証スクリプト自体が毎回「クラッシュ」として記録してしまう構造だった。インデックスをクリアして解消。
+
+**副次的な教訓:** Release/ubsanの3構成検証を、検証用PowerShellスクリプト(大量ファイル生成・NeoMIFES.exe起動)と並行実行したところ、`json_tree_pane`とは無関係な`FileLoaderTest`/`LoadFileTest`(document/エンコーディング検出サブシステム)が最大6件見かけ上失敗した。単独再実行で100%成功することを確認し、リソース競合による偽陽性と判断した(同時に走らせていた重いディスクI/O・複数NeoMIFES.exeプロセスが原因と推定)。以後、重いテスト実行と他の検証作業は同時に走らせない方針を確認。
+
+clang-tidyはCI既存のワークアラウンド(`--extra-arg=-Wno-unused-command-line-argument`、`.github/workflows/ci.yml`のコメントに記載済みの既知のMSVC/clang-cl flag不一致対応)を使って実行し、新規警告0を確認。Debug/Release/ubsan全1554/1554件green。
+
+`docs/issues/json_tree_ui_population_hang.md`(推定原因の訂正・実際の原因・修正内容・実機検証結果を全面書き直し、完了条件3項目にチェック)/`docs/issues/README.md`(解決済みへ移動、新規issue追加)/`build_plan.md`(§0次フェーズ候補リスト更新)/`master_roadmap.md`(§12.5「6件の重大な発見」item3を解決済みへ更新)/`RESUME_HERE.md`を同期。検証用スクラッチ(`.tmp_issue_verify\`)は削除済み。
+
+次は、残り4件のissue(`csv_per_cell_index_memory_scaling.md`/`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するか、あるいは新規発見の`json_syntax_highlight_large_file_open_hang.md`を優先するかをユーザーに確認する。
+
 <!-- 次セッションはここに追記 -->

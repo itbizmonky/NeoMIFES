@@ -31,6 +31,8 @@
 
 #include <windows.h>
 
+#include <commctrl.h>
+
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -96,7 +98,24 @@ private:
     // app::buildJsonTreeItems(), whose own depth is bounded only by
     // json_tree.cpp's kMaxJsonNestingDepth guard (200), not by a naturally
     // shallow symbol-definition nesting the way syntax::OutlineNode's is.
+    //
+    // json_tree_ui_population_hang.md: below kEagerFullyExpandThreshold
+    // total items, populates and expands everything up front exactly as
+    // before (unchanged UX for ordinary files) - above it, only inserts
+    // m_items itself via insertChildrenCapped() and leaves the rest to
+    // on-demand expansion (see that helper's own comment for why - a
+    // million-sibling flat JSON array makes even one level of eager
+    // insertion catastrophic, so lazy-loading alone is not sufficient).
     void populateTree() noexcept;
+    // Inserts up to kMaxChildrenPerLevel of `children` under `parentHandle`
+    // (TVI_ROOT is a valid parentHandle, for the top level). Any child that
+    // itself has children gets TVIF_CHILDREN/cChildren=1 (the deferred-
+    // expand glyph) instead of having ITS children inserted - real
+    // population of a deeper level only happens when the user actually
+    // expands into it (see handleNotify()'s TVN_ITEMEXPANDINGW case). If
+    // `children` exceeds the cap, appends one trailing non-expandable
+    // "... N more" row (lParam 0) rather than silently truncating.
+    void insertChildrenCapped(HTREEITEM parentHandle, const std::vector<OutlineItem>& children) noexcept;
     void ensureFont(float dpiScale) noexcept;
 
     neomifes::platform::WindowHandle    m_hwndTree;

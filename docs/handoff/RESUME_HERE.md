@@ -49,9 +49,34 @@
 >
 > **✅ 🎉 M5 達成 (2026-09-01)。** WI-13(M4)前例に倣い、未達項目(数GB Grep)と5件のissueを正直に記録したまま、ユーザー承認のもと現状でv1出荷判定を確定した。`.tmp_v1_verify\`配下のスクラッチファイルは削除済み。**2026-08-23合意の確定スコープ(Phase 10残り+Git統合UI化+v1出荷判定)がこれで完全に完了した。**
 >
-> **次回セッション最初にやること:** 新規発見5件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(M5達成時点で全てのスコープ対象が完了しているため)。
->
 > 詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)、`docs/history/TIMELINE.md` Session 115参照。
+>
+> ---
+
+> # 🎯 最重要 (2026-09-01) — M5達成後、次フェーズ候補①`json_tree_ui_population_hang.md`を解決
+>
+> **M5達成後、ユーザーへ次フェーズ候補5件の実装優先度を提示し「①json_tree_ui_population_hang.md → ②csv_per_cell_index_memory_scaling.md → ③search_grep_multi_gb_performance_gap.md」の順が承認され、①から着手した。**
+>
+> **着手前調査で、issue自身の推定原因(`WC_LISTVIEW`の非仮想化)が誤りだったと判明した。** `ui::JsonTreePane`が実際に使うのは`WC_TREEVIEW`で、ListViewの`LVS_OWNERDATA`に相当する仮想モード機構自体が存在しない。標準プローブ(`treeview_probe.cpp`)で`TVM_INSERTITEMW`単体のコストを実測(約100〜150μs/件、145万件で約188秒 — 報告された168秒のハングとほぼ一致)し、真の原因を特定した。
+>
+> **修正:** しきい値(`kEagerFullyExpandThreshold`=20,000件)ベースで、小規模ファイルは従来通り全展開、大規模ファイルはWin32標準の`TVIF_CHILDREN`/`TVN_ITEMEXPANDINGW`パターンで遅延ロード+1階層あたりの挿入上限(`kMaxChildrenPerLevel`=5,000件、超過分は「他N件省略」行)へ切り替える設計に変更した(`src/ui/src/json_tree_pane.cpp`/`.h`)。実装前に別の標準プローブ(`treeview_lazy_probe.cpp`)でこの機構自体を実機検証してから着手した。
+>
+> **実機検証(Release、issueと同条件の145万要素JSON配列):** トグルコマンド自体9ms(応答維持)、非同期インデックス構築4.4秒(UIスレッド終始応答可能)、ルート展開303ms・5,002件(上限5,000件+省略行)。小規模JSON(18ノード)での回帰確認(全展開の維持)も実施。
+>
+> **⚠️ 検証中に、本件とは別の重大な発見があった。** 145万要素・78MBのJSON配列ファイルを`--open`で開くだけで(構造ツリー機能に一切触れなくても)、JSON構文ハイライトが原因と見られる**約47秒のUIハング**が発生することを発見した(同一内容を`.txt`化すると約1秒で応答可能)。これは`ui::JsonTreePane`とは無関係な別問題であり、[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md)(P1)として新規起票した。既存の`tree_sitter_incremental_parse_cost.md`(インクリメンタル再パースの文書サイズ比例コスト、50万行で155.95ms)との関係は未調査。
+>
+> Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(CI established `-Wno-unused-command-line-argument`ワークアラウンドを使用)。**副次的に、Release/ubsanのテスト実行を検証用PowerShellスクリプトと並行実行したところ`FileLoaderTest`/`LoadFileTest`が最大6件見かけ上失敗した(`json_tree_pane`とは無関係なsubsystem) — リソース競合による見かけ上の失敗と判断し、単独再実行で100%再現なく成功することを確認した(教訓: 重い並行I/Oを伴うテスト実行は他の検証作業と同時に走らせない)。**
+>
+> **未対応のまま残る5件のissue(次のPhase候補):**
+> - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — CSVモードのper-cellインデックスが10GB規模で恒常的に大きなメモリを消費(一時バッファの問題とは別)
+> - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 検索・Grepが3GBで38.94秒(目標30秒超過)。Phase 5a設計時点でSIMD/並列化は意図的に未実装だった
+> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
+> - [`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1、新規) — 大規模JSONファイルを開くだけでJSON構文ハイライトが約47秒UIをハングさせる
+> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
+>
+> **次回セッション最初にやること:** 新規発見5件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い。
+>
+> 詳細は[`docs/issues/json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md)、[`docs/issues/json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md)、`docs/history/TIMELINE.md` Session 116参照。
 >
 > ---
 
