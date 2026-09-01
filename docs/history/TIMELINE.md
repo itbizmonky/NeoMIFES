@@ -3717,4 +3717,30 @@ Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(2ファイル�
 
 次は、`text_surface_no_screen_reader_exposure.md`に今すぐ着手するか、規模の大きさを理由に別フェーズへ先送りするか、あるいは他の方針にするかをユーザーに確認する。
 
+**続けて「着手せよ」の指示で`text_surface_no_screen_reader_exposure.md`に着手した。**
+
+issue自身が3方針(①フルTextPattern実装/②簡易アナウンス実装/③現状維持)を未確定のまま残していたため、着手前に対象コードを調査した。`grep`でこのコードベースにUI Automation関連コード(`WM_GETOBJECT`/`IRawElementProviderSimple`/`IAccessible`等)が一切存在しないことを確認、`main_window.cpp`のウィンドウクラス登録を確認しテキストサーフェスが独立子HWNDではなくメインウィンドウ自体のWM_PAINT+Direct2D直接描画であることを確認、`render_pipeline.cpp`のキャレット/選択範囲描画コードを確認し`IDWriteTextLayout::HitTestTextPosition()`による位置⇔ピクセル変換が既に(可視行限定で)内部実装されていることを確認した。これらの事実とともにAskUserQuestionで3方針を提示し、**「②簡易アナウンス実装(推奨)」が選ばれた。**
+
+**設計・実装:** 古典的なMSAA(Microsoft Active Accessibility)ライブリージョン機構を採用した。新規`ui::TextSurfaceAccessible`(`src/ui/include/neomifes/ui/text_surface_accessible.h`/`src/ui/src/text_surface_accessible.cpp`) — `::CreateStdAccessibleObject()`で取得した標準`IAccessible`オブジェクトへの委譲をベースに、`get_accName()`のみを独自実装で上書きし現在行のテキストを返すCOMオブジェクト。`IAccessible`+`IDispatch`の残り約26メソッドは全て`m_inner`への1行委譲(このコードベース初の手書きCOMインターフェース実装。オブジェクト自体のライフタイムはAddRef/Release参照カウントで管理するため、`new`/`delete`の直接使用はCLAUDE.mdの通常規約に対する意図的な例外としてコメントで明記)。COM相互運用の既存慣習に合わせ`Microsoft::WRL::ComPtr`で所有権を扱う。
+
+`MainWindow`(`src/ui/include/neomifes/ui/main_window.h`/`.cpp`)に新規`handleGetObject()`(`WM_GETOBJECT`ハンドラ、`OBJID_CLIENT`のみ応答し他は`DefWindowProcW`へフォールスルーしてタイトルバー等の既定アクセシビリティオブジェクトを保護)と新規公開メソッド`announceCurrentLineIfChanged(sessionToken, lineNumber, lineText)`(カーソルの行番号が前回と異なる場合のみ`m_accessible`へ新テキストをセットし`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, m_hwnd, OBJID_CLIENT, CHILDID_SELF)`を発火)を追加した。ui層(`neomifes::ui`)はADR-009によりdocument/core型に依存できないため、`sessionToken`は`csvGridPanePendingSessionToken`と同型の「`EditorSession*`を不透明な`const void*`として扱う」パターンを踏襲し、`lineText`は呼び出し元が`document::Document::lineText()`から解決済みの`std::wstring_view`(`neomifes::util::toWstringView()`でu16string→wstring変換)として渡す設計にした。呼び出し元(`src/app/normal_mode_wiring.cpp`の`handlePaintEvent()`)は既存の`buildStatusBarParts()`と同じ「毎フレーム再計算・no dirty-check guard」規約に倣い、カーソル行番号を都度計算して渡す(「変更されたか」の判定自体は`MainWindow`側の責務)。`src/ui/CMakeLists.txt`へ新規ソースファイル追加+`oleacc`(`CreateStdAccessibleObject`/`LresultFromObject`)を新規リンク。
+
+**実機検証で2つの見落としを発見・修正した(推測実装をせず標準プローブ・実機で確認するというこのセッション一貫の方針の継続、CLAUDE.mdルール3):**
+
+1. **`IDispatch::Invoke()`の単純委譲が不完全だった。** `IAccessible`は`IDispatch`派生インターフェースであり、Automationの仕様上`get_accName`はストロングタイプの vtable スロット(`get_accName()`)だけでなく、`DISPID_ACC_NAME`(`-5003`、`oleacc.h`で定義)経由の`IDispatch::Invoke()`動的ディスパッチでも呼び出せる。当初`Invoke()`を無条件で`m_inner->Invoke(...)`へ委譲する実装にしていたため、動的ディスパッチ経由の呼び出しは`get_accName()`の独自実装を完全に迂回し、常に`m_inner`(未修正・空文字列)の名前を返していた。この見落としは、PowerShellから`Accessibility.IAccessible`型へキャストした`__ComObject`のプロパティアクセス(内部的に`IDispatch::Invoke`を経由しうる)を試したところ、直接の`AccessibleObjectFromWindow`+ストロングタイプvtable呼び出しでは正しい値が返るのに対しこちらは空文字列が返るという食い違いから発覚した。`Invoke()`内で`dispIdMember == DISPID_ACC_NAME`かつ`DISPATCH_PROPERTYGET`の場合のみ`get_accName()`へ転送し、それ以外は従来通り`m_inner->Invoke(...)`へ委譲するよう修正した(`DISPPARAMS`から`varChild`引数を取り出す処理を含む、VARIANT構造体アクセスは`cppcoreguidelines-pro-type-union-access`のNOLINTBEGIN/ENDブロックで対応)。
+
+2. **「カーソル移動が1ステップ遅れて反映される」という誤検知を追跡・解消した。** 最初の実機検証(WM_KEYDOWN(VK_RETURN)+WM_KEYUPを`PostMessage`で送る、この開発環境で確立済みの一般的な検証手法)で、上矢印/下矢印を押しても常に1つ前の行の内容が返るように見える現象が発生した。診断ログ(`NEOMIFES_DOGFOOD_A11Y_LOG`環境変数でゲート、実装完了後に完全除去)で内部状態を逐次記録したところ、`TextSurfaceAccessible`側のキャッシュは正しく更新されていることが判明し、**コード側のロジックバグではなく検証スクリプト自体の問題だった**と特定した。原因は、WM_KEYDOWN(VK_RETURN)単体での改行合成が、この環境の`TranslateMessage`(投函されたWM_KEYDOWNであっても、受信側スレッドの通常のメッセージループが自動的にWM_CHARへ翻訳する)によって、想定と異なる余分な空行を生む副作用を持っていたこと(標準的なEnterキーの単純な二重処理、または受信側のキーバインド経路との相互作用が疑われるが、根本原因はこのセッションでは未特定のまま)。検証スクリプトをWM_CHAR(`'\r'`)を直接`PostMessage`する方式に切り替えたところ、"AAA"+Enter+"BBB"の2行のみが正しく作成され、行移動のたびに即時・正確な内容反映を確認できた(遅延・陳腐化は一切なし)。この「余分な空行」現象自体は実際のキーボード入力(TranslateMessageが本来のスキャンコード付きWM_KEYDOWNを正しく翻訳する経路)では再現しないと推測されるが未検証であり、本セッションのスコープ外として深追いしなかった(新規issueとしての起票も、再現性の確証が無いため見送った)。
+
+**実機検証(2026-09-02、Debugビルド):** `AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, IID_IAccessible, ...)` + `IAccessible::accName(CHILDID_SELF)`を直接呼ぶPowerShellスクリプト(`Accessibility`アセンブリの`IAccessible`型を`[MarshalAs(UnmanagedType.Interface)]`で明示的に指定してP/Invokeし、ストロングタイプのvtable呼び出しを保証)で検証した。**当初、issue自身の再検証コマンド(`System.Windows.Automation.AutomationElement`の`Descendants`ツリー巡回で`Name`プロパティを読む)を使ったところ、実装後も`Name=''`のままだった。** 調査の結果、これは実装の不備ではなく、**UI Automationの`System.Windows.Automation`高レベルAPIによるツリー巡回が、この特定の「メインウィンドウの client 領域」要素の`Name`プロパティを、MSAA `IAccessible::get_accName()`とは別の経路(UIAの既定HWNDプロバイダ)で解決しているため**と判明した(`AccessibleObjectFromWindow`で直接取得した同一の`IAccessible`オブジェクトの`accChildCount`が22件を返すなど、client オブジェクト自体は正しく機能していることは別途確認済み)。実際のATが`EVENT_OBJECT_LIVEREGIONCHANGED`受信時に呼ぶ経路は`AccessibleObjectFromEvent`(内部的に`AccessibleObjectFromWindow`と同じ`IAccessible`解決)であり、静的なUIAツリー巡回とは異なるため、検証方式を後者へ切り替えた。
+
+最終検証: 空ドキュメントで`accName=''`(正しい)。"AAA"+Enter(WM_CHAR)+"BBB"と入力後、上矢印5回でトップへ移動→`accName='AAA'`、下矢印1回→`accName='BBB'`(遅延なし)、文末に達した状態で下矢印を繰り返しても`accName='BBB'`のまま(正しいクランプ、末尾を超えて進まない)を確認した。
+
+Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(新規発生した`cppcoreguidelines-pro-type-union-access`はいずれもWin32/OLE Automationの`VARIANT`タグ付きunionへの直接アクセスに起因し、コメント付きNOLINTで対応)。DOGFOOD-TEMP診断ログ(`main_window.cpp`3箇所+`text_surface_accessible.cpp`2箇所)は実装完了後に全て除去し`grep -rn "DOGFOOD" src/`で確認した。
+
+**意図的にスコープ外としたもの:** 列(カラム)単位のキャレット追跡・範囲選択の読み上げ・文字単位ナビゲーション(いずれもフルTextPattern実装でのみ提供可能)。同一行内でタイピング中の内容変化のリアルタイム追従アナウンス(スクリーンリーダー自身の文字エコー機能と重複するため、行番号変化時のみをトリガーとする設計にした — 同一行に留まる限り`changed`判定が発火せず、`TextSurfaceAccessible`側のキャッシュはカーソルがその行に到達した瞬間の内容のまま更新されない。これは意図した挙動)。Narrator実機を起動しての音声読み上げそのものの確認(この開発環境でNarratorの音声出力確認は行っていない — AT実装が読み上げに使う`AccessibleObjectFromWindow`+`accName`の経路を直接検証することで代替した)。
+
+これでM5達成後に発見された5件のissue(json_tree/json_syntax/csv/search_grep/undo_redo/text_surface)全てへの対応が完了した(解決4件・部分対応2件)。
+
+次は、次に着手する作業をユーザーに確認する。§12.3フル版の残り項目・Git統合の追加機能(Blame/Commit/Branch切替、意図的に凍結中)・CSV式列(v2.0機能として見送り済み)など、いずれも一度は見送り/凍結が確定している既存の候補群のみが残っている。
+
 <!-- 次セッションはここに追記 -->

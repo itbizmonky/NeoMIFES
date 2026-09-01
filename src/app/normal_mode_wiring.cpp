@@ -4316,6 +4316,20 @@ void handlePaintEvent(HWND paintHwnd, MainWindow& window, RenderPipeline& render
     // WI-07 step4: same "rebuild every frame, no dirty-check guard"
     // convention as tabBar.setTabs() above.
     statusBar.setParts(buildStatusBarParts(session));
+    // text_surface_no_screen_reader_exposure.md's minimal live-region tier:
+    // recomputes the cursor's current line every frame (same "cheap, no
+    // dirty-check guard here" shape as buildStatusBarParts() just above,
+    // which computes an equivalent line number internally but doesn't
+    // expose it back to this caller) and hands it to MainWindow, which owns
+    // the actual "did this change since last frame" decision and the
+    // resulting screen-reader announcement.
+    {
+        const Document&                          document  = session.document();
+        const neomifes::document::TextPos        cursorPos = session.selection().primaryCursor().position;
+        const neomifes::document::LineNumber     line      = document.offsetToLine(cursorPos);
+        window.announceCurrentLineIfChanged(&session, line,
+                                            neomifes::util::toWstringView(document.lineText(line)));
+    }
     // WI-07 step8: same "rebuild every frame, no dirty-check guard"
     // convention - MainWindow::setTitle()'s own doc comment explains
     // why no diffing against the previous title is needed here.

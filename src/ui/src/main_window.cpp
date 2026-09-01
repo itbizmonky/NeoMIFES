@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <imm.h>       // ImmGetContext/ImmGetCompositionStringW/ImmSetCandidateWindow (WM_IME_*, WI-06)
+#include <oleacc.h>    // LresultFromObject (WM_GETOBJECT, text_surface_no_screen_reader_exposure.md)
 #include <shellapi.h>  // DragAcceptFiles/DragQueryFileW/DragFinish (WM_DROPFILES, WI-02)
 #include <windowsx.h>  // GET_X_LPARAM/GET_Y_LPARAM (WM_LBUTTONDOWN, Phase 4b2)
 
@@ -238,6 +239,8 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
         case WM_KILLFOCUS:
             handleFocusLost();
             return 0;
+        case WM_GETOBJECT:
+            return handleGetObject(wParam, lParam);
         // WI-06: never forwarded to DefWindowProcW (unlike every case above
         // except WM_ERASEBKGND) - this class owns composition drawing/
         // candidate-window positioning entirely, so there is no OS default
@@ -491,6 +494,49 @@ void MainWindow::handleFocusLost() noexcept {
     if (m_onFocusLost) {
         m_onFocusLost(m_hwnd);
     }
+}
+
+// text_surface_no_screen_reader_exposure.md's minimal live-region tier.
+// Only OBJID_CLIENT is ours to answer - every other id (OBJID_WINDOW,
+// OBJID_TITLEBAR, OBJID_SYSMENU, etc.) must keep reaching DefWindowProcW so
+// the window chrome's own default accessible objects keep working
+// unmodified; this handler only replaces what the client area itself would
+// otherwise expose.
+LRESULT MainWindow::handleGetObject(WPARAM wParam, LPARAM lParam) noexcept {
+    if (static_cast<long>(lParam) != OBJID_CLIENT) {
+        return ::DefWindowProcW(m_hwnd, WM_GETOBJECT, wParam, lParam);
+    }
+    if (!m_accessible) {
+        m_accessible = TextSurfaceAccessible::create(m_hwnd);
+        if (!m_accessible) {
+            return ::DefWindowProcW(m_hwnd, WM_GETOBJECT, wParam, lParam);
+        }
+        // Seed with whatever the cursor's current line already is - this
+        // query can arrive well after startup (an AT can attach mid-
+        // session), and without this the first read-out would be whatever
+        // empty string this member starts as, not the real current line.
+        m_accessible->setCurrentLineText(m_currentLineText);
+    }
+    return ::LresultFromObject(IID_IAccessible, wParam, m_accessible.Get());
+}
+
+void MainWindow::announceCurrentLineIfChanged(const void* sessionToken, std::uint64_t lineNumber,
+                                              std::wstring_view lineText) {
+    const bool changed =
+        sessionToken != m_lastAnnouncedSessionToken || lineNumber != m_lastAnnouncedLine;
+    m_lastAnnouncedSessionToken = sessionToken;
+    m_lastAnnouncedLine         = lineNumber;
+    // Kept fresh every call regardless of `changed` - see handleGetObject()'s
+    // comment on why a late-created m_accessible still needs this.
+    m_currentLineText.assign(lineText);
+    if (!m_accessible) {
+        return;  // No AT has queried WM_GETOBJECT yet - nothing to notify.
+    }
+    if (!changed) {
+        return;
+    }
+    m_accessible->setCurrentLineText(m_currentLineText);
+    ::NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, m_hwnd, OBJID_CLIENT, CHILDID_SELF);
 }
 
 void MainWindow::handleImeStartComposition() noexcept {

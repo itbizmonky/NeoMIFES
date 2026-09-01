@@ -16,6 +16,7 @@
 // it compiles directly into the NeoMIFES.exe target, not neomifes_ui).
 
 #include <windows.h>
+#include <wrl/client.h>
 
 #include <cstdint>
 #include <functional>
@@ -26,6 +27,7 @@
 #include <vector>
 
 #include "neomifes/ui/click_tracking.h"
+#include "neomifes/ui/text_surface_accessible.h"
 
 namespace neomifes::ui {
 
@@ -325,6 +327,24 @@ public:
     // this is not itself responsible for interpreting that sentinel.
     bool startAutoSaveTimer(UINT intervalMs) noexcept;
 
+    // Imperative call (text_surface_no_screen_reader_exposure.md's minimal
+    // live-region tier, 2026-09-02), same "app layer calls imperatively
+    // into a ui:: class" pattern as setTitle()/setImeCandidatePosition()
+    // above. Meant to be called once per WM_PAINT (handlePaintEvent()
+    // already computes the active session's cursor line every frame for
+    // buildStatusBarParts()) - `sessionToken` is an opaque identity key for
+    // the active EditorSession (its address is fine; MainWindow, the ui
+    // layer, must not depend on neomifes::core/document types per ADR-009,
+    // so it never sees an EditorSession& directly), mirroring
+    // csvGridPanePendingSessionToken's existing "raw EditorSession* as an
+    // opaque token" pattern in normal_mode_wiring.cpp. Only touches the
+    // accessible object and fires EVENT_OBJECT_LIVEREGIONCHANGED when
+    // either `sessionToken` or `lineNumber` differs from the previous call
+    // - calling this unconditionally every frame would otherwise announce
+    // the same unchanged line dozens of times a second.
+    void announceCurrentLineIfChanged(const void* sessionToken, std::uint64_t lineNumber,
+                                      std::wstring_view lineText);
+
 private:
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
 
@@ -359,6 +379,13 @@ private:
     // (see .cpp for why both can't be assumed to always coexist).
     void handleImeComposition(LPARAM lParam) noexcept;
     void handleImeEndComposition() noexcept;
+    // WM_GETOBJECT (text_surface_no_screen_reader_exposure.md) - lazily
+    // creates m_accessible on the first OBJID_CLIENT query (no assistive
+    // technology running this session means this never runs at all) and
+    // seeds it with whatever announceCurrentLineIfChanged() has already
+    // cached, so the very first query returns real content rather than an
+    // empty name.
+    LRESULT handleGetObject(WPARAM wParam, LPARAM lParam) noexcept;
 
     HWND                       m_hwnd            = nullptr;
     std::function<void(HWND)>  m_onFirstPaint;
@@ -389,6 +416,22 @@ private:
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;
     ClickTrackerState          m_clickState;
+
+    // text_surface_no_screen_reader_exposure.md's minimal live-region tier.
+    // m_accessible starts null (lazy, see handleGetObject()'s comment).
+    // m_currentLineText is kept fresh on EVERY announceCurrentLineIfChanged()
+    // call regardless of the change check below, precisely so a late-created
+    // m_accessible can be seeded correctly. m_lastAnnouncedSessionToken
+    // starts at a value no real EditorSession address can equal only by
+    // convention (nullptr is also a legal token in principle, but
+    // Workspace always has an active session by the time WM_PAINT can
+    // fire, so the very first call's token is never actually nullptr in
+    // practice) - the point is only that the first call is always treated
+    // as "changed".
+    Microsoft::WRL::ComPtr<TextSurfaceAccessible> m_accessible;
+    std::wstring                                  m_currentLineText;
+    const void*                                   m_lastAnnouncedSessionToken = nullptr;
+    std::uint64_t                                 m_lastAnnouncedLine         = UINT64_MAX;
 };
 
 }  // namespace neomifes::ui

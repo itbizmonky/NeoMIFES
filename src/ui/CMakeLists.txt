@@ -11,6 +11,7 @@ add_library(neomifes_ui STATIC
     src/tab_bar.cpp
     src/status_bar.cpp
     src/main_window.cpp
+    src/text_surface_accessible.cpp
 )
 add_library(neomifes::ui ALIAS neomifes_ui)
 
@@ -37,6 +38,11 @@ target_link_libraries(neomifes_ui
         # Imm32 calls live in this class - see main_window.h's header
         # comment - so this is the only target that needs imm32 linked.
         imm32
+        # main_window.cpp/text_surface_accessible.cpp:
+        # CreateStdAccessibleObject/LresultFromObject
+        # (text_surface_no_screen_reader_exposure.md's minimal live-region
+        # tier, WM_GETOBJECT).
+        oleacc
 )
 
 set_target_properties(neomifes_ui PROPERTIES

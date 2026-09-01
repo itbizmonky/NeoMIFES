@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-01 (v1出荷判定🎉M5達成後の次フェーズ全5件対応完了 — `json_tree_ui_population_hang.md`/`json_syntax_highlight_large_file_open_hang.md`/`undo_redo_active_usage_soak_not_performed.md`解決・`csv_per_cell_index_memory_scaling.md`/`search_grep_multi_gb_performance_gap.md`部分対応)
+**最終更新:** 2026-09-02 (v1出荷判定🎉M5達成後の次フェーズ全5件対応完了 — `json_tree_ui_population_hang.md`/`json_syntax_highlight_large_file_open_hang.md`/`undo_redo_active_usage_soak_not_performed.md`/`text_surface_no_screen_reader_exposure.md`解決・`csv_per_cell_index_memory_scaling.md`/`search_grep_multi_gb_performance_gap.md`部分対応。M5後発見の5件issue全てに対応完了)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -23,7 +23,6 @@
 | [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
 | [CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費する](csv_per_cell_index_memory_scaling.md) | 🟡 2026-09-01部分対応。`CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB)。10GB規模への根本対応(遅延インデックス化)はユーザー承認のもと対象外確定、リスクは残存 | 対象外確定 (遅延インデックス化は再設計コストが大きいため見送り) |
 | [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 🟡 2026-09-01部分対応。真因はRE2ではなくUTF-8変換(toUtf8WithOffsets、ASCII高速パス追加で約38%削減)。GrepServiceのファイルあたり固定オーバーヘッドは対象外のまま残存 | 部分対応 (GrepServiceの多ファイルケースは未対応) |
-| [主要テキスト編集領域がUI Automation/スクリーンリーダーへ内容を一切公開していない](text_surface_no_screen_reader_exposure.md) | メニュー・ステータスバー・ダイアログは正しく公開されるが、Direct2D直接描画の本文領域は`ControlType.Custom`/`Name=''`で内容が一切取得できない | 未定 (UI Automation TextPattern実装は大規模な新規サブシステム) |
 
 ## P2 — 凍結 / 再評価待ち
 
@@ -69,6 +68,7 @@
 | [JSON/XMLツリーUIが大規模ファイルでUIスレッドを長時間ハングさせる](json_tree_ui_population_hang.md) | 🟢 2026-09-01。実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(issueの推定原因`WC_LISTVIEW`は誤りと判明、標準プローブで実測)。しきい値ベースの「全展開(小規模)/遅延ロード+階層キャップ(大規模)」で解消、145万要素で実測トグル9ms・展開303ms |
 | [大規模JSONファイルを開くだけでJSON構文ハイライトが長時間UIをハングさせる](json_syntax_highlight_large_file_open_hang.md) | 🟢 2026-09-01。真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。空テーブルなら即座に空を返す早期リターンで解消、47秒→約1秒(約47倍改善)。C++等アウトライン対応言語への回帰無しをドッグフーディングで確認 |
 | [「100万Undo(24時間ソーク)」が実際にはUndo/Redoを回さないアイドル確認だった](undo_redo_active_usage_soak_not_performed.md) | 🟢 2026-09-01。ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施。`UndoStack`自体はリークしないことを確認(`push()`が`m_redo.clear()`を正しく実行)。観測された線形増加(非加速)は既知の`AddBuffer` append-only設計に起因、`undo_stack_unbounded_memory.md`で追跡中 |
+| [主要テキスト編集領域がUI Automation/スクリーンリーダーへ内容を一切公開していない](text_surface_no_screen_reader_exposure.md) | 🟢 2026-09-02。ユーザーが「簡易アナウンス実装」(フルTextPattern実装ではなく)を選択。`ui::TextSurfaceAccessible`(自前`IAccessible`、`CreateStdAccessibleObject()`への委譲+`get_accName()`のみ独自実装)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`経由の動的ディスパッチが独自実装を迂回する既存の見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで行移動ごとの正確・即時な内容反映を確認 |
 
 ---
 

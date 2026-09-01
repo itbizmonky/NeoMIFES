@@ -72,7 +72,7 @@ ctest --preset debug --output-on-failure
 > - Phase 10.2 (CSV): 🎉 **WI-16gの列固定達成をもって完結扱い。式列(WI-16h)は2026-08-30、roadmap原案が元々v2.0機能としていた点を理由にユーザー承認のもと見送り確定。**
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
 > - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
-> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) 2026-08-30着手 → 2026-09-01完了(🎉M5)。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応。17項目中16項目達成(3項目部分達成)、残り1項目(数GB Grep)は未達のまま正直に記録して確定。**M5達成後に発見した5件のissueのうち4件(json_tree/json_syntax/csv/search_grep/undo_redo)へ対応済み(解決3件・部分対応2件)、残るは`text_surface_no_screen_reader_exposure.md`(P1、スクリーンリーダー未対応)のみ — 規模が大きい(`ITextProvider`/`ITextRangeProvider`実装が必要)ため着手要否は新セッションでユーザーに確認すること(下記「次フェーズ候補」参照)。**
+> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) 2026-08-30着手 → 2026-09-01完了(🎉M5)。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応。17項目中16項目達成(3項目部分達成)、残り1項目(数GB Grep)は未達のまま正直に記録して確定。**M5達成後に発見した5件のissue全てに対応完了(解決4件・部分対応2件、内訳は下記「次フェーズ候補」参照)。次にどの作業へ着手するかは新セッションでユーザーに確認すること。**
 >
 > **凍結する (🧊、着手しない):**
 > - Phase 11.2 LSP 完全実装、Phase 11.3 マクロ (Lua+JS+秀丸互換)、Phase 9 AI プラグイン
@@ -80,10 +80,10 @@ ctest --preset debug --output-on-failure
 > - master_roadmap.md §12.3 の元22項目フル版 (Google/MSリリース品質基準、NVDA/JAWS専門認証・Authenticode証明書配布・SBOM/CVE継続運用・自動更新機構など、このワークフロー単独では完結できない項目を含む) — 商用配布を将来検討する際に再評価する
 > - CSV式列 (WI-16h、v2.0機能として見送り)
 >
-> **次フェーズ候補 (M5達成後、2026-09-01時点で未対応。次にどれへ着手するかはユーザーへ確認すること):**
+> **次フェーズ候補 (M5達成後に発見された5件は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 🟡 **2026-09-01部分対応。** 実測で真因はRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドは対象外のまま残存
-> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 本文編集領域がスクリーンリーダーに一切内容を公開していない
+> - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
 > - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — 🟡 **2026-09-01部分対応。** `CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB、旧参照8.3GBから大幅改善)。10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定、10GB規模でのリスクは軽減されつつも残存
 > - ~~[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。早期リターンで解消、47秒→約1秒(約47倍改善)、Debug/Release/ubsan全1554件green
 > - ~~[`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2)~~ — 🟢 **2026-09-01解決済み。** ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施、`UndoStack`自体はリークしないことを確認。観測された線形増加(非加速)は`AddBuffer`の既知append-only設計に起因、`undo_stack_unbounded_memory.md`で引き続き追跡中

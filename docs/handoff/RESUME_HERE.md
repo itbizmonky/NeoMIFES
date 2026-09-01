@@ -165,6 +165,32 @@
 > **次回セッション最初にやること:** `text_surface_no_screen_reader_exposure.md`に今すぐ着手するか、規模の大きさ(新規UI Automationサブシステム)を理由に別フェーズへ先送りするか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
 >
 > 詳細は[`docs/issues/undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md)、`docs/history/TIMELINE.md` Session 116参照。
+>
+> ---
+
+> # 🎯 最重要 (2026-09-02) — 次フェーズ候補④`text_surface_no_screen_reader_exposure.md`を解決、M5後発見の5件issue全対応完了
+>
+> **「着手せよ」の指示で、残り1件だった`text_surface_no_screen_reader_exposure.md`(主要テキスト編集領域がスクリーンリーダーに内容を一切公開していない)に着手した。**
+>
+> **①フルTextPattern実装(`ITextProvider`/`ITextRangeProvider`)/②簡易アナウンス実装(`NotifyWinEvent`ベースのMSAAライブリージョン)/③現状維持の3方針を、着手前調査の事実とともにAskUserQuestionで提示した。** 調査結果: このコードベースにUI Automation関連コードは一切存在せず完全新規、テキストサーフェスは独立子HWNDではなくメインウィンドウ自体がWM_PAINT+Direct2Dで直接描画、キャレット/選択範囲の位置⇔ピクセル変換は既にDirectWriteの`HitTestTextPosition()`で内部実装済み(現状は可視行のみだが`ITextRangeProvider::GetBoundingRectangles`は画面外レンジに空配列を返すのが仕様上正当なため転用可能)、`document::Document`は任意レンジのテキスト抽出を既に提供。**「②簡易アナウンス実装(推奨)」が選ばれた。**
+>
+> **実装:** 古典的MSAAライブリージョン機構。新規`ui::TextSurfaceAccessible`(`text_surface_accessible.h`/`.cpp`) — `::CreateStdAccessibleObject()`への委譲をベースに`get_accName()`のみ独自実装で上書きするCOMオブジェクト(IAccessible+IDispatchの残り約26メソッドは全て1行委譲、インターフェース契約自体がこの規模を要求するためクラスサイズ目安の対象外とコメントで明記)。新規`MainWindow::handleGetObject()`(`WM_GETOBJECT`、`OBJID_CLIENT`のみ応答・他は`DefWindowProcW`へフォールスルー)+`MainWindow::announceCurrentLineIfChanged()`(カーソル行番号が前回と異なる場合のみ`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`発火)。ui層(`neomifes::ui`)はADR-009によりdocument/core型に依存できないため、呼び出し元(`handlePaintEvent()`)が`document::Document::lineText()`から解決済みの`std::wstring_view`を渡す設計。`oleacc.lib`を新規リンク。
+>
+> **実機検証で2つの見落としを発見・修正した(推測実装をしなかったことで発覚、CLAUDE.mdルール3):**
+> 1. **`IDispatch::Invoke()`の単純委譲が不完全だった。** `IAccessible`は`IDispatch`派生であり、`get_accName`は`DISPID_ACC_NAME`(`-5003`)経由の動的ディスパッチでも呼び出しうる。当初`Invoke()`を無条件で`m_inner`へ委譲していたため、動的ディスパッチ経由の呼び出しは独自実装を迂回し常に空文字列を返していた(PowerShellの`Accessibility.IAccessible`後期バインディングで発覚)。`Invoke()`内で`DISPID_ACC_NAME`のプロパティ取得だけを`get_accName()`へ転送するよう修正。
+> 2. **「1ステップ遅れて見える」誤検知。** 初回の実機検証で行移動後に1つ前の行が返るように見えたが、切り分けの結果**コードのバグではなく検証スクリプト自体の問題だった** — WM_KEYDOWN(VK_RETURN)単体での改行合成(検証用の一般的手法)がこの環境で余分な空行を生む副作用を持ち、実際のドキュメント構造がテスト側の想定とズレていた。WM_CHAR(`'\r'`)を直接送る方式に切り替えたところ、行番号変化時の即時・正確なアナウンスを確認できた(遅延・陳腐化は一切なし)。
+>
+> **実機検証(2026-09-02、Debugビルド):** `AccessibleObjectFromWindow`+`IAccessible::accName(CHILDID_SELF)`を直接呼ぶPowerShellスクリプトで検証(UI Automationの`System.Windows.Automation.Descendants`ツリー巡回では`Name`プロパティが別経路で解決され本機能を反映しないと判明したため、実際にATが`EVENT_OBJECT_LIVEREGIONCHANGED`受信時に呼ぶのと同じ経路で検証する方式に切り替えた)。"AAA"→Enter→"BBB"と入力後、上矢印でトップへ移動→`accName='AAA'`、下矢印1回→`accName='BBB'`(遅延なし)、文末で下矢印を繰り返しても`'BBB'`のまま(正しいクランプ)を確認。
+>
+> Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(該当は全て`cppcoreguidelines-pro-type-union-access`、Win32 `VARIANT`のunionアクセスが原因でNOLINT済み)。DOGFOOD-TEMP診断ログは全て除去済み(`grep -rn "DOGFOOD" src/`で確認)。
+>
+> **意図的にスコープ外としたもの:** 列単位のキャレット追跡・範囲選択の読み上げ・文字単位ナビゲーション(フルTextPattern実装のみ提供可能)、同一行内でタイピング中の内容変化のリアルタイム追従アナウンス(スクリーンリーダー自身の文字エコー機能と重複するため意図的に行番号変化時のみをトリガーとした)、Narrator実機での音声読み上げそのものの確認(この開発環境で音声確認は行わず、AT側が実際に使う`AccessibleObjectFromWindow`+`accName`経路の検証で代替)。
+>
+> **これでM5達成後に発見された5件のissue全てへの対応が完了した(解決4件・部分対応2件)。**
+>
+> **次回セッション最初にやること:** 次に着手する作業をユーザーに確認する。§12.3フル版の残り項目・Git統合の追加機能(Blame/Commit/Branch切替、意図的に凍結中)・CSV式列(v2.0機能として見送り済み)など、いずれも一度は見送り/凍結が確定している。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は[`docs/issues/text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md)、`docs/history/TIMELINE.md` Session 116参照。
 
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
