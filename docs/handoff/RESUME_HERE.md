@@ -36,7 +36,9 @@
 >
 > **続けてv1出荷判定の残り項目を実測(2026-08-31)。17項目中14項目達成(3項目部分達成)、1項目対象外(fuzz test)、アイドルソークは進行中(タスクスケジューラ`NeoMIFES_V1_SoakTest`)、残り1項目(数GB Grep)は未達確定。**
 >
-> **🔴 ソークの前提が24時間→アイドル12時間へ変更された(2026-08-31、ユーザー指摘):** 「起動放置して何の意味があるのか」との指摘を受け、`soak_monitor.ps1`の実体が**Undo/Redo等の能動的操作を一切行わないアイドル生存確認**であり、ロードマップ原案の「100万回連続Undo/Redoを24時間」という能動的ストレステストとは別物だったと判明。ユーザー承認のもと**12時間のアイドル確認として完走させる**方針に変更、`soak_monitor.ps1`の閾値を24→12へ変更済み(2026-08-31 11:04着手 → **完了予定 23:04頃**、24時間から短縮)。詳細・未実施の能動的ソークの扱いは新規[`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md)(P2)参照。
+> **🔴 ソークの前提が24時間→アイドル12時間へ変更された(2026-08-31、ユーザー指摘):** 「起動放置して何の意味があるのか」との指摘を受け、`soak_monitor.ps1`の実体が**Undo/Redo等の能動的操作を一切行わないアイドル生存確認**であり、ロードマップ原案の「100万回連続Undo/Redoを24時間」という能動的ストレステストとは別物だったと判明。ユーザー承認のもと**12時間のアイドル確認として完走させる**方針に変更、`soak_monitor.ps1`の閾値を24→12へ変更(2026-08-31 11:04着手)。詳細・未実施の能動的ソークの扱いは新規[`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md)(P2)参照。
+>
+> **✅ ソーク完了(2026-08-31 23:04:39 JST、`SOAK_COMPLETE_NO_CRASH`)。** タスクスケジューラは自動的に登録解除・プロセス終了済み。WorkingSetは50.71MB→57.58MB(定常)→95〜97MB(AppVerifier検証の一時再起動後の水準)で単調増加なく横ばい安定。実測値は`master_roadmap.md` §12.5「クラッシュ0/メモリ安定性」項目へ転記済み。**v1出荷判定17項目中16項目達成(3項目部分達成)、残り1項目(数GB Grep)のみ未達確定 — 全項目の検証が完了した。**
 >
 > **未対応のまま残る5件のissue(次のPhase候補、いずれもユーザー承認のもと今回は記録のみに留めた):**
 > - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — CSVモードのper-cellインデックスが10GB規模で恒常的に大きなメモリを消費(一時バッファの問題とは別)
@@ -45,7 +47,9 @@
 > - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
 > - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
 >
-> **次回セッション最初にやること:** `.tmp_v1_verify\soak_log.csv`を確認し`SOAK_COMPLETE_NO_CRASH`が記録されていればアイドル12時間ソーク達成、master_roadmap.md §12.5へ実測値を転記(「100万Undo」「クラッシュ0/メモリ安定性」両項目、既に下書き済みの文言を実測値で更新するだけでよい)。その後、新規発見5件のいずれかへ着手するか、WI-13前例(未達2項目を正直に記録したままユーザー承認でM4を確定)に倣い現状のままv1出荷判定(🎉M5)を宣言するかをユーザーに確認する。
+> **✅ 🎉 M5 達成 (2026-09-01)。** WI-13(M4)前例に倣い、未達項目(数GB Grep)と5件のissueを正直に記録したまま、ユーザー承認のもと現状でv1出荷判定を確定した。`.tmp_v1_verify\`配下のスクラッチファイルは削除済み。**2026-08-23合意の確定スコープ(Phase 10残り+Git統合UI化+v1出荷判定)がこれで完全に完了した。**
+>
+> **次回セッション最初にやること:** 新規発見5件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(M5達成時点で全てのスコープ対象が完了しているため)。
 >
 > 詳細は[`docs/issues/decode_cache_unbounded_growth.md`](../issues/decode_cache_unbounded_growth.md)、`docs/history/TIMELINE.md` Session 115参照。
 >

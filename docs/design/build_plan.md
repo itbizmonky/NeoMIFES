@@ -64,21 +64,29 @@ ctest --preset debug --output-on-failure
 
 この状態に至った経緯は [`gap_analysis.md`](gap_analysis.md) を参照 (読まなくても作業はできる)。
 
-> ## 🎯 現在のゴール (2026-08-23 確定、v1出荷方針)
+> ## 🎯 現在のゴール (2026-08-23 確定、v1出荷方針) — 🎉 2026-09-01 達成 (M5)
 >
 > MVP達成後、差別化機能の追加に終わりの定義が無いまま作業が続いていたため、ユーザーとの合意でスコープを確定した。**新しいセッションは必ずこのゴールを起点に「次に何をすべきか」を判断すること。**
 >
-> **やる (残りスコープ):**
+> **やった (旧・残りスコープ、全て完了):**
 > - Phase 10.2 (CSV): 🎉 **WI-16gの列固定達成をもって完結扱い。式列(WI-16h)は2026-08-30、roadmap原案が元々v2.0機能としていた点を理由にユーザー承認のもと見送り確定。**
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
 > - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
-> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) に2026-08-30着手、進行中。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応した。達成をもって開発を一区切りとする。
+> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) 2026-08-30着手 → 2026-09-01完了(🎉M5)。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応。17項目中16項目達成(3項目部分達成)、残り1項目(数GB Grep)は未達のまま正直に記録して確定。**次にどのissueへ着手するかは未定 — 新セッションはユーザーに確認すること(下記「次フェーズ候補」参照)。**
 >
 > **凍結する (🧊、着手しない):**
 > - Phase 11.2 LSP 完全実装、Phase 11.3 マクロ (Lua+JS+秀丸互換)、Phase 9 AI プラグイン
 > - Git統合の Blame / Commit / Branch切替 / 3-Way Merge
 > - master_roadmap.md §12.3 の元22項目フル版 (Google/MSリリース品質基準、NVDA/JAWS専門認証・Authenticode証明書配布・SBOM/CVE継続運用・自動更新機構など、このワークフロー単独では完結できない項目を含む) — 商用配布を将来検討する際に再評価する
 > - CSV式列 (WI-16h、v2.0機能として見送り)
+>
+> **次フェーズ候補 (M5達成後、2026-09-01時点で未対応。次にどれへ着手するかはユーザーへ確認すること):**
+> - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 検索・Grepが数GB規模で目標30秒を超過(実測38.94秒)
+> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 本文編集領域がスクリーンリーダーに一切内容を公開していない
+> - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費
+> - [`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1) — JSON/XMLツリーUIが大規模ファイルでUIスレッドを長時間ハングさせる
+> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo」ソークが実際にはUndo/Redoを回さないアイドル確認だった
+> - [`authenticode_certificate_not_acquired.md`](../issues/authenticode_certificate_not_acquired.md) (P1、外部要因待ち) — 本物のAuthenticode証明書取得(ユーザー判断)
 >
 > 詳細な理由と各案の比較は [`docs/history/TIMELINE.md`](../history/TIMELINE.md) の該当セッション記録、および `master_roadmap.md` の各フェーズ見出しに付けた🧊凍結注記を参照。
 
@@ -185,8 +193,8 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 - [x] **WI-17d** Git統合 保存時の自動再diffトリガー (`CommandDispatchContext::gitDiffWorker`、`dispatchSaveCommand()`から`beginGitDiffIndexing()`、実機ドッグフーディングでピクセル単位確認) → コミット: `cdb9c66`
 - [x] **WI-17e** Git統合 Gitペイン (変更ファイル一覧) (`GitRepository::statusList()`+`GitStatusWorker`+`Workspace`配線(EditorSessionではない意図的配置)+`ui::GitPane`、コマンドパレット限定「Git: Toggle Changed Files」、実機ドッグフーディングでM/U混在の変更一覧が`git status --short`と一致することを確認) → コミット: `fb533a3`/`06c7c4b`/`1fbe29a`/`79fbf71`
 - [x] **WI-17f** Git統合 Diffビュー (インライン統合diff) (`GitRepository::unifiedDiffAgainstHead()`+`render::DiffViewLineMarker`(GitDiffMarkerとは別型)+コマンドパレット限定「Git: Toggle Diff View」、実機ドッグフーディングで追加/削除行の色分け表示・Escape復帰・入力ブロックを確認、🎉 **Phase 11.1(Git統合)完結**) → コミット: `7c396c0`/`62b2418`
-- [ ] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施。**着手中 (2026-08-30〜)。** 検証中に重大な実装バグ(`decode_cache_unbounded_growth.md`)を発見・修正した(詳細下記)。§12.5の17項目中14項目達成(3項目部分達成)、1項目対象外(fuzz test)、残り1項目(数GB Grep)は未達確定。アイドルソークは進行中(元々24時間の予定だったが、実際には入力・編集・Undo/Redo等を一切行わないアイドル放置確認に過ぎないとユーザー指摘で判明したため12時間へ短縮・再定義、詳細は`RESUME_HERE.md`参照)。
-  - 🎉 **M5 達成目標: v1出荷 (軽量版)**
+- [x] **v1出荷判定 (軽量版)** — master_roadmap.md §12.5 のチェックリストで実施 (2026-08-30〜2026-09-01)。検証中に重大な実装バグ(`decode_cache_unbounded_growth.md`)を発見・修正した(詳細下記)。§12.5の17項目中**16項目達成(3項目部分達成)、残り1項目(数GB Grep)は未達のまま正直に記録して確定**。アイドル12時間ソーク(元々24時間の予定だったが、実際には入力・編集・Undo/Redo等を一切行わないアイドル放置確認に過ぎないとユーザー指摘で判明したため短縮・再定義)は2026-08-31 23:04:39に`SOAK_COMPLETE_NO_CRASH`で完了。検証中に新規発見した5件のissue(P1×4、P2×1)は未対応のまま次フェーズ候補として保留、WI-13(M4)前例に倣いユーザー承認のもと現状でM5確定 (2026-09-01)。
+  - 🎉 **M5 達成 (2026-09-01): v1出荷 (軽量版)。2026-08-23合意の確定スコープ(Phase 10残り+Git統合UI化+v1出荷判定)が完了した**
 
 ### v1出荷判定 中間発見: `OriginalBuffer` デコードキャッシュ無制限蓄積バグ (2026-08-30〜31、修正済み)
 
