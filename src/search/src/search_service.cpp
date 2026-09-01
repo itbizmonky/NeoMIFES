@@ -160,6 +160,20 @@ void findAllInBuffer(const re2::RE2& re, const util::Utf8Conversion& conv,
 // per-call `buffer` copy a second time inside OriginalBuffer's decode
 // cache (this scan visits every piece once and moves on - see
 // docs/issues/decode_cache_unbounded_growth.md).
+//
+// search_grep_multi_gb_performance_gap.md: pieceTextStreamed() was tried
+// here too (matching LineIndex::build()'s own move off pieceTextNoCache()
+// for the same "one huge Original piece" file shape), on the hypothesis
+// that one-shot decode of a multi-GB piece would show the same non-linear
+// cost LineIndex::build() hit at 10GB. Measured against a real 3GB file
+// (standalone probe, 3 repeated runs): pieceTextStreamed() was NOT faster -
+// consistently ~1-2s SLOWER (8.4-8.8s vs pieceTextNoCache()'s 6.6-7.8s),
+// unlike LineIndex::build()'s case. Reverted per that measurement (CLAUDE.md
+// rule 10: don't keep a change with no measured benefit) - this function
+// needs the WHOLE concatenated buffer at the end regardless (RE2 must see
+// the complete text to match across piece boundaries), so it does not share
+// LineIndex::build()'s "look at one character, discard it" shape that made
+// streaming a clear win there.
 void scanDocument(const re2::RE2& re, const document::BufferSnapshot& snapshot, std::vector<Match>& matches) {
     std::u16string buffer;
     for (const auto& piece : snapshot.pieces()) {

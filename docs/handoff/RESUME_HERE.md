@@ -117,10 +117,33 @@
 > - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
 > - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
 >
-> **次回セッション最初にやること:** 残り3件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
->
 > 詳細は[`docs/issues/json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md)、`docs/history/TIMELINE.md` Session 116参照。
+>
 > ---
+
+> # 🎯 最重要 (2026-09-01) — 次フェーズ候補②`search_grep_multi_gb_performance_gap.md`を部分対応
+>
+> **①完了後、「次に進め」の指示で②`search_grep_multi_gb_performance_gap.md`(検索・Grepが数GB規模で30秒目標を超過)に着手した。**
+>
+> **`SearchService::scanDocument()`を3段階(①ピース連結`pieceTextNoCache()`/②UTF-16→UTF-8変換`toUtf8WithOffsets()`/③RE2スキャン)に分けて標準プローブ(RE2/abslをリンクしたスタンドアロンプログラム)で実測したところ、issueの推定原因(「RE2自体が遅い」)は誤りと判明した。** 3GBファイル(2,667件マッチ)で①約6.4〜7.8秒、②約9.1〜9.5秒、**③RE2スキャン自体は約0.15〜0.33秒(無視できるレベル)。** issueが提案していた方針①(SIMD/Boyer-Moore)②(並列ピーススキャン)はいずれも「そもそも遅くない部分」を高速化しようとするものだったと判明した。
+>
+> 実測値をユーザーへ提示し「A: ストリーミング化+UTF-8変換最適化(推奨)」を選択。**実装:** `toUtf8WithOffsets()`にASCII連続区間の高速パスを追加(`src/util/src/utf8_convert.cpp`、サロゲート・非ASCIIは既存の低速パスを維持、正しさは不変) — 実測で約9.1秒→約5.5〜5.6秒(約38〜40%削減)、複数回一貫。
+>
+> **`scanDocument()`のピース連結も`pieceTextStreamed()`(LineIndex::build()と同じ、10GB規模で大きな改善を得た前例のパターン)へ切り替えを試みたが、3GB規模で複数回実測したところ一貫して約1〜2秒「遅く」なった(8.4〜8.8秒 vs `pieceTextNoCache()`の6.4〜7.8秒)。CLAUDE.mdルール10(効果を計測で裏付ける)に従い、効果の無い変更のため撤回し`pieceTextNoCache()`のまま維持した。** LineIndexは1文字ずつ見て捨てる用途だが、`scanDocument()`はRE2のためピース境界をまたぐマッチを見る目的で最終的に全体を1個のバッファとして持つ必要があり、用途の違いが結果の差の一因と考えられる(未検証の推測として記録)。
+>
+> **実機検証:** 3GBファイル(①+②+③合計)が約17.1秒→約12.0〜12.4秒(約28%削減)。**注意: issueが最初に報告した38.94秒という数値は、本修正前の時点でも本セッションの実測環境では再現できなかった**(本セッションの「修正前」ベースラインは約17秒)。ディスクキャッシュ状態等の環境差と推定されるが厳密には未特定のため、「○倍改善」という単純比較は避け、本セッションで実測した相対的な改善(UTF-8変換で約38〜40%、全体で約28%)のみを記録した。
+>
+> **`GrepService::findAll()`(マルチファイル、5,000ファイル)は今回のスコープ外のまま残る。** `GrepService`内部で`SearchService::findAll()`を呼ぶため上記の最適化は及ぶが、issue自身の分析通りマルチファイルケースの支配的コストは「ファイルあたりの`loadUtf8File()`固定オーバーヘッド」であり、これは選ばれなかった別方針(GrepService側のオーバーヘッド削減)に相当する。
+>
+> 実機ドッグフーディングで、日本語テキストとASCII"ERROR"混在ファイルでの検索(3件中1/3、正しくハイライト)、3GBファイルでの実際の検索(WM_COMMAND経由、1/2667件と正しい件数、ハング無く復帰)の両方をスクリーンショットで確認した。Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0。issueは「🟡部分対応」として記録。
+>
+> **未対応のまま残る2件のissue(次のPhase候補):**
+> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
+> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
+>
+> **次回セッション最初にやること:** 残り2件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は[`docs/issues/search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)、`docs/history/TIMELINE.md` Session 116参照。
 
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >

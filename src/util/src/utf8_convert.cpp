@@ -50,6 +50,34 @@ void appendUtf8(std::string& out, char32_t codepoint) {
     }
 }
 
+// search_grep_multi_gb_performance_gap.md: appends [runStart, i) - a run of
+// consecutive ASCII (< 0x80) units the caller has already found - in one
+// shot rather than through decodeOne()/appendUtf8()'s per-codepoint
+// branching. For pure ASCII, byte offset and UTF-16 offset are identical
+// (one unit in, one byte out), so byteToUtf16[byteStart + k] == runStart + k
+// for every k in the run - a plain fill, not a value that needs computing
+// per byte. Standalone probe measured toUtf8WithOffsets() as ~9.1s of a 3GB
+// ASCII-heavy file's ~17s SearchService::findAll() - resize()+indexed-write
+// loops here (no push_back() capacity branch, no per-character branching)
+// let the compiler auto-vectorize what decodeOne()/appendUtf8()'s branchy
+// per-codepoint shape could not.
+void appendAsciiRun(Utf8Conversion& result, std::u16string_view text, std::size_t runStart, std::size_t runEnd) {
+    const std::size_t runLength = runEnd - runStart;
+    if (runLength == 0) {
+        return;
+    }
+    const std::size_t byteStart = result.utf8.size();
+    result.utf8.resize(byteStart + runLength);
+    for (std::size_t k = 0; k < runLength; ++k) {
+        result.utf8[byteStart + k] = static_cast<char>(text[runStart + k]);
+    }
+    const std::size_t offsetStart = result.byteToUtf16.size();
+    result.byteToUtf16.resize(offsetStart + runLength);
+    for (std::size_t k = 0; k < runLength; ++k) {
+        result.byteToUtf16[offsetStart + k] = static_cast<std::uint32_t>(runStart + k);
+    }
+}
+
 }  // namespace
 
 Utf8Conversion toUtf8WithOffsets(std::u16string_view text) {
@@ -59,6 +87,17 @@ Utf8Conversion toUtf8WithOffsets(std::u16string_view text) {
 
     std::size_t i = 0;
     while (i < text.size()) {
+        const std::size_t runStart = i;
+        while (i < text.size() && text[i] < 0x80) {
+            ++i;
+        }
+        appendAsciiRun(result, text, runStart, i);
+        if (i >= text.size()) {
+            break;
+        }
+
+        // Slow path: one non-ASCII codepoint, same as before the fast path
+        // above existed.
         const auto [codepoint, unitsConsumed] = decodeOne(text, i);
 
         const std::size_t byteStart = result.utf8.size();

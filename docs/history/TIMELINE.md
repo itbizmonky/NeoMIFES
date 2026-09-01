@@ -3675,4 +3675,28 @@ Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0。issueは「�
 
 次は、残り3件のissue(`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するかをユーザーに確認する。
 
+**続けて「次に進め」の指示で②`search_grep_multi_gb_performance_gap.md`(検索・Grepが数GB規模で30秒目標を超過)に着手した。**
+
+`SearchService::scanDocument()`(`SearchService::findAll()`の内部実装)を読み、①ピース連結(`pieceTextNoCache()`)②UTF-16→UTF-8変換(`toUtf8WithOffsets()`)③RE2スキャンの3段階から成ることを確認。issueの推定原因が「RE2自体が遅い」だったため、これを推測で受け入れず実測で検証することにした。RE2/Abseilを含む標準プローブ(`search_probe.cpp`、スクラッチパッドで`neomifes_search`/`neomifes_document`/`re2`/64個のabsl `.lib`ファイルを直接リンク、`cl.exe`のランタイムライブラリ不一致(`/MD`明示で解消)を経て構築)を作成し、3GB・自作テストファイル(2,667件マッチ)で3段階を個別に計測した。
+
+**結果、issueの推定原因は誤りだった。** ①ピース連結が約6.4〜7.8秒、②UTF-8変換が約9.1〜9.5秒、**③RE2スキャン自体はわずか約0.15〜0.33秒**(初回計測時はプローブ自体のバグ — `RE2::Match()`の`startpos`/`endpos`が`size_t`であるところを誤って`int`にキャストしていたため3GBの`size_t`が符号付き32bit intへ切り詰められ0件マッチという誤った結果が出た — を発見・修正して確定)。issueが提案していた4方針のうち①(SIMD/Boyer-Moore)②(並列ピーススキャン)は、そもそも遅くないRE2を高速化しようとするものであり効果が薄いと判明した。
+
+実測値をユーザーへ提示し「A: ストリーミング化+UTF-8変換最適化(推奨)」が選ばれた。**実装1: `toUtf8WithOffsets()`(`src/util/src/utf8_convert.cpp`)にASCII連続区間の高速パスを追加した。** 元の実装は1コードポイントごとに`decodeOne()`+`appendUtf8()`+1バイトずつ`push_back()`するブランチの多いループだった。ASCII文字(コードポイント<0x80)はUTF-16オフセットとUTF-8バイトオフセットが1:1対応するため、連続ASCII区間を検出し`resize()`+添字書き込みで一括処理する経路(`appendAsciiRun()`)を追加した(サロゲートペア・非ASCII文字は既存の低速パスをそのまま使用、正しさは一切変更していない)。実測で約9.1秒→約5.5〜5.6秒(約38〜40%削減)、複数回の実測で一貫した改善を確認した。
+
+**実装2: `scanDocument()`のピース連結も`pieceTextStreamed()`へ切り替えを試みた。** `LineIndex::build()`が「単一の巨大Original piece」という同じファイル形状(3GBの未編集ファイルは通常1ピースのみ)で一括デコードからストリーミングデコードへ切り替え10GB規模で大きな改善を得た前例(`decode_cache_unbounded_growth.md`)に倣った設計判断だった。しかし3GB規模で標準プローブを使い複数回(計5回)実測したところ、`pieceTextStreamed()`は一貫して約1〜2秒「遅く」なった(8.4〜8.8秒 vs `pieceTextNoCache()`の6.4〜7.8秒、単発の測定ではなくノイズかどうか複数回再実行して確認)。**CLAUDE.mdルール10(性能を主張する場合は必ず計測値を示す/効果の無い変更は採用しない)に従い、この変更は撤回し`pieceTextNoCache()`のまま維持した。** LineIndexは1文字ずつ見て捨てる用途だが、`scanDocument()`はRE2がピース境界をまたぐマッチを見るために最終的に全体を1個のバッファとして持つ必要があり、この用途の違い(「見て捨てる」vs「最終的に全部保持する」)が結果の差の一因と考えられる、という推測をコード中のコメントに明記した(未検証の推測であることを明示)。
+
+**実機再測定(Release、3GBファイル):** ①+②+③(`SearchService::findAll()`の主要部分)の合計が約17.1秒→約12.0〜12.4秒(約28%削減、複数回実測で一貫)。**ここで重要な注記を行った: issueが最初に報告した38.94秒という数値は、本修正前の時点でも本セッションの実測環境では再現できなかった**(本セッションでの「修正前」ベースラインは既に約17秒で、38.94秒より大幅に小さかった)。ディスクキャッシュの状態(本セッションのテストファイルは生成直後でOSキャッシュが温まっていた可能性が高い)等の環境差によるものと推定されるが、厳密な原因特定はしていない。このため「○倍改善」という単純な比較は意図的に避け、本セッション内で一貫して再現できた相対的な改善値(UTF-8変換で約38〜40%、全体で約28%)のみを実測値として記録する方針にした。
+
+**`GrepService::findAll()`(マルチファイル、5,000ファイル)は今回のスコープ外のまま残ることを明記した。** `GrepService`は内部で`SearchService::findAll()`を呼ぶため上記の最適化は各ファイルにも及ぶが、issue自身の分析が示す通りマルチファイルケースの支配的コストは「ファイルあたりの`loadUtf8File()`固定オーバーヘッド」であり、これは今回選ばれなかった別方針(GrepService側のオーバーヘッド削減、並列ファイル処理)に相当する別の作業である。
+
+実機ドッグフーディングは2パターン実施した。1つ目は日本語テキストとASCII"ERROR"が混在する小さいファイル(`Ctrl+F`相当のWM_COMMAND(40000)でFindBarを開き、WM_SETTEXTで検索語を注入)で、3件中1/3、いずれも正しくハイライトされることをスクリーンショットで確認 — 日本語直後の"ERROR"も正しく検出され、ASCII高速パスと非ASCII低速パスの境界に問題が無いことを実証した。2つ目は実際の3GBファイルでの検索で、`1/2667`という正しい件数が表示され、検索中の約20秒間`Responding=False`になった後正常に復帰することを確認した(ハング・クラッシュ無し)。
+
+副次的に、`cl.exe`でRE2/Abseil込みの標準プローブをリンクする際、Release構成の`neomifes_document.lib`等が`/MD`(動的CRT)でビルドされているのに対しデフォルトの`cl.exe`呼び出しが異なるランタイムを選ぶため`LNK2038`(RuntimeLibrary不一致)が発生する、という新しい落とし穴を発見・解消した(`/MD`明示で解決)。またビルド時、正当な理由でkillできない既知のゾンビ`NeoMIFES`プロセス(PID固定、`json_syntax_highlight_large_file_open_hang.md`調査時に発見)が再度出力exeをロックし、`mv`によるリネーム退避で再度回避した。
+
+`docs/issues/search_grep_multi_gb_performance_gap.md`(推定原因の訂正・実際の原因・実施内容・実機検証結果を全面記述、38.94秒との比較についての正直な注記を含む、完了条件2/3にチェック)/`docs/issues/README.md`(部分対応として記述更新)/`master_roadmap.md`(§12.5「数GB Grep」項目・「7件の重大な発見」item4を更新)/`build_plan.md`(§0次フェーズ候補リスト更新)/`RESUME_HERE.md`を同期。検証用スクラッチ(`.tmp_issue_verify\`及びスクラッチパッドの各種プローブファイル)は削除済み。
+
+Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(2ファイルとも)。issueは「🟡部分対応」として記録した。
+
+次は、残り2件のissue(`text_surface_no_screen_reader_exposure.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するかをユーザーに確認する。
+
 <!-- 次セッションはここに追記 -->
