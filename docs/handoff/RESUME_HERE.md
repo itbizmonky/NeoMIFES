@@ -144,6 +144,27 @@
 > **次回セッション最初にやること:** 残り2件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
 >
 > 詳細は[`docs/issues/search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)、`docs/history/TIMELINE.md` Session 116参照。
+>
+> ---
+
+> # 🎯 最重要 (2026-09-01) — 次フェーズ候補③`undo_redo_active_usage_soak_not_performed.md`を解決
+>
+> **②完了後、「次に進め」の指示で③`undo_redo_active_usage_soak_not_performed.md`(「100万Undo(24時間ソーク)」の実体が、実際にはUndo/Redoを回さないアイドル放置確認だった)に着手した。**
+>
+> **①UI経由のSendInput連打/②ヘッドレスプローブで`core::UndoStack`直接駆動/③現状維持の3方針をAskUserQuestionで提示し、「②ヘッドレスプローブ(推奨)」が選ばれた**(①は本セッション内で確立済みの制約 — Ctrl+Z相当の修飾キー合成入力はこの環境で不安定 — によりリスクが高いと判断)。
+>
+> **`core::UndoStack`/`document::Document`を直接駆動する標準プローブ(`undo_soak_probe.cpp`)を新規作成し、「10,000件push→全undo→全redo→全undo(定常状態)」を1サイクルとして無限に繰り返す設計にした。着手直後、深刻に見える結果(36秒でWorkingSet 62MB→9.9GB)が出たが、原因調査の結果、これは本物のリークではなく**プローブ自体の設計不備だった**。`document::Document::m_pendingEdits`(`RenderPipeline`が毎フレーム`takePendingEdits()`で排出する設計)を、`RenderPipeline`を持たない本ヘッドレスプローブが一度も排出していなかったため蓄積し続けていた。`doc.takePendingEdits()`を各サイクル末尾で呼ぶよう修正して解消した。
+>
+> **修正後、5分間(298.6秒、34,999サイクル、約14億回のpush/undo/redo/undo操作)のセーフティ監視付き実測を実施。** WorkingSetは6.48MB→1,416.74MB(約1.41GB)まで増加したが、増加率は時間経過に対して**一貫して線形(むしろわずかに逓減、加速の兆候なし)**。`UndoStack::push()`のソースを確認し`m_redo.clear()`が正しく呼ばれていることも確認、**`UndoStack`自体は各サイクルの冒頭で古いredoスタックを正しく解放しておりリークしていない。** 観測された増加は1pushあたり約4.06バイトという極めて小さい値で、これは`document::AddBuffer`(`add_buffer.h`で「append-only」と明記済みの意図的設計)による、挿入した文字1つあたりほぼそのままのコストと完全に整合する。これは既存issue[`undo_stack_unbounded_memory.md`](../issues/undo_stack_unbounded_memory.md)(P2)が既に追跡している既知の設計上の特性であり、同issueに実測値(4.06バイト/push)を追記した。
+>
+> **結論:** 「実際にUndo/Redoを連続実行してもクラッシュ・メモリ膨張しない」という主張のうち、`UndoStack`自体が予期しない形でリークすることは無いと実測で確認した(検証ギャップを解消)。24時間規模のフル実行は、既に確認された線形トレンドを追認するだけで新たな知見を生まない上、AddBufferの性質上メモリ消費が数十GB規模に達しうるため、安全のため実施しなかった。コードの修正は無し(バグは発見されなかった)、ドキュメント更新のみ。
+>
+> **未対応のまま残る1件のissue(次のPhase候補):**
+> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)。`ITextProvider`/`ITextRangeProvider`実装が必要な大規模な新規サブシステムであり、これまでのissueより規模が大きい
+>
+> **次回セッション最初にやること:** `text_surface_no_screen_reader_exposure.md`に今すぐ着手するか、規模の大きさ(新規UI Automationサブシステム)を理由に別フェーズへ先送りするか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は[`docs/issues/undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md)、`docs/history/TIMELINE.md` Session 116参照。
 
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >

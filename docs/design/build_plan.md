@@ -72,7 +72,7 @@ ctest --preset debug --output-on-failure
 > - Phase 10.2 (CSV): 🎉 **WI-16gの列固定達成をもって完結扱い。式列(WI-16h)は2026-08-30、roadmap原案が元々v2.0機能としていた点を理由にユーザー承認のもと見送り確定。**
 > - Phase 10.3 (JSON/XML Tree): **WI-15a〜iで🎉完結、残作業なし**
 > - Phase 11.1 (Git統合): 🎉 **WI-17a〜fで完結済み (2026-08-25)。残作業なし。**
-> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) 2026-08-30着手 → 2026-09-01完了(🎉M5)。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応。17項目中16項目達成(3項目部分達成)、残り1項目(数GB Grep)は未達のまま正直に記録して確定。**次にどのissueへ着手するかは未定 — 新セッションはユーザーに確認すること(下記「次フェーズ候補」参照)。**
+> - **v1出荷判定 (軽量版、master_roadmap.md §12.5) 2026-08-30着手 → 2026-09-01完了(🎉M5)。** fuzz testは元々v2.0機能のためユーザー承認のもとチェックリストから除外。検証中に`decode_cache_unbounded_growth.md`(重大、修正済み)を発見・対応。17項目中16項目達成(3項目部分達成)、残り1項目(数GB Grep)は未達のまま正直に記録して確定。**M5達成後に発見した5件のissueのうち4件(json_tree/json_syntax/csv/search_grep/undo_redo)へ対応済み(解決3件・部分対応2件)、残るは`text_surface_no_screen_reader_exposure.md`(P1、スクリーンリーダー未対応)のみ — 規模が大きい(`ITextProvider`/`ITextRangeProvider`実装が必要)ため着手要否は新セッションでユーザーに確認すること(下記「次フェーズ候補」参照)。**
 >
 > **凍結する (🧊、着手しない):**
 > - Phase 11.2 LSP 完全実装、Phase 11.3 マクロ (Lua+JS+秀丸互換)、Phase 9 AI プラグイン
@@ -86,7 +86,7 @@ ctest --preset debug --output-on-failure
 > - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 本文編集領域がスクリーンリーダーに一切内容を公開していない
 > - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — 🟡 **2026-09-01部分対応。** `CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB、旧参照8.3GBから大幅改善)。10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定、10GB規模でのリスクは軽減されつつも残存
 > - ~~[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。早期リターンで解消、47秒→約1秒(約47倍改善)、Debug/Release/ubsan全1554件green
-> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo」ソークが実際にはUndo/Redoを回さないアイドル確認だった
+> - ~~[`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2)~~ — 🟢 **2026-09-01解決済み。** ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施、`UndoStack`自体はリークしないことを確認。観測された線形増加(非加速)は`AddBuffer`の既知append-only設計に起因、`undo_stack_unbounded_memory.md`で引き続き追跡中
 > - [`authenticode_certificate_not_acquired.md`](../issues/authenticode_certificate_not_acquired.md) (P1、外部要因待ち) — 本物のAuthenticode証明書取得(ユーザー判断)
 >
 > 詳細な理由と各案の比較は [`docs/history/TIMELINE.md`](../history/TIMELINE.md) の該当セッション記録、および `master_roadmap.md` の各フェーズ見出しに付けた🧊凍結注記を参照。

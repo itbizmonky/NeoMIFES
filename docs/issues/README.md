@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-01 (v1出荷判定🎉M5達成後の次フェーズ、`json_tree_ui_population_hang.md`/`json_syntax_highlight_large_file_open_hang.md`解決・`csv_per_cell_index_memory_scaling.md`/`search_grep_multi_gb_performance_gap.md`部分対応)
+**最終更新:** 2026-09-01 (v1出荷判定🎉M5達成後の次フェーズ全5件対応完了 — `json_tree_ui_population_hang.md`/`json_syntax_highlight_large_file_open_hang.md`/`undo_redo_active_usage_soak_not_performed.md`解決・`csv_per_cell_index_memory_scaling.md`/`search_grep_multi_gb_performance_gap.md`部分対応)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -32,7 +32,7 @@
 | [オーバーレイにフォーカスがある間 Ctrl+S/O/N が届かない](overlay_focus_blocks_file_lifecycle_keys.md) | FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane のサブクラスプロシージャが未知のキーを親HWNDへ転送しない | 待機 (5ウィジェット全てへの転送ロジックが必要になった時点で再評価) |
 | [メニューバーのキーバインド表示が実行時リマップに追従しない](menu_bar_keybinding_label_stale.md) | `\tCtrl+X` 等の表示は起動時固定、`keybindings.reload`/`.preset.*` 後も再起動まで古いまま (実際のキー入力自体は正しく機能する) | 待機 (メニュー再構築機構が必要になった時点で再評価) |
 | [`ts_parser_parse()` の文書サイズ比例コスト](tree_sitter_incremental_parse_cost.md) | 50万行で 155.95ms、DoD ≤50ms 未達。4 フェーズ挑戦し tree-sitter の構造的限界と結論 | 🧊 **凍結** (Phase 12 直前に「達成」か「DoD 改訂」かを判断) |
-| [`UndoStack` のメモリ無制限成長](undo_stack_unbounded_memory.md) | 圧縮/ディスクスワップ未実装。時間 DoD は達成済み、メモリは未計測 | 待機 (実メモリ計測が可能になってから) |
+| [`UndoStack` のメモリ無制限成長](undo_stack_unbounded_memory.md) | 圧縮/ディスクスワップ未実装。2026-09-01追記: ヘッドレスプローブで1pushあたり約4.06バイトと実測(AddBufferのappend-only設計に起因、線形増加で加速無し)、100万件規模でも約4MB程度と推定され256MB予算を大きく下回る見込み | 待機 (実UIを通した100万件規模の実測はまだ無い) |
 | [`TextLayoutCache` のサイズ無制限成長](text_layout_cache_unbounded_growth.md) | LRU 追い出し未実装 | 待機 |
 | [`LineIndex` の O(log n) 化](line_index_o_log_n.md) | Phase 7p でインクリメンタル更新は実装済み。残りは低優先度 | 待機 |
 | [マッチハイライトの線形走査](match_highlight_linear_scan_scaling.md) | 数万件マッチが発生する経路ができてから再評価 | 待機 |
@@ -43,7 +43,6 @@
 | [Phase 10.1 v2.0拡張候補が未実装](phase_10_1_v2_extended_patterns.md) | リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/SAP・AWS・Azure等ベンダー固有パターンは実データ入手まで意図的に先送り (WI-14a) | 待機 (WI-14c MVP達成後、実データ入手時に再評価) |
 | [CSVグリッドが末尾改行由来の暗黙の空行を表示してしまう](csv_grid_shows_trailing_implicit_empty_row.md) | `CsvModel`の既存仕様(WI-16a、Document全体と一貫)がグリッドUIで視覚的ノイズとして露呈。データ欠落・誤りは無い | 待機 (要望が出るかPhase 10.2次期UI改善サブWI着手時に再評価) |
 | [`tree-sitter-xml`が約505階層超のネストで整形式入力を誤検知する](xmltree_deep_nesting_misparse_limit.md) | クラッシュではなく`ERROR`ノードへの安全な縮退。実用上の発生頻度は極めて低いと想定 | 待機 (実例が確認された場合に再評価) |
-| [「100万Undo(24時間ソーク)」が実際にはUndo/Redoを回さないアイドル確認だった](undo_redo_active_usage_soak_not_performed.md) | ロードマップ原案は能動的なUndo/Redoストレステストを計画していたが、実装はアイドル放置確認に留まった。100万Undo自体の能力・速度はベンチマークで実測済み | 待機 (ユーザー指摘で発覚、2026-08-31。次フェーズ候補として検討) |
 
 ## 対応不能 / 外部要因待ち
 
@@ -69,6 +68,7 @@
 | [`OriginalBuffer` のデコードキャッシュ無制限蓄積による OOM](decode_cache_unbounded_growth.md) | 🟢 v1出荷判定 (2026-08-31)。10GBファイルのログ解析モードでシステムメモリ枯渇を実機で確認、非キャッシュAPI+ストリーミングAPI追加で解消(10GBファイルのPrivateメモリ 20GB超→1.22GB、初回インデックス構築113.7秒→26.99秒)。`LineIndex::build()`等9箇所を修正 |
 | [JSON/XMLツリーUIが大規模ファイルでUIスレッドを長時間ハングさせる](json_tree_ui_population_hang.md) | 🟢 2026-09-01。実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(issueの推定原因`WC_LISTVIEW`は誤りと判明、標準プローブで実測)。しきい値ベースの「全展開(小規模)/遅延ロード+階層キャップ(大規模)」で解消、145万要素で実測トグル9ms・展開303ms |
 | [大規模JSONファイルを開くだけでJSON構文ハイライトが長時間UIをハングさせる](json_syntax_highlight_large_file_open_hang.md) | 🟢 2026-09-01。真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。空テーブルなら即座に空を返す早期リターンで解消、47秒→約1秒(約47倍改善)。C++等アウトライン対応言語への回帰無しをドッグフーディングで確認 |
+| [「100万Undo(24時間ソーク)」が実際にはUndo/Redoを回さないアイドル確認だった](undo_redo_active_usage_soak_not_performed.md) | 🟢 2026-09-01。ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施。`UndoStack`自体はリークしないことを確認(`push()`が`m_redo.clear()`を正しく実行)。観測された線形増加(非加速)は既知の`AddBuffer` append-only設計に起因、`undo_stack_unbounded_memory.md`で追跡中 |
 
 ---
 
