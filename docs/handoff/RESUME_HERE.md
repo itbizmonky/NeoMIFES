@@ -94,10 +94,32 @@
 > - [`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1) — 大規模JSONファイルを開くだけでJSON構文ハイライトが約47秒UIをハングさせる
 > - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
 >
-> **次回セッション最初にやること:** 残り4件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット済み、pushはユーザー指示待ち)。
->
 > 詳細は[`docs/issues/csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md)、`docs/history/TIMELINE.md` Session 116参照。
 >
+> ---
+
+> # 🎯 最重要 (2026-09-01) — 次フェーズ候補①`json_syntax_highlight_large_file_open_hang.md`を解決
+>
+> **②完了後、ユーザーへ次フェーズ候補を再提示(実装優先度①`json_syntax_highlight_large_file_open_hang.md`(新規発見)→②`search_grep_multi_gb_performance_gap.md`→③`undo_redo_active_usage_soak_not_performed.md`、④`text_surface_no_screen_reader_exposure.md`は別フェーズ推奨、`authenticode_certificate_not_acquired.md`は実装作業ではないため対象外)、承認を得て①から着手した。**
+>
+> **標準の診断ログ手法(`NEOMIFES_DOGFOOD_PARSE_LOG`環境変数でゲート、実装完了後に全除去)で47秒の内訳を実測した:** `extractOutline()`(Breadcrumb/アウトライン抽出、**UIスレッドで同期実行**)が約22.8秒、`SyntaxWorker`のトークン着色パース(バックグラウンドスレッド、非同期)が約15.4秒。**真因は`extractOutline()`だった。** `src/syntax/src/outline.cpp`の`symbolTableFor(Language)`を確認したところ、JSON含む19言語(Json/Html/Css/Shell/Yaml/Toml/Xml/TypeScript/Tsx/Php/Markdown/PowerShell/Ini/Batch/Sql)が`emptySymbolTable()`を返す設計であり、これらの言語では`extractOutline()`が145万行を22.8秒かけてフルパースしても**結果は最初から空だと分かっていた** — 純粋に無駄な計算だった。`SyntaxWorker`側は既に非同期設計でUIをブロックしないことも確認できた。
+>
+> **`tree_sitter_incremental_parse_cost.md`(P2、凍結)との関係も調査完了。** 両者は「tree-sitterのパースコストが文書サイズに比例する」という同じ根本的性質に起因するが、`extractOutline()`は不要な計算だったため根絶でき、`SyntaxWorker`側(約15.4秒、非同期のためUIはブロックしない)は本質的な制約として同issueの範囲に残る。
+>
+> **修正:** `extractOutline()`冒頭に、シンボルテーブルが空なら即座に空を返す早期リターンを追加(`src/syntax/src/outline.cpp`)。設計上のトレードオフが無い(既存の挙動をどの言語でも変えない)ため、AskUserQuestionでの選択肢提示は不要と判断し直接実装した。
+>
+> **実機検証(Release、issueと同条件の78MB/145万行JSON配列):** ファイルを開いてから応答可能になるまで**47秒→約1秒(約47倍改善)。** 残る約15秒(`SyntaxWorker`のトークン着色)はバックグラウンドで進行、UIは終始応答可能。実機ドッグフーディングで、JSONの構文ハイライトが数秒後に正しく反映されること、C++ファイル(アウトライン対応言語)でBreadcrumb/アウトライン機能に回帰が無いこと(`csv_model.cpp`の全関数が正しく一覧表示)の両方をスクリーンショットで確認した。
+>
+> Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0。
+>
+> **未対応のまま残る3件のissue(次のPhase候補):**
+> - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 検索・Grepが3GBで38.94秒(目標30秒超過)。Phase 5a設計時点でSIMD/並列化は意図的に未実装だった
+> - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 主要テキスト編集領域(Direct2D直接描画)がUI Automationへ内容を一切公開しておらず、スクリーンリーダーでファイル内容を読めない(メニュー等は正常に公開されている)
+> - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo(24時間ソーク)」の実体がアイドル放置確認だった。100万Undo自体の能力・速度はベンチマークで実測済み
+>
+> **次回セッション最初にやること:** 残り3件のissue(`build_plan.md` §0「次フェーズ候補」参照)のうちどれへ着手するか、あるいは他の方針にするかをユーザーに確認する。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は[`docs/issues/json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md)、`docs/history/TIMELINE.md` Session 116参照。
 > ---
 
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む

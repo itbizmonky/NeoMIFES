@@ -2726,10 +2726,11 @@ neomifes.showToast("Inserted!")
 - [x] 動作確認した Windows バージョンを明記する — **Windows 11 Pro 25H2 (ビルド26200.9168)、開発機実機確認(2026-08-31)。** レジストリの`ProductName`は`Windows 10 Pro`という陳腐化した表記のままだが、`DisplayVersion`=25H2/`CurrentBuild`=26200が実際のWindows 11 25H2を示す(既知のWindowsレジストリの表記不整合)。他バージョンは未確認
 - [x] Portable Zip 版配布 (WI-13で実証済みの自己署名を維持。本物のAuthenticode証明書取得は商用配布時の別課題として`docs/issues/`に残す)
 
-**達成状況 (2026-09-01時点、全項目検証完了):** 17項目中16項目達成(うち3項目「基本アクセシビリティ」「10GBファイル対応」「100万Undo」は部分達成 — 100万Undoは能力・速度は達成済み、実使用ソーク部分のみ未実施)、残り1項目(数GB Grep)は未達確定。アイドル12時間ソークは2026-08-31 23:04:39(JST)に`SOAK_COMPLETE_NO_CRASH`で完了済み。**検証中に6件の重大な発見があった:**
+**達成状況 (2026-09-01時点、全項目検証完了):** 17項目中16項目達成(うち3項目「基本アクセシビリティ」「10GBファイル対応」「100万Undo」は部分達成 — 100万Undoは能力・速度は達成済み、実使用ソーク部分のみ未実施)、残り1項目(数GB Grep)は未達確定。アイドル12時間ソークは2026-08-31 23:04:39(JST)に`SOAK_COMPLETE_NO_CRASH`で完了済み。**検証中に7件の重大な発見があった(3件解決済み、1件部分対応、3件未対応。詳細は各項目参照):**
 1. `decode_cache_unbounded_growth.md`(重大、修正済み) — `OriginalBuffer`のデコードキャッシュ無制限蓄積+文書全体の一括デコードという2段階の根本原因。非キャッシュAPI+ストリーミングAPIを`LineIndex::build()`(あらゆるファイル読込)を含む9箇所へ適用、10GBファイルでのPrivateメモリを20GB超→1.22GBへ削減。
 2. `csv_per_cell_index_memory_scaling.md`(P1、🟡 2026-09-01部分対応) — CSVモードのper-cellインデックスが10GB規模で恒常的に大きなメモリを消費。`CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB)、10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定。
-3. `json_tree_ui_population_hang.md`(P1、🟢 2026-09-01解決済み) — JSON/XMLツリーUIが100MB規模で3分以上UIハング。原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(issueの推定原因`WC_LISTVIEW`は誤りと判明)。しきい値ベースの遅延ロード+階層キャップで解消、副産物として`json_syntax_highlight_large_file_open_hang.md`(P1、未対応)を新規発見。
+3. `json_tree_ui_population_hang.md`(P1、🟢 2026-09-01解決済み) — JSON/XMLツリーUIが100MB規模で3分以上UIハング。原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(issueの推定原因`WC_LISTVIEW`は誤りと判明)。しきい値ベースの遅延ロード+階層キャップで解消、副産物として`json_syntax_highlight_large_file_open_hang.md`(P1)を新規発見。
+7. `json_syntax_highlight_large_file_open_hang.md`(P1、🟢 2026-09-01解決済み) — 大規模JSONファイルを開くだけで約47秒UIハング(構造ツリー機能とは無関係)。真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。早期リターンで解消、47秒→約1秒(約47倍改善)。`tree_sitter_incremental_parse_cost.md`との関係も調査完了(同根本原因だが別消費者、SyntaxWorker側の残存コストは同issueの範囲として引き続き凍結)。
 4. `search_grep_multi_gb_performance_gap.md`(P1、未対応) — 検索・Grepが3GBで38.94秒、目標30秒を超過。Phase 5a設計時点でSIMD/並列化は意図的に未実装だった。
 5. `text_surface_no_screen_reader_exposure.md`(P1、未対応) — 主要テキスト編集領域がUI Automationへ内容を一切公開していない(スクリーンリーダーがファイル内容を読めない)。
 6. `undo_redo_active_usage_soak_not_performed.md`(P2、未対応) — 「100万Undo(24時間ソーク)」の実体が、実際にUndo/Redoを回さないアイドル放置確認だった(ユーザー指摘で発覚)。100万Undo自体の能力・速度はベンチマークで実測済みのため機能欠陥ではない。

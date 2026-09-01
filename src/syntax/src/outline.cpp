@@ -325,6 +325,21 @@ std::vector<OutlineNode> extractOutline(std::u16string_view text, Language langu
     const TSLanguage*  tsLanguage = tsLanguageFor(language);
     const SymbolTable& table      = symbolTableFor(language);
 
+    // json_syntax_highlight_large_file_open_hang.md: symbolTableFor()
+    // returns emptySymbolTable() for 19 of the languages listed there
+    // (Json/Html/Css/Shell/Yaml/Toml/Xml/TypeScript/Tsx/Php/Markdown/
+    // PowerShell/Ini/Batch/Sql among them) - walkForOutline() below can
+    // NEVER match a node against an empty table, so parsing at all is
+    // strictly wasted work for these languages, independent of how large
+    // the document is. This was previously unconditional: a full,
+    // non-incremental ts_parser_parse_string_encoding() call - on a
+    // 1.45M-line JSON array, ~22.8s measured, entirely synchronous on the
+    // caller's thread (refreshDocumentCacheIfStale()) - to walk a tree that
+    // could only ever produce an empty result.
+    if (table.empty()) {
+        return {};
+    }
+
     const TSParserPtr parser = makeParser(tsLanguage);
     const auto*        bytes  = reinterpret_cast<const char*>(text.data());
     const auto          length = static_cast<uint32_t>(text.size() * sizeof(char16_t));

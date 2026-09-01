@@ -3653,4 +3653,26 @@ Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0。issueは「�
 
 次は、残り4件のissue(`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`json_syntax_highlight_large_file_open_hang.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するかをユーザーに確認する。
 
+**続けて次フェーズ候補の優先順位を再提示(①`json_syntax_highlight_large_file_open_hang.md`(新規発見、広範囲に影響)→②`search_grep_multi_gb_performance_gap.md`→③`undo_redo_active_usage_soak_not_performed.md`、④`text_surface_no_screen_reader_exposure.md`は規模突出のため別フェーズ推奨、Authenticode証明書は実装作業ではないため対象外)、ユーザー承認で①から着手した。**
+
+まず`src/render/src/syntax_worker.cpp`(トークン着色用の`SyntaxWorker`)を読み、既に完全に非同期設計(専用ワーカースレッド、`m_cv`での待機、`PostMessageW`での結果通知)であることを確認した。これはissueの推定原因(「同期的にUIスレッドをブロックしている」)と矛盾するように見えたため、憶測せず標準の診断ログ手法(env var `NEOMIFES_DOGFOOD_PARSE_LOG`でゲートしたfprintfベースのタイミング計測、`incremental_parser.cpp`/`syntax_worker.cpp`の各段階へ一時的に埋め込み)で実測した。
+
+初回の実測で、`extractNoCache`(デコード)は197ms、`SyntaxWorker`自身のパース+トークン抽出(`IncrementalParser::reparseRange()`、バックグラウンドスレッド)が計約15.4秒(parse 10.6秒+walk 4.8秒)と判明したが、これだけでは観測された47秒の半分にも満たなかった。残りの内訳を探すため`render_pipeline.cpp`の`refreshDocumentCacheIfStale()`を読んだところ、**Phase 7h由来の`syntax::extractOutline()`(Breadcrumb/アウトライン抽出)呼び出しが、既存コードコメント自身が明記する通り「SYNCHRONOUS、UIスレッド上」で実行される設計**であることを発見。ここへ診断ログを追加したところ、**約22.8秒**を要していることが実測で判明した — これが真の主犯だった。
+
+さらに`src/syntax/src/outline.cpp`の`symbolTableFor(Language)`を確認したところ、**JSON含む19言語(Json/Html/Css/Shell/Yaml/Toml/Xml/TypeScript/Tsx/Php/Markdown/PowerShell/Ini/Batch/Sql)が`emptySymbolTable()`(空のシンボルテーブル)を返す設計**であり、`extractOutline()`自体は`table.empty()`を一切チェックせず、これらの言語であっても無条件に`ts_parser_parse_string_encoding()`で文書全体をフルパースしていたと判明した。`walkForOutline()`が空のテーブルに対して何かを認識できることは原理的にないため、145万行のJSONを22.8秒かけてパースした結果は**最初から空だと分かっている**ものだった — 純粋に無駄な計算。
+
+`tree_sitter_incremental_parse_cost.md`(P2、凍結、50万行で155.95msのインクリメンタル再パース性能を扱う既存issue)との関係も明らかになった: 両者は「tree-sitterのパースコストが文書サイズに比例する」という同じ根本的性質に起因するが、**`extractOutline()`側はそもそも不要な計算だったため根絶できる一方、`SyntaxWorker`のトークン着色パース(約15.4秒、非同期のためUIはブロックしないが本質的なコスト)は同issueが扱う範囲としてそのまま凍結状態に残る**、という整理になった。
+
+**修正は極めて小さく済んだ:** `extractOutline()`冒頭、`symbolTableFor(language)`を取得した直後に`if (table.empty()) { return {}; }`を追加するのみ(`src/syntax/src/outline.cpp`)。設計上のトレードオフが一切無く(アウトライン対応言語の挙動は完全に不変)、AskUserQuestionでの選択肢提示は不要と判断し直接実装した — JSON-XML Tree/CSVメモリのような複数の設計選択肢を伴う修正とは質的に異なる、純粋な「無駄な処理の除去」だった。
+
+実装後、全てのDOGFOOD-TEMP診断コード(4箇所: `incremental_parser.cpp`/`syntax_worker.cpp`/`render_pipeline.cpp`×2)を`grep`で残留無しを確認しつつ完全除去。Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(4ファイル全て)。
+
+実機再検証(Release、issueと同条件の78MB/145万行JSON配列)で、**ファイルを開いてから応答可能になるまでが47秒→約1秒(約47倍改善)** に達したことを確認した。残る約15秒(`SyntaxWorker`の非同期トークン着色)はバックグラウンドで進行し続け、UIは終始応答可能なまま数秒後に構文ハイライトが正しく反映されることをスクリーンショットで確認した(キー・文字列・数値それぞれ正しい色)。回帰確認として、アウトライン対応言語(C++、`src/csvmode/src/csv_model.cpp`)を開きBreadcrumb/アウトライン機能を実際にトグルし、`neomifes::csvmode`名前空間配下の全関数が従来通り正しく一覧表示されることもスクリーンショットで確認し、影響が無いことを実証した。
+
+ドッグフーディング中、副次的に「単独では正当な理由でkillできないゾンビ状態の`NeoMIFES`プロセス(PID固定)」を発見した — `Stop-Process`/`taskkill`とも`アクセスが拒否されました`で失敗し、`-IncludeUserName`が要求する昇格も本セッションでは行えないため詳細調査は断念、実害としてはビルド時に出力exeファイルをロックすることがあったが、ロック中でもファイルの**リネームは許可される**という挙動を発見し(Windows のファイルロックが常にDELETE/RENAMEも禁止するとは限らない)、ビルド前に`mv NeoMIFES.exe NeoMIFES_locked.exe`で退避することで実害を回避できた。
+
+`docs/issues/json_syntax_highlight_large_file_open_hang.md`(推定原因の訂正・実際の原因・修正内容・実機検証結果を全面記述、完了条件4項目にチェック)/`docs/issues/README.md`(解決済みへ移動)/`master_roadmap.md`(§12.5「7件の重大な発見」item7として追加・件数更新)/`build_plan.md`(§0次フェーズ候補リスト更新)/`RESUME_HERE.md`を同期。検証用スクラッチ(`.tmp_issue_verify\`)は削除済み。
+
+次は、残り3件のissue(`search_grep_multi_gb_performance_gap.md`/`text_surface_no_screen_reader_exposure.md`/`undo_redo_active_usage_soak_not_performed.md`)のうちどれに着手するかをユーザーに確認する。
+
 <!-- 次セッションはここに追記 -->

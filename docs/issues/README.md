@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-01 (v1出荷判定🎉M5達成後の次フェーズ、`json_tree_ui_population_hang.md`解決・`json_syntax_highlight_large_file_open_hang.md`起票・`csv_per_cell_index_memory_scaling.md`部分対応)
+**最終更新:** 2026-09-01 (v1出荷判定🎉M5達成後の次フェーズ、`json_tree_ui_population_hang.md`/`json_syntax_highlight_large_file_open_hang.md`解決・`csv_per_cell_index_memory_scaling.md`部分対応)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -24,7 +24,6 @@
 | [CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費する](csv_per_cell_index_memory_scaling.md) | 🟡 2026-09-01部分対応。`CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB)。10GB規模への根本対応(遅延インデックス化)はユーザー承認のもと対象外確定、リスクは残存 | 対象外確定 (遅延インデックス化は再設計コストが大きいため見送り) |
 | [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 3GB単一ファイルで38.94秒、1.49GB/5000ファイルで23.87秒。Phase 5a設計時点でSIMD/並列化は「将来の最適化」と明記され意図的に未実装だった | 未定 (要件定義書NFRとの整合、実装コストとのトレードオフ検討) |
 | [主要テキスト編集領域がUI Automation/スクリーンリーダーへ内容を一切公開していない](text_surface_no_screen_reader_exposure.md) | メニュー・ステータスバー・ダイアログは正しく公開されるが、Direct2D直接描画の本文領域は`ControlType.Custom`/`Name=''`で内容が一切取得できない | 未定 (UI Automation TextPattern実装は大規模な新規サブシステム) |
-| [大規模JSONファイルを開くだけでJSON構文ハイライトが長時間UIをハングさせる](json_syntax_highlight_large_file_open_hang.md) | 78MB/145万行のJSON配列を開くだけで約47秒UIハング(構造ツリー機能は無関係)。`.txt`では約1秒。`tree_sitter_incremental_parse_cost.md`との関係は未調査 | 未定 (原因調査未着手、2026-09-01 json_tree_ui_population_hang.md検証中に発見) |
 
 ## P2 — 凍結 / 再評価待ち
 
@@ -69,6 +68,7 @@
 | [CSVグリッドのフィルタ行付近に表示異常](csv_grid_filter_row_visual_glitch.md) | 🟢 WI-16f (2026-08-25)。原因はWM_PAINTが常に裏のテキストビューを描画しフィルタ行の余白から透けて見えていたこと。背景パネル(`m_hwndFilterBackdrop`)追加で解消、実機確認済み |
 | [`OriginalBuffer` のデコードキャッシュ無制限蓄積による OOM](decode_cache_unbounded_growth.md) | 🟢 v1出荷判定 (2026-08-31)。10GBファイルのログ解析モードでシステムメモリ枯渇を実機で確認、非キャッシュAPI+ストリーミングAPI追加で解消(10GBファイルのPrivateメモリ 20GB超→1.22GB、初回インデックス構築113.7秒→26.99秒)。`LineIndex::build()`等9箇所を修正 |
 | [JSON/XMLツリーUIが大規模ファイルでUIスレッドを長時間ハングさせる](json_tree_ui_population_hang.md) | 🟢 2026-09-01。実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(issueの推定原因`WC_LISTVIEW`は誤りと判明、標準プローブで実測)。しきい値ベースの「全展開(小規模)/遅延ロード+階層キャップ(大規模)」で解消、145万要素で実測トグル9ms・展開303ms |
+| [大規模JSONファイルを開くだけでJSON構文ハイライトが長時間UIをハングさせる](json_syntax_highlight_large_file_open_hang.md) | 🟢 2026-09-01。真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。空テーブルなら即座に空を返す早期リターンで解消、47秒→約1秒(約47倍改善)。C++等アウトライン対応言語への回帰無しをドッグフーディングで確認 |
 
 ---
 

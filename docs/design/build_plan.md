@@ -85,7 +85,7 @@ ctest --preset debug --output-on-failure
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 検索・Grepが数GB規模で目標30秒を超過(実測38.94秒)
 > - [`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1) — 本文編集領域がスクリーンリーダーに一切内容を公開していない
 > - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — 🟡 **2026-09-01部分対応。** `CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB、旧参照8.3GBから大幅改善)。10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定、10GB規模でのリスクは軽減されつつも残存
-> - [`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1、新規) — 大規模JSONファイルを開くだけでJSON構文ハイライトが約47秒UIをハングさせる(json_tree_ui_population_hang.md検証中に副次的に発見、構造ツリー機能とは無関係)
+> - ~~[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。早期リターンで解消、47秒→約1秒(約47倍改善)、Debug/Release/ubsan全1554件green
 > - [`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2) — 「100万Undo」ソークが実際にはUndo/Redoを回さないアイドル確認だった
 > - [`authenticode_certificate_not_acquired.md`](../issues/authenticode_certificate_not_acquired.md) (P1、外部要因待ち) — 本物のAuthenticode証明書取得(ユーザー判断)
 >
