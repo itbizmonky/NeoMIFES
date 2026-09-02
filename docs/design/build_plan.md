@@ -2355,7 +2355,7 @@ Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は�
 
 これで[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1、要件定義書§6必須機能)が完全に解決した。
 
-コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。次にどの作業へ着手するかはユーザーへ確認する — `view_menu_and_word_wrap_incomplete.md`(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ。
+コミット済み(`36588d9`)、pushはユーザーの明示指示待ち。次にどの作業へ着手するかはユーザーへ確認する — `view_menu_and_word_wrap_incomplete.md`(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ。
 
 ---
 
