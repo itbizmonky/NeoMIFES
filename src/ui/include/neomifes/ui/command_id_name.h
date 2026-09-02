@@ -28,9 +28,10 @@
 
 namespace neomifes::ui {
 
-// Every CommandId enumerator that IS remappable per WI-10's scope: all 37
-// non-None enumerators except About (menu-only, no keyboard path by
-// design). Declaration order matches command_ids.h exactly - consumers that
+// Every CommandId enumerator that IS remappable per WI-10's scope: every
+// non-None enumerator except About/Exit/TabCloseOthers/TabCloseAll
+// (menu-only, no keyboard path by design). Declaration order matches
+// command_ids.h exactly - consumers that
 // need a deterministic tie-break order (see
 // app::resolveKeyBindingConflicts()) rely on THIS being enum-declaration
 // order, not an arbitrary one.
@@ -92,6 +93,9 @@ inline constexpr std::array<CommandId, 36> kAllRemappableCommandIds{
         case CommandId::BookmarkPrevious: return u"bookmark.previous";
         case CommandId::TagJump: return u"navigate.tagJump";
         case CommandId::About:
+        case CommandId::Exit:
+        case CommandId::TabCloseOthers:
+        case CommandId::TabCloseAll:
         case CommandId::None:
             return u"";
     }

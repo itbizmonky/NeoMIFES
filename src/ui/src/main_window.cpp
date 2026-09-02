@@ -231,7 +231,7 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             handleDropFiles(wParam);
             return 0;
         case WM_CONTEXTMENU:
-            handleContextMenu(lParam);
+            handleContextMenu(wParam, lParam);
             return 0;
         case WM_TIMER:
             handleTimer(wParam);
@@ -459,7 +459,7 @@ void MainWindow::handleDropFiles(WPARAM wParam) noexcept {
     ::DragFinish(hDrop);
 }
 
-void MainWindow::handleContextMenu(LPARAM lParam) noexcept {
+void MainWindow::handleContextMenu(WPARAM wParam, LPARAM lParam) noexcept {
     if (!m_onContextMenu) {
         return;
     }
@@ -481,7 +481,15 @@ void MainWindow::handleContextMenu(LPARAM lParam) noexcept {
             y = 0;
         }
     }
-    m_onContextMenu(m_hwnd, x, y);
+    // WI-18a: wParam is WM_CONTEXTMENU's own "handle to the window in which
+    // the user right-clicked" (MSDN) - previously discarded entirely, which
+    // meant a right-click that bubbled up here from TabBar/StatusBar (an
+    // unhandled WM_CONTEXTMENU on a child control reaches its parent by
+    // Win32's own default behavior) was indistinguishable from one on this
+    // window's own client area, so the SAME edit-menu callback fired for
+    // both. See MainWindowConfig::onContextMenu's doc comment for how
+    // callers now use this to tell the two apart.
+    m_onContextMenu(reinterpret_cast<HWND>(wParam), m_hwnd, x, y);
 }
 
 void MainWindow::handleTimer(WPARAM wParam) noexcept {

@@ -65,6 +65,11 @@ enum class CommandId : std::uint16_t {
     TabNext,
     TabPrevious,
     TabClose,
+    // Tab context menu only (WI-18a), no accelerator/palette entry - see
+    // command_id_name.h's comment on why these aren't in
+    // kAllRemappableCommandIds (same "menu-only" treatment as About).
+    TabCloseOthers,
+    TabCloseAll,
     TabSwitch1,
     TabSwitch2,
     TabSwitch3,
@@ -82,6 +87,11 @@ enum class CommandId : std::uint16_t {
     // WI-07 step3: menu-only (Help menu), never accelerator-routed or
     // palette-registered - shows a minimal version MessageBoxW.
     About,
+    // WI-18a: File menu-only ("終了"), never accelerator-routed or
+    // palette-registered - Alt+F4/the title bar close button already reach
+    // the same WM_CLOSE path (MainWindow::handleClose()), so this exists
+    // purely for menu discoverability, same rationale as About.
+    Exit,
     // WI-07 step5: toggles EditorSession::overwriteMode(). Bound to a bare
     // VK_INSERT keypress in normal_mode_wiring.cpp's key-down chain (NOT the
     // accelerator table - see handleClipboardOrUndoRedoKey()'s own comment

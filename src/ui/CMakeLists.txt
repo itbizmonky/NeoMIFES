@@ -1,5 +1,6 @@
 add_library(neomifes_ui STATIC
     src/find_bar.cpp
+    src/find_replace_dialog.cpp
     src/command_palette.cpp
     src/goto_line_bar.cpp
     src/grep_bar.cpp

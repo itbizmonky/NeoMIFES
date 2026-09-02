@@ -631,6 +631,29 @@ public:
     // hitTestMinimap() itself calls this after its own X check passes.
     [[nodiscard]] std::optional<document::LineNumber> minimapLineAtY(std::int32_t yPx) const noexcept;
 
+    // WI-07 step7: dynamic-width line-number gutter (computeGutterWidthDips(),
+    // gutter_math.h) - replaces the old fixed kGutterWidthDips constant
+    // (still present as this function's own minWidthDips floor) as the
+    // single source of truth every x-coordinate consumer in this file must
+    // agree on (same "every consumer must agree" contract kGutterWidthDips
+    // itself used to document - see this constant's own header comment).
+    // Computed fresh from m_document->lineCount() (O(1), a maintained
+    // counter - see document.h) every call rather than cached: this class
+    // has no per-frame-invalidated cache for it, and the underlying counter
+    // read is cheap enough not to need one (CLAUDE.md rule 10 - no
+    // benchmark motivates adding a cache here). Falls back to
+    // kGutterWidthDips outright when m_document is null or m_charWidthDips
+    // hasn't been measured yet (pre-first-resize) - preserves every existing
+    // test's/measurement-mode's coordinate system exactly until real layout
+    // info exists.
+    //
+    // WI-18a: moved from private to public (declaration only - the .cpp
+    // definition is unchanged) so app-layer WM_CONTEXTMENU handling can
+    // exclude the gutter from "is this point over real text content",
+    // reusing this as the single existing source of truth for that boundary
+    // rather than duplicating its computeGutterWidthDips() logic.
+    [[nodiscard]] float gutterWidthDips() const noexcept;
+
     // Exposed for the --measure-frame harness and integration tests to
     // observe caching behavior (Phase 3c, ADR-011) - not merely test-only,
     // the frame harness reports these numbers in its JSON output.
@@ -905,22 +928,6 @@ private:
     // 3+ call sites exist" precedent reservedTopHeightDips() itself set
     // (Phase 7o).
     [[nodiscard]] float leftColumnOffsetDips() const noexcept;
-    // WI-07 step7: dynamic-width line-number gutter (computeGutterWidthDips(),
-    // gutter_math.h) - replaces the old fixed kGutterWidthDips constant
-    // (still present as this function's own minWidthDips floor) as the
-    // single source of truth every x-coordinate consumer in this file must
-    // agree on (same "every consumer must agree" contract kGutterWidthDips
-    // itself used to document - see this constant's own header comment).
-    // Computed fresh from m_document->lineCount() (O(1), a maintained
-    // counter - see document.h) every call rather than cached: this class
-    // has no per-frame-invalidated cache for it, and the underlying counter
-    // read is cheap enough not to need one (CLAUDE.md rule 10 - no
-    // benchmark motivates adding a cache here). Falls back to
-    // kGutterWidthDips outright when m_document is null or m_charWidthDips
-    // hasn't been measured yet (pre-first-resize) - preserves every existing
-    // test's/measurement-mode's coordinate system exactly until real layout
-    // info exists.
-    [[nodiscard]] float gutterWidthDips() const noexcept;
     // WI-08: kMinimapWidthDips if the minimap is currently visible
     // (m_showMinimap), 0.0F otherwise - so hiding the minimap
     // (setMinimapVisible(false)) reclaims its reserved width instead of

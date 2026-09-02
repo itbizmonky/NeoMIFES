@@ -38,19 +38,22 @@ struct FindBarConfig {
     // restoring focus to the document editing area - FindBar does not know
     // where that is.
     std::function<void()> onClosed;
-    // Enter while the replace edit has focus (Phase 5b3b) - replaces just
-    // the current match. Passes the replace edit's current text verbatim
-    // (a raw template, e.g. containing "$1") - same "push the current text"
-    // shape as onQueryChanged, not a separate pull-style getter.
-    std::function<void(std::u16string_view replacementText)> onReplaceCurrent;
-    // Ctrl+Enter while the replace edit has focus - replaces every match.
-    std::function<void(std::u16string_view replacementText)> onReplaceAll;
+    // Ctrl+H while the find edit has focus (WI-18b). FindBar itself no
+    // longer has any replace UI of its own (see the class comment) - Ctrl+H
+    // normally reaches MainWindow's own onKeyDown hook and opens
+    // ui::FindReplaceDialog from there, but that hook never fires while
+    // keyboard focus is on this child control (Win32 routes WM_KEYDOWN to
+    // whichever HWND actually has focus), so this callback exists purely so
+    // Ctrl+H still works while the user is mid-search in the find edit.
+    // FindBar deliberately does not know FindReplaceDialog exists - the app
+    // layer wires this to findReplaceDialog.show(hwnd), same decoupling as
+    // every other callback here.
+    std::function<void()> onReplaceRequested;
     // Ctrl+Up while the find edit has focus (Phase 5c5). `currentText` is
     // the find edit's text at the moment of the keypress; the caller looks
     // up core::SearchHistory::older(currentText) and, if it returns a
     // value, calls FindBar::setQueryText() with it. Never fired while an
-    // IME composition is in progress, nor from the replace edit (history is
-    // a search-pattern concept, not a replacement-template one).
+    // IME composition is in progress.
     std::function<void(std::u16string_view currentText)> onHistoryOlder;
     // Ctrl+Down - symmetric to onHistoryOlder (core::SearchHistory::newer()).
     std::function<void(std::u16string_view currentText)> onHistoryNewer;
@@ -78,13 +81,7 @@ public:
     // re-pressing Ctrl+F while already focused re-selects rather than doing
     // nothing).
     void show() noexcept;
-    // Reveals everything show() does, plus the replace edit (Ctrl+H
-    // convention - Phase 5b3b). Still focuses the find edit, matching
-    // VSCode: the user Tabs to the replace edit rather than starting there.
-    void showWithReplace() noexcept;
-    // Hides every child HWND, including the replace edit if visible, and
-    // resets replace-mode off - the next show()/showWithReplace() call
-    // decides fresh rather than a hidden bar "remembering" replace-mode.
+    // Hides the find edit + info label.
     void hide() noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
 
@@ -93,9 +90,8 @@ public:
     void setMatchCount(std::size_t currentIndex, std::size_t count) noexcept;
 
     // Programmatically replaces the find edit's text (Phase 5c5, Ctrl+Up/
-    // Down history recall) and moves the caret to the end - not the replace
-    // edit, which has no history concept (see FindBarConfig::onHistoryOlder).
-    // Setting the text triggers EN_CHANGE -> the existing debounce timer ->
+    // Down history recall) and moves the caret to the end. Setting the
+    // text triggers EN_CHANGE -> the existing debounce timer ->
     // onQueryChanged as usual (no special-casing needed): recalling a
     // history entry is expected to actually re-run the search, matching
     // what typing the same text would do.
@@ -116,19 +112,11 @@ private:
     static LRESULT CALLBACK subclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                          UINT_PTR subclassId, DWORD_PTR refData) noexcept;
     LRESULT handleSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
-    // `hwnd` distinguishes which of the two edit controls fired the key -
-    // both are subclassed through the same subclassProc/dwRefData=this
-    // (Phase 5b3b), so Enter/Ctrl+Enter mean "find next"/n-a in the find
-    // edit but "replace current"/"replace all" in the replace edit. Returns
-    // true if the key was one FindBar handles (caller should consume the
-    // message, i.e. return 0 rather than falling through to
+    // Returns true if the key was one FindBar handles (caller should
+    // consume the message, i.e. return 0 rather than falling through to
     // DefSubclassProc) - false lets ordinary typing/navigation keys reach
     // the stock edit control unchanged.
     [[nodiscard]] bool handleSubclassKeyDown(HWND hwnd, UINT vkCode) noexcept;
-    // Enter/Ctrl+Enter on the replace edit - split out of
-    // handleSubclassKeyDown()'s VK_RETURN case to stay under clang-tidy's
-    // cognitive-complexity threshold.
-    void handleReplaceReturn(HWND hwnd, bool ctrlDown) noexcept;
     // Alt+C/W/R arrive as WM_SYSKEYDOWN (Alt is a "system key" modifier),
     // never WM_KEYDOWN - see the .cpp for why this needs its own handler.
     void handleSubclassSysKeyDown(UINT vkCode) noexcept;
@@ -136,20 +124,12 @@ private:
     // event, not a burst of typing) and from the debounce WM_TIMER once it
     // fires (which it kills first, so it only ever fires once per burst).
     void fireQueryChanged() noexcept;
-    // Moves focus between the find/replace edits (Phase 5b3b) - only
-    // meaningful while the replace row is visible; a no-op (falls through
-    // to DefSubclassProc, ordinary Tab navigation) otherwise, since there is
-    // nothing to cycle to.
-    void cycleFocus(HWND hwnd) noexcept;
     void ensureFont(float dpiScale) noexcept;
-    // Reads `hwnd`'s current text (WM_GETTEXT) as a u16string - shared by
-    // fireQueryChanged() (find edit) and handleReplaceReturn() (replace
-    // edit), which need the identical GetWindowTextLengthW/GetWindowTextW/
-    // fromWstringView() sequence. static: touches no instance state.
+    // Reads `hwnd`'s current text (WM_GETTEXT) as a u16string - used by
+    // fireQueryChanged(). static: touches no instance state.
     [[nodiscard]] static std::u16string readEditText(HWND hwnd);
 
     neomifes::platform::WindowHandle    m_hwndFindEdit;
-    neomifes::platform::WindowHandle    m_hwndReplaceEdit;
     neomifes::platform::WindowHandle    m_hwndInfoLabel;
     neomifes::platform::GdiObjectHandle m_font;
     // Tracks WM_IME_STARTCOMPOSITION/WM_IME_ENDCOMPOSITION so Enter/Escape/F3
@@ -160,7 +140,6 @@ private:
     bool m_caseSensitive = false;
     bool m_wholeWord     = false;
     bool m_regex         = false;
-    bool m_replaceVisible = false;
     FindBarConfig m_config;
 };
 

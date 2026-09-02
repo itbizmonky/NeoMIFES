@@ -51,9 +51,9 @@ MenuBarHandles buildMenuBar(const core::RecentFiles& recentFiles) {
     bool ok = appendPopupMenu(menuBar, L"ファイル(&F)", kFileMenuItems);
 
     // WI-11: the "最近使ったファイル" submenu is appended to the File popup
-    // AFTER kFileMenuItems' 4 static entries, as its 5th item - a nested
-    // MF_POPUP, unlike every entry appendPopupMenu() itself builds (those
-    // are all flat MF_STRING commands).
+    // AFTER kFileMenuItems' static entries (WI-18a: now 6, not the original
+    // 4) - a nested MF_POPUP, unlike every entry appendPopupMenu() itself
+    // builds (those are all flat MF_STRING commands).
     HMENU recentFilesSubmenu = nullptr;
     if (ok) {
         recentFilesSubmenu = ::CreatePopupMenu();

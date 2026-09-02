@@ -14,7 +14,6 @@ namespace {
 
 constexpr int      kFindEditId      = 1001;
 constexpr int      kInfoLabelId     = 1002;
-constexpr int      kReplaceEditId   = 1003;
 constexpr UINT_PTR kSubclassId      = 1;
 constexpr UINT_PTR kDebounceTimerId = 1;
 constexpr UINT     kDebounceMs      = 150;
@@ -50,22 +49,7 @@ bool FindBar::create(HWND parent, HINSTANCE hInstance, const FindBarConfig& conf
     }
     m_hwndInfoLabel.reset(label);
 
-    HWND replaceEdit = ::CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | ES_AUTOHSCROLL, 0,
-                                         0, 10, 10, parent,
-                                         reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kReplaceEditId)),
-                                         hInstance, nullptr);
-    if (replaceEdit == nullptr) {
-        return false;
-    }
-    m_hwndReplaceEdit.reset(replaceEdit);
-
-    // Both edits share one subclass callback/dwRefData - handleSubclassMessage()
-    // distinguishes them by the `hwnd` it receives (Phase 5b3b).
     if (::SetWindowSubclass(m_hwndFindEdit.get(), &FindBar::subclassProc, kSubclassId,
-                            reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
-        return false;
-    }
-    if (::SetWindowSubclass(m_hwndReplaceEdit.get(), &FindBar::subclassProc, kSubclassId,
                             reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
         return false;
     }
@@ -87,14 +71,6 @@ void FindBar::show() noexcept {
     ::SendMessageW(m_hwndFindEdit.get(), EM_SETSEL, 0, -1);
 }
 
-void FindBar::showWithReplace() noexcept {
-    show();
-    if (m_hwndReplaceEdit) {
-        m_replaceVisible = true;
-        ::ShowWindow(m_hwndReplaceEdit.get(), SW_SHOW);
-    }
-}
-
 void FindBar::hide() noexcept {
     if (!m_hwndFindEdit || !m_hwndInfoLabel) {
         return;
@@ -102,10 +78,6 @@ void FindBar::hide() noexcept {
     ::KillTimer(m_hwndFindEdit.get(), kDebounceTimerId);
     ::ShowWindow(m_hwndFindEdit.get(), SW_HIDE);
     ::ShowWindow(m_hwndInfoLabel.get(), SW_HIDE);
-    if (m_hwndReplaceEdit) {
-        ::ShowWindow(m_hwndReplaceEdit.get(), SW_HIDE);
-    }
-    m_replaceVisible = false;
 }
 
 bool FindBar::isVisible() const noexcept {
@@ -153,12 +125,6 @@ void FindBar::onParentResized(std::uint32_t parentWidth, float dpiScale) noexcep
                    SWP_NOZORDER | SWP_NOACTIVATE);
     ::SetWindowPos(m_hwndInfoLabel.get(), nullptr, startX + editWidthPx + marginPx, findY, labelWidthPx,
                    heightPx, SWP_NOZORDER | SWP_NOACTIVATE);
-
-    if (m_hwndReplaceEdit) {
-        const int replaceY = findY + heightPx + marginPx;
-        ::SetWindowPos(m_hwndReplaceEdit.get(), nullptr, startX, replaceY, editWidthPx, heightPx,
-                       SWP_NOZORDER | SWP_NOACTIVATE);
-    }
 }
 
 void FindBar::handleCommand(WPARAM wParam, LPARAM /*lParam*/) noexcept {
@@ -166,9 +132,7 @@ void FindBar::handleCommand(WPARAM wParam, LPARAM /*lParam*/) noexcept {
         return;
     }
     // Debounced (Phase 5b3a): rapid keystrokes each restart the timer, so
-    // onQueryChanged only fires once the user pauses for kDebounceMs. The
-    // replace edit intentionally does not arm this timer - it has no
-    // incremental-search behavior to debounce (Phase 5b3b).
+    // onQueryChanged only fires once the user pauses for kDebounceMs.
     ::KillTimer(m_hwndFindEdit.get(), kDebounceTimerId);
     ::SetTimer(m_hwndFindEdit.get(), kDebounceTimerId, kDebounceMs, nullptr);
 }
@@ -196,9 +160,6 @@ void FindBar::ensureFont(float dpiScale) noexcept {
     if (m_hwndInfoLabel) {
         ::SendMessageW(m_hwndInfoLabel.get(), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
-    if (m_hwndReplaceEdit) {
-        ::SendMessageW(m_hwndReplaceEdit.get(), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    }
 }
 
 std::u16string FindBar::readEditText(HWND hwnd) {
@@ -208,21 +169,6 @@ std::u16string FindBar::readEditText(HWND hwnd) {
         ::GetWindowTextW(hwnd, buffer.data(), length + 1);
     }
     return std::u16string(neomifes::util::fromWstringView(buffer));
-}
-
-// Enter/Ctrl+Enter while the replace edit has focus - pulled out of
-// handleSubclassKeyDown()'s VK_RETURN case to keep that function under
-// clang-tidy's cognitive-complexity threshold (25); this branch alone
-// nested 4 levels deep.
-void FindBar::handleReplaceReturn(HWND hwnd, bool ctrlDown) noexcept {
-    const std::u16string text = readEditText(hwnd);
-    if (ctrlDown) {
-        if (m_config.onReplaceAll) {
-            m_config.onReplaceAll(text);
-        }
-    } else if (m_config.onReplaceCurrent) {
-        m_config.onReplaceCurrent(text);
-    }
 }
 
 void FindBar::fireQueryChanged() noexcept {
@@ -235,14 +181,6 @@ void FindBar::fireQueryChanged() noexcept {
     m_config.onQueryChanged(readEditText(m_hwndFindEdit.get()), m_caseSensitive, m_wholeWord, m_regex);
 }
 
-void FindBar::cycleFocus(HWND hwnd) noexcept {
-    if (!m_replaceVisible || !m_hwndFindEdit || !m_hwndReplaceEdit) {
-        return;
-    }
-    const bool onReplaceEdit = (hwnd == m_hwndReplaceEdit.get());
-    ::SetFocus(onReplaceEdit ? m_hwndFindEdit.get() : m_hwndReplaceEdit.get());
-}
-
 bool FindBar::handleSubclassKeyDown(HWND hwnd, UINT vkCode) noexcept {
     // While an IME composition is active, Enter/Escape belong to the IME
     // (confirm/cancel the current conversion) - intercepting them as Find
@@ -252,15 +190,9 @@ bool FindBar::handleSubclassKeyDown(HWND hwnd, UINT vkCode) noexcept {
     }
     const bool shiftDown = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
     const bool ctrlDown  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool onReplaceEdit = m_hwndReplaceEdit && (hwnd == m_hwndReplaceEdit.get());
 
     switch (vkCode) {
         case VK_RETURN:
-            if (onReplaceEdit) {
-                handleReplaceReturn(hwnd, ctrlDown);
-                return true;
-            }
-            [[fallthrough]];
         case VK_F3:
             if (shiftDown) {
                 if (m_config.onFindPrevious) {
@@ -275,29 +207,31 @@ bool FindBar::handleSubclassKeyDown(HWND hwnd, UINT vkCode) noexcept {
                 m_config.onClosed();
             }
             return true;
-        case VK_TAB:
-            cycleFocus(hwnd);
-            return m_replaceVisible;  // consumed only if there was somewhere to cycle to
         case 'F':
-            if (ctrlDown && !onReplaceEdit) {
+            if (ctrlDown) {
                 show();  // re-select-all when Ctrl+F is pressed while already focused
                 return true;
             }
             return false;
+        // WI-18b: FindBar has no replace UI of its own anymore - see
+        // FindBarConfig::onReplaceRequested's own comment for why this
+        // still intercepts Ctrl+H rather than letting it fall through.
         case 'H':
             if (ctrlDown) {
-                showWithReplace();
+                if (m_config.onReplaceRequested) {
+                    m_config.onReplaceRequested();
+                }
                 return true;
             }
             return false;
         case VK_UP:
-            if (ctrlDown && !onReplaceEdit && m_config.onHistoryOlder) {
+            if (ctrlDown && m_config.onHistoryOlder) {
                 m_config.onHistoryOlder(readEditText(hwnd));
                 return true;
             }
             return false;
         case VK_DOWN:
-            if (ctrlDown && !onReplaceEdit && m_config.onHistoryNewer) {
+            if (ctrlDown && m_config.onHistoryNewer) {
                 m_config.onHistoryNewer(readEditText(hwnd));
                 return true;
             }

@@ -2257,6 +2257,41 @@ Debug/Release/ubsan全1526/1526件green(3構成とも自身で直接ビルド・
 
 ---
 
+## WI-18 — 基本UI品質の是正 (ファイルを閉じる操作・右クリックメニューの位置認識・検索/置換ダイアログ化)
+
+**目的:** 🎉M5(v1出荷判定)達成後の次フェーズ全5件issue対応完了後、ユーザーから「NeoMIFESの実用品質が秀丸エディタ/MIFESに到底及ばない」との直接フィードバックを受け着手した。具体的に3件のバグが報告された: ①ファイルを閉じるボタンがメニューに無く、タブ右クリックでも閉じられない、②テキスト領域以外を右クリックしてもコピー/貼り付けメニューが出る(位置を判別していない)、③検索が埋め込みバーで秀丸/MIFES流のダイアログになっていない。ユーザーは「秀丸/MIFESを使い続けた方が早いなら意見を尊重する」とも述べた。
+
+着手前に実コードを調査し、3件とも実際のバグ/欠落として確認した上で「エンジン層は十分な深さがあり秀丸への乗り換えを勧める段階ではない」という判断をユーザーへ提示、実装の承認を得た(EnterPlanMode/ExitPlanModeで正式なPlan承認を経由)。調査中に要件定義書§6との照合監査も行い、複数ウィンドウの構造的欠如(`docs/issues/no_multiple_window_support.md`)と表示メニュー/折り返し機能の手薄さ(`docs/issues/view_menu_and_word_wrap_incomplete.md`)を追加発見、いずれも本WIのスコープ外として起票した。
+
+### 設計・実装
+
+**①ファイルを閉じる操作の追加:**
+- `kFileMenuItems`(`menu_bar.h`)に「閉じる(&C)\tCtrl+W」「終了(&X)」を追加(4項目→6項目)。新規`CommandId::Exit`は`::PostMessageW(hwnd, WM_CLOSE, 0, 0)`のみ — 既存の`MainWindow::handleClose()`(全タブの未保存確認込み)がAlt+F4と同じ経路でそのまま処理する。
+- `ui::TabBar`に`hwnd()`アクセサを追加。タブ右クリックメニュー(閉じる/他のタブを閉じる/すべて閉じる)を新設 — 新規`CommandId::TabCloseOthers`/`TabCloseAll`、`dispatchTabCloseOthersCommand()`/`dispatchTabCloseAllCommand()`(既存`dispatchTabCloseCommand()`を再利用する設計、`Workspace`自体への変更は不要と判明)、`showTabContextMenu()`。
+
+**②右クリックメニューの位置認識:**
+- `MainWindow::handleContextMenu()`がWM_CONTEXTMENUの`wParam`(右クリックされた実際のHWND、従来は完全に無視されていた)を`onContextMenu`コールバックへ渡すようシグネチャ変更。新規`handleContextMenuEvent()`が`source`を判定: タブバー(`TabCtrl_HitTest`でタブ特定→①のメニュー)/メインウィンドウ自身かつテキスト領域内(`RenderPipeline::hitTest()`/`hitTestMinimap()`/`gutterWidthDips()`で判定、`gutterWidthDips()`をprivateからpublicへ変更)/それ以外(ステータスバー等、何も表示しない)の3分岐。
+- **根本原因は「タブバー/ステータスバー上の未処理WM_CONTEXTMENUがWin32の既定動作でメインウィンドウへバブルし、区別する手段が無かった」ことだった。**
+
+**③検索/置換ダイアログの新規実装:**
+- 新規`ui::FindReplaceDialog`(`find_replace_dialog.h`/`.cpp`) — このコードベース初の`MainWindow`以外の独立トップレベルウィンドウ(`WS_POPUP | WS_CAPTION | WS_SYSMENU`、`WS_EX_TOOLWINDOW`、所有者は`CreateWindowExW`の`hWndParent`でメインウィンドウ)。検索欄・置換後欄・3チェックボックス(大文字小文字/単語単位/正規表現)・4ボタン(次を検索/前を検索/置換/すべて置換)。
+- `FindBar`から置換モード一式(`showWithReplace()`/`onReplaceCurrent`/`onReplaceAll`/`m_hwndReplaceEdit`/`m_replaceVisible`/`handleReplaceReturn()`/`cycleFocus()`)を削除し、Ctrl+F専用(インクリメンタル検索バーのみ)に単純化。Ctrl+H(`CommandId::FindReplace`)は新規ダイアログを開くよう全4箇所の呼び出し元(`dispatchWidgetShowCommand`/`handleFindBarKey`/`buildCommandRegistry`のパレットエントリ×1/`FindBarConfig::onReplaceRequested`経由のCtrl+Hショートカット)を差し替えた。
+- `jumpToMatch()`/`refreshMatches()`/`runFindQuery()`/`navigateToMatch()`/`replaceCurrentMatch()`/`replaceAllMatches()`を`FindBar&`固定引数から`template <typename MatchCountSink>`へ変更 — これら6関数は`sink.setMatchCount(std::size_t, std::size_t)`しか呼んでおらず、`FindBar`/`FindReplaceDialog`の両方が同一シグネチャの`setMatchCount()`を持つため、共通基底クラス無しのコンパイル時ダックタイピングで検索/置換ロジックを完全に再利用できた。
+
+### 実機ドッグフーディングで発見・修正したバグ
+
+- **Find/Replaceダイアログの初期幅計算が誤っていた。** ラベル+検索欄の行幅のみを基準にダイアログ幅を計算していたため、4ボタン行(3ギャップ+左右余白=5マージン分必要)がダイアログ幅を超え「すべて置換」ボタンが右端で欠けていた。ボタン行の実際の必要幅(`kButtonRowWidthDips`)とラベル+検索欄行の幅の大きい方を採用するよう修正、実機スクリーンショットで4ボタン全て正しく収まることを確認。
+
+実機ドッグフーディング(スクリーンショット)で以下を確認: Fileメニューに「閉じる(C)」「終了(X)」が正しく表示、タブ右クリックで3項目メニューが表示・機能する(3タブ作成→「他のタブを閉じる」→1タブに正しく収束、再度3タブ作成→「すべて閉じる」→1タブの空文書に正しく収束)、テキスト領域右クリックで編集メニューが表示、ガター/タブバー/ステータスバー右クリックでは何も表示されない(修正前は全て編集メニューが誤表示されていた)、Find/Replaceダイアログが独立ウィンドウとして開き検索(1/3ヒット等の件数表示)・次を検索・すべて置換(実際に文書内容が書き換わることを確認)・Escapeでの非表示化が全て機能、Ctrl+F(FindBar)が置換モード削除後も回帰なく機能。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規警告0(対象: `find_replace_dialog.cpp`/`find_bar.cpp`/`main_window.cpp`/`tab_bar.cpp`/`normal_mode_wiring.cpp`/`menu_bar.cpp`/`main.cpp`)。Release初回実行で`FileLoaderTest`3件+`GitRepositoryTest`11件が一時的に失敗したが、単独再実行(`ctest --rerun-failed`)で全件pass — 既知の並行I/O下でのテスト環境フレーキネス(このプロジェクトで複数回観測済みの既存パターン、本WIの変更とは無関係)と確認、実際の回帰ではない。
+
+コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

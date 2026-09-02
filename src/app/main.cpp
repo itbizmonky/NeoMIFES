@@ -89,6 +89,7 @@
 #include "neomifes/ui/command_palette.h"
 #include "neomifes/ui/csv_grid_pane.h"
 #include "neomifes/ui/find_bar.h"
+#include "neomifes/ui/find_replace_dialog.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/json_tree_pane.h"
@@ -140,6 +141,7 @@ using neomifes::render::RenderPipeline;
 using neomifes::ui::CommandPalette;
 using neomifes::ui::CsvGridPane;
 using neomifes::ui::FindBar;
+using neomifes::ui::FindReplaceDialog;
 using neomifes::ui::GitPane;
 using neomifes::ui::GotoLineBar;
 using neomifes::ui::JsonPathBar;
@@ -538,6 +540,12 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // core::ReplaceAllCommand staying decoupled from neomifes::search in
     // Phase 5b2 (see docs/history/TIMELINE.md's Phase 5b3a entry).
     FindBar findBar;
+    // WI-18b: standalone floating Find/Replace window - the user asked for
+    // a real Win32 dialog (秀丸/MIFES-style) instead of FindBar's own
+    // embedded-bar replace mode (findBar itself keeps its Ctrl+F
+    // incremental-search-only role; see find_replace_dialog.h's class
+    // comment for the full rationale).
+    FindReplaceDialog findReplaceDialog;
     // Command palette state (Phase 5b3c) - a second, independent overlay
     // reusing the WC_EDIT+SetWindowSubclass pattern findBar established
     // (see command_palette.h's class comment for how it differs: a second
@@ -784,7 +792,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
         // wireNormalMode() now resolves the active session fresh wherever a
         // stored/later-invoked callback needs it, so a future tab switch is
         // reflected everywhere without this call site changing again.
-        wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, commandPalette,
+        wireNormalMode(cfg, window, renderPipeline, workspace, hInstance, findBar, findReplaceDialog, commandPalette,
                        gotoLineBar, jsonPathBar, grepBar, grepState, searchHistory, outlinePane, tabBar, statusBar,
                        settings, settingsPath, keyBindings, keyBindingsPath, accelTable,
                        freeCursorModeEnabled, isDraggingMinimap, imeComposing, recentFiles, menuHandles,

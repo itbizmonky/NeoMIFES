@@ -205,7 +205,21 @@ struct MainWindowConfig {
     // except unconditional even when unconfigured (no default Win32 popup
     // exists for a Direct2D-painted client area with no WC_EDIT focus to
     // fall back to).
-    std::function<void(HWND, std::int32_t xScreen, std::int32_t yScreen)> onContextMenu;
+    //
+    // WI-18a: the first HWND parameter is WM_CONTEXTMENU's own wParam - the
+    // window the user actually right-clicked, which is this window itself
+    // for a click on its own client area, but a DIFFERENT hwnd (e.g.
+    // TabBar's/StatusBar's) when an unhandled WM_CONTEXTMENU on a child
+    // control bubbles up here by Win32's own default behavior. Previously
+    // this callback only received the main window's own hwnd (the second
+    // parameter, still passed for convenience/consistency with the other
+    // hooks here) and had no way to tell a genuine main-window right-click
+    // apart from a bubbled one - every right-click anywhere in the window
+    // produced the identical popup menu regardless of where it actually
+    // landed. Callers should compare the first parameter against whichever
+    // child HWNDs they care about distinguishing (see
+    // normal_mode_wiring.cpp's cfg.onContextMenu).
+    std::function<void(HWND source, HWND hwnd, std::int32_t xScreen, std::int32_t yScreen)> onContextMenu;
     // Optional: invoked from WM_TIMER (WI-11 - this codebase's first Win32
     // timer of any kind) with the raw timer id (WM_TIMER's wParam - a
     // trivial decode, same "hand the app layer typed values" convention
@@ -364,10 +378,11 @@ private:
     LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
     [[nodiscard]] bool handleClose() noexcept;
     void handleDropFiles(WPARAM wParam) noexcept;
-    // Decodes WM_CONTEXTMENU's lParam (screen coordinates, or (-1,-1) for a
-    // keyboard-triggered invocation - see MainWindowConfig::onContextMenu's
-    // doc comment for the GetCursorPos() fallback in that case).
-    void handleContextMenu(LPARAM lParam) noexcept;
+    // Decodes WM_CONTEXTMENU's wParam (the originating HWND, WI-18a) and
+    // lParam (screen coordinates, or (-1,-1) for a keyboard-triggered
+    // invocation - see MainWindowConfig::onContextMenu's doc comment for the
+    // GetCursorPos() fallback in that case).
+    void handleContextMenu(WPARAM wParam, LPARAM lParam) noexcept;
     // Decodes WM_TIMER's wParam (the timer id) - WI-11.
     void handleTimer(WPARAM wParam) noexcept;
     // WM_KILLFOCUS carries no payload to decode - WI-11.
@@ -404,7 +419,7 @@ private:
     std::function<LRESULT(HWND, WPARAM, LPARAM)>                      m_onNotify;
     std::function<bool(HWND)>                                         m_onClose;
     std::function<void(HWND, std::vector<std::wstring>)>              m_onDropFiles;
-    std::function<void(HWND, std::int32_t, std::int32_t)>             m_onContextMenu;
+    std::function<void(HWND, HWND, std::int32_t, std::int32_t)>       m_onContextMenu;
     std::function<void(HWND, UINT_PTR)>                               m_onTimer;
     std::function<void(HWND)>                                         m_onFocusLost;
     std::function<void(HWND)>                                         m_onImeStartComposition;

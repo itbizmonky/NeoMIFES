@@ -3743,4 +3743,42 @@ Debug/Release/ubsan全1554/1554件green、clang-tidy新規警告0(新規発生�
 
 次は、次に着手する作業をユーザーに確認する。§12.3フル版の残り項目・Git統合の追加機能(Blame/Commit/Branch切替、意図的に凍結中)・CSV式列(v2.0機能として見送り済み)など、いずれも一度は見送り/凍結が確定している既存の候補群のみが残っている。
 
+## Session 117 (2026-09-02): WI-18(ユーザー報告の基本UI品質バグ3件を修正)完了、要件監査でissue2件を新規発見
+
+**M5後発見issue全5件対応完了後、「次に進め」でユーザーへ次候補を確認したところ、代わりにユーザーから直接3件のUI品質バグ報告が来た。** 「ファイルを閉じるボタんがメニューに無く、タブを右クリックしてもない」「テキスト領域以外を右クリックしてもコピーや貼り付けなどのテキスト領域用の右クリックメニューが表示される」「検索ウィンドウはダイアログで表示されるようにして欲しい」の3件、加えて「今一度本アプリの要件を再確認せよ」「今後の改修計画を策定せよ」「本アプリの改修よりも既存の秀丸やMIFESを使ったほうが早いというならあなたの意見を尊重する」という率直な問いかけだった。
+
+**推測で反論せず、3件全てを実コードで確認した。** File menu(`kFileMenuItems`)が開く/保存/名前を付けて保存/新規の4項目のみで「閉じる」が無いこと、`TabBar`に右クリックハンドラが一切存在しないこと(`tab_bar.h`自身の既存コメントに「v1 scope cut (WI-05): no per-tab close button」と明記済みだった)、`key_bindings_presets.cpp`が秀丸互換/サクラ互換プリセットで`tab.close`を意図的に未割当のままにしていること(つまりCtrl+Wというキーバインドすら一部プリセットには存在しない)、`MainWindow::handleContextMenu()`がWM_CONTEXTMENUの`wParam`(右クリックされた実際のHWND)を一切見ておらず`lParam`(座標)だけで無条件に編集メニューを出していること、`FindBar`が最初からVSCode流の埋め込みバー(インクリメンタル検索)として設計されていたこと(要件定義書§6が「通常検索」と「インクリメンタル検索」を別項目として挙げていた)を、それぞれgrep・ソース読解で確認した。
+
+**続けて要件定義書§6の必須機能リストと実装状況を照合する監査を行い、2件を追加発見した。** `main.cpp`の`claimSingleInstance()`により「複数ウィンドウ」が構造的に不可能であること(要件定義書§6に明記されているにも関わらず未実装、これまで一度も指摘されていなかった)、`表示`メニューがアウトライン/構造ツリー/CSVグリッドの3項目のみで行番号/折り返し/テーマ切替が無いこと、そして折り返し(word wrap)機能自体が`RenderPipeline`に`DWRITE_WORD_WRAPPING_NO_WRAP`としてハードコードされ一切実装されていないことを発見した。
+
+**「秀丸への乗り換えを勧める段階ではない」という判断を、率直な根拠とともにユーザーへ提示した。** エンジン層(文書エンジン・描画・検索・シンタックス・Git統合・アクセシビリティ)は十分な深さがあり10GBファイル対応など秀丸を上回る指標もある一方、報告された3件は全て実際のバグ/欠落だったこと、追加で複数ウィンドウ・表示メニュー/折り返しの2件も発見したことを正直に報告した。複数ウィンドウと表示メニュー/折り返しは規模が大きく別Work Itemとすべきとの認識でユーザーと合意し、[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)・[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)として起票、今回の3件のみをWI-18としてEnterPlanMode/ExitPlanModeで正式なPlan承認を得て着手した。
+
+**検索UIのダイアログ化方式について、AskUserQuestionで設計上のトレードオフを提示した。** 現在のFindBar/GrepBar/GotoLineBar/CommandPaletteは全て同じ「埋め込みバー」方式で統一されており、検索だけ本物のWin32ダイアログにするとこの一貫性が崩れる点を説明し、「本物のWin32ダイアログ化(推奨、秀丸/MIFESユーザーの期待に最も忠実)」「FindBarを拡張して代替(UI一貫性は保たれるが要望を完全には満たさない)」「今回は見送り」の3択を提示、**「本物のWin32ダイアログ化(推奨)」が選ばれた。**
+
+### 実装
+
+**①ファイルを閉じる操作の追加:** `kFileMenuItems`に「閉じる(&C)\tCtrl+W」「終了(&X)」を追加(4項目→6項目、既存の`最近使ったファイル`サブメニューは6番目の後、7番目として引き続き追加される)。新規`CommandId::Exit`のdispatchは`::PostMessageW(hwnd, WM_CLOSE, 0, 0)`のみで済んだ — 既存の`MainWindow::handleClose()`(`cfg.onClose`、全タブの未保存確認を既に実装済み)がAlt+F4/タイトルバー閉じるボタンと全く同じ経路でそのまま処理するため、新規ロジックは不要だった。`ui::TabBar`に`hwnd()`アクセサ(`MainWindow::hwnd()`と同型)を追加し、タブ右クリックメニュー(閉じる/他のタブを閉じる/すべて閉じる)を新設した。新規`CommandId::TabCloseOthers`/`TabCloseAll`のdispatch実装(`dispatchTabCloseOthersCommand()`/`dispatchTabCloseAllCommand()`)は、既存`Workspace::closeSession()`をインデックス降順(erase後のインデックスシフトが未処理分に影響しない順序)で反復し、`confirmDiscardIfDirty()`で1件ずつ確認する設計にした。「すべて閉じる」は「他のタブを閉じる」+既存`dispatchTabCloseCommand()`(最後の1件は閉じずに空文書へリセットする既存ロジックをそのまま再利用)の組み合わせで実装でき、`Workspace`自体への新規メソッド追加は不要だった(当初の計画では`Workspace::closeOthers()`/`closeAll()`を新設する想定だったが、実装中により既存コードを再利用できる設計に気づき、計画から意図的に逸脱した)。
+
+**②右クリックメニューの位置認識:** `MainWindow::handleContextMenu(LPARAM)`を`handleContextMenu(WPARAM, LPARAM)`へシグネチャ変更し、`onContextMenu`コールバックの型を`std::function<void(HWND, std::int32_t, std::int32_t)>`から`std::function<void(HWND source, HWND hwnd, std::int32_t, std::int32_t)>`へ拡張、WM_CONTEXTMENUの`wParam`(右クリックされた実際のHWND)を初めてコールバックへ渡すようにした。新規`handleContextMenuEvent()`(`normal_mode_wiring.cpp`)が`source`を3分岐で判定する: `source == tabBar.hwnd()`ならタブ右クリック(`TabCtrl_HitTest`でタブ特定→①のメニュー)、`source == hwnd`(メインウィンドウ自身)ならさらにクライアント座標へ変換し`RenderPipeline::gutterWidthDips()`(privateからpublicへ変更、DIPs単位のガター幅アクセサ)・`hitTestMinimap()`・`hitTest()`(いずれも既存、`handleMouseDownEvent()`が左クリックで既に使っていたのと同じ3種の判定を右クリックにも転用)でテキスト領域内かを判定しテキスト領域内のみ②の編集メニューを表示、それ以外(ステータスバー等)は何も表示しない。
+
+**③検索/置換ダイアログ:** 新規`ui::FindReplaceDialog`(`find_replace_dialog.h`/`.cpp`)。このコードベース初のMainWindow以外の独立トップレベルウィンドウとして設計した — `WS_POPUP | WS_CAPTION | WS_SYSMENU`、`WS_EX_TOOLWINDOW`(タスクバーに出ない小さい実用ダイアログの慣習的スタイル)、`CreateWindowExW`の`hWndParent`にメインウィンドウを渡すことで「所有」関係を確立(WS_CHILDではないため真の親子関係ではないが、Z順序が連動しタスクバーに単独表示されない、モードレスダイアログの標準パターン)。独自の`WNDCLASSEXW`登録+`WndProc`(`MainWindow::ensureWindowClass()`/`wndProcTrampoline()`と同型のパターンを踏襲)を持つ。実装中に発見した設計上の注意点: `wndProcTrampoline`は当初privateで宣言したが、`ensureWindowClass()`(フリー関数)から`&FindReplaceDialog::wndProcTrampoline`を代入する必要があり、クラス外からのプライベート静的メンバへのアドレス取得はMSVCでは警告なくコンパイルが通ってしまうが標準違反であり、clang-tidy(clang-diagnostic-error)が正しく検出した — `MainWindow::wndProcTrampoline`が同じ理由でpublicになっている既存の前例に倣い修正した。もう一つ: `m_hwnd`が所有権を持つ`WindowHandle`(生ポインタではない)であるため、`WM_NCCREATE`到達時点ではまだ未設定であり、`MainWindow::wndProc()`のように「`m_hwnd`を読んで`DefWindowProcW`へ渡す」設計は使えない(WM_NCCREATE中に`m_hwnd`へ`reset()`すると、`create()`内の`CreateWindowExW()`戻り値での2度目の`reset()`が同一ハンドルを誤って`DestroyWindow()`してしまう)。`wndProc()`に`hwnd`を明示的な引数として渡す設計に変更して回避した。
+
+子コントロール: 検索欄・置換後欄(WC_EDIT×2)・大文字小文字を区別/単語単位/正規表現(WC_BUTTON+BS_AUTOCHECKBOX×3、FindBarは同じ3トグルをAlt+C/W/Rのキーボードのみで実装しておりチェックボックスの可視UIは今回が初めて)・次を検索/前を検索/置換/すべて置換(WC_BUTTON+BS_PUSHBUTTON×4)・件数ラベル(WC_STATIC)。`FindBar`と同じ`SetWindowSubclass`パターンで検索欄・置換後欄をサブクラス化しEnter/Escapeを処理。
+
+`FindBar`から置換モード一式(`showWithReplace()`/`FindBarConfig::onReplaceCurrent`/`onReplaceAll`/`m_hwndReplaceEdit`/`m_replaceVisible`/`handleReplaceReturn()`/`cycleFocus()`)を完全に削除し、Ctrl+F専用(インクリメンタル検索バーのみ)に単純化した。Ctrl+H(`CommandId::FindReplace`)は新規ダイアログを開くよう、呼び出し元4箇所(`dispatchWidgetShowCommand()`のswitch文/`handleFindBarKey()`のキーボードチェーン/`buildCommandRegistry()`のパレットエントリ「find.replace」/新規`FindBarConfig::onReplaceRequested`経由— find編集欄にフォーカスがある状態でのCtrl+Hは`MainWindow::onKeyDown`フックに届かない(WM_KEYDOWNはフォーカスを持つ子コントロールへ直接届き親へは自動転送されないため)ため、FindBar自身がこのコールバックを新設して対応)を全て差し替えた。
+
+`jumpToMatch()`/`refreshMatches()`/`runFindQuery()`/`navigateToMatch()`/`replaceCurrentMatch()`/`replaceAllMatches()`(いずれも`normal_mode_wiring.cpp`)を、固定の`FindBar& findBar`引数から`template <typename MatchCountSink> ... MatchCountSink& sink`へ変更した。着手前にこれら6関数の`FindBar&`の使われ方を精査したところ、`sink.setMatchCount(std::size_t, std::size_t)`の呼び出し以外に一切使っていないことが判明し、`FindBar`と`FindReplaceDialog`の両方が同一シグネチャの`setMatchCount()`を実装していたため、共通基底クラスを新設せずコンパイル時ダックタイピングだけで検索/置換ロジック全体(SearchService::findAll呼び出し・マッチジャンプ・Undo一体化した置換等)を完全に再利用できた。新規`buildFindReplaceDialogConfig()`(`buildFindBarConfig()`と対になる構造)が`FindReplaceDialogConfig`を組み立てる。
+
+### 実機ドッグフーディングで発見・修正したバグ
+
+**Find/Replaceダイアログの初期幅計算が誤っていた。** 実装直後の実機スクリーンショットで、4ボタン行の最後のボタン「すべて置換」が「す...」と欠けて表示されているのを発見した。原因調査の結果、`kDialogWidthDips`をラベル+検索欄の行幅のみを基準に計算していたため、ボタン行(5マージン分の余白: 左端+3ギャップ+右端 + 4ボタン幅)の実際の必要幅(434 DIPs)が算出済みの幅(380 DIPs)を超えていたと判明した。`kButtonRowWidthDips`(ボタン行が実際に必要とする幅)を新たに計算し、ラベル+検索欄行の幅との大きい方を`kDialogWidthDips`として採用するよう修正、実機スクリーンショットで4ボタン全てが正しく収まることを確認した。
+
+### 実機ドッグフーディング(全て確認済み)
+
+WM_COMMAND経由のCommandId直接送信+スクリーンショット(`GetWindowRect`+`CopyFromScreen`、フォーカス操作を伴わない撮影手法 — 事前の`SetForegroundWindow`呼び出しが開いていたメニュー/ダイアログを閉じてしまう問題を発見し回避)で以下を確認した: Fileメニューに「閉じる(C)\tCtrl+W」「終了(X)」が正しい位置・ラベルで表示される。タブを右クリックすると「閉じる(C)/他のタブを閉じる(O)/すべて閉じる(A)」の3項目メニューが表示され、実際に3タブ作成→アクティブでないタブを右クリック相当のWM_COMMAND(TabCloseOthers)送信→1タブに正しく収束、再度3タブ作成→TabCloseAll送信→1タブの空文書(Untitled 1)に正しく収束することを確認した。テキスト領域を右クリックすると元に戻す/やり直し/切り取り/コピー/貼り付けの編集メニューが表示される一方、行番号ガター・タブバー・ステータスバーを右クリックすると何も表示されない(修正前はいずれも誤って編集メニューが表示されていた)ことを確認した。Ctrl+H相当のWM_COMMAND送信でFind/Replaceダイアログが独立ウィンドウとして開き(`GetWindowRect`で実際に別のトップレベルHWNDとして存在することを確認)、"apple banana apple cherry apple"というテキストに対し検索欄へ"apple"を入力すると"1/3"という正しいマッチ数が表示され、「次を検索」ボタンのクリックで"2/3"へ進み、置換後欄へ"grape"を入力し「すべて置換」ボタンをクリックすると実際に文書内容が"grape banana grape cherry grape"へ書き換わることを確認した。Escapeキーでダイアログが非表示になる(`FindWindowsForProcess`で可視ウィンドウ数が2から1へ減ることで確認)ことと、その後Ctrl+F相当のWM_COMMANDでFindBar(置換モード削除後、find編集欄のみ)が引き続き正しく機能する(回帰なし)ことも確認した。
+
+Debug/Release/ubsan全1554/1554件green(Release初回実行で`FileLoaderTest`3件+`GitRepositoryTest`11件が一時的に失敗したが、いずれも単独再実行で全件pass — このプロジェクトで複数回観測済みの既知の並行I/O下でのテスト環境フレーキネスパターンであり、本WIの変更(メニュー/コンテキストメニュー/検索ダイアログ)とは無関係と確認)。clang-tidy新規警告0(対象: `find_replace_dialog.cpp`/`find_bar.cpp`/`main_window.cpp`/`tab_bar.cpp`/`normal_mode_wiring.cpp`/`menu_bar.cpp`/`main.cpp`。実際に検出・修正した指摘: `TCHITTESTINFO`の`flags`フィールド省略、複数箇所の`readability-math-missing-parentheses`、`kWindowClassName[]`のC配列指摘(既存`main_window.h`と同じNOLINT)、`wndProcTrampoline`のprivateアクセス違反、`kInfoLabelId`の未使用変数(実際にコントロールID指定を忘れていた実バグ))。
+
+次は、次に着手する作業をユーザーに確認する。`no_multiple_window_support.md`(P1)/`view_menu_and_word_wrap_incomplete.md`(P2)が新規候補、他は既存の凍結/見送り済み項目のみ残っている。
+
 <!-- 次セッションはここに追記 -->

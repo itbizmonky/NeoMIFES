@@ -56,11 +56,17 @@ struct MenuItemSpec {
 // library tests/unit links) linked into the test binary - same
 // "header-expose the pure data for headless testability" convention
 // command_dispatch.h's kAcceleratorTable already follows.
-inline constexpr std::array<MenuItemSpec, 4> kFileMenuItems = {{
+// WI-18a: 閉じる/終了を追加 - 従来はCtrl+W(tab.close)というキーバインド
+// 経由でしか到達できず、しかも秀丸互換/サクラ互換プリセットではそのCtrl+W
+// 自体が未割当のため、ファイルを閉じる手段がメニューに一切無かった
+// (text_surface_no_screen_reader_exposure.md解決後にユーザーから報告)。
+inline constexpr std::array<MenuItemSpec, 6> kFileMenuItems = {{
     {ui::CommandId::Open, L"開く(&O)\tCtrl+O"},
     {ui::CommandId::Save, L"保存(&S)\tCtrl+S"},
     {ui::CommandId::SaveAs, L"名前を付けて保存(&A)\tCtrl+Shift+S"},
     {ui::CommandId::New, L"新規(&N)\tCtrl+N"},
+    {ui::CommandId::TabClose, L"閉じる(&C)\tCtrl+W"},
+    {ui::CommandId::Exit, L"終了(&X)"},
 }};
 
 inline constexpr std::array<MenuItemSpec, 5> kEditMenuItems = {{

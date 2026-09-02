@@ -191,6 +191,30 @@
 > **次回セッション最初にやること:** 次に着手する作業をユーザーに確認する。§12.3フル版の残り項目・Git統合の追加機能(Blame/Commit/Branch切替、意図的に凍結中)・CSV式列(v2.0機能として見送り済み)など、いずれも一度は見送り/凍結が確定している。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
 >
 > 詳細は[`docs/issues/text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md)、`docs/history/TIMELINE.md` Session 116参照。
+>
+> ---
+
+> # 🎯 最重要 (2026-09-02) — WI-18: ユーザー報告の基本UI品質バグ3件を修正
+>
+> **M5後発見issue全5件対応完了後、「次に進め」でユーザーへ次候補を確認したところ、代わりにユーザーから直接3件のUI品質バグ報告が来た:** ①ファイルを閉じるボタンがメニューに無く、タブ右クリックでも閉じられない、②テキスト領域以外を右クリックしてもコピー/貼り付けメニューが出る(位置を判別していない)、③検索が埋め込みバーで秀丸/MIFES流のダイアログになっていない。**「秀丸/MIFESに到底及ばない」「本アプリの改修より秀丸/MIFESを使った方が早いなら意見を尊重する」との率直な指摘だった。**
+>
+> **実コード調査で3件とも実際のバグ/欠落と確認し(推測で反論しなかった)、「エンジン層は十分な深さがあり秀丸への乗り換えを勧める段階ではない」という判断とともにユーザーへ提示、EnterPlanMode/ExitPlanModeで正式なPlan承認を得て着手した。** 調査中に要件定義書§6との照合監査も実施し、複数ウィンドウの構造的欠如([`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)、P1)と表示メニュー/折り返し機能の手薄さ([`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)、P2)を追加発見、いずれも本WIのスコープ外として起票(ユーザーへ提示済み、別Work Item扱いで合意)。
+>
+> **①ファイルを閉じる操作:** File menuに「閉じる(&C)\tCtrl+W」「終了(&X)」を追加。`ui::TabBar::hwnd()`アクセサを新設し、タブ右クリックメニュー(閉じる/他のタブを閉じる/すべて閉じる)を実装 — 新規`CommandId::TabCloseOthers`/`TabCloseAll`は既存`dispatchTabCloseCommand()`を再利用する設計にでき、`Workspace`自体への変更は不要だった。
+>
+> **②右クリックメニューの位置認識:** 根本原因は「タブバー/ステータスバー上の未処理WM_CONTEXTMENUがWin32既定動作でメインウィンドウへバブルし、区別する手段が無かった」ことだった。`MainWindow::handleContextMenu()`がWM_CONTEXTMENUの`wParam`(従来完全に無視されていた、右クリックされた実際のHWND)を`onContextMenu`コールバックへ渡すようシグネチャ変更し、新規`handleContextMenuEvent()`でsource判定(タブバー/メインウィンドウのテキスト領域内/それ以外)。テキスト領域判定は既存`RenderPipeline::hitTest()`/`hitTestMinimap()`/`gutterWidthDips()`(privateからpublicへ変更)を再利用、新規ロジックはゼロで済んだ。
+>
+> **③検索/置換ダイアログ:** 新規`ui::FindReplaceDialog` — このコードベース初のMainWindow以外の独立トップレベルウィンドウ(`WS_POPUP`、所有者はメインウィンドウ)。**FindBar/GrepBar/GotoLineBar/CommandPaletteが全て埋め込みバー方式で統一されている中、検索だけダイアログ化すると一貫性が崩れる点をAskUserQuestionで提示し、「本物のWin32ダイアログ化(推奨)」が選ばれた。** FindBarから置換モード一式を削除しCtrl+F専用に単純化、Ctrl+H(`CommandId::FindReplace`)は新規ダイアログを開くよう全4箇所の呼び出し元を差し替え。`jumpToMatch()`等6つの検索/置換関数を`FindBar&`固定引数から`template <typename MatchCountSink>`へ変更し(両クラスとも同一シグネチャの`setMatchCount()`を持つコンパイル時ダックタイピング)、共通基底クラス無しで検索/置換ロジックを完全に再利用した。
+>
+> **実機ドッグフーディングで1件のレイアウトバグを発見・修正した。** Find/Replaceダイアログの初期幅計算がラベル+検索欄の行幅のみを基準にしており、4ボタン行(3ギャップ+左右余白)がダイアログ幅を超え「すべて置換」ボタンが右端で欠けていた。ボタン行の実際の必要幅とラベル+検索欄行の幅の大きい方を採用するよう修正、スクリーンショットで4ボタン全て正しく収まることを確認。
+>
+> **実機ドッグフーディングで以下を全て確認:** Fileメニューの「閉じる」「終了」の表示、タブ右クリック3項目メニューの表示・機能(3タブ→他を閉じる→1タブ、3タブ→すべて閉じる→1タブの空文書、いずれも正しく収束)、テキスト領域右クリックで編集メニュー表示・ガター/タブバー/ステータスバー右クリックでは何も表示されない(修正前は全て誤表示)、Find/Replaceダイアログの検索(件数表示)・次を検索・すべて置換(実際に文書内容が書き換わることを確認)・Escapeでの非表示化、Ctrl+F(FindBar)が置換モード削除後も回帰なく機能。
+>
+> Debug/Release/ubsan全1554/1554件green(Release初回実行で`FileLoaderTest`/`GitRepositoryTest`計14件が一時的に失敗したが、単独再実行で全件pass — 既知の並行I/O下でのテスト環境フレーキネス、本WIの変更とは無関係)。clang-tidy新規警告0。
+>
+> **次回セッション最初にやること:** 次に着手する作業をユーザーに確認する — `no_multiple_window_support.md`(P1)/`view_menu_and_word_wrap_incomplete.md`(P2)が新規候補、他は既存の凍結/見送り済み項目のみ。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-18節、`docs/history/TIMELINE.md` Session 117参照。
 
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >

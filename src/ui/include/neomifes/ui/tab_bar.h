@@ -80,6 +80,12 @@ public:
 
     [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const TabBarConfig& config);
 
+    // WI-18a: lets callers recognize a right-click that bubbled up from this
+    // control (see MainWindowConfig::onContextMenu's own comment) - same
+    // "expose the raw HWND for identity comparison" role as MainWindow::
+    // hwnd() itself. nullptr before create() succeeds.
+    [[nodiscard]] HWND hwnd() const noexcept { return m_hwndTab.get(); }
+
     // Full rebuild (delete every existing item, re-insert from `items`) plus
     // marking `activeIndex` as the current selection. Called from the paint
     // handler every frame something was invalidated (see WI-05's completion

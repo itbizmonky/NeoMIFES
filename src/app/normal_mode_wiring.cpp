@@ -134,7 +134,9 @@ using neomifes::ui::CommandPaletteConfig;
 using neomifes::ui::CsvGridPane;
 using neomifes::ui::CsvGridPaneConfig;
 using neomifes::ui::FindBar;
+using neomifes::ui::FindReplaceDialog;
 using neomifes::ui::FindBarConfig;
+using neomifes::ui::FindReplaceDialogConfig;
 using neomifes::ui::GitPane;
 using neomifes::ui::GitPaneConfig;
 using neomifes::ui::GotoLineBar;
@@ -263,13 +265,22 @@ void syncMatchVisuals(const FindReplaceState& state, RenderPipeline& renderPipel
 // navigateToMatch() (F3/Shift+F3) - both end up wanting exactly this. WI-04:
 // takes EditorSession& (touches findReplaceState/selection/viewport/
 // document - 4 members) instead of 4 separate refs.
-void jumpToMatch(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline, FindBar& findBar) {
+// WI-18b: templated on `sink` (not a fixed FindBar&) - the only thing this
+// function (and refreshMatches()/runFindQuery()/navigateToMatch()/
+// replaceCurrentMatch()/replaceAllMatches() below) ever does with it is
+// call setMatchCount(std::size_t, std::size_t), a method both ui::FindBar
+// and ui::FindReplaceDialog implement identically. Templating on that
+// shared shape (compile-time duck typing) lets both buildFindBarConfig()
+// and buildFindReplaceDialogConfig() reuse this exact search/replace logic
+// verbatim, without a shared base class neither widget otherwise needs.
+template <typename MatchCountSink>
+void jumpToMatch(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline, MatchCountSink& sink) {
     const auto& state = session.findReplaceState();
     const Match& match = state.currentMatches[state.currentMatchIndex];
     session.selection().setCursors(
         {Cursor{.position = match.range.end, .anchor = match.range.start, .isPrimary = true}});
     session.viewport().ensureVisible(match.range.start, session.document());
-    findBar.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
+    sink.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
     syncMatchVisuals(state, renderPipeline);
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
@@ -282,13 +293,14 @@ void jumpToMatch(HWND hwnd, EditorSession& session, RenderPipeline& renderPipeli
 // search-and-update-state half without the jump, since it wants to land on
 // "the match nearest the one just replaced", not unconditionally #0).
 // WI-04: takes EditorSession& (document/findReplaceState).
+template <typename MatchCountSink>
 void refreshMatches(const Query& query, EditorSession& session, RenderPipeline& renderPipeline,
-                    FindBar& findBar) {
+                    MatchCountSink& sink) {
     auto& state              = session.findReplaceState();
     state.currentQuery      = query;
     state.currentMatches    = SearchService::findAll(session.document(), query);
     state.currentMatchIndex = 0;
-    findBar.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
+    sink.setMatchCount(state.currentMatchIndex, state.currentMatches.size());
     syncMatchVisuals(state, renderPipeline);
 }
 
@@ -296,18 +308,19 @@ void refreshMatches(const Query& query, EditorSession& session, RenderPipeline& 
 // jumps to the first match, if any (Phase 5b3a). An empty/no-match result
 // clears all highlighting and shows FindBar's "no results" state. WI-04:
 // takes EditorSession& (document/findReplaceState/selection/viewport).
+template <typename MatchCountSink>
 void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord, bool regex, HWND hwnd,
-                  EditorSession& session, RenderPipeline& renderPipeline, FindBar& findBar) {
+                  EditorSession& session, RenderPipeline& renderPipeline, MatchCountSink& sink) {
     refreshMatches(Query{.pattern       = std::u16string(query),
                         .caseSensitive = caseSensitive,
                         .wholeWord     = wholeWord,
                         .regex         = regex},
-                  session, renderPipeline, findBar);
+                  session, renderPipeline, sink);
     if (session.findReplaceState().currentMatches.empty()) {
         ::InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
-    jumpToMatch(hwnd, session, renderPipeline, findBar);
+    jumpToMatch(hwnd, session, renderPipeline, sink);
 }
 
 // F3 (forward=true) / Shift+F3 (forward=false), wrapping around - shared by
@@ -317,8 +330,9 @@ void runFindQuery(std::u16string_view query, bool caseSensitive, bool wholeWord,
 // helper, two call sites" pattern as neomifes::app::dispatchMouseDown().
 // WI-04: takes EditorSession& (findReplaceState/selection/viewport/
 // document).
+template <typename MatchCountSink>
 void navigateToMatch(bool forward, HWND hwnd, EditorSession& session, RenderPipeline& renderPipeline,
-                     FindBar& findBar) {
+                     MatchCountSink& sink) {
     auto& state = session.findReplaceState();
     if (state.currentMatches.empty()) {
         return;
@@ -326,7 +340,7 @@ void navigateToMatch(bool forward, HWND hwnd, EditorSession& session, RenderPipe
     state.currentMatchIndex = forward
         ? neomifes::ui::nextMatchIndex(state.currentMatchIndex, state.currentMatches.size())
         : neomifes::ui::previousMatchIndex(state.currentMatchIndex, state.currentMatches.size());
-    jumpToMatch(hwnd, session, renderPipeline, findBar);
+    jumpToMatch(hwnd, session, renderPipeline, sink);
 }
 
 // Escape while the find edit has focus (FindBarConfig::onClosed) - hides
@@ -361,14 +375,17 @@ void closeFindBar(HWND hwnd, FindBar& findBar, EditorSession& session, RenderPip
 // embedded presets (key_bindings_presets.cpp) bind any manual-chain command
 // to an Alt-modified chord.
 bool handleFindBarKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, FindBar& findBar,
-                      EditorSession& session, RenderPipeline& renderPipeline,
+                      FindReplaceDialog& findReplaceDialog, EditorSession& session, RenderPipeline& renderPipeline,
                       const core::KeyBindings& keyBindings) {
     if (chordMatches(keyBindings, CommandId::FindShow, ctrlDown, shiftDown, false, vkCode)) {
         findBar.show();
         return true;
     }
+    // WI-18b: previously findBar.showWithReplace() - now opens the
+    // standalone dialog, see dispatchWidgetShowCommand()'s identical
+    // CommandId::FindReplace case for the full rationale.
     if (chordMatches(keyBindings, CommandId::FindReplace, ctrlDown, shiftDown, false, vkCode)) {
-        findBar.showWithReplace();
+        findReplaceDialog.show(hwnd);
         return true;
     }
     const bool isNext = chordMatches(keyBindings, CommandId::FindNext, ctrlDown, shiftDown, false, vkCode);
@@ -1113,16 +1130,18 @@ bool handleTagJumpKey(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Edi
     return true;
 }
 
-// Enter while the replace edit has focus (FindBarConfig::onReplaceCurrent,
-// Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
+// Enter/Replace button while the replace edit has focus
+// (FindReplaceDialogConfig::onReplaceCurrent, WI-18b - formerly FindBarConfig::
+// onReplaceCurrent, Phase 5b3b) - replaces state.currentMatches[state.currentMatchIndex] with
 // `replacementTemplate` expanded against the match's capture groups, then
 // re-runs state.currentQuery and jumps to whichever match now occupies the
 // same index (clamped, since a replace can only ever remove exactly one
 // match, so the count shrinks by at most 1 - see the plan's Context section
 // for the out-of-bounds trace). WI-04: takes EditorSession& (document/
 // dispatcher/findReplaceState/selection/viewport - 5 members).
+template <typename MatchCountSink>
 void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, EditorSession& session,
-                         RenderPipeline& renderPipeline, FindBar& findBar) {
+                         RenderPipeline& renderPipeline, MatchCountSink& sink) {
     auto& state = session.findReplaceState();
     if (state.currentMatches.empty()) {
         return;
@@ -1132,17 +1151,18 @@ void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, Edi
     const std::u16string expanded = expandReplacementTemplate(replacementTemplate, session.document(), match);
     session.dispatcher().dispatch(std::make_unique<ReplaceRangeCommand>(match.range, expanded));
 
-    refreshMatches(state.currentQuery, session, renderPipeline, findBar);
+    refreshMatches(state.currentQuery, session, renderPipeline, sink);
     if (state.currentMatches.empty()) {
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
         return;
     }
     state.currentMatchIndex = std::min(replacedIndex, state.currentMatches.size() - 1);
-    jumpToMatch(hwnd, session, renderPipeline, findBar);
+    jumpToMatch(hwnd, session, renderPipeline, sink);
 }
 
-// Ctrl+Enter while the replace edit has focus (FindBarConfig::onReplaceAll,
-// Phase 5b3b) - replaces every current match atomically as one undo step.
+// Ctrl+Enter/Replace All button while the replace edit has focus
+// (FindReplaceDialogConfig::onReplaceAll, WI-18b - formerly FindBarConfig::
+// onReplaceAll, Phase 5b3b) - replaces every current match atomically as one undo step.
 // state.currentMatches is already in ascending document order
 // (SearchService::findAll()'s guarantee - search_service.h), matching
 // applyEditsWithCumulativeShift()'s ordering requirement
@@ -1156,8 +1176,9 @@ void replaceCurrentMatch(std::u16string_view replacementTemplate, HWND hwnd, Edi
 // query would be confusing (looks like the replace silently didn't work)
 // rather than informative. WI-04: takes EditorSession& (document/dispatcher/
 // selection/findReplaceState - 4 members).
+template <typename MatchCountSink>
 void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, EditorSession& session,
-                       RenderPipeline& renderPipeline, FindBar& findBar) {
+                       RenderPipeline& renderPipeline, MatchCountSink& sink) {
     auto& state = session.findReplaceState();
     if (state.currentMatches.empty()) {
         return;
@@ -1176,7 +1197,7 @@ void replaceAllMatches(std::u16string_view replacementTemplate, HWND hwnd, Edito
 
     state.currentMatches.clear();
     state.currentMatchIndex = 0;
-    findBar.setMatchCount(0, 0);
+    sink.setMatchCount(0, 0);
     renderPipeline.setMatchVisuals({});
     ::InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -1755,7 +1776,8 @@ void toggleDiffView(HWND hwnd, RenderPipeline& renderPipeline, Workspace& worksp
 // EditorSession member-placement notes for why FindBar/CommandPalette/
 // GotoLineBar/GrepBar/OutlinePane/freeCursorModeEnabled stay separate).
 void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, Workspace& workspace,
-                        RenderPipeline& renderPipeline, FindBar& findBar, CommandPalette& commandPalette,
+                        RenderPipeline& renderPipeline, FindBar& findBar, FindReplaceDialog& findReplaceDialog,
+                        CommandPalette& commandPalette,
                         GotoLineBar& gotoLineBar, GrepBar& grepBar, OutlinePane& outlinePane,
                         JsonTreePane& jsonTreePane, GitPane& gitPane,
                         std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
@@ -1844,7 +1866,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     // command_dispatch.h's top comment for why Find/Grep/CommandPalette/
     // Outline/GotoLine/Bookmark/TagJump (checked above) were NOT moved the
     // same way.
-    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, session, renderPipeline, keyBindings)) {
+    if (handleFindBarKey(hwnd, vkCode, shiftDown, ctrlDown, findBar, findReplaceDialog, session, renderPipeline,
+                         keyBindings)) {
         return;
     }
     // Copy/Cut/Paste/Undo/Redo (WI-07 step2): also NOT accelerator-routed
@@ -2016,7 +2039,8 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession
 // capturing a single session fixed when this function ran (see
 // wireNormalMode()'s header comment for why).
 FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
-                                 FindBar& findBar, SearchHistory& searchHistory) {
+                                 FindBar& findBar, SearchHistory& searchHistory,
+                                 FindReplaceDialog& findReplaceDialog) {
     FindBarConfig config{};
     config.onQueryChanged = [hwnd, &workspace, &renderPipeline, &findBar](std::u16string_view query,
                                                                           bool caseSensitive, bool wholeWord,
@@ -2055,12 +2079,56 @@ FindBarConfig buildFindBarConfig(HWND hwnd, Workspace& workspace, RenderPipeline
     config.onClosed = [hwnd, &findBar, &workspace, &renderPipeline]() {
         closeFindBar(hwnd, findBar, workspace.active(), renderPipeline);
     };
-    config.onReplaceCurrent = [hwnd, &workspace, &renderPipeline,
-                               &findBar](std::u16string_view replacementText) {
-        replaceCurrentMatch(replacementText, hwnd, workspace.active(), renderPipeline, findBar);
+    // WI-18b: FindBar no longer has its own replace UI - Ctrl+H while the
+    // find edit has focus opens the standalone dialog instead (see
+    // FindBarConfig::onReplaceRequested's own comment for why FindBar
+    // itself needs this callback rather than just relying on MainWindow's
+    // global Ctrl+H handling).
+    config.onReplaceRequested = [hwnd, &findReplaceDialog]() { findReplaceDialog.show(hwnd); };
+    return config;
+}
+
+// WI-18b: FindReplaceDialog's counterpart to buildFindBarConfig() above -
+// same runFindQuery()/navigateToMatch()/replaceCurrentMatch()/
+// replaceAllMatches() bodies (now templated on the match-count sink, see
+// jumpToMatch()'s own comment), just handed `findReplaceDialog` instead of
+// `findBar`. Deliberately does NOT wire onHistoryOlder/onHistoryNewer
+// (Ctrl+Up/Down search-history recall) - FindReplaceDialog's
+// handleEditKeyDown() has no history keys to fire them from yet; Ctrl+F's
+// FindBar keeps full history support, this is a small, consciously accepted
+// gap for the dialog rather than a silently dropped feature.
+FindReplaceDialogConfig buildFindReplaceDialogConfig(HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
+                                                      FindReplaceDialog& findReplaceDialog) {
+    FindReplaceDialogConfig config{};
+    config.onQueryChanged = [hwnd, &workspace, &renderPipeline, &findReplaceDialog](
+                                std::u16string_view query, bool caseSensitive, bool wholeWord, bool regex) {
+        runFindQuery(query, caseSensitive, wholeWord, regex, hwnd, workspace.active(), renderPipeline,
+                    findReplaceDialog);
     };
-    config.onReplaceAll = [hwnd, &workspace, &renderPipeline, &findBar](std::u16string_view replacementText) {
-        replaceAllMatches(replacementText, hwnd, workspace.active(), renderPipeline, findBar);
+    config.onFindNext = [hwnd, &workspace, &renderPipeline, &findReplaceDialog]() {
+        navigateToMatch(true, hwnd, workspace.active(), renderPipeline, findReplaceDialog);
+    };
+    config.onFindPrevious = [hwnd, &workspace, &renderPipeline, &findReplaceDialog]() {
+        navigateToMatch(false, hwnd, workspace.active(), renderPipeline, findReplaceDialog);
+    };
+    // Unlike closeFindBar() (which also calls findBar.hide()):
+    // FindReplaceDialog::requestClose() already hides itself before
+    // invoking this callback (see that method's own comment), so only the
+    // match-highlighting/focus cleanup half is needed here.
+    config.onClosed = [hwnd, &workspace, &renderPipeline]() {
+        EditorSession& session = workspace.active();
+        session.findReplaceState().currentMatches.clear();
+        renderPipeline.setMatchVisuals({});
+        ::SetFocus(hwnd);
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+    };
+    config.onReplaceCurrent = [hwnd, &workspace, &renderPipeline,
+                               &findReplaceDialog](std::u16string_view replacementText) {
+        replaceCurrentMatch(replacementText, hwnd, workspace.active(), renderPipeline, findReplaceDialog);
+    };
+    config.onReplaceAll = [hwnd, &workspace, &renderPipeline,
+                           &findReplaceDialog](std::u16string_view replacementText) {
+        replaceAllMatches(replacementText, hwnd, workspace.active(), renderPipeline, findReplaceDialog);
     };
     return config;
 }
@@ -2376,7 +2444,8 @@ void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND
 }
 
 std::vector<CommandDescriptor> buildCommandRegistry(
-    HWND hwnd, FindBar& findBar, Workspace& workspace, RenderPipeline& renderPipeline, core::Settings& settings,
+    HWND hwnd, FindBar& findBar, FindReplaceDialog& findReplaceDialog, Workspace& workspace,
+    RenderPipeline& renderPipeline, core::Settings& settings,
     const std::optional<std::filesystem::path>& settingsPath, core::KeyBindings& keyBindings,
     const std::optional<std::filesystem::path>& keyBindingsPath, platform::AcceleratorTableHandle& accelTable,
     bool& freeCursorModeEnabled, CommandPalette& commandPalette, core::RecentFiles& recentFiles,
@@ -2400,7 +2469,10 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .id = u"find.replace", .title = u"Find and Replace",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"find.replace"),
         .commandId       = CommandId::FindReplace,
-        .action          = [&findBar]() { findBar.showWithReplace(); }});
+        // WI-18b: previously findBar.showWithReplace() - see
+        // dispatchWidgetShowCommand()'s identical CommandId::FindReplace
+        // case for the full rationale.
+        .action          = [hwnd, &findReplaceDialog]() { findReplaceDialog.show(hwnd); }});
     commands.push_back(CommandDescriptor{
         .id = u"find.next", .title = u"Find Next",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"find.next"),
@@ -2714,7 +2786,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     commands.push_back(CommandDescriptor{
         .id = u"keybindings.reload", .title = u"Reload Keybindings", .keybindingLabel = u"",
         .commandId = CommandId::None,
-        .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
+        .action = [hwnd, &findBar, &findReplaceDialog, &workspace, &renderPipeline, &settings, settingsPath,
+                   &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
@@ -2726,7 +2799,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             keyBindings = core::KeyBindings::loadFrom(*keyBindingsPath);
             accelTable  = neomifes::app::buildAcceleratorTable(keyBindings);
             commandPalette.setCommands(buildCommandRegistry(
-                hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
+                hwnd, findBar, findReplaceDialog, workspace, renderPipeline, settings, settingsPath, keyBindings,
+                keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
@@ -2759,7 +2833,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             .title           = std::u16string(u"Keybindings Preset: ") + std::u16string(choice.displayName),
             .keybindingLabel = u"",
             .commandId       = CommandId::None,
-            .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
+            .action = [hwnd, &findBar, &findReplaceDialog, &workspace, &renderPipeline, &settings, settingsPath,
+                       &keyBindings,
                        keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                        menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                        &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
@@ -2772,7 +2847,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 }
                 accelTable = neomifes::app::buildAcceleratorTable(keyBindings);
                 commandPalette.setCommands(buildCommandRegistry(
-                    hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings,
+                    hwnd, findBar, findReplaceDialog, workspace, renderPipeline, settings, settingsPath, keyBindings,
                     keyBindingsPath, accelTable, freeCursorModeEnabled, commandPalette, recentFiles,
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
                     outlinePane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
@@ -2796,7 +2871,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     commands.push_back(CommandDescriptor{
         .id = u"logmode.patterns.reload", .title = u"Log: Reload Patterns", .keybindingLabel = u"",
         .commandId = CommandId::None,
-        .action = [hwnd, &findBar, &workspace, &renderPipeline, &settings, settingsPath, &keyBindings,
+        .action = [hwnd, &findBar, &findReplaceDialog, &workspace, &renderPipeline, &settings, settingsPath,
+                   &keyBindings,
                    keyBindingsPath, &accelTable, &freeCursorModeEnabled, &commandPalette, &recentFiles,
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
@@ -2807,7 +2883,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             }
             userLogPatterns = loadUserLogPatternsFromDirectory(*logPatternsDir);
             commandPalette.setCommands(buildCommandRegistry(
-                hwnd, findBar, workspace, renderPipeline, settings, settingsPath, keyBindings, keyBindingsPath,
+                hwnd, findBar, findReplaceDialog, workspace, renderPipeline, settings, settingsPath, keyBindings,
+                keyBindingsPath,
                 accelTable, freeCursorModeEnabled, commandPalette, recentFiles, menuHandles, autosave,
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
@@ -3525,6 +3602,106 @@ void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, Render
     dispatchCommand(static_cast<CommandId>(selected), ctx);
 }
 
+// WI-18a: tab strip's right-click menu (閉じる/他のタブを閉じる/すべて閉じる) -
+// same TrackPopupMenu(TPM_RETURNCMD)-then-dispatchCommand() shape as
+// showEditContextMenu() above. Activates `tabIndex` first if it isn't
+// already the active tab - a right-click on a background tab should act on
+// the tab actually clicked, matching how a left-click there would also
+// switch tabs first; dispatchTabCloseCommand()/dispatchTabCloseOthersCommand()/
+// dispatchTabCloseAllCommand() all operate on workspace.active(), so this
+// activation is what makes the menu's 3 items act on the right tab.
+void showTabContextMenu(HWND hwnd, POINT screenPt, std::size_t tabIndex, Workspace& workspace,
+                        RenderPipeline& renderPipeline, FindBar& findBar, core::RecentFiles& recentFiles,
+                        const MenuBarHandles& menuHandles, const core::Settings& settings, AutosaveContext& autosave,
+                        CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken,
+                        git::GitDiffWorker& gitDiffWorker) {
+    if (tabIndex < workspace.sessionCount() && tabIndex != workspace.activeIndex()) {
+        workspace.activate(tabIndex);
+        syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
+                                csvGridPanePendingSessionToken);
+    }
+    HMENU menu = ::CreatePopupMenu();
+    if (menu == nullptr) {
+        return;
+    }
+    ::AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(CommandId::TabClose), L"閉じる(&C)");
+    ::AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(CommandId::TabCloseOthers), L"他のタブを閉じる(&O)");
+    ::AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(CommandId::TabCloseAll), L"すべて閉じる(&A)");
+    // Same SetForegroundWindow()/PostMessageW(WM_NULL) idiom showEditContextMenu()
+    // above uses for a modal TrackPopupMenu() to dismiss correctly on an
+    // outside click.
+    ::SetForegroundWindow(hwnd);
+    const int selected = ::TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, screenPt.x,
+                                          screenPt.y, 0, hwnd, nullptr);
+    ::PostMessageW(hwnd, WM_NULL, 0, 0);
+    ::DestroyMenu(menu);
+    if (selected <= 0) {
+        return;  // dismissed without a choice (Escape, click-away)
+    }
+    const CommandDispatchContext ctx{.hwnd                           = hwnd,
+                                     .workspace                      = workspace,
+                                     .renderPipeline                 = renderPipeline,
+                                     .findBar                        = findBar,
+                                     .recentFiles                    = recentFiles,
+                                     .menuHandles                    = menuHandles,
+                                     .autosave                       = autosave,
+                                     .settings                       = settings,
+                                     .csvGridPane                    = csvGridPane,
+                                     .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
+                                     .gitDiffWorker                  = gitDiffWorker};
+    dispatchCommand(static_cast<CommandId>(selected), ctx);
+}
+
+// WI-18a: WM_CONTEXTMENU dispatcher - `source` distinguishes a right-click
+// that landed directly on this window's own client area from one that
+// bubbled up from an unhandled child control (TabBar/StatusBar - Win32's own
+// default behavior for a control that doesn't handle WM_CONTEXTMENU itself
+// is to forward it to its parent). Previously every right-click anywhere in
+// the window - including on the tab strip or status bar, or on the gutter/
+// minimap within the main window's own client area - produced the identical
+// Undo/Redo/Cut/Copy/Paste menu meant for the text content only.
+void handleContextMenuEvent(HWND source, HWND hwnd, std::int32_t xScreen, std::int32_t yScreen, Workspace& workspace,
+                            RenderPipeline& renderPipeline, FindBar& findBar, TabBar& tabBar,
+                            core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
+                            const core::Settings& settings, AutosaveContext& autosave, CsvGridPane& csvGridPane,
+                            const void*& csvGridPanePendingSessionToken, git::GitDiffWorker& gitDiffWorker) {
+    const POINT screenPt{.x = xScreen, .y = yScreen};
+    if (source == tabBar.hwnd()) {
+        POINT clientPt = screenPt;
+        ::ScreenToClient(tabBar.hwnd(), &clientPt);
+        // `flags` is an output-only field TabCtrl_HitTest() fills in - zero-
+        // initialized here only to satisfy clang-tidy's designated-
+        // initializer completeness check, its input value is never read.
+        TCHITTESTINFO hitTestInfo{.pt = clientPt, .flags = 0};
+        const int tabIndex = TabCtrl_HitTest(tabBar.hwnd(), &hitTestInfo);
+        if (tabIndex < 0) {
+            return;  // right-clicked the tab strip's own empty margin, not a tab
+        }
+        showTabContextMenu(hwnd, screenPt, static_cast<std::size_t>(tabIndex), workspace, renderPipeline, findBar,
+                           recentFiles, menuHandles, settings, autosave, csvGridPane,
+                           csvGridPanePendingSessionToken, gitDiffWorker);
+        return;
+    }
+    if (source != hwnd) {
+        return;  // bubbled from StatusBar or any other non-text control - no menu there yet
+    }
+    POINT clientPt = screenPt;
+    ::ScreenToClient(hwnd, &clientPt);
+    const auto dpiScale = static_cast<float>(::GetDpiForWindow(hwnd)) / 96.0F;
+    // Excludes the left gutter (line numbers/fold markers/diff markers,
+    // gutterWidthDips()), the minimap strip (hitTestMinimap()), and any
+    // point below/beyond the document's own rendered content (hitTest()
+    // returns nullopt there) - the same 3 regions handleMouseDownEvent()
+    // above already treats specially for a LEFT click, reused here so a
+    // right-click gets consistent treatment.
+    if (static_cast<float>(clientPt.x) < renderPipeline.gutterWidthDips() * dpiScale ||
+        renderPipeline.hitTestMinimap(clientPt.x, clientPt.y) || !renderPipeline.hitTest(clientPt.x, clientPt.y)) {
+        return;
+    }
+    showEditContextMenu(hwnd, screenPt, workspace, renderPipeline, findBar, recentFiles, menuHandles, settings,
+                        autosave, csvGridPane, csvGridPanePendingSessionToken, gitDiffWorker);
+}
+
 // WI-07 step4: derives every ui::StatusBarParts field from EditorSession's
 // already-existing state - no new state introduced here. WI-07 step5:
 // overwriteMode now reflects the real EditorSession::overwriteMode() toggle
@@ -3830,6 +4007,47 @@ void dispatchTabCloseCommand(const CommandDispatchContext& ctx, EditorSession& s
     }
 }
 
+// WI-18a: tab context menu's "他のタブを閉じる". Iterates DESCENDING so that
+// each Workspace::closeSession(i) call's own index-shifting (indices after
+// the erased one move down by one) only ever affects positions this loop
+// hasn't visited yet - by the time index `i` is processed, everything above
+// it is already gone and everything at/below it is still at its original
+// position, so `keepIndex` (captured once, before any erasure) stays a
+// valid comparison throughout. Confirms per tab exactly like
+// dispatchTabCloseCommand() (a cancelled prompt on one tab simply skips
+// that tab and continues with the rest, rather than aborting the whole
+// operation).
+void dispatchTabCloseOthersCommand(const CommandDispatchContext& ctx) {
+    const std::size_t keepIndex = ctx.workspace.activeIndex();
+    for (std::size_t i = ctx.workspace.sessionCount(); i-- > 0;) {
+        if (i == keepIndex) {
+            continue;
+        }
+        EditorSession& other = ctx.workspace.sessionAt(i);
+        if (!confirmDiscardIfDirty(ctx.hwnd, other, ctx.settings, ctx.recentFiles, ctx.menuHandles, ctx.autosave)) {
+            continue;  // user cancelled for this tab - leave it open, keep going with the rest
+        }
+        if (other.isDirty()) {
+            other.document().markSaved();
+        }
+        ctx.workspace.closeSession(i);
+    }
+    syncViewForActiveSession(ctx.hwnd, ctx.renderPipeline, ctx.workspace.active(), ctx.findBar, ctx.csvGridPane,
+                             ctx.csvGridPanePendingSessionToken);
+}
+
+// WI-18a: tab context menu's "すべて閉じる" - closes every OTHER tab first
+// (dispatchTabCloseOthersCommand() above), then runs the exact same close
+// path a single active tab already goes through (dispatchTabCloseCommand()),
+// which both confirms/discards it and resets it to a blank Untitled
+// document rather than actually removing it - Workspace::closeSession()
+// never allows the session count to drop below one, so "close all" always
+// converges to that same single-blank-tab end state.
+void dispatchTabCloseAllCommand(const CommandDispatchContext& ctx) {
+    dispatchTabCloseOthersCommand(ctx);
+    dispatchTabCloseCommand(ctx, ctx.workspace.active());
+}
+
 void dispatchCopyCommand(const CommandDispatchContext& ctx, EditorSession& session) {
     const auto text = neomifes::app::textToCopy(session.selection(), session.document());
     if (text) {
@@ -3877,7 +4095,8 @@ void dispatchUndoRedoCommand(CommandId id, const CommandDispatchContext& ctx, Ed
 // so "recognized but nothing to do" doesn't arise the way it can for
 // keyboard chains).
 bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, RenderPipeline& renderPipeline,
-                               FindBar& findBar, CommandPalette& commandPalette, GrepBar& grepBar,
+                               FindBar& findBar, FindReplaceDialog& findReplaceDialog,
+                               CommandPalette& commandPalette, GrepBar& grepBar,
                                GotoLineBar& gotoLineBar, neomifes::ui::OutlinePane& outlinePane,
                                JsonTreePane& jsonTreePane, GitPane& gitPane,
                                std::optional<jsontree::JsonTreeWorker>& jsonTreeWorker,
@@ -3889,8 +4108,13 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
         case CommandId::FindShow:
             findBar.show();
             return true;
+        // WI-18b: previously findBar.showWithReplace() (the embedded bar's
+        // own replace-mode) - now opens the standalone floating dialog
+        // instead, per the user's request for a real Win32 Find/Replace
+        // dialog. findBar itself keeps its Ctrl+F incremental-search-only
+        // role (see find_replace_dialog.h's class comment).
         case CommandId::FindReplace:
-            findBar.showWithReplace();
+            findReplaceDialog.show(hwnd);
             return true;
         case CommandId::FindNext:
             navigateToMatch(true, hwnd, workspace.active(), renderPipeline, findBar);
@@ -4425,6 +4649,21 @@ void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
         case CommandId::TabClose:
             dispatchTabCloseCommand(ctx, session);
             return;
+        case CommandId::TabCloseOthers:
+            dispatchTabCloseOthersCommand(ctx);
+            return;
+        case CommandId::TabCloseAll:
+            dispatchTabCloseAllCommand(ctx);
+            return;
+        // WI-18a: File menu-only "終了" - just requests the same WM_CLOSE
+        // path Alt+F4/the title bar close button already trigger
+        // (MainWindow::handleClose() runs the usual unsaved-changes prompt
+        // for whichever session is active at the time WM_CLOSE is actually
+        // processed - see that method's own comment). No session-specific
+        // work belongs here.
+        case CommandId::Exit:
+            ::PostMessageW(ctx.hwnd, WM_CLOSE, 0, 0);
+            return;
         case CommandId::Copy:
             dispatchCopyCommand(ctx, session);
             return;
@@ -4484,6 +4723,7 @@ void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
 // completely unchanged.
 void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, FindBar& findBar,
+                    FindReplaceDialog& findReplaceDialog,
                     CommandPalette& commandPalette, GotoLineBar& gotoLineBar, JsonPathBar& jsonPathBar,
                     GrepBar& grepBar,
                     GrepState& grepState, SearchHistory& searchHistory, OutlinePane& outlinePane,
@@ -4520,7 +4760,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // purely so refreshRecentFilesMenu() call sites below (opening/saving a
     // file) can reuse the SAME HMENU pair - see this file's own callers of
     // that function.
-    cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &commandPalette,
+    cfg.onDeferredInit = [&window, &renderPipeline, &workspace, hInstance, &findBar, &findReplaceDialog,
+                          &commandPalette,
                           &gotoLineBar, &jsonPathBar, &grepBar, &grepState, &searchHistory, &outlinePane, &tabBar,
                           &statusBar, &settings, &settingsPath, &keyBindings, keyBindingsPath, &accelTable,
                           &freeCursorModeEnabled, &recentFiles, menuHandles, &autosave, &logIndexWorker,
@@ -4573,16 +4814,28 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
             handlePaintEvent(paintHwnd, window, renderPipeline, workspace, tabBar, statusBar, csvGridPane);
         });
         const FindBarConfig findBarConfig =
-            buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory);
+            buildFindBarConfig(hwnd, workspace, renderPipeline, findBar, searchHistory, findReplaceDialog);
         [[maybe_unused]] const bool findBarCreated = findBar.create(hwnd, hInstance, findBarConfig);
+
+        // WI-18b: same non-fatal treatment as findBar.create() above - a
+        // Find/Replace dialog that fails to create simply isn't available
+        // this session (CommandId::FindReplace's dispatch already no-ops
+        // safely if findReplaceDialog was never successfully created, same
+        // "check before use" convention every other optional overlay here
+        // follows).
+        const FindReplaceDialogConfig findReplaceDialogConfig =
+            buildFindReplaceDialogConfig(hwnd, workspace, renderPipeline, findReplaceDialog);
+        [[maybe_unused]] const bool findReplaceDialogCreated =
+            findReplaceDialog.create(hwnd, hInstance, findReplaceDialogConfig);
 
         // Same non-fatal treatment as findBar.create() above - a palette
         // that fails to create simply isn't available this session.
         CommandPaletteConfig commandPaletteConfig{};
         commandPaletteConfig.onClosed = [hwnd]() { ::SetFocus(hwnd); };
-        auto commands = buildCommandRegistry(hwnd, findBar, workspace, renderPipeline, settings, settingsPath,
-                                             keyBindings, keyBindingsPath, accelTable, freeCursorModeEnabled,
-                                             commandPalette, recentFiles, menuHandles, autosave, logIndexWorker,
+        auto commands = buildCommandRegistry(hwnd, findBar, findReplaceDialog, workspace, renderPipeline, settings,
+                                             settingsPath, keyBindings, keyBindingsPath, accelTable,
+                                             freeCursorModeEnabled, commandPalette, recentFiles, menuHandles,
+                                             autosave, logIndexWorker,
                                              userLogPatterns, logPatternsDir, jsonTreePane, outlinePane,
                                              jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
                                              csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
@@ -4686,7 +4939,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         tabBar.onParentResized(w, dpiScale);
         statusBar.onParentResized(w, h, dpiScale);
     };
-    cfg.onCommand = [&findBar, &commandPalette, &grepBar, &gotoLineBar, &outlinePane, &jsonTreePane, &gitPane,
+    cfg.onCommand = [&findBar, &findReplaceDialog, &commandPalette, &grepBar, &gotoLineBar, &outlinePane,
+                     &jsonTreePane, &gitPane,
                      &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                      &csvModelWorker, &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
                      menuHandles, &settings, &autosave, &gitDiffWorker](HWND hwnd, WPARAM wParam, LPARAM lParam) {
@@ -4733,8 +4987,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         // Outline/GotoLine/About - the commands dispatchCommand() itself
         // deliberately does NOT handle, see that function's own comment);
         // falls through to dispatchCommand() for everything else.
-        if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, commandPalette,
-                                      grepBar, gotoLineBar, outlinePane, jsonTreePane, gitPane, jsonTreeWorker,
+        if (dispatchWidgetShowCommand(commandId, hwnd, workspace, renderPipeline, findBar, findReplaceDialog,
+                                      commandPalette, grepBar, gotoLineBar, outlinePane, jsonTreePane, gitPane,
+                                      jsonTreeWorker,
                                       xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                                       csvGridPanePendingSessionToken)) {
             return;
@@ -4799,28 +5054,28 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // is exactly the kind of "about to walk away" moment autosave exists to
     // protect against, same rationale as the periodic timer above.
     cfg.onFocusLost = [&workspace, &autosave](HWND) { autoSaveAllDirtySessions(workspace, autosave); };
-    // WI-07 step9: right-click context menu - see showEditContextMenu()'s
-    // own comment above for why xScreen/yScreen pass straight through with
-    // no additional coordinate handling here.
-    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &settings, &autosave,
-                        &csvGridPane, &csvGridPanePendingSessionToken,
-                        &gitDiffWorker](HWND hwnd, std::int32_t xScreen, std::int32_t yScreen) {
-        showEditContextMenu(hwnd, POINT{.x = xScreen, .y = yScreen}, workspace, renderPipeline, findBar,
-                            recentFiles, menuHandles, settings, autosave, csvGridPane,
-                            csvGridPanePendingSessionToken, *gitDiffWorker);
+    // WI-07 step9/WI-18a: right-click context menu - see
+    // handleContextMenuEvent()'s own comment above for the source-HWND
+    // branching (tab strip / main window text content / everything else).
+    cfg.onContextMenu = [&workspace, &renderPipeline, &findBar, &tabBar, &recentFiles, menuHandles, &settings,
+                        &autosave, &csvGridPane, &csvGridPanePendingSessionToken,
+                        &gitDiffWorker](HWND source, HWND hwnd, std::int32_t xScreen, std::int32_t yScreen) {
+        handleContextMenuEvent(source, hwnd, xScreen, yScreen, workspace, renderPipeline, findBar, tabBar,
+                               recentFiles, menuHandles, settings, autosave, csvGridPane,
+                               csvGridPanePendingSessionToken, *gitDiffWorker);
     };
     // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
     // pulled into a standalone function rather than assigned inline here
     // (same cognitive-complexity-budget reasoning as handleKeyDownEvent()/
     // handleHScrollEvent() above).
     wireImeHooks(cfg, workspace, renderPipeline, imeComposing);
-    cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &commandPalette, &gotoLineBar, &grepBar,
-                     &outlinePane, &jsonTreePane, &gitPane, &jsonTreeWorker, &xmlTreeWorker,
+    cfg.onKeyDown = [&workspace, &renderPipeline, &findBar, &findReplaceDialog, &commandPalette, &gotoLineBar,
+                     &grepBar, &outlinePane, &jsonTreePane, &gitPane, &jsonTreeWorker, &xmlTreeWorker,
                      &jsonTreePanePendingSessionToken,
                      &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &freeCursorModeEnabled,
                      &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings, &autosave,
                      &gitDiffWorker](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
-        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
+        handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar, findReplaceDialog,
                           commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, gitPane, jsonTreeWorker,
                           xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                           csvGridPanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,

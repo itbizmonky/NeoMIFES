@@ -47,6 +47,7 @@
 #include "neomifes/search/grep_service.h"
 #include "neomifes/ui/command_palette.h"
 #include "neomifes/ui/find_bar.h"
+#include "neomifes/ui/find_replace_dialog.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
 #include "neomifes/ui/csv_grid_pane.h"
@@ -320,6 +321,7 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // parameter directly.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
                     Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
+                    ui::FindReplaceDialog& findReplaceDialog,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
                     ui::JsonPathBar& jsonPathBar, ui::GrepBar& grepBar,
                     GrepState& grepState, core::SearchHistory& searchHistory, ui::OutlinePane& outlinePane,
