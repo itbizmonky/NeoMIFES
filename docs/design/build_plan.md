@@ -2320,7 +2320,7 @@ Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規�
 
 Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規警告0(対象: `editor_window.cpp`/`session_manager.cpp`/`main.cpp`/`main_window.cpp`。実際に検出・修正した指摘: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`、const参照へ変更)、`main.cpp`/`main_window.cpp`の`const HWND`誤配置2件(`misc-misplaced-const`、HWNDはポインタ型typedefのため`const HWND`はポインタ自体をconst化してしまう、意味上無害だが`const`を削除して解消))。
 
-コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。次はWI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲) — 詳細設計は承認済みプラン参照。
+コミット済み(`d7de1ed`)、pushはユーザーの明示指示待ち。次はWI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲) — 詳細設計は承認済みプラン参照。
 
 ---
 
