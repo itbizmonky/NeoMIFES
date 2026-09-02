@@ -80,9 +80,10 @@ ctest --preset debug --output-on-failure
 > - master_roadmap.md §12.3 の元22項目フル版 (Google/MSリリース品質基準、NVDA/JAWS専門認証・Authenticode証明書配布・SBOM/CVE継続運用・自動更新機構など、このワークフロー単独では完結できない項目を含む) — 商用配布を将来検討する際に再評価する
 > - CSV式列 (WI-16h、v2.0機能として見送り)
 >
-> **🚧 現在進行中: WI-20(複数ウィンドウ対応)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)に対応中。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。**WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)完了(2026-09-02)** — 詳細は本ファイルのWI-20aセクション参照。次はWI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲)。
+> **🎉 WI-20(複数ウィンドウ対応)完結(2026-09-02〜03)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ対応、解決済みへ移動した。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)→WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)の2段階で実装、実機ドッグフーディングで複数ウィンドウの独立生成/破棄・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(--openあり/なし両方)を確認済み — 詳細は本ファイルのWI-20a/WI-20bセクション参照。
 >
-> **次フェーズ候補 (M5達成後に発見された5件は全て対応完了。WI-20完了後にどれへ着手するかはユーザーへ確認すること):**
+> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
+> - [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md) (P2、WI-18の品質監査で発見) — 表示メニューが手薄・折り返し(word wrap)機能が存在しない
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 🟡 **2026-09-01部分対応。** 実測で真因はRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドは対象外のまま残存
 > - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
@@ -2321,6 +2322,40 @@ Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規�
 Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規警告0(対象: `editor_window.cpp`/`session_manager.cpp`/`main.cpp`/`main_window.cpp`。実際に検出・修正した指摘: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`、const参照へ変更)、`main.cpp`/`main_window.cpp`の`const HWND`誤配置2件(`misc-misplaced-const`、HWNDはポインタ型typedefのため`const HWND`はポインタ自体をconst化してしまう、意味上無害だが`const`を削除して解消))。
 
 コミット済み(`d7de1ed`)、pushはユーザーの明示指示待ち。次はWI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲) — 詳細設計は承認済みプラン参照。
+
+---
+
+## WI-20b — 複数ウィンドウ対応: `CommandId::NewWindow`のフル配線 + `WM_COPYDATA`による2つ目起動時のIPC委譲
+
+### 目的
+
+WI-20a(内部再構成のみ、外部から見た挙動は無変化)の上に、実際のユーザー向け新機能(複数ウィンドウを開く手段)を追加する。承認済みプランの設計②/③に対応。
+
+### 実装
+
+**①`CommandId::NewWindow`のフル配線** — 承認済みプランの3判断(2つ目起動時パス無しの挙動/新規ウィンドウのキー割当/複数ウィンドウ環境での「終了」の意味)のうち②(フル対応: Ctrl+Shift+N+パレット+リマップ可)に基づき実装。`command_ids.h`に`New`直後で追加(全プリセットでCtrl+Shift+N未使用と既に確認済み)、`command_id_name.h`の`kAllRemappableCommandIds`(36→37)+`"window.new"`、`keybinding_dispatch.h`の`kAcceleratorEligibleCommands`(16→17、`New`と同じくWM_COMMAND経由でTranslateAcceleratorWが処理)、`key_bindings_presets.cpp`の`neomifes`標準プリセットへ`Ctrl+Shift+N`を割当(秀丸/サクラ/VSCodeプリセットは既存の「確定デフォルト無しは意図的に未割当」慣習に倣い未割当のまま)、`menu_bar.h`の`kFileMenuItems`へ「新しいウィンドウ(&W)\tCtrl+Shift+N」を`New`と`TabClose`の間に追加(6→7エントリ)。
+
+`command_dispatch.h`の`CommandDispatchContext`に`SessionManager& sessionManager`フィールドを追加(前方宣言のみで循環include回避)。`dispatchCommand()`に`case CommandId::NewWindow: ctx.sessionManager.createWindow(std::nullopt); return;`、`buildCommandRegistry()`に`"window.new"`パレットエントリを追加。この新規フィールドの追加により、`CommandDispatchContext`を構築する既存の全7箇所(`handleClipboardOrUndoRedoKey()`/`handleOverwriteToggleKey()`/`buildCommandRegistry()`のUndo・Redoアクション×2/`showEditContextMenu()`/`showTabContextMenu()`/`wireNormalMode()`本体の`cfg.onCommand`)と、それらへ`SessionManager&`を伝播させる必要のある呼び出し元(`handleKeyDownEvent()`/`handleContextMenuEvent()`/`buildCommandRegistry()`の4呼び出し箇所+その3つの再帰自己呼び出し内ラムダの捕捉リスト/`wireNormalMode()`自身の`cfg.onDeferredInit`・`cfg.onKeyDown`・`cfg.onContextMenu`各ラムダの捕捉リスト)まで、機械的だが広範囲な配線変更が必要になった — Copy/Cut/Paste/Undo/Redo/ToggleOverwriteMode等、`sessionManager`を実際には使わないコマンド群の関数にも同フィールドが必須引数として伝播する形になったが、`CommandDispatchContext`自体が「都度個別引数を足すのではなく共通コンテキストとしてまとめて配線する」既存設計である以上、これは新規フィールド追加につきものの妥当なコストと判断した。
+
+**②`WM_COPYDATA`による2つ目起動時のIPC委譲** — `claimSingleInstance()`のシグネチャに`const LaunchArgs& args`を追加。ミューテックス既存検出時、`FindWindowW`で見つけた既存ウィンドウへ新規`kCopyDataOpenPathId`を`dwData`として`WM_COPYDATA`を`SendMessageW`(同期呼び出し、`lpData`は`--open`パスのUTF-16文字列、パス無しなら空文字列)。受信側は`ui::MainWindowConfig`に新規`onCopyData`フックを追加、`WM_COPYDATA`ケースで`COPYDATASTRUCT`から`std::wstring_view`へ即座にコピー(`lpData`は`SendMessageW`呼び出し完了後は無効になるため)。`SessionManager::wireAndShow()`が全ウィンドウにこのハンドラを配線する(`FindWindowW`はZ順序依存でどのウィンドウを返すか保証されないため、どのウィンドウが受信しても同じ挙動になる必要がある)。
+
+新規`SessionManager::createWindow(const std::optional<path>& openPath)` — `adoptFirstWindow()`と異なり自身で`launch_setup.h`の`loadDocumentForOpenPath()`(旧`loadStartupDocument()`を`LaunchArgs`全体ではなくパスだけを取るようリファクタし、匿名名前空間の外へ昇格して`launch_setup.h`で公開、`prepareDocument()`の起動時1ウィンドウ目の読み込みと完全に同じロジックを再利用)を呼んでDocumentを読み込み、クラッシュ復旧プロンプトループは実行しない(起動時専用の概念であり、セッション中に開いたウィンドウには回復すべき新規対象が無いため)。`openPath`が`std::nullopt`なら新規空ウィンドウを開く(basic_design.mdの「そちらが新規MainWindowを開く」という無条件の文言通り、ユーザー承認済みの挙動)。
+
+### 実機ドッグフーディング
+
+自動テストでは検証できないWin32メッセージループ/複数プロセス相互作用のため、実バイナリで以下を確認: **①`CommandId::NewWindow`をWM_COMMAND(値40018)で発火 → 独立した第2ウィンドウが実際に開く(2ウィンドウとも列挙で確認)。片方(あとから開いた方)だけを閉じてもプロセスは生存し残る1ウィンドウはそのまま → 最後の1ウィンドウを閉じるとプロセスが実際に終了(exit code 0)。** **②`NeoMIFES.exe`を実際に2回・3回と追加起動** — 1回目は`--open <ファイル>`付き、2回目は引数無し。いずれも起動した追加プロセス自身は即座にexit code 0で終了し、最初のプロセスが新規ウィンドウを開く(--openありの場合はタイトルバー/タブに正しいファイル名が反映、引数無しの場合は新規空ウィンドウ)ことを確認、最終的に1プロセスで3ウィンドウが開いている状態を実機で確認した。
+
+**未確認のまま正直に記録する項目:** 「第2ウィンドウにフォーカスがある状態でCtrl+S等のアクセラレータが正しく機能する」(`runMessageLoop()`の`GetAncestor`修正が存在しなければ壊れる項目)は、この環境の既知のキーストローク合成制約(WI-20aのドッグフーディングで確認済み、SendKeys/SendInputいずれも本ウィンドウへのキー入力が届かない)により、実際のキー入力での実演はできなかった。`GetAncestor(msg.hwnd, GA_ROOT)`自体は特殊なケースの無いシンプルかつ確立されたWin32 APIパターンであり、かつ本ドッグフーディングにより「実際に複数ウィンドウが同時に開いている」という前提条件自体は現実のシナリオとして初めて検証された(この修正がこれまで理論上のものでしかなかった状態から、実際に意味のあるコードパスへ変わった)。
+
+途中1回、ドッグフーディング中に発見した無関係な環境要因: 過去セッションの記録通り「正当な理由でkillできないゾンビNeoMIFESプロセス」が既に存在していたが、これは`Local\`スコープの名前付きミューテックスを実際には保持していない(新規起動が正常にブロックされずウィンドウを開けたことで確認)ことが判明、本WIの動作には影響しないと確認した。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は発生せず初回で全件pass)。clang-tidyで2件検出・修正: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`、`createWindow()`の`openPath`引数をconst参照へ変更)、`launch_setup.cpp`の`const_cast`除去1件(`cppcoreguidelines-pro-type-const-cast`、`COPYDATASTRUCT::lpData`がWin32 API上`PVOID`型で受け取り専用の`const`文字列からのキャストが必要になっていた箇所を、`payload`自体を非const局所変数にし`.data()`の非constオーバーロードを使う形へ変更して解消)。既存テスト`CommandDispatchTest.CoversExactlyTheDocumentedCommandSet`(`app_command_dispatch_test.cpp`)が`NewWindow`追加後のHACCEL集合と食い違い1件を検出、期待値セットへ`NewWindow`を追加して解消。`app_menu_bar_test.cpp`の`kFileMenuItems`サイズ検証も6→7へ更新。
+
+これで[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1、要件定義書§6必須機能)が完全に解決した。
+
+コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。次にどの作業へ着手するかはユーザーへ確認する — `view_menu_and_word_wrap_incomplete.md`(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ。
 
 ---
 

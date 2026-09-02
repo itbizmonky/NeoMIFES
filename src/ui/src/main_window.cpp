@@ -85,6 +85,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onImeResult           = config.onImeResult;
     m_onImeEndComposition   = config.onImeEndComposition;
     m_onDestroyed           = config.onDestroyed;
+    m_onCopyData            = config.onCopyData;
 
     // WI-03: WS_HSCROLL only added when a handler is actually configured -
     // must be decided before CreateWindowExW (unlike DragAcceptFiles below,
@@ -280,6 +281,20 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
                 ::PostQuitMessage(0);
             }
             return 0;
+        }
+        case WM_COPYDATA: {
+            // WI-20b: decode the raw COPYDATASTRUCT here (this class owns
+            // Win32-primitive decoding, see this field's own doc comment)
+            // and COPY the payload out before calling the hook - lParam's
+            // COPYDATASTRUCT and the memory cds->lpData points to are only
+            // guaranteed valid for the duration of this SendMessageW call.
+            auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lParam);
+            if (cds != nullptr && m_onCopyData) {
+                const std::wstring_view payload(reinterpret_cast<const wchar_t*>(cds->lpData),
+                                                cds->cbData / sizeof(wchar_t));
+                m_onCopyData(m_hwnd, cds->dwData, payload);
+            }
+            return TRUE;
         }
         default:
             // App-defined messages (Phase 7c) - kMsgDeferredInit above is

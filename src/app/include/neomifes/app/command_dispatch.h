@@ -51,6 +51,14 @@
 
 namespace neomifes::app {
 
+// WI-20b: forward-declared only - CommandDispatchContext below stores a
+// reference (dispatchCommand()'s CommandId::NewWindow case calls
+// sessionManager.createWindow()), which needs no complete type, avoiding a
+// circular #include between this header and session_manager.h (which
+// itself includes editor_window.h -> normal_mode_wiring.h ->
+// command_dispatch.h).
+class SessionManager;
+
 // WI-11: the 3 refs every autosave-related call site needs together
 // (app::performAutoSave()/app::clearAutoSave()'s own parameter list) -
 // bundled into one struct (rather than 3 more individual
@@ -136,10 +144,14 @@ struct CommandDispatchContext {
     // hidden, so a re-diff there would be moot; this field is reachable
     // ONLY via dispatchCommand()'s CommandId::Save/SaveAs cases.
     git::GitDiffWorker& gitDiffWorker;
+    // WI-20b: dispatchCommand()'s CommandId::NewWindow case calls
+    // sessionManager.createWindow(std::nullopt) - the only command family
+    // this context serves that needs to reach outside the current window.
+    SessionManager& sessionManager;
 };
 
-// Handles: Save, SaveAs, Open, New, TabNext, TabPrevious, TabClose,
-// TabSwitch1..TabSwitch9, Copy, Cut, Paste, Undo, Redo,
+// Handles: Save, SaveAs, Open, New, NewWindow, TabNext, TabPrevious,
+// TabClose, TabSwitch1..TabSwitch9, Copy, Cut, Paste, Undo, Redo,
 // ToggleOverwriteMode. No-op for CommandId::None or any id not in that
 // list - see this header's own top comment for which commands are
 // deliberately NOT handled here.

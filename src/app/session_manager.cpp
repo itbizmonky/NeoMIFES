@@ -3,6 +3,7 @@
 #include <utility>
 #include <variant>
 
+#include "neomifes/app/launch_setup.h"
 #include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/normal_mode_wiring.h"
@@ -158,6 +159,19 @@ bool SessionManager::adoptFirstWindow(document::Document doc, DocumentFileState 
     return true;
 }
 
+bool SessionManager::createWindow(const std::optional<std::filesystem::path>& openPath) {
+    DocumentFileState                    fileState;
+    std::optional<std::filesystem::path> currentDocumentPath;
+    document::Document doc = loadDocumentForOpenPath(openPath, fileState, currentDocumentPath);
+
+    auto w = std::make_unique<EditorWindow>(std::move(doc), fileState, currentDocumentPath);
+    if (!wireAndShow(*w)) {
+        return false;
+    }
+    m_windows.push_back(std::move(w));
+    return true;
+}
+
 bool SessionManager::wireAndShow(EditorWindow& w) {
     // WI-08: applied once per window, before wireNormalMode()/create() -
     // setters only touch plain member state (same reasoning
@@ -178,6 +192,24 @@ bool SessionManager::wireAndShow(EditorWindow& w) {
     // WI-20a: the "only quit once every window is gone" hook - see
     // ui::MainWindowConfig::onDestroyed's own header comment.
     cfg.onDestroyed = [this, target = &w](HWND) { onWindowDestroyed(target); };
+    // WI-20b: the WM_COPYDATA handoff from a second NeoMIFES.exe launch
+    // (claimSingleInstance(), launch_setup.cpp). Wired on EVERY window
+    // (not just the first) since FindWindowW - the sender's own lookup -
+    // can return ANY currently-open window (Z-order-dependent, not
+    // creation-order-guaranteed): whichever one happens to receive it must
+    // behave identically. `source`/`hwnd` (this window's own HWND) are
+    // unused here - the new window always opens independently of which
+    // existing window physically received the message.
+    cfg.onCopyData = [this](HWND, ULONG_PTR dwData, std::wstring_view payload) {
+        if (dwData != kCopyDataOpenPathId) {
+            return;
+        }
+        std::optional<std::filesystem::path> path;
+        if (!payload.empty()) {
+            path = std::filesystem::path(payload);
+        }
+        static_cast<void>(createWindow(path));
+    };
 
     wireNormalMode(cfg, w.window, w.renderPipeline, w.workspace, m_hInstance, w.findBar, w.findReplaceDialog,
                    w.commandPalette, w.gotoLineBar, w.structuralViews.jsonPathBar, w.grepBar, w.grepState,
@@ -189,7 +221,7 @@ bool SessionManager::wireAndShow(EditorWindow& w) {
                    w.structuralViews.csvGridPane, w.structuralViews.csvGridPanePendingSessionToken,
                    w.structuralViews.gitDiffWorker, w.structuralViews.xmlTreeWorker,
                    w.structuralViews.jsonPathBarIsForXml, w.structuralViews.gitPane,
-                   w.structuralViews.gitStatusWorker, w.structuralViews.diffViewDocument);
+                   w.structuralViews.gitStatusWorker, w.structuralViews.diffViewDocument, *this);
 
     // Phase 7b/7d: reflect the startup document's language before the first
     // paint - attach() itself happens later inside onDeferredInit, but

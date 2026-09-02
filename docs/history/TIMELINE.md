@@ -3813,4 +3813,34 @@ Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は�
 
 次はWI-20b(新しいウィンドウコマンド`CommandId::NewWindow`+`WM_COPYDATA`による2つ目起動時のIPC委譲)——設計は承認済みプランに既に含まれている。
 
+**続けてユーザーから「継続せよ」と指示され、WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)に着手・完了した(2026-09-03)。🎉 WI-20(複数ウィンドウ対応)完結。**
+
+### 実装
+
+**①`CommandId::NewWindow`のフル配線。** 承認済みプランの判断②(フル対応: Ctrl+Shift+N+パレット+リマップ可)通りに実装。`command_ids.h`の`New`直後に追加、`command_id_name.h`の`kAllRemappableCommandIds`(36→37)+`"window.new"`、`keybinding_dispatch.h`の`kAcceleratorEligibleCommands`(16→17)、`key_bindings_presets.cpp`のneomifes標準プリセットへ`Ctrl+Shift+N`を割当(秀丸/サクラ/VSCodeは既存の「確定デフォルト無しは意図的に未割当」慣習のまま)、`menu_bar.h`の`kFileMenuItems`へ「新しいウィンドウ(&W)」追加(6→7エントリ)。
+
+`command_dispatch.h`の`CommandDispatchContext`に`SessionManager&`フィールドを新設(前方宣言のみで循環include回避)。この1フィールド追加の波及範囲が想定以上に広く、`CommandDispatchContext`を構築する既存7箇所(`handleClipboardOrUndoRedoKey()`/`handleOverwriteToggleKey()`/`buildCommandRegistry()`のUndo・Redoアクション×2/`showEditContextMenu()`/`showTabContextMenu()`/`wireNormalMode()`本体の`cfg.onCommand`)と、それらへ`SessionManager&`を伝播させる呼び出し元の連鎖(`handleKeyDownEvent()`→`handleClipboardOrUndoRedoKey()`/`handleOverwriteToggleKey()`、`handleContextMenuEvent()`→`showEditContextMenu()`/`showTabContextMenu()`、`buildCommandRegistry()`の4呼び出し箇所とその中の3つの再帰自己呼び出しラムダの捕捉リスト、`wireNormalMode()`自身の`cfg.onDeferredInit`・`cfg.onKeyDown`・`cfg.onContextMenu`各ラムダの捕捉リスト)まで、機械的だが広範囲な配線変更を要した。Copy/Cut/Paste/Undo/Redo等`sessionManager`を実際には使わないコマンド群の関数にも同フィールドが必須引数として伝播する形になったが、`CommandDispatchContext`自体が「都度個別引数を足すのではなく共通コンテキストとしてまとめて配線する」既存設計である以上、新規フィールド追加につきものの妥当なコストと判断し、`gitDiffWorker`パラメータが既に同じ経路で伝播している箇所を目印(grep)にして漏れなく特定した。
+
+**②`WM_COPYDATA`による2つ目起動時のIPC委譲。** `claimSingleInstance()`のシグネチャに`const LaunchArgs& args`を追加、ミューテックス既存検出時に新規`kCopyDataOpenPathId`を`dwData`として`SendMessageW`で`WM_COPYDATA`送信(`lpData`は`--open`パスのUTF-16文字列、無ければ空)。受信側は`ui::MainWindowConfig`に新規`onCopyData`フックを追加、`WM_COPYDATA`ケースで`COPYDATASTRUCT`から`std::wstring_view`へ即座にコピー(`lpData`は`SendMessageW`完了後は無効になるため)。`SessionManager::wireAndShow()`が全ウィンドウにこのハンドラを配線する(`FindWindowW`はZ順序依存でどのウィンドウを返すか保証されないため)。
+
+新規`SessionManager::createWindow()`——`adoptFirstWindow()`と異なり自身で文書を読み込む必要があり、`launch_setup.cpp`の`loadStartupDocument()`(元は`LaunchArgs`全体を取る匿名名前空間ローカル関数)を`loadDocumentForOpenPath()`へリファクタ(パスだけを取るよう狭め、`launch_setup.h`で公開)し、起動時1ウィンドウ目の読み込みと完全に同じロジックを再利用した。クラッシュ復旧プロンプトループは実行しない設計にした(起動時専用の概念であり、セッション中に開いたウィンドウには回復すべき新規対象が無いため)。`openPath`が`std::nullopt`なら新規空ウィンドウを開く——basic_design.md §2.3の「そちらが新規MainWindowを開く」という無条件の文言通り、AskUserQuestionで既に確認済みの挙動(バグ無し2回目起動は常に新規ウィンドウ、既存ウィンドウを再アクティブ化するだけの旧挙動ではない)。
+
+### 実機ドッグフーディングで発見したこと
+
+`session_manager.cpp`のWM_COMMAND直接送信によるドッグフーディングスクリプト実行前に、既存の「killできないゾンビNeoMIFESプロセス」(過去セッションから既知、ビルド時exeロック由来)が実際にはシングルインスタンス用の名前付きミューテックスを保持していないことが判明した——`taskkill /F`が「アクセスが拒否されました」で失敗する状態のプロセスが存在する中で新規`NeoMIFES.exe`を起動したところ、正常に新規ウィンドウが開いた(既存ウィンドウへのアクティブ化に切り替わらなかった)ことで確認。ゾンビプロセスのカーネルリソース(スレッド・ミューテックス所有権含む)は既に解放済みで、プロセスエントリ自体だけがOS上に奇妙な状態で残留している(`Get-Process`で`StartTime`/`MainWindowTitle`が空、`Responding: True`だが`HasExited`も空という矛盾した状態)と判断、本WIの動作には無関係と結論した。
+
+### 実機ドッグフーディング(全て確認済み)
+
+WM_COMMAND直接送信(`CommandId::NewWindow`=40018)+ウィンドウ列挙により確認: ①`CommandId::NewWindow`で独立した第2ウィンドウが実際に開く(2ウィンドウとも別々のHWNDとして列挙で確認)。②あとから開いた方だけをWM_CLOSEで閉じてもプロセスは生存し続け、残る1ウィンドウはそのまま存在する。③最後の1ウィンドウを閉じるとプロセスが実際に終了する(exit code 0)。④`NeoMIFES.exe`を実際に2回・3回と追加起動(1回目は`--open <ファイル>`付き、2回目は引数無し)、いずれも追加起動したプロセス自身は即座にexit code 0で終了し、最初のプロセスが新規ウィンドウを開く(`--open`ありの場合はタイトルバー/タブに正しいファイル名"wi20b_ipc_test.txt - NeoMIFES"が反映、引数無しの場合は新規の空"Untitled - NeoMIFES"ウィンドウ)ことを確認、最終的に1プロセスで3ウィンドウが同時に開いている状態を実機で確認した。
+
+**未確認のまま正直に記録する項目:** 「第2ウィンドウにフォーカスがある状態でCtrl+S等のアクセラレータが正しく機能する」(`main.cpp`の`runMessageLoop()`の`GetAncestor(msg.hwnd, GA_ROOT)`修正が存在しなければ壊れる、WI-20aで先回りして修正済みの項目)は、この環境の既知のキーストローク合成制約(WI-20aのドッグフーディングで確認済み、`SendKeys`/`SendInput`いずれも本ウィンドウへのキー入力が届かない)により、実際のキー入力での実演はできなかった。`GetAncestor()`自体は特殊なケースの無いシンプルかつ確立されたWin32 APIパターンであり、かつ本ドッグフーディングにより「実際に複数ウィンドウが同時に開いている」という前提条件自体が初めて現実のシナリオとして検証されたため、この修正コードは理論上のものから実際に意味のあるコードパスへと変わった。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は発生せず初回で全件pass — ubsan構成の検証をバックグラウンドサブエージェントへ委任したが、2回連続で「バックグラウンドビルドを開始した」段階で応答を終了し指示した全工程を完走していなかったため、SendMessageで同一エージェントを2回再開させ、3回目に「run_in_backgroundを使わずフォアグラウンドで実行せよ」と明示指示してようやく完走させた)。clang-tidyで2件検出・修正: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`、`createWindow()`の`openPath`引数をconst参照へ変更、ヘッダ宣言も同期)、`launch_setup.cpp`の`const_cast`除去1件(`cppcoreguidelines-pro-type-const-cast`——`COPYDATASTRUCT::lpData`がWin32 API上`PVOID`型のため`payload.c_str()`への`const_cast`が必要になっていたが、`payload`自体を非const局所変数にし`.data()`の非constオーバーロード(C++17)を使う形に変更して解消)。既存テスト`CommandDispatchTest.CoversExactlyTheDocumentedCommandSet`(`app_command_dispatch_test.cpp`)が`NewWindow`追加後のHACCEL集合と期待値セットの食い違いを実際に検出、期待値セットへ`NewWindow`を追加して解消(このテストは`kAcceleratorEligibleCommands`を直接参照せず`buildAcceleratorRows()`の結果から独立して期待値を再導出する設計だったため、他の2ファイル(`kFileMenuItems`のみ手動更新が必要、`kAllRemappableCommandIds`参照テストは元々ハードコード件数を持たず無変更で対応)とは異なる経路で不整合を捕捉した)。
+
+**これで[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1、要件定義書§6必須機能)が完全に解決した。**
+
+次は、次に着手する作業をユーザーに確認する。`view_menu_and_word_wrap_incomplete.md`(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ残っている。
+
 <!-- 次セッションはここに追記 -->

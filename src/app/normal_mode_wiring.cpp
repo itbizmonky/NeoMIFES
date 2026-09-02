@@ -31,6 +31,7 @@
 #include "neomifes/app/json_tree_bridge.h"
 #include "neomifes/app/key_chord.h"
 #include "neomifes/app/keybinding_dispatch.h"
+#include "neomifes/app/session_manager.h"
 #include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
@@ -1706,7 +1707,8 @@ void toggleDiffView(HWND hwnd, RenderPipeline& renderPipeline, Workspace& worksp
                                                 const core::Settings& settings, AutosaveContext& autosave,
                                                 CsvGridPane& csvGridPane,
                                                 const void*& csvGridPanePendingSessionToken,
-                                                git::GitDiffWorker& gitDiffWorker) {
+                                                git::GitDiffWorker& gitDiffWorker,
+                                                SessionManager& sessionManager) {
     constexpr std::array<CommandId, 5> kCandidates{CommandId::Copy, CommandId::Cut, CommandId::Paste,
                                                     CommandId::Undo, CommandId::Redo};
     for (const CommandId candidate : kCandidates) {
@@ -1723,7 +1725,8 @@ void toggleDiffView(HWND hwnd, RenderPipeline& renderPipeline, Workspace& worksp
                                          .settings                       = settings,
                                          .csvGridPane                    = csvGridPane,
                                          .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                         .gitDiffWorker                  = gitDiffWorker};
+                                         .gitDiffWorker                  = gitDiffWorker,
+                                         .sessionManager                 = sessionManager};
         dispatchCommand(candidate, ctx);
         return true;
     }
@@ -1744,7 +1747,8 @@ void toggleDiffView(HWND hwnd, RenderPipeline& renderPipeline, Workspace& worksp
                                             const core::Settings& settings, AutosaveContext& autosave,
                                             CsvGridPane& csvGridPane,
                                             const void*& csvGridPanePendingSessionToken,
-                                            git::GitDiffWorker& gitDiffWorker) {
+                                            git::GitDiffWorker& gitDiffWorker,
+                                            SessionManager& sessionManager) {
     if (!chordMatches(keyBindings, CommandId::ToggleOverwriteMode, ctrlDown, shiftDown, false, vkCode)) {
         return false;
     }
@@ -1758,7 +1762,8 @@ void toggleDiffView(HWND hwnd, RenderPipeline& renderPipeline, Workspace& worksp
                                      .settings                       = settings,
                                      .csvGridPane                    = csvGridPane,
                                      .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                     .gitDiffWorker                  = gitDiffWorker};
+                                     .gitDiffWorker                  = gitDiffWorker,
+                                     .sessionManager                 = sessionManager};
     dispatchCommand(CommandId::ToggleOverwriteMode, ctx);
     return true;
 }
@@ -1787,7 +1792,8 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
                         const void*& csvGridPanePendingSessionToken, bool freeCursorModeEnabled, bool imeComposing,
                         const core::KeyBindings& keyBindings, core::RecentFiles& recentFiles,
                         const MenuBarHandles& menuHandles, const core::Settings& settings,
-                        AutosaveContext& autosave, git::GitDiffWorker& gitDiffWorker) {
+                        AutosaveContext& autosave, git::GitDiffWorker& gitDiffWorker,
+                        SessionManager& sessionManager) {
     // WI-06: checked before EVERYTHING else in this dispatch chain (even
     // handleFreeCursorRightArrow()) - while an IME is actively composing,
     // Windows still delivers WM_KEYDOWN for some keys (arrows, Enter, Escape
@@ -1879,7 +1885,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     // lookup would otherwise count directly against it.
     if (handleClipboardOrUndoRedoKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar,
                                      keyBindings, recentFiles, menuHandles, settings, autosave, csvGridPane,
-                                     csvGridPanePendingSessionToken, gitDiffWorker)) {
+                                     csvGridPanePendingSessionToken, gitDiffWorker, sessionManager)) {
         return;
     }
     // WI-12: Ctrl+A/Ctrl+D/Ctrl+Shift+K - see handleLineEditKey()'s own
@@ -1889,7 +1895,7 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
     }
     if (handleOverwriteToggleKey(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar, keyBindings,
                                  recentFiles, menuHandles, settings, autosave, csvGridPane,
-                                 csvGridPanePendingSessionToken, gitDiffWorker)) {
+                                 csvGridPanePendingSessionToken, gitDiffWorker, sessionManager)) {
         return;
     }
     const bool changed =
@@ -2458,7 +2464,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     std::optional<csvmode::CsvModelWorker>& csvModelWorker,
     const void*& csvGridPanePendingSessionToken, JsonPathBar& jsonPathBar, bool& jsonPathBarIsForXml,
     git::GitDiffWorker& gitDiffWorker, GitPane& gitPane, git::GitStatusWorker& gitStatusWorker,
-    std::optional<document::Document>& diffViewDocument) {
+    std::optional<document::Document>& diffViewDocument, SessionManager& sessionManager) {
     std::vector<CommandDescriptor> commands;
     commands.push_back(CommandDescriptor{
         .id = u"find.show", .title = u"Find",
@@ -2488,6 +2494,11 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             navigateToMatch(false, hwnd, workspace.active(), renderPipeline, findBar);
         }});
     commands.push_back(CommandDescriptor{
+        .id = u"window.new", .title = u"New Window",
+        .keybindingLabel = keybindingLabelFor(keyBindings, u"window.new"),
+        .commandId       = CommandId::NewWindow,
+        .action          = [&sessionManager]() { static_cast<void>(sessionManager.createWindow(std::nullopt)); }});
+    commands.push_back(CommandDescriptor{
         .id = u"edit.undo", .title = u"Undo",
         .keybindingLabel = keybindingLabelFor(keyBindings, u"edit.undo"),
         .commandId = CommandId::Undo,
@@ -2497,7 +2508,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         // handleKeyDownEvent() check (Undo isn't accelerator-routed, see
         // command_dispatch.h's top comment).
         .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave, &settings,
-                  &csvGridPane, &csvGridPanePendingSessionToken, &gitDiffWorker]() {
+                  &csvGridPane, &csvGridPanePendingSessionToken, &gitDiffWorker, &sessionManager]() {
             const CommandDispatchContext ctx{.hwnd                           = hwnd,
                                              .workspace                      = workspace,
                                              .renderPipeline                 = renderPipeline,
@@ -2508,7 +2519,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                                              .settings                       = settings,
                                              .csvGridPane                    = csvGridPane,
                                              .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                             .gitDiffWorker                  = gitDiffWorker};
+                                             .gitDiffWorker                  = gitDiffWorker,
+                                             .sessionManager                 = sessionManager};
             dispatchCommand(CommandId::Undo, ctx);
         }});
     commands.push_back(CommandDescriptor{
@@ -2516,7 +2528,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .keybindingLabel = keybindingLabelFor(keyBindings, u"edit.redo"),
         .commandId = CommandId::Redo,
         .action = [hwnd, &workspace, &renderPipeline, &findBar, &recentFiles, menuHandles, &autosave, &settings,
-                  &csvGridPane, &csvGridPanePendingSessionToken, &gitDiffWorker]() {
+                  &csvGridPane, &csvGridPanePendingSessionToken, &gitDiffWorker, &sessionManager]() {
             const CommandDispatchContext ctx{.hwnd                           = hwnd,
                                              .workspace                      = workspace,
                                              .renderPipeline                 = renderPipeline,
@@ -2527,7 +2539,8 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                                              .settings                       = settings,
                                              .csvGridPane                    = csvGridPane,
                                              .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                             .gitDiffWorker                  = gitDiffWorker};
+                                             .gitDiffWorker                  = gitDiffWorker,
+                                             .sessionManager                 = sessionManager};
             dispatchCommand(CommandId::Redo, ctx);
         }});
     commands.push_back(CommandDescriptor{
@@ -2792,7 +2805,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                    &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
-                   &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument]() {
+                   &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument, &sessionManager]() {
             if (!keyBindingsPath) {
                 return;
             }
@@ -2805,7 +2818,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                 csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker, gitPane,
-                gitStatusWorker, diffViewDocument));
+                gitStatusWorker, diffViewDocument, sessionManager));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-10: 4 flat palette-only commands, same "no click position to
@@ -2840,7 +2853,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                        &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken,
                        &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar,
                        &jsonPathBarIsForXml, &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument,
-                       presetName = std::u16string(choice.name)]() {
+                       &sessionManager, presetName = std::u16string(choice.name)]() {
                 keyBindings = core::KeyBindings::forPreset(presetName);
                 if (keyBindingsPath) {
                     keyBindings.saveTo(*keyBindingsPath);
@@ -2852,7 +2865,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                     menuHandles, autosave, logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane,
                     outlinePane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane,
                     csvModelWorker, csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml,
-                    gitDiffWorker, gitPane, gitStatusWorker, diffViewDocument));
+                    gitDiffWorker, gitPane, gitStatusWorker, diffViewDocument, sessionManager));
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }});
     }
@@ -2877,7 +2890,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                    menuHandles, &autosave, &logIndexWorker, &userLogPatterns, logPatternsDir, &jsonTreePane,
                    &outlinePane, &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                    &csvModelWorker, &csvGridPanePendingSessionToken, &jsonPathBar, &jsonPathBarIsForXml,
-                   &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument]() {
+                   &gitDiffWorker, &gitPane, &gitStatusWorker, &diffViewDocument, &sessionManager]() {
             if (!logPatternsDir) {
                 return;
             }
@@ -2889,7 +2902,7 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                 logIndexWorker, userLogPatterns, logPatternsDir, jsonTreePane, outlinePane, jsonTreeWorker,
                 xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                 csvGridPanePendingSessionToken, jsonPathBar, jsonPathBarIsForXml, gitDiffWorker, gitPane,
-                gitStatusWorker, diffViewDocument));
+                gitStatusWorker, diffViewDocument, sessionManager));
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
 
@@ -3569,7 +3582,8 @@ void createAndPositionStatusBar(HWND hwnd, HINSTANCE hInstance, Workspace& works
 void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, RenderPipeline& renderPipeline,
                          FindBar& findBar, core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
                          const core::Settings& settings, AutosaveContext& autosave, CsvGridPane& csvGridPane,
-                         const void*& csvGridPanePendingSessionToken, git::GitDiffWorker& gitDiffWorker) {
+                         const void*& csvGridPanePendingSessionToken, git::GitDiffWorker& gitDiffWorker,
+                         SessionManager& sessionManager) {
     HMENU menu = ::CreatePopupMenu();
     if (menu == nullptr) {
         return;
@@ -3598,7 +3612,8 @@ void showEditContextMenu(HWND hwnd, POINT screenPt, Workspace& workspace, Render
                                      .settings                       = settings,
                                      .csvGridPane                    = csvGridPane,
                                      .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                     .gitDiffWorker                  = gitDiffWorker};
+                                     .gitDiffWorker                  = gitDiffWorker,
+                                     .sessionManager                 = sessionManager};
     dispatchCommand(static_cast<CommandId>(selected), ctx);
 }
 
@@ -3614,7 +3629,7 @@ void showTabContextMenu(HWND hwnd, POINT screenPt, std::size_t tabIndex, Workspa
                         RenderPipeline& renderPipeline, FindBar& findBar, core::RecentFiles& recentFiles,
                         const MenuBarHandles& menuHandles, const core::Settings& settings, AutosaveContext& autosave,
                         CsvGridPane& csvGridPane, const void*& csvGridPanePendingSessionToken,
-                        git::GitDiffWorker& gitDiffWorker) {
+                        git::GitDiffWorker& gitDiffWorker, SessionManager& sessionManager) {
     if (tabIndex < workspace.sessionCount() && tabIndex != workspace.activeIndex()) {
         workspace.activate(tabIndex);
         syncViewForActiveSession(hwnd, renderPipeline, workspace.active(), findBar, csvGridPane,
@@ -3648,7 +3663,8 @@ void showTabContextMenu(HWND hwnd, POINT screenPt, std::size_t tabIndex, Workspa
                                      .settings                       = settings,
                                      .csvGridPane                    = csvGridPane,
                                      .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                     .gitDiffWorker                  = gitDiffWorker};
+                                     .gitDiffWorker                  = gitDiffWorker,
+                                     .sessionManager                 = sessionManager};
     dispatchCommand(static_cast<CommandId>(selected), ctx);
 }
 
@@ -3664,7 +3680,8 @@ void handleContextMenuEvent(HWND source, HWND hwnd, std::int32_t xScreen, std::i
                             RenderPipeline& renderPipeline, FindBar& findBar, TabBar& tabBar,
                             core::RecentFiles& recentFiles, const MenuBarHandles& menuHandles,
                             const core::Settings& settings, AutosaveContext& autosave, CsvGridPane& csvGridPane,
-                            const void*& csvGridPanePendingSessionToken, git::GitDiffWorker& gitDiffWorker) {
+                            const void*& csvGridPanePendingSessionToken, git::GitDiffWorker& gitDiffWorker,
+                            SessionManager& sessionManager) {
     const POINT screenPt{.x = xScreen, .y = yScreen};
     if (source == tabBar.hwnd()) {
         POINT clientPt = screenPt;
@@ -3679,7 +3696,7 @@ void handleContextMenuEvent(HWND source, HWND hwnd, std::int32_t xScreen, std::i
         }
         showTabContextMenu(hwnd, screenPt, static_cast<std::size_t>(tabIndex), workspace, renderPipeline, findBar,
                            recentFiles, menuHandles, settings, autosave, csvGridPane,
-                           csvGridPanePendingSessionToken, gitDiffWorker);
+                           csvGridPanePendingSessionToken, gitDiffWorker, sessionManager);
         return;
     }
     if (source != hwnd) {
@@ -3699,7 +3716,7 @@ void handleContextMenuEvent(HWND source, HWND hwnd, std::int32_t xScreen, std::i
         return;
     }
     showEditContextMenu(hwnd, screenPt, workspace, renderPipeline, findBar, recentFiles, menuHandles, settings,
-                        autosave, csvGridPane, csvGridPanePendingSessionToken, gitDiffWorker);
+                        autosave, csvGridPane, csvGridPanePendingSessionToken, gitDiffWorker, sessionManager);
 }
 
 // WI-07 step4: derives every ui::StatusBarParts field from EditorSession's
@@ -4633,6 +4650,9 @@ void dispatchCommand(CommandId id, const CommandDispatchContext& ctx) {
         case CommandId::New:
             dispatchNewCommand(ctx);
             return;
+        case CommandId::NewWindow:
+            static_cast<void>(ctx.sessionManager.createWindow(std::nullopt));
+            return;
         case CommandId::TabNext:
         case CommandId::TabPrevious:
         case CommandId::TabSwitch1:
@@ -4743,7 +4763,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                     std::optional<neomifes::git::GitDiffWorker>& gitDiffWorker,
                     std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml,
                     GitPane& gitPane, std::optional<GitStatusWorker>& gitStatusWorker,
-                    std::optional<document::Document>& diffViewDocument) {
+                    std::optional<document::Document>& diffViewDocument, SessionManager& sessionManager) {
     // WI-05: a plain statement here (not inside any lambda) - this value
     // never changes again for the process's lifetime (see
     // setTabBarHeightDips()'s own comment), so there is no reason to defer
@@ -4768,7 +4788,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                           &userLogPatterns, logPatternsDir, &jsonTreeWorker, &csvModelWorker, &jsonTreePane,
                           &jsonTreePanePendingSessionToken, &csvGridPane,
                           &csvGridPanePendingSessionToken, &gitDiffWorker, &xmlTreeWorker,
-                          &jsonPathBarIsForXml, &gitPane, &gitStatusWorker, &diffViewDocument](HWND hwnd) {
+                          &jsonPathBarIsForXml, &gitPane, &gitStatusWorker, &diffViewDocument,
+                          &sessionManager](HWND hwnd) {
         const auto attached = renderPipeline.attach(hwnd);
         if (!attached) {
             debugLogRenderError("RenderPipeline::attach", attached.error());
@@ -4840,7 +4861,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                              jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
                                              csvGridPane, csvModelWorker, csvGridPanePendingSessionToken,
                                              jsonPathBar, jsonPathBarIsForXml, *gitDiffWorker, gitPane,
-                                             *gitStatusWorker, diffViewDocument);
+                                             *gitStatusWorker, diffViewDocument, sessionManager);
         [[maybe_unused]] const bool commandPaletteCreated =
             commandPalette.create(hwnd, hInstance, commandPaletteConfig, std::move(commands));
 
@@ -4943,7 +4964,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                      &jsonTreePane, &gitPane,
                      &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                      &csvModelWorker, &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
-                     menuHandles, &settings, &autosave, &gitDiffWorker](HWND hwnd, WPARAM wParam, LPARAM lParam) {
+                     menuHandles, &settings, &autosave, &gitDiffWorker,
+                     &sessionManager](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
         grepBar.handleCommand(wParam, lParam);
@@ -4973,7 +4995,8 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                          .settings                       = settings,
                                          .csvGridPane                    = csvGridPane,
                                          .csvGridPanePendingSessionToken = csvGridPanePendingSessionToken,
-                                         .gitDiffWorker                  = *gitDiffWorker};
+                                         .gitDiffWorker                  = *gitDiffWorker,
+                                         .sessionManager                 = sessionManager};
         if (rawId >= neomifes::app::kRecentFileIdBase &&
             rawId < neomifes::app::kRecentFileIdBase + neomifes::app::kMaxRecentFileMenuItems) {
             dispatchRecentFileCommand(static_cast<std::size_t>(rawId - neomifes::app::kRecentFileIdBase), ctx);
@@ -5058,11 +5081,11 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleContextMenuEvent()'s own comment above for the source-HWND
     // branching (tab strip / main window text content / everything else).
     cfg.onContextMenu = [&workspace, &renderPipeline, &findBar, &tabBar, &recentFiles, menuHandles, &settings,
-                        &autosave, &csvGridPane, &csvGridPanePendingSessionToken,
-                        &gitDiffWorker](HWND source, HWND hwnd, std::int32_t xScreen, std::int32_t yScreen) {
+                        &autosave, &csvGridPane, &csvGridPanePendingSessionToken, &gitDiffWorker,
+                        &sessionManager](HWND source, HWND hwnd, std::int32_t xScreen, std::int32_t yScreen) {
         handleContextMenuEvent(source, hwnd, xScreen, yScreen, workspace, renderPipeline, findBar, tabBar,
                                recentFiles, menuHandles, settings, autosave, csvGridPane,
-                               csvGridPanePendingSessionToken, *gitDiffWorker);
+                               csvGridPanePendingSessionToken, *gitDiffWorker, sessionManager);
     };
     // WI-06: see wireImeHooks()'s own comment for why the 4 IME hooks were
     // pulled into a standalone function rather than assigned inline here
@@ -5073,13 +5096,13 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                      &grepBar, &outlinePane, &jsonTreePane, &gitPane, &jsonTreeWorker, &xmlTreeWorker,
                      &jsonTreePanePendingSessionToken,
                      &csvGridPane, &csvModelWorker, &csvGridPanePendingSessionToken, &freeCursorModeEnabled,
-                     &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings, &autosave,
-                     &gitDiffWorker](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
+                     &imeComposing, &keyBindings, &recentFiles, menuHandles, &settings, &autosave, &gitDiffWorker,
+                     &sessionManager](HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown) {
         handleKeyDownEvent(hwnd, vkCode, shiftDown, ctrlDown, workspace, renderPipeline, findBar, findReplaceDialog,
                           commandPalette, gotoLineBar, grepBar, outlinePane, jsonTreePane, gitPane, jsonTreeWorker,
                           xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
                           csvGridPanePendingSessionToken, freeCursorModeEnabled, imeComposing, keyBindings,
-                          recentFiles, menuHandles, settings, autosave, *gitDiffWorker);
+                          recentFiles, menuHandles, settings, autosave, *gitDiffWorker, sessionManager);
     };
     cfg.onSysKeyDown = [&workspace, &renderPipeline](HWND hwnd, UINT vkCode, bool shiftDown) {
         return handleSysKeyDownEvent(hwnd, vkCode, shiftDown, workspace.active(), renderPipeline);

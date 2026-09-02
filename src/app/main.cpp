@@ -265,7 +265,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     // fresh isolated processes for benchmarking; gating those on this check would
     // make CI runs flaky if two measurement runs ever overlapped.
     KernelHandle singleInstanceMutex;
-    if (args.mode == LaunchMode::Normal && !claimSingleInstance(singleInstanceMutex)) {
+    if (args.mode == LaunchMode::Normal && !claimSingleInstance(singleInstanceMutex, args)) {
         return 0;
     }
 

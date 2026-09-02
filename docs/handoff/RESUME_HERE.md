@@ -234,6 +234,24 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-20aセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎯 最重要 (2026-09-03) — WI-20b: `CommandId::NewWindow`のフル配線 + `WM_COPYDATA`による2つ目起動時のIPC委譲、🎉 複数ウィンドウ対応完結
+>
+> **WI-20aの内部再構成(外部から見た挙動は無変化)の上に、実際のユーザー向け新機能を実装した。** ①`CommandId::NewWindow`(Ctrl+Shift+N、File>新しいウィンドウ、コマンドパレット「New Window」)をフル配線 — `command_ids.h`/`command_id_name.h`/`keybinding_dispatch.h`/`key_bindings_presets.cpp`(neomifesプリセットのみ)/`menu_bar.h`。`CommandDispatchContext`(`command_dispatch.h`)に`SessionManager&`フィールドを追加、`dispatchCommand()`の`case CommandId::NewWindow`が`sessionManager.createWindow(std::nullopt)`を呼ぶ。この1フィールド追加により、`CommandDispatchContext`を構築する既存7箇所と、それらへ`SessionManager&`を伝播させる呼び出し元(`handleKeyDownEvent()`/`handleContextMenuEvent()`/`buildCommandRegistry()`の4呼び出し箇所+`wireNormalMode()`自身の3ラムダ)まで、機械的だが広範囲な配線変更が必要になった — Copy/Cut/Paste/Undo/Redo等`sessionManager`を実際には使わないコマンド群の関数にも同フィールドが必須引数として伝播したが、`CommandDispatchContext`自体が「共通コンテキストとしてまとめて配線する」既存設計である以上、新規フィールド追加につきものの妥当なコストと判断した。
+>
+> **②`WM_COPYDATA`による2つ目起動時のIPC委譲** — `claimSingleInstance()`が既存ウィンドウ発見時、新規`kCopyDataOpenPathId`を`dwData`として`--open`パス(UTF-16文字列、無ければ空)を`SendMessageW`で送信するよう拡張。受信側は`ui::MainWindowConfig`に新規`onCopyData`フックを追加、全ウィンドウに配線(`FindWindowW`はZ順序依存でどのウィンドウを返すか保証されないため)。新規`SessionManager::createWindow()`が`launch_setup.h`の`loadDocumentForOpenPath()`(旧`loadStartupDocument()`を`LaunchArgs`全体ではなくパスだけを取る形へリファクタし公開関数へ昇格、起動時1ウィンドウ目の読み込みと完全に同じロジックを再利用)でDocumentを読み込む。クラッシュ復旧プロンプトループは実行しない(起動時専用の概念のため)。`openPath`が`std::nullopt`なら新規空ウィンドウを開く(basic_design.mdの無条件の文言通り、ユーザー承認済み)。
+>
+> **実機ドッグフーディングで確認:** `CommandId::NewWindow`(WM_COMMAND)で独立した第2ウィンドウが実際に開く、片方だけを閉じてもプロセスは生存しもう片方は残る、最後の1ウィンドウを閉じるとプロセスが実際に終了(exit code 0)。**`NeoMIFES.exe`を実際に2回・3回追加起動**(1回目`--open`あり、2回目無し)し、いずれも追加プロセス自身が即座にexit code 0で終了、最初のプロセスが新規ウィンドウを開く(--openありはタイトルバー/タブに正しいファイル名反映、無しは新規空ウィンドウ)ことを確認、最終的に1プロセス3ウィンドウの状態を実機で確認した。**「第2ウィンドウにフォーカスがある状態でCtrl+S等のアクセラレータが機能する」(`runMessageLoop()`のGetAncestor修正が無ければ壊れる項目)は、この環境の既知のキーストローク合成制約により実際のキー入力での実演はできなかった** — 正直に記録した。途中、過去セッションから存在する「killできないゾンビNeoMIFESプロセス」が実際には名前付きミューテックスを保持していない(新規起動が正常にブロックされずウィンドウを開けたことで確認)と判明、本WIの動作には無関係と確認した。
+>
+> clang-tidyで2件検出・修正: `session_manager.cpp`の値渡しパラメータ1件、`launch_setup.cpp`の`const_cast`除去1件(`COPYDATASTRUCT::lpData`がWin32 API上`PVOID`型のため、payload文字列を非constにし`.data()`の非constオーバーロードを使う形で解消)。既存テスト`CommandDispatchTest.CoversExactlyTheDocumentedCommandSet`が期待値セットの食い違いを検出、`NewWindow`を追加して解消。Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行なし)。
+>
+> **これで[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1、要件定義書§6必須機能)が完全に解決した。🎉 WI-20(複数ウィンドウ対応)完結。**
+>
+> **次回セッション最初にやること:** 次に着手する作業をユーザーに確認する — [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-20bセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

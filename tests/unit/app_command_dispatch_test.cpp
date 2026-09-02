@@ -59,11 +59,11 @@ TEST(CommandDispatchTest, CoversExactlyTheDocumentedCommandSet) {
     }
     const std::set<ui::CommandId> expected = {
         ui::CommandId::Save,       ui::CommandId::SaveAs,      ui::CommandId::Open,
-        ui::CommandId::New,        ui::CommandId::TabClose,    ui::CommandId::TabNext,
-        ui::CommandId::TabPrevious, ui::CommandId::TabSwitch1, ui::CommandId::TabSwitch2,
-        ui::CommandId::TabSwitch3, ui::CommandId::TabSwitch4, ui::CommandId::TabSwitch5,
-        ui::CommandId::TabSwitch6, ui::CommandId::TabSwitch7, ui::CommandId::TabSwitch8,
-        ui::CommandId::TabSwitch9,
+        ui::CommandId::New,        ui::CommandId::NewWindow,   ui::CommandId::TabClose,
+        ui::CommandId::TabNext,    ui::CommandId::TabPrevious, ui::CommandId::TabSwitch1,
+        ui::CommandId::TabSwitch2, ui::CommandId::TabSwitch3,  ui::CommandId::TabSwitch4,
+        ui::CommandId::TabSwitch5, ui::CommandId::TabSwitch6,  ui::CommandId::TabSwitch7,
+        ui::CommandId::TabSwitch8, ui::CommandId::TabSwitch9,
     };
     EXPECT_EQ(actual, expected);
 }

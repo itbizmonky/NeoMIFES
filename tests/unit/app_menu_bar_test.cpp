@@ -61,13 +61,14 @@ TEST(MenuBarTest, NoCommandIdAppearsInMoreThanOneMenu) {
 }
 
 TEST(MenuBarTest, FileMenuOpensSavesAndCreatesInTheDocumentedOrder) {
-    ASSERT_EQ(kFileMenuItems.size(), 6U);
+    ASSERT_EQ(kFileMenuItems.size(), 7U);
     EXPECT_EQ(kFileMenuItems[0].commandId, CommandId::Open);
     EXPECT_EQ(kFileMenuItems[1].commandId, CommandId::Save);
     EXPECT_EQ(kFileMenuItems[2].commandId, CommandId::SaveAs);
     EXPECT_EQ(kFileMenuItems[3].commandId, CommandId::New);
-    EXPECT_EQ(kFileMenuItems[4].commandId, CommandId::TabClose);
-    EXPECT_EQ(kFileMenuItems[5].commandId, CommandId::Exit);
+    EXPECT_EQ(kFileMenuItems[4].commandId, CommandId::NewWindow);
+    EXPECT_EQ(kFileMenuItems[5].commandId, CommandId::TabClose);
+    EXPECT_EQ(kFileMenuItems[6].commandId, CommandId::Exit);
 }
 
 TEST(MenuBarTest, EditMenuCoversUndoRedoAndClipboard) {

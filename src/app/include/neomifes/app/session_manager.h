@@ -66,6 +66,22 @@ public:
     [[nodiscard]] bool adoptFirstWindow(document::Document doc, DocumentFileState fileState,
                                         const std::optional<std::filesystem::path>& path);
 
+    // WI-20b: the general-purpose entry point - CommandId::NewWindow's
+    // dispatch and the WM_COPYDATA second-launch handoff both call this.
+    // Unlike adoptFirstWindow(), loads its own Document (via
+    // loadDocumentForOpenPath(), launch_setup.h - the exact same "load a
+    // path, fall back to blank on failure" logic prepareDocument() itself
+    // uses for the first window) and runs NO crash-recovery prompt loop
+    // (that is a startup-only concept - scanForRecoverableAutoSaves() was
+    // already fully consumed by adoptFirstWindow() at process start; a
+    // window opened mid-session has nothing new to recover). `openPath`
+    // nullopt opens a new blank window (basic_design.md sec.2.3's
+    // unconditional "そちらが新規MainWindowを開く" wording - see this WI's
+    // plan for why this was confirmed with the user rather than assumed).
+    // Same false-only-if-MainWindow::create()-fails contract as
+    // adoptFirstWindow().
+    [[nodiscard]] bool createWindow(const std::optional<std::filesystem::path>& openPath);
+
     [[nodiscard]] std::size_t windowCount() const noexcept { return m_windows.size(); }
 
     [[nodiscard]] const platform::AcceleratorTableHandle& acceleratorTable() const noexcept {

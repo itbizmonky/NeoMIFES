@@ -8,6 +8,13 @@ std::map<std::u16string, std::vector<std::u16string>> neomifesStandardBindings()
         {u"file.saveAs", {u"Ctrl+Shift+S"}},
         {u"file.open", {u"Ctrl+O"}},
         {u"file.new", {u"Ctrl+N"}},
+        // WI-20b: opens a new independent top-level window - confirmed
+        // unclaimed by every preset in this file and no overlay widget
+        // reserves it. Deliberately NOT added to sakura/hidemaru/vscode
+        // below (same "omit = unbound, no confirmed default for that
+        // preset's own tradition" convention every other entry unique to
+        // this preset already follows).
+        {u"window.new", {u"Ctrl+Shift+N"}},
         {u"tab.close", {u"Ctrl+W"}},
         {u"tab.next", {u"Ctrl+Tab", u"Ctrl+PageDown"}},
         {u"tab.previous", {u"Ctrl+Shift+Tab", u"Ctrl+PageUp"}},

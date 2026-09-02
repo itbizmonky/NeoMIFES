@@ -35,19 +35,20 @@ namespace neomifes::ui {
 // need a deterministic tie-break order (see
 // app::resolveKeyBindingConflicts()) rely on THIS being enum-declaration
 // order, not an arbitrary one.
-inline constexpr std::array<CommandId, 36> kAllRemappableCommandIds{
+inline constexpr std::array<CommandId, 37> kAllRemappableCommandIds{
     CommandId::FindShow,          CommandId::FindReplace,     CommandId::FindNext,
     CommandId::FindPrevious,      CommandId::GrepShow,        CommandId::CommandPaletteShow,
     CommandId::OutlineToggle,     CommandId::JsonTreeToggle,  CommandId::CsvGridToggle,
     CommandId::GotoLineShow,      CommandId::BookmarkToggle,  CommandId::BookmarkNext,
     CommandId::BookmarkPrevious,  CommandId::TagJump,         CommandId::Save,
     CommandId::SaveAs,            CommandId::Open,            CommandId::New,
-    CommandId::TabNext,           CommandId::TabPrevious,     CommandId::TabClose,
-    CommandId::TabSwitch1,        CommandId::TabSwitch2,      CommandId::TabSwitch3,
-    CommandId::TabSwitch4,        CommandId::TabSwitch5,      CommandId::TabSwitch6,
-    CommandId::TabSwitch7,        CommandId::TabSwitch8,      CommandId::TabSwitch9,
-    CommandId::Copy,              CommandId::Cut,             CommandId::Paste,
-    CommandId::Undo,              CommandId::Redo,            CommandId::ToggleOverwriteMode,
+    CommandId::NewWindow,         CommandId::TabNext,         CommandId::TabPrevious,
+    CommandId::TabClose,          CommandId::TabSwitch1,      CommandId::TabSwitch2,
+    CommandId::TabSwitch3,        CommandId::TabSwitch4,      CommandId::TabSwitch5,
+    CommandId::TabSwitch6,        CommandId::TabSwitch7,      CommandId::TabSwitch8,
+    CommandId::TabSwitch9,        CommandId::Copy,            CommandId::Cut,
+    CommandId::Paste,             CommandId::Undo,            CommandId::Redo,
+    CommandId::ToggleOverwriteMode,
 };
 
 // nullptr-equivalent (empty string_view) for CommandId::None and
@@ -60,6 +61,7 @@ inline constexpr std::array<CommandId, 36> kAllRemappableCommandIds{
         case CommandId::SaveAs: return u"file.saveAs";
         case CommandId::Open: return u"file.open";
         case CommandId::New: return u"file.new";
+        case CommandId::NewWindow: return u"window.new";
         case CommandId::TabClose: return u"tab.close";
         case CommandId::TabNext: return u"tab.next";
         case CommandId::TabPrevious: return u"tab.previous";

@@ -277,6 +277,21 @@ struct MainWindowConfig {
     // wireMeasureFrameMode(), main.cpp) and any other single-MainWindow
     // caller are completely unaffected by this change.
     std::function<void(HWND)> onDestroyed;
+    // Optional: invoked from WM_COPYDATA (WI-20b) - a second NeoMIFES.exe
+    // launch, detecting this one is already running, forwards its own
+    // --open path (if any) here via SendMessageW before exiting (see
+    // app::claimSingleInstance()). `dwData` is COPYDATASTRUCT::dwData
+    // (app::kCopyDataOpenPathId identifies this payload shape - the caller
+    // should ignore any other value, same "unrecognized input is a silent
+    // no-op" convention this codebase already applies elsewhere); `payload`
+    // is the UTF-16 path string (empty means "open a new blank window").
+    // MainWindow decodes the raw COPYDATASTRUCT itself (same "decode the
+    // primitive Win32 payload, hand the app layer clean typed values"
+    // convention onMouseDown/onDropFiles already follow) and COPIES the
+    // string out of cds->lpData before calling this - Win32 only
+    // guarantees that memory is valid for the duration of the SendMessageW
+    // call, so the callback must not retain a pointer/view into it.
+    std::function<void(HWND, ULONG_PTR dwData, std::wstring_view payload)> onCopyData;
 };
 
 class MainWindow {
@@ -441,6 +456,7 @@ private:
     std::function<void(HWND, std::u16string)>                         m_onImeResult;
     std::function<void(HWND)>                                         m_onImeEndComposition;
     std::function<void(HWND)>                                         m_onDestroyed;
+    std::function<void(HWND, ULONG_PTR, std::wstring_view)>           m_onCopyData;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;

@@ -45,16 +45,18 @@
 
 namespace neomifes::app {
 
-// The 16 CommandIds pre-WI-10's kAcceleratorTable (command_dispatch.h)
-// already routed through the real Win32 accelerator mechanism. Fixed, not
-// user-configurable - see this header's own top comment.
-inline constexpr std::array<ui::CommandId, 16> kAcceleratorEligibleCommands{
+// The 17 CommandIds pre-WI-10's kAcceleratorTable (command_dispatch.h)
+// already routed through the real Win32 accelerator mechanism, plus
+// NewWindow (WI-20b - confirmed unclaimed by every preset and no overlay
+// widget). Fixed, not user-configurable - see this header's own top
+// comment.
+inline constexpr std::array<ui::CommandId, 17> kAcceleratorEligibleCommands{
     ui::CommandId::Save,        ui::CommandId::SaveAs,      ui::CommandId::Open,
-    ui::CommandId::New,         ui::CommandId::TabClose,    ui::CommandId::TabNext,
-    ui::CommandId::TabPrevious, ui::CommandId::TabSwitch1,  ui::CommandId::TabSwitch2,
-    ui::CommandId::TabSwitch3,  ui::CommandId::TabSwitch4,  ui::CommandId::TabSwitch5,
-    ui::CommandId::TabSwitch6,  ui::CommandId::TabSwitch7,  ui::CommandId::TabSwitch8,
-    ui::CommandId::TabSwitch9,
+    ui::CommandId::New,         ui::CommandId::NewWindow,   ui::CommandId::TabClose,
+    ui::CommandId::TabNext,     ui::CommandId::TabPrevious, ui::CommandId::TabSwitch1,
+    ui::CommandId::TabSwitch2,  ui::CommandId::TabSwitch3,  ui::CommandId::TabSwitch4,
+    ui::CommandId::TabSwitch5,  ui::CommandId::TabSwitch6,  ui::CommandId::TabSwitch7,
+    ui::CommandId::TabSwitch8,  ui::CommandId::TabSwitch9,
 };
 
 // Maps each chord (in parseKeyChord()/keyChordToString()'s canonical string

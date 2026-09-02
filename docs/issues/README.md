@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-02 (WI-20a: 複数ウィンドウ対応の内部再構成〔`EditorWindow`/`SessionManager`〕完了、`no_multiple_window_support.md`〔P1〕を部分対応へ更新。先行してWI-18: ユーザー報告の基本UI品質バグ3件を修正 — ファイルを閉じる操作の追加/右クリックメニューの位置認識/検索・置換ダイアログ化。品質監査で新規発見した`view_menu_and_word_wrap_incomplete.md`〔P2〕は未対応のまま)
+**最終更新:** 2026-09-03 (WI-20b: `CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲が完了、`no_multiple_window_support.md`〔P1〕を解決済みへ移動。先行してWI-20a: 複数ウィンドウ対応の内部再構成〔`EditorWindow`/`SessionManager`〕完了。さらに先行してWI-18: ユーザー報告の基本UI品質バグ3件を修正。品質監査で新規発見した`view_menu_and_word_wrap_incomplete.md`〔P2〕は未対応のまま)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -23,7 +23,6 @@
 | [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
 | [CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費する](csv_per_cell_index_memory_scaling.md) | 🟡 2026-09-01部分対応。`CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB)。10GB規模への根本対応(遅延インデックス化)はユーザー承認のもと対象外確定、リスクは残存 | 対象外確定 (遅延インデックス化は再設計コストが大きいため見送り) |
 | [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 🟡 2026-09-01部分対応。真因はRE2ではなくUTF-8変換(toUtf8WithOffsets、ASCII高速パス追加で約38%削減)。GrepServiceのファイルあたり固定オーバーヘッドは対象外のまま残存 | 部分対応 (GrepServiceの多ファイルケースは未対応) |
-| [複数ウィンドウ (要件定義書§6必須機能) が構造的に未実装](no_multiple_window_support.md) | 🟡 2026-09-02部分対応(WI-20a)。方式を単一プロセス・複数`MainWindow`(`basic_design.md` §2.3通り)に確定、`EditorWindow`/`SessionManager`への内部再構成を完了(外部から見た挙動は無変化)。「複数ウィンドウを実際に開ける」ユーザー向け機能自体はWI-20b未着手 | WI-20a完了/WI-20b残り |
 
 ## P2 — 凍結 / 再評価待ち
 
@@ -71,6 +70,7 @@
 | [大規模JSONファイルを開くだけでJSON構文ハイライトが長時間UIをハングさせる](json_syntax_highlight_large_file_open_hang.md) | 🟢 2026-09-01。真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。空テーブルなら即座に空を返す早期リターンで解消、47秒→約1秒(約47倍改善)。C++等アウトライン対応言語への回帰無しをドッグフーディングで確認 |
 | [「100万Undo(24時間ソーク)」が実際にはUndo/Redoを回さないアイドル確認だった](undo_redo_active_usage_soak_not_performed.md) | 🟢 2026-09-01。ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施。`UndoStack`自体はリークしないことを確認(`push()`が`m_redo.clear()`を正しく実行)。観測された線形増加(非加速)は既知の`AddBuffer` append-only設計に起因、`undo_stack_unbounded_memory.md`で追跡中 |
 | [主要テキスト編集領域がUI Automation/スクリーンリーダーへ内容を一切公開していない](text_surface_no_screen_reader_exposure.md) | 🟢 2026-09-02。ユーザーが「簡易アナウンス実装」(フルTextPattern実装ではなく)を選択。`ui::TextSurfaceAccessible`(自前`IAccessible`、`CreateStdAccessibleObject()`への委譲+`get_accName()`のみ独自実装)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`経由の動的ディスパッチが独自実装を迂回する既存の見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで行移動ごとの正確・即時な内容反映を確認 |
+| [複数ウィンドウ (要件定義書§6必須機能) が構造的に未実装](no_multiple_window_support.md) | 🟢 WI-20a/b (2026-09-02〜03)。当初「複数プロセス方式」で合意しかけたが、`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記・プロセス分離を却下済みと判明、設計書通りへ差し戻し。新規`EditorWindow`/`SessionManager`(WI-20a)+`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲(WI-20b)で実装。実機ドッグフーディングで独立ウィンドウの開閉・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(`--open`あり/なし)を確認、キーストローク合成での独立編集の実演のみこの環境の制約で未確認のまま正直に記録 |
 
 ---
 

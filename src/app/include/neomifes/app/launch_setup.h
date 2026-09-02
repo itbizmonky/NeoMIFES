@@ -23,6 +23,17 @@
 
 namespace neomifes::app {
 
+// WI-20b: WM_COPYDATA::dwData value claimSingleInstance() (sender, a
+// second launch about to exit) and MainWindowConfig::onCopyData (receiver,
+// wired by SessionManager) both agree on - the payload (COPYDATASTRUCT::
+// lpData) is the UTF-16 path string to open, or empty for "open a new
+// blank window" (a bare second launch with no --open, per basic_design.md
+// sec.2.3's unconditional "そちらが新規MainWindowを開く" wording). No other
+// dwData value is defined yet - the receiver ignores anything else, same
+// "unrecognized input is a silent no-op" convention this codebase already
+// applies to a malformed keybindings.json entry etc.
+inline constexpr ULONG_PTR kCopyDataOpenPathId = 1;
+
 enum class LaunchMode : std::uint8_t {
     Normal,
     MeasureStartup,
@@ -43,17 +54,34 @@ struct LaunchArgs {
 // heap allocations on the fast path when no measurement flags are present.
 [[nodiscard]] LaunchArgs parseArgs() noexcept;
 
-// Named-mutex single-instance check (basic_design.md sec.2.3). Only the
-// detection + "activate the existing window" half is implemented here - the
-// command-line-handoff-via-IPC half described in basic_design.md requires a
-// SessionManager that does not exist yet (Phase 4+), so it is deliberately
-// not built speculatively. Returns true if THIS process should proceed to
-// create its own window; false if an existing instance was found and
-// activated instead (caller should exit without creating a window).
+// Named-mutex single-instance check (basic_design.md sec.2.3). WI-20b: now
+// implements BOTH halves basic_design.md describes - detection +
+// "activate the existing window" (as before WI-20a/b, when SessionManager
+// did not exist yet) AND the command-line-handoff-via-IPC half ("2つ目以降
+// の起動...コマンドライン引数をIPCで先行プロセスへ委譲、そちらが新規
+// MainWindowを開く") via WM_COPYDATA, sent to the existing window found via
+// FindWindowW. Returns true if THIS process should proceed to create its
+// own window; false if an existing instance was found (and handed
+// `args.openPath`, if any) instead - caller should exit without creating a
+// window in that case.
 //
 // `mutexHolder` receives ownership of the mutex handle so it stays alive for
 // the process lifetime (a second launch must still detect this one).
-[[nodiscard]] bool claimSingleInstance(platform::KernelHandle& mutexHolder) noexcept;
+[[nodiscard]] bool claimSingleInstance(platform::KernelHandle& mutexHolder, const LaunchArgs& args) noexcept;
+
+// WI-20b: promoted out of launch_setup.cpp's anonymous namespace (was
+// `loadStartupDocument()`, parameter narrowed from the whole LaunchArgs to
+// just the path it actually reads) so SessionManager::createWindow() can
+// reuse the identical "load a path, fall back to blank Document + debug-log
+// on failure" logic for every window created after the first (via the "New
+// Window" command with no path, or the WM_COPYDATA handoff above with a
+// path) - not just the one prepareDocument() builds at startup.
+// `fileStateOut`/`currentDocumentPathOut` are populated ONLY on a
+// successful load, same reasoning as prepareDocument()'s own doc comment
+// below.
+[[nodiscard]] document::Document loadDocumentForOpenPath(
+    const std::optional<std::filesystem::path>& openPath, DocumentFileState& fileStateOut,
+    std::optional<std::filesystem::path>& currentDocumentPathOut);
 
 // Defensive: FindBar's SetWindowSubclass/DefSubclassProc (Phase 5b3a, first
 // comctl32 usage in this codebase) do not strictly require this per

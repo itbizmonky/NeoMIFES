@@ -42,27 +42,6 @@ void debugLogLoadError(const std::filesystem::path& path, LoadError err) noexcep
 #endif
 }
 
-// Real launches only (checked by the caller). A missing/invalid --open path
-// falls back to an empty Document rather than blocking startup.
-Document loadStartupDocument(const LaunchArgs& args, DocumentFileState& fileStateOut,
-                             std::optional<std::filesystem::path>& currentDocumentPathOut) {
-    Document document;
-    if (!args.openPath) {
-        return document;
-    }
-    auto loadResult = neomifes::document::loadFile(*args.openPath);
-    if (auto* result = std::get_if<LoadResult>(&loadResult)) {
-        document                = std::move(*result->document);
-        fileStateOut.encoding   = result->detectedEncoding;
-        fileStateOut.lineEnding = result->lineEnding;
-        fileStateOut.writeBom   = result->hadBom;
-        currentDocumentPathOut  = *args.openPath;
-    } else {
-        debugLogLoadError(*args.openPath, std::get<LoadError>(loadResult));
-    }
-    return document;
-}
-
 // --measure-frame without --open (e.g. the CI PoC step, which passes no
 // --open so it stays self-contained with no repo fixture-file dependency)
 // synthesizes one large document instead. A single insertText() call rather
@@ -83,6 +62,31 @@ Document synthesizeMeasurementDocument() {
 }
 
 }  // namespace
+
+// WI-20b: promoted out of the anonymous namespace (and its parameter
+// narrowed from the whole LaunchArgs to just the path it actually reads) so
+// SessionManager::createWindow() can reuse the identical "load a path, fall
+// back to blank + debug-log on failure" logic for every window created
+// after the first, not just the one prepareDocument() builds at startup.
+Document loadDocumentForOpenPath(const std::optional<std::filesystem::path>& openPath,
+                                 DocumentFileState& fileStateOut,
+                                 std::optional<std::filesystem::path>& currentDocumentPathOut) {
+    Document document;
+    if (!openPath) {
+        return document;
+    }
+    auto loadResult = neomifes::document::loadFile(*openPath);
+    if (auto* result = std::get_if<LoadResult>(&loadResult)) {
+        document                = std::move(*result->document);
+        fileStateOut.encoding   = result->detectedEncoding;
+        fileStateOut.lineEnding = result->lineEnding;
+        fileStateOut.writeBom   = result->hadBom;
+        currentDocumentPathOut  = *openPath;
+    } else {
+        debugLogLoadError(*openPath, std::get<LoadError>(loadResult));
+    }
+    return document;
+}
 
 LaunchArgs parseArgs() noexcept {
     LaunchArgs args;
@@ -116,7 +120,7 @@ LaunchArgs parseArgs() noexcept {
     return args;
 }
 
-bool claimSingleInstance(KernelHandle& mutexHolder) noexcept {
+bool claimSingleInstance(KernelHandle& mutexHolder, const LaunchArgs& args) noexcept {
     HANDLE h = ::CreateMutexW(nullptr, FALSE, kSingleInstanceMutexName);
     mutexHolder = KernelHandle{h};
     if (h == nullptr) {
@@ -131,6 +135,24 @@ bool claimSingleInstance(KernelHandle& mutexHolder) noexcept {
                 ::ShowWindow(existing, SW_RESTORE);
             }
             ::SetForegroundWindow(existing);
+            // WI-20b: hand this launch's --open path (if any) to the
+            // existing process via WM_COPYDATA - basic_design.md sec.2.3's
+            // "コマンドライン引数をIPCで先行プロセスへ委譲、そちらが新規
+            // MainWindowを開く". This process has no HWND of its own yet
+            // (still before any window creation) and is about to exit, so
+            // wParam carries no meaningful sender handle - 0, same
+            // "nothing to pass" treatment as every other zeroed-out Win32
+            // parameter this codebase leaves unused elsewhere.
+            // Non-const (not `const std::wstring`) so .data() below returns
+            // wchar_t* directly (the C++17 non-const overload) - COPYDATASTRUCT::
+            // lpData is typed PVOID by the Win32 API despite being read-only
+            // for SendMessageW's synchronous call, so a const string here
+            // would force a const_cast to satisfy it.
+            std::wstring payload = args.openPath ? args.openPath->wstring() : std::wstring{};
+            COPYDATASTRUCT cds{.dwData = kCopyDataOpenPathId,
+                              .cbData = static_cast<DWORD>(payload.size() * sizeof(wchar_t)),
+                              .lpData = payload.data()};
+            ::SendMessageW(existing, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cds));
         }
         return false;
     }
@@ -180,7 +202,7 @@ Document prepareDocument(const LaunchArgs& args, std::uint64_t& syntheticLineCou
         return synthesizeMeasurementDocument();
     }
     if (args.mode == LaunchMode::Normal || args.mode == LaunchMode::MeasureFrame) {
-        return loadStartupDocument(args, fileStateOut, currentDocumentPathOut);
+        return loadDocumentForOpenPath(args.openPath, fileStateOut, currentDocumentPathOut);
     }
     return Document{};
 }

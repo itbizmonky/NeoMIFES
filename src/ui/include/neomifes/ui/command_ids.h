@@ -62,6 +62,14 @@ enum class CommandId : std::uint16_t {
     SaveAs,
     Open,
     New,
+    // WI-20b: opens a new independent top-level window (SessionManager::
+    // createWindow()), same layered-single-process model as `New` opening a
+    // new tab within the CURRENT window - see session_manager.h's own
+    // header comment for the architecture this builds on. Full remappable
+    // treatment (unlike TabCloseOthers/TabCloseAll/Exit below) - confirmed
+    // Ctrl+Shift+N is unclaimed by every keybinding preset and no overlay
+    // widget reserves it.
+    NewWindow,
     TabNext,
     TabPrevious,
     TabClose,

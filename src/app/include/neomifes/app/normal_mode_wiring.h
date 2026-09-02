@@ -308,6 +308,16 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // csvGridPanePendingSessionToken exist to resolve (see workspace.h's own
 // gitStatus()-placement comment for the full reasoning).
 //
+// WI-20b: takes SessionManager& sessionManager - the ONLY thing this
+// parameter is for is CommandId::NewWindow's dispatch
+// (dispatchCommand()'s own switch, via CommandDispatchContext::
+// sessionManager) and the "New Window" command-palette entry
+// (buildCommandRegistry()). No other function in this file reads it -
+// SessionManager owns the EditorWindow this wireNormalMode() call is
+// itself wiring, so nothing here needs a back-reference for any other
+// purpose (see session_manager.h's own header comment on why EditorWindow
+// itself never needs to know about SessionManager either).
+//
 // WI-17f: takes std::optional<document::Document>& diffViewDocument - the
 // ONLY thing this parameter is for is OWNING the Diff view's synthesized
 // document's storage across its open/close lifetime (RenderPipeline::
@@ -341,6 +351,6 @@ void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::R
                     std::optional<git::GitDiffWorker>& gitDiffWorker,
                     std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker, bool& jsonPathBarIsForXml,
                     ui::GitPane& gitPane, std::optional<git::GitStatusWorker>& gitStatusWorker,
-                    std::optional<document::Document>& diffViewDocument);
+                    std::optional<document::Document>& diffViewDocument, SessionManager& sessionManager);
 
 }  // namespace neomifes::app
