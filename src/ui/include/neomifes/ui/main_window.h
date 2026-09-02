@@ -264,6 +264,19 @@ struct MainWindowConfig {
     // signals the composition session ended (committed or cancelled); the
     // caller should clear any composition-overlay render state.
     std::function<void(HWND)> onImeEndComposition;
+    // Optional: invoked from WM_DESTROY (WI-20a), AFTER m_hwnd has already
+    // been reset to nullptr, with the HWND that was just destroyed. When
+    // configured, this hook takes FULL responsibility for deciding whether/
+    // when to call ::PostQuitMessage() - MainWindow itself does NOT call it
+    // in that case (multi-window support needs "only quit once every window
+    // is gone", which MainWindow itself has no way to know - only whoever
+    // owns the collection of windows, SessionManager, does). No handler
+    // configured preserves the pre-WI-20a default: MainWindow calls
+    // ::PostQuitMessage(0) itself, unconditionally, exactly as before - so
+    // measurement-mode launches (wireMeasureStartupOrMemoryMode()/
+    // wireMeasureFrameMode(), main.cpp) and any other single-MainWindow
+    // caller are completely unaffected by this change.
+    std::function<void(HWND)> onDestroyed;
 };
 
 class MainWindow {
@@ -427,6 +440,7 @@ private:
         m_onImeComposition;
     std::function<void(HWND, std::u16string)>                         m_onImeResult;
     std::function<void(HWND)>                                         m_onImeEndComposition;
+    std::function<void(HWND)>                                         m_onDestroyed;
     bool                       m_firstPaintFired = false;
     bool                       m_isDragging      = false;
     UINT                       m_currentDpi      = 96;

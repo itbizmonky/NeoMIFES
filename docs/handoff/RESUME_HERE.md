@@ -216,6 +216,24 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-18節、`docs/history/TIMELINE.md` Session 117参照。
 
+> ---
+
+> # 🎯 最重要 (2026-09-02) — WI-20a: 複数ウィンドウ対応の内部再構成(`EditorWindow`/`SessionManager`)完了
+>
+> **WI-18完了後、次の改修候補としてユーザーへ提示した4系統のうち①[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ着手した。** 実装方式についてAskUserQuestionで「複数プロセス方式(推奨)」を一旦提示・承認を得たが、**Plan Mode着手直後の調査で[`basic_design.md`](../design/basic_design.md) §2.3が既に「単一プロセス内で`MainWindow`を複数インスタンス化(VS Code方式)」を明記し「プロセス分離は起動0.3s要件を満たせないため採用しない」と明確に却下していることが判明した。** この却下理由は2026-07時点、実装前の推測で書かれたものであり、現在は起動31.35msを実測済み(300ms予算の1/10以下)でこの懸念は実質的に解消されている可能性が高いことをユーザーへ提示した上で再度AskUserQuestionを行い、**「設計書通り単一プロセス方式(推奨)」に差し戻して合意した。** これは既存設計文書からの逸脱ではなく、既存設計の実現である点が重要 — CLAUDE.mdが設計書を要件定義書と同格の拘束力があるとしている以上、無断で異なる方式へ進めることはできなかった。
+>
+> **設計はPlan agentへ委任し、詳細な実装計画(クラス設計・ファイル配置・段階分割・オープンな判断3点)を作成させた。** 3点の判断(①2つ目起動時の挙動、②新規ウィンドウのキー割当、③複数ウィンドウ環境での「終了」の意味)はAskUserQuestionでユーザー確認し、いずれも推奨案(①常に新しい空ウィンドウを開く、②Ctrl+Shift+Nフル対応、③終了は現状維持でこのウィンドウだけ閉じる)が選ばれた。規模が大きいためWI-20a(内部再構成のみ、外部から見た挙動は無変化)/WI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲)の2段階に分割、今回はWI-20aのみ実施。
+>
+> **実装:** 新規`neomifes::app::EditorWindow`(`Workspace`↔`EditorSession`と同じ「生の型↔app層ラッパ」命名慣習)が`wWinMain`のウィンドウ固有ローカル変数(約30個)を束ね、JSON/XML/CSV/Git系は`struct StructuralViewState`として責務分離(クラスサイズ対策)。`std::unique_ptr`保持前提(`wireNormalMode()`の約40個の参照キャプチャラムダがアドレス安定を要求するため、Plan agentが`wireNormalMode()`全文を読み確認済み)。新規`neomifes::app::SessionManager`がアプリ全体で1つだけ必要な状態(Settings/KeyBindings/RecentFiles/SearchHistory/自動保存インデックス)を所有し、`wireNormalMode()`本体(約4700行)は内部ロジック無改修で再利用した。単一プロセスであるため、当初懸念していた`settings.json`/`autosave/index.json`へのプロセス間書き込み競合は完全に消滅(追加のロック機構は不要)という設計上の利点も判明した。`ui::MainWindowConfig`に新規`onDestroyed`フック追加(未設定時は既存通り無条件`PostQuitMessage`、設定時は`SessionManager`が「全ウィンドウが閉じたら終了」を判定)。`main.cpp`の`runMessageLoop()`を固定HWNDから`GetAncestor(msg.hwnd, GA_ROOT)`によるメッセージごとの解決へ変更(複数ウィンドウ時のアクセラレータ誤動作を先回りで防止)。
+>
+> **実機ドッグフーディングで確認:** 通常起動でウィンドウが正しく開く、唯一のウィンドウを閉じると新設`onWindowDestroyed()`経路で実際にプロセスが終了する(WI-20aの核心的な新規動作)、`--open`で実ファイルが正しく開かれる。キーストローク合成(SendKeys/SendInput両方)がこの環境でこのウィンドウへ届かない既知の制約により実際の編集+保存操作の実演はできなかった — 正直に記録した。ただし編集/保存のコード経路自体はWI-20aで一切変更されておらず、既存の自動テスト(`document_save_roundtrip`等)がDebug/Release/ubsan全構成でgreenのまま通ることでその正しさは保証される。
+>
+> clang-tidyで3件検出・修正: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`)、`main.cpp`/`main_window.cpp`の`const HWND`誤配置2件(`misc-misplaced-const`、HWNDがポインタ型typedefのため`const HWND`はポインタ自体をconst化してしまう)。Debug/Release/ubsan全1554/1554件green。
+>
+> **次回セッション最初にやること:** WI-20b(新しいウィンドウコマンド`CommandId::NewWindow`+`WM_COPYDATA`による2つ目起動時のIPC委譲)に着手する — 詳細設計は承認済みプラン(`C:\Users\kenbo\.claude\plans\eventual-crafting-lecun.md`、および`docs/design/build_plan.md`のWI-20aセクション末尾)参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-20aセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

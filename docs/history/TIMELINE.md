@@ -3781,4 +3781,36 @@ Debug/Release/ubsan全1554/1554件green(Release初回実行で`FileLoaderTest`3�
 
 次は、次に着手する作業をユーザーに確認する。`no_multiple_window_support.md`(P1)/`view_menu_and_word_wrap_incomplete.md`(P2)が新規候補、他は既存の凍結/見送り済み項目のみ残っている。
 
+## Session 118 (2026-09-02〜03): WI-20a(複数ウィンドウ対応 内部再構成、`EditorWindow`/`SessionManager`)完了、方式を複数プロセスから単一プロセスへ設計書に基づき差し戻し
+
+**WI-18完了・push・CI green確認後、ユーザーに次の改修計画を尋ねられ、要件監査で発見済みの4系統(①複数ウィンドウ非対応、②Grep/CSVの部分対応止まりのP1、③既存未対応P1、④凍結中の大型機能)を提示し①への着手を推奨、ユーザーが「①から着手せよ」と指示した。** `no_multiple_window_support.md`自身が「複数プロセス方式(秀丸/サクラ伝統)」と「単一プロセス複数ウィンドウ方式(VS Code)」の2択を書き残していたため、着手前にAskUserQuestionで確認したところ「複数プロセス方式(推奨)」が選ばれた——`claimSingleInstance()`を撤廃するだけで済み、既存の`wWinMain`構造(10種の非同期Worker等がすべて1ウィンドウに紐づく設計)を丸ごと再利用できるため、と提示した根拠に基づく判断だった。
+
+**Plan Mode着手直後の調査で、この判断の前提が誤っていたことが判明した。** Explore agentへ「複数ウィンドウ実装のアーキテクチャ設計」を委任したところ、[`docs/design/basic_design.md`](../design/basic_design.md) §2.3「プロセス構成」が既に以下を明記していると報告された: 「複数ウィンドウ: 単一プロセス内でMainWindowを複数インスタンス化して実現(VS Code/Sublime Textと同方式)。**プロセス分離は起動0.3s要件を満たせないため採用しない**。ウィンドウは独立したSessionを持ち、SessionManagerが集約管理する」「2つ目以降の起動: シングルインスタンス化(Named Mutex)し、コマンドライン引数をIPCで先行プロセスへ委譲、そちらが新規MainWindowを開く」。つまり`claimSingleInstance()`は場当たり的な制約ではなく、この設計判断に基づく意図的な実装であり、直前にユーザーから承認を得ていた「複数プロセス方式」はこの既存設計と正面から矛盾していた。CLAUDE.mdが設計書を要件定義書と同格の拘束力があるとしている以上、無断で逸脱はできない。
+
+**ただし設計書の却下理由自体([起動0.3s要件])は2026-07時点、実装が影も形もなかった段階での推測だった。** M5検証で実測済みの起動31.35ms(300ms予算の1/10以下)を踏まえれば、2つ目のプロセスも同程度で起動すると考えられ、当時の懸念は現在の実装では実質的に解消されている可能性が高い。この事実を添えて再度AskUserQuestionを行い、「設計書通り単一プロセス方式(推奨)」に差し戻すことで合意した——これは設計からの逸脱ではなく設計の実現であり、当初の「複数プロセス」提案の方が誤りだったことを正直に認めた形になった。
+
+**設計をPlan agentへ委任し、実装可能な詳細計画を作成させた。** Plan agentは`main.cpp`全文(845行)・`normal_mode_wiring.h`(`wireNormalMode()`のシグネチャ、38個の`[&...]`参照キャプチャラムダの存在)・`main_window.cpp`(`WM_DESTROY`が無条件`PostQuitMessage`である事実)・`command_dispatch.h`等を実際に読み、以下を実測ベースで確定した: (1) `wireNormalMode()`の全参照キャプチャがアドレス安定を要求するため、ウィンドウごとの束は`std::unique_ptr`保持が必須(値保持の`std::vector`は再配置でアドレスが壊れる)、(2) `WM_DESTROY`の無条件`PostQuitMessage`は複数ウィンドウでは不正になるため条件化が必要、(3) `runMessageLoop()`が固定HWNDで`TranslateAcceleratorW`しているため2つ目以降のウィンドウでアクセラレータが壊れる実在のバグになる(先回りで修正が必要)、(4) `WM_COPYDATA`はこのコードベースで一度も使われていない新規プリミティブ。
+
+3件のオープンな判断(①2つ目起動時パス無しの挙動、②新規ウィンドウのキー割当方式、③複数ウィンドウ環境での「終了」の意味)をAskUserQuestionでユーザーへ確認し、いずれも推奨案(①常に新しい空ウィンドウを開く=basic_design.mdの文言通り、②Ctrl+Shift+Nフル対応=全プリセット未使用と確認済み、③終了は現状維持でこのウィンドウだけ閉じる)が選ばれた。規模が大きいためWI-20a(内部再構成のみ、外部から見た挙動は無変化)/WI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲)へ2段階分割し、今回はWI-20aのみ実施することでExitPlanMode承認を得た。
+
+### 実装
+
+新規`neomifes::app::EditorWindow`(`src/app/editor_window.h`/`.cpp`)——`document::Document`↔`app::EditorSession`と同じ「生の型↔app層ラッパ」命名慣習を1段上に適用、`ui::MainWindow`(生のWin32シェル)↔`EditorWindow`(app層ラッパ)。`wWinMain`のウィンドウ固有ローカル変数(`Workspace`/`MainWindow`/`RenderPipeline`/`FindBar`/`FindReplaceDialog`/`CommandPalette`/`GotoLineBar`/`GrepBar`+`GrepState`/`OutlinePane`/`TabBar`/`StatusBar`/このウィンドウ専用`MenuBarHandles`/3個のbool フラグ、計約17メンバ)を束ねた。JSON/XML/CSV/Gitの「構造ビュー」系(6つの非同期Worker+3ペイン+2トークン+`diffViewDocument`)は責務が異なるため`struct StructuralViewState`として分離し1メンバとして持たせた(CLAUDE.mdルール4のクラスサイズ対策、`AutosaveContext`と同じ「関連フィールドを束ねるだけの構造体」慣習)。コピー・ムーブ全削除(`Workspace`と同型)。
+
+新規`neomifes::app::SessionManager`(`src/app/session_manager.h`/`.cpp`)——basic_design.md §2.3の語彙に一致させた命名。`std::vector<std::unique_ptr<EditorWindow>>`を保持し、アプリ全体で1つだけ必要な状態(`Settings`/`KeyBindings`+`HACCEL`/`RecentFiles`/`SearchHistory`/自動保存インデックス一式/ログパターン)を自身のメンバとして所有、各ウィンドウの配線時に参照で渡す。**単一プロセスであるため、当初「複数プロセス方式」で懸念していた`settings.json`/`autosave/index.json`へのプロセス間同時書き込み競合は完全に消滅した**——メモリ上に唯一のコピーしか存在せず、追加のロック機構は一切不要という設計上の利点が明確になった。コンストラクタが`resolveAppDataDir()`以下の全%APPDATA%解決ロジック(旧`main.cpp`の`loadRecentFilesForLaunch()`/`resolveAutosaveStartupState()`/`resolveLogPatternsStartupState()`相当、Normal-mode専用のためmode分岐は不要化)を担う。`AutosaveContext`が参照メンバを持つため、`m_autosaveIndex`等の解決順序(宣言順で`m_autosave`より先)とmem-initializer-list/body分割による初期化パターンに注意を払った。`adoptFirstWindow()`は`wWinMain`が既に`prepareDocument()`で読み込み済みの起動文書をそのまま受け取り(再読み込みなし)、クラッシュ復旧プロンプトループ(`Workspace`存在後・ウィンドウ表示前という既存順序を維持)を実行してから`wireAndShow()`で配線・表示する。`wireAndShow()`は`wireNormalMode()`(約4700行)を**内部ロジック無改修**で呼び出す——全参照キャプチャの指す先が`wWinMain`ローカルから`EditorWindow`/`SessionManager`のメンバへ変わるだけ。`wireNormalMode()`自体のシグネチャもWI-20aでは無変更(`CommandId::NewWindow`が存在しない今、`SessionManager&`パラメータはまだ不要なためWI-20bへ先送り、と判断した——このスコープ最小化はPlan agentの提案ではなく実装中の自己判断)。
+
+`ui::MainWindowConfig`に新規`onDestroyed`フック追加。`WM_DESTROY`を「フック未設定時は現状通り無条件`PostQuitMessage(0)`(計測モード等の既存呼び出し元は無改修で影響を受けない)、フック設定時はそちらへ完全委譲」という後方互換デフォルトに変更、`SessionManager::onWindowDestroyed()`が`m_windows`から該当ウィンドウを`erase`し空になった時だけ`PostQuitMessage(0)`する。`main.cpp`の`runMessageLoop()`を固定HWND引数から`::GetAncestor(msg.hwnd, GA_ROOT)`によるメッセージごとの解決へ変更(単一ウィンドウの計測モードでは退行なし、`GetAncestor`は唯一のトップレベルウィンドウ自身に対しても同じHWNDを返すため)。`wWinMain`を`args.mode == Normal`かどうかで完全に2分岐する構造へ再構成し、以前の約330行のセットアップコードをSessionManagerのコンストラクタ/`adoptFirstWindow()`/`wireAndShow()`へ吸収させた。計測モード分岐は`Workspace`/`MainWindow`/`RenderPipeline`+デフォルト`Settings`/`KeyBindings`+`accelTable`のみを直接構築する、以前と同じ「%APPDATA%を一切読まない」経路のまま維持。
+
+### 実機ドッグフーディング
+
+Win32メッセージループ/ウィンドウ生成コードは自動テストで検証できないため実バイナリを起動して確認: ①通常起動でウィンドウが正しく開く(タイトル"Untitled - NeoMIFES")、②**唯一のウィンドウを閉じると新設`onWindowDestroyed()`経路経由でプロセスが実際に終了する(exit code 0)——これがWI-20aの核心的な新規動作であり、2回の独立した検証で確認した**、③`--open`で実ファイルを渡すと正しいファイルが読み込まれ開かれる(タイトルバー/タブにファイル名が反映)ことをスクリーンショットで確認。
+
+**キーストローク合成による実際の編集+保存の検証は、この環境の既知のGUI自動化制約により実施できなかった。** `System.Windows.Forms.SendKeys`(Ctrl+End/Ctrl+S含む)、クリック+`SendKeys`(修飾キー無し)、生の`SendInput`(修飾キー無し、VK_END+X+Y+Z)の3通りを順に試したが、いずれもスクリーンショット上でキャレット位置・文書内容に変化が見られず、この環境の入力送信機構が本ウィンドウへ届いていないという既存の`reference_no_win32_gui_automation.md`の知見(「スクリーンショットと入力送信は独立した機構」)を追認する形になった。正直に「未確認」と記録した——ただし編集/保存のコード経路自体(`handleCharEvent()`/`handleKeyDownEvent()`/`document::saveFile()`等)はWI-20aで一切変更しておらず、`wireNormalMode()`本体も無改修のため、この経路の正しさは既存の自動テスト(`document_save_roundtrip`等)がDebug/Release/ubsan全構成でgreenのまま通ることでそのまま保証される、という論拠で代替検証とした。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は発生せず初回で全件pass)。clang-tidyで3件検出・修正: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`、`adoptFirstWindow()`の`path`引数をconst参照へ変更)、`main.cpp`/`main_window.cpp`の`const HWND`誤配置2件(`misc-misplaced-const`——HWNDはポインタ型typedefのため`const HWND x`はポインタ自体をconst化してしまい意図と異なる型になる、`const`を削除して解消)。3件とも修正後に再ビルド・再clang-tidy実行・Debug/Release/ubsan全構成の再テストで最終確認済み。Release/ubsanの検証はバックグラウンドサブエージェントへ委任したが、初回応答は「バックグラウンドビルドを開始した」で止まり指示した全工程(テスト実行・ubsan・clang-tidy)を完走していなかったため、SendMessageで同一エージェントを再開させ完走させた。
+
+次はWI-20b(新しいウィンドウコマンド`CommandId::NewWindow`+`WM_COPYDATA`による2つ目起動時のIPC委譲)——設計は承認済みプランに既に含まれている。
+
 <!-- 次セッションはここに追記 -->

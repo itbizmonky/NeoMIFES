@@ -84,6 +84,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onImeComposition      = config.onImeComposition;
     m_onImeResult           = config.onImeResult;
     m_onImeEndComposition   = config.onImeEndComposition;
+    m_onDestroyed           = config.onDestroyed;
 
     // WI-03: WS_HSCROLL only added when a handler is actually configured -
     // must be decided before CreateWindowExW (unlike DragAcceptFiles below,
@@ -261,10 +262,25 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
         case WM_IME_ENDCOMPOSITION:
             handleImeEndComposition();
             return 0;
-        case WM_DESTROY:
-            m_hwnd = nullptr;
-            ::PostQuitMessage(0);
+        case WM_DESTROY: {
+            // WI-20a: capture before resetting m_hwnd to nullptr - the
+            // configured hook (if any) still needs to know WHICH window just
+            // went away (SessionManager::onWindowDestroyed() looks it up by
+            // this value). Not `const HWND` - HWND is a pointer typedef, so
+            // `const HWND` would const-qualify the pointer itself rather
+            // than what it points to (misc-misplaced-const); harmless
+            // either way since this local is never reassigned, but
+            // clang-tidy flags it as a warning-turned-error under this
+            // project's build config.
+            HWND destroyedHwnd = m_hwnd;
+            m_hwnd             = nullptr;
+            if (m_onDestroyed) {
+                m_onDestroyed(destroyedHwnd);
+            } else {
+                ::PostQuitMessage(0);
+            }
             return 0;
+        }
         default:
             // App-defined messages (Phase 7c) - kMsgDeferredInit above is
             // MainWindow's own, everything else >= WM_APP is opaque to this

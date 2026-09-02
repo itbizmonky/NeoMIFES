@@ -80,7 +80,9 @@ ctest --preset debug --output-on-failure
 > - master_roadmap.md §12.3 の元22項目フル版 (Google/MSリリース品質基準、NVDA/JAWS専門認証・Authenticode証明書配布・SBOM/CVE継続運用・自動更新機構など、このワークフロー単独では完結できない項目を含む) — 商用配布を将来検討する際に再評価する
 > - CSV式列 (WI-16h、v2.0機能として見送り)
 >
-> **次フェーズ候補 (M5達成後に発見された5件は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
+> **🚧 現在進行中: WI-20(複数ウィンドウ対応)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)に対応中。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。**WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)完了(2026-09-02)** — 詳細は本ファイルのWI-20aセクション参照。次はWI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲)。
+>
+> **次フェーズ候補 (M5達成後に発見された5件は全て対応完了。WI-20完了後にどれへ着手するかはユーザーへ確認すること):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 🟡 **2026-09-01部分対応。** 実測で真因はRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドは対象外のまま残存
 > - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
@@ -2289,6 +2291,36 @@ Debug/Release/ubsan全1526/1526件green(3構成とも自身で直接ビルド・
 Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規警告0(対象: `find_replace_dialog.cpp`/`find_bar.cpp`/`main_window.cpp`/`tab_bar.cpp`/`normal_mode_wiring.cpp`/`menu_bar.cpp`/`main.cpp`)。Release初回実行で`FileLoaderTest`3件+`GitRepositoryTest`11件が一時的に失敗したが、単独再実行(`ctest --rerun-failed`)で全件pass — 既知の並行I/O下でのテスト環境フレーキネス(このプロジェクトで複数回観測済みの既存パターン、本WIの変更とは無関係)と確認、実際の回帰ではない。
 
 コミット済み(`1361ee7`)、pushはユーザーの明示指示待ち。
+
+---
+
+## WI-20a — 複数ウィンドウ対応: `EditorWindow`/`SessionManager`への内部再構成
+
+### 目的
+
+[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1、WI-18の要件監査で発見)への対応第1段階。ユーザーへ確認したところ「複数プロセス方式」が一旦承認されたが、実装着手前の調査で[`basic_design.md`](basic_design.md) §2.3が既に「単一プロセス内で`MainWindow`を複数インスタンス化(VS Code方式)」を明記し「プロセス分離は起動0.3s要件を満たせないため採用しない」と明確に却下していることが判明、この却下理由(2026-07時点の実装前の推測)は実測起動31.35ms(予算の1/10以下)により実質的に解消されている可能性が高い旨を提示した上で、**設計書通り単一プロセス方式へ差し戻して合意した。** WI-20aは「複数ウィンドウを開ける」というユーザー向け新機能そのものではなく、それを可能にするための内部再構成(外部から見た挙動は無変化)のみを対象とする。実際の新機能(新しいウィンドウコマンド+2つ目起動時のIPC委譲)はWI-20bへ。
+
+### 設計・実装
+
+新規`neomifes::app::EditorWindow`(`editor_window.h`/`.cpp`) — `wWinMain`のウィンドウ固有ローカル変数(`Workspace`/`MainWindow`/`RenderPipeline`/`FindBar`/`FindReplaceDialog`/`CommandPalette`/`GotoLineBar`/`GrepBar`+`GrepState`/`OutlinePane`/`TabBar`/`StatusBar`/このウィンドウ専用`MenuBarHandles`/`isDraggingMinimap`等3フラグ)を1つに束ねた。JSON/XML/CSV/Gitの「構造ビュー」系(6ワーカー+3ペイン+関連トークン+`diffViewDocument`)は責務が異なるため`struct StructuralViewState`として分離、`EditorWindow`はこれを1メンバとして持つ(クラスサイズ対策、CLAUDE.mdルール4)。`std::unique_ptr`保持前提(`wireNormalMode()`の約40個の参照キャプチャラムダがウィンドウ生存期間中アドレス安定を要求するため)、コピー・ムーブ全削除(`Workspace`と同型)。
+
+新規`neomifes::app::SessionManager`(`session_manager.h`/`.cpp`) — `std::vector<std::unique_ptr<EditorWindow>>`を保持、アプリ全体で1つだけ必要な状態(`Settings`/`KeyBindings`+`HACCEL`/`RecentFiles`/`SearchHistory`/自動保存インデックス一式/ログパターン)をメンバとして所有し各ウィンドウへ参照で配線する。単一プロセスであるため、当初懸念していた`settings.json`/`autosave/index.json`へのプロセス間同時書き込み競合は完全に消滅した(メモリ上に唯一のコピーしか存在せず、追加のロック機構は不要)。`adoptFirstWindow()`は`wWinMain`が既に`prepareDocument()`で読み込み済みの起動文書をそのまま受け取り(再読み込みなし)、クラッシュ復旧プロンプトループ(`Workspace`存在後・ウィンドウ表示前という既存の順序を維持)を実行してから`wireAndShow()`で配線・表示する。`wireAndShow()`は`wireNormalMode()`(約4700行)を**内部ロジック無改修**で呼び出す — 全参照キャプチャの指す先が`wWinMain`ローカルから`EditorWindow`/`SessionManager`のメンバへ変わるだけ。`wireNormalMode()`自体のシグネチャもWI-20aでは無変更(`CommandId::NewWindow`が無い今、`SessionManager&`パラメータを渡す必要がまだ無いため、追加はWI-20bへ先送り)。
+
+`ui::MainWindowConfig`に新規`onDestroyed`フック追加、`WM_DESTROY`ハンドラを「フック未設定時は現状通り無条件`PostQuitMessage(0)`(計測モード等の既存呼び出し元は無改修で影響を受けない)、フック設定時はそちらへ完全委譲」という後方互換デフォルトに変更。`SessionManager::onWindowDestroyed()`がこのフックを受け、`m_windows`から該当ウィンドウを`erase`、空になった時だけ`PostQuitMessage(0)`する設計にした。
+
+`main.cpp`の`runMessageLoop()`を固定`HWND`引数から`::GetAncestor(msg.hwnd, GA_ROOT)`によるメッセージごとの解決へ変更 — 固定HWNDは単一ウィンドウ前提でのみ正しく、複数ウィンドウ環境では2つ目以降のウィンドウのアクセラレータ(Ctrl+S等)が壊れる実在のバグになるため(WI-20bで実際に複数ウィンドウが開くまで顕在化しないが、WI-20aで先に直しておく前提修正)。単一ウィンドウの計測モード(`--measure-*`)では退行なし(`GetAncestor`は唯一のトップレベルウィンドウ自身のHWNDに対しても同じHWNDを返す)。
+
+`wWinMain`を`args.mode == Normal`かどうかで完全に2分岐する構造へ再構成: Normal分岐は`SessionManager`を構築し`adoptFirstWindow()`を1回呼ぶだけ(以前の約330行のセットアップコードがSessionManagerのコンストラクタ/`adoptFirstWindow()`/`wireAndShow()`へ吸収された)。計測モード分岐は`Workspace`/`MainWindow`/`RenderPipeline`+デフォルト`Settings`/`KeyBindings`+`accelTable`のみを直接構築する、以前と同じ「%APPDATA%を一切読まない」経路を維持。
+
+### 実機ドッグフーディング
+
+自動テストでは検証できないWin32メッセージループ/ウィンドウ生成コードのため、実バイナリを起動して確認: (1) 通常起動でウィンドウが正しく開く(タイトル"Untitled - NeoMIFES")、(2) 唯一のウィンドウを閉じると新設の`onWindowDestroyed()`経路経由でプロセスが実際に終了する(exit code 0、これがWI-20aの核心的な新規動作)、(3) `--open`で実ファイルを渡すと正しいファイルが読み込まれ開かれる(タブ/タイトルバーにファイル名が反映)ことをスクリーンショットで確認。キーストローク合成による実際の編集+保存の検証は、この環境の既知のGUI自動化制約(`reference_no_win32_gui_automation.md`、SendKeys/SendInputいずれも本ウィンドウへのキー入力が届かない)により実施できなかった — 正直に記録する。ただし編集/保存のコード経路自体(`handleCharEvent()`/`handleKeyDownEvent()`/`document::saveFile()`等)はWI-20aで一切変更しておらず、`wireNormalMode()`本体も無改修のため、この経路の正しさは既存の自動テスト(`document_save_roundtrip`等、Debug/Release/ubsan全構成でgreen)がそのまま保証する。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規警告0(対象: `editor_window.cpp`/`session_manager.cpp`/`main.cpp`/`main_window.cpp`。実際に検出・修正した指摘: `session_manager.cpp`の値渡しパラメータ1件(`performance-unnecessary-value-param`、const参照へ変更)、`main.cpp`/`main_window.cpp`の`const HWND`誤配置2件(`misc-misplaced-const`、HWNDはポインタ型typedefのため`const HWND`はポインタ自体をconst化してしまう、意味上無害だが`const`を削除して解消))。
+
+コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。次はWI-20b(新しいウィンドウコマンド+2つ目起動時のIPC委譲) — 詳細設計は承認済みプラン参照。
 
 ---
 

@@ -90,6 +90,11 @@ add_executable(NeoMIFES WIN32
     normal_mode_wiring.cpp
     command_dispatch.cpp
     menu_bar.cpp
+    # WI-20a: EditorWindow (one window's editing state) + SessionManager
+    # (owns the collection of windows + app-wide persisted state) - see
+    # session_manager.h's own header comment.
+    editor_window.cpp
+    session_manager.cpp
     startup_profile.cpp
     frame_profile.cpp
     file_dialogs.cpp

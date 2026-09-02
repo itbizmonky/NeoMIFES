@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-02 (WI-18: ユーザー報告の基本UI品質バグ3件を修正 — ファイルを閉じる操作の追加/右クリックメニューの位置認識/検索・置換ダイアログ化。品質監査で新規発見した2件を起票 — `no_multiple_window_support.md`(P1)/`view_menu_and_word_wrap_incomplete.md`(P2))
+**最終更新:** 2026-09-02 (WI-20a: 複数ウィンドウ対応の内部再構成〔`EditorWindow`/`SessionManager`〕完了、`no_multiple_window_support.md`〔P1〕を部分対応へ更新。先行してWI-18: ユーザー報告の基本UI品質バグ3件を修正 — ファイルを閉じる操作の追加/右クリックメニューの位置認識/検索・置換ダイアログ化。品質監査で新規発見した`view_menu_and_word_wrap_incomplete.md`〔P2〕は未対応のまま)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -23,7 +23,7 @@
 | [本物の Authenticode 証明書が未取得](authenticode_certificate_not_acquired.md) | 署名機構自体は自己署名証明書で実装・動作確認済み、実配布には本物の証明書購入(ユーザー判断)が必要 | 未定 (ユーザーの証明書取得待ち) |
 | [CSVモードのper-cellインデックスが大規模ファイルで大きなメモリを消費する](csv_per_cell_index_memory_scaling.md) | 🟡 2026-09-01部分対応。`CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB)。10GB規模への根本対応(遅延インデックス化)はユーザー承認のもと対象外確定、リスクは残存 | 対象外確定 (遅延インデックス化は再設計コストが大きいため見送り) |
 | [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 🟡 2026-09-01部分対応。真因はRE2ではなくUTF-8変換(toUtf8WithOffsets、ASCII高速パス追加で約38%削減)。GrepServiceのファイルあたり固定オーバーヘッドは対象外のまま残存 | 部分対応 (GrepServiceの多ファイルケースは未対応) |
-| [複数ウィンドウ (要件定義書§6必須機能) が構造的に未実装](no_multiple_window_support.md) | `claimSingleInstance()`によりプロセス単位でシングルインスタンス制約があり、複数の独立したウィンドウを開けない。WI-18の品質監査で発見 | 未定 (方式決定にユーザー判断が必要) |
+| [複数ウィンドウ (要件定義書§6必須機能) が構造的に未実装](no_multiple_window_support.md) | 🟡 2026-09-02部分対応(WI-20a)。方式を単一プロセス・複数`MainWindow`(`basic_design.md` §2.3通り)に確定、`EditorWindow`/`SessionManager`への内部再構成を完了(外部から見た挙動は無変化)。「複数ウィンドウを実際に開ける」ユーザー向け機能自体はWI-20b未着手 | WI-20a完了/WI-20b残り |
 
 ## P2 — 凍結 / 再評価待ち
 
