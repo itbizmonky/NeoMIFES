@@ -210,7 +210,7 @@
 >
 > **実機ドッグフーディングで以下を全て確認:** Fileメニューの「閉じる」「終了」の表示、タブ右クリック3項目メニューの表示・機能(3タブ→他を閉じる→1タブ、3タブ→すべて閉じる→1タブの空文書、いずれも正しく収束)、テキスト領域右クリックで編集メニュー表示・ガター/タブバー/ステータスバー右クリックでは何も表示されない(修正前は全て誤表示)、Find/Replaceダイアログの検索(件数表示)・次を検索・すべて置換(実際に文書内容が書き換わることを確認)・Escapeでの非表示化、Ctrl+F(FindBar)が置換モード削除後も回帰なく機能。
 >
-> Debug/Release/ubsan全1554/1554件green(Release初回実行で`FileLoaderTest`/`GitRepositoryTest`計14件が一時的に失敗したが、単独再実行で全件pass — 既知の並行I/O下でのテスト環境フレーキネス、本WIの変更とは無関係)。clang-tidy新規警告0。
+> Debug/Release/ubsan全1554/1554件green(Release初回実行で`FileLoaderTest`/`GitRepositoryTest`計14件が一時的に失敗したが、単独再実行で全件pass — 既知の並行I/O下でのテスト環境フレーキネス、本WIの変更とは無関係)。clang-tidy新規警告0。コミット済み(`1361ee7`)、pushはユーザーの明示指示待ち。
 >
 > **次回セッション最初にやること:** 次に着手する作業をユーザーに確認する — `no_multiple_window_support.md`(P1)/`view_menu_and_word_wrap_incomplete.md`(P2)が新規候補、他は既存の凍結/見送り済み項目のみ。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
 >

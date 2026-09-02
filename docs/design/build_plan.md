@@ -2288,7 +2288,7 @@ Debug/Release/ubsan全1526/1526件green(3構成とも自身で直接ビルド・
 
 Debug/Release/ubsan全1554/1554件green(3構成とも確認)。clang-tidy新規警告0(対象: `find_replace_dialog.cpp`/`find_bar.cpp`/`main_window.cpp`/`tab_bar.cpp`/`normal_mode_wiring.cpp`/`menu_bar.cpp`/`main.cpp`)。Release初回実行で`FileLoaderTest`3件+`GitRepositoryTest`11件が一時的に失敗したが、単独再実行(`ctest --rerun-failed`)で全件pass — 既知の並行I/O下でのテスト環境フレーキネス(このプロジェクトで複数回観測済みの既存パターン、本WIの変更とは無関係)と確認、実際の回帰ではない。
 
-コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。
+コミット済み(`1361ee7`)、pushはユーザーの明示指示待ち。
 
 ---
 
