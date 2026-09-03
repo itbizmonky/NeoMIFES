@@ -2661,7 +2661,7 @@ Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanは�
 
 `docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`(P2、既存issue)の「対象」リストを更新し、調査で判明した副次的発見(`FindReplaceDialog`も同一のCtrl+S/O/N非到達ギャップを実は既に持っていた——`GetAncestor(..., GA_ROOT)`が`WS_CHILD`親チェーンしか辿らずowner関係を辿らないため)を記録した(本WIでは修正しない)。
 
-コミット未実施(ドキュメント同期完了後にコミット予定)。
+コミット済み(`7a40a39`)、pushはユーザーの明示指示待ち。
 
 ---
 
