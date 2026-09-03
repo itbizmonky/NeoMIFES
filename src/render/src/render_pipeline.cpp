@@ -1781,6 +1781,24 @@ void RenderPipeline::drawMinimapLines(ID2D1DeviceContext6& dc, float left, float
     }
 }
 
+// WI-21f: this ratio is deliberately LOGICAL-line-based (visStart/visEnd
+// from visibleLineRange(), divided by the document's total logical line
+// count), not visual-ROW-based, even after word wrap (WI-21a-e) made the
+// two diverge whenever a document mixes short and heavily-wrapped long
+// lines. Computing a true visual-row-based ratio would need the total
+// visual row count for the WHOLE document (a visualRowCountForLine() sum
+// over every line), which is an O(document size) pass this class cannot
+// afford - the same 10GB-file guarantee (CLAUDE.md) that already rules out
+// a whole-document maxVisibleLineLength() scan elsewhere in this file. The
+// accepted consequence: in a document where the currently-visible region's
+// local wrap density differs sharply from the document-wide average, this
+// highlight can appear noticeably too tall or too short relative to where
+// the true visual scroll position sits - self-correcting as the user keeps
+// scrolling (immediately visible, not silently wrong), and not remotely as
+// disruptive as recomputing wrap for the entire document on every frame
+// would be. Filed as P3 (see docs/issues/minimap_highlight_ignores_word_wrap_row_density.md)
+// rather than fixed - a deliberate, revisited-at-WI-21f design decision,
+// not an oversight.
 void RenderPipeline::drawMinimapViewportHighlight(ID2D1DeviceContext6& dc, float left, float widthDips,
                                                    float heightDips, std::uint64_t totalLines) noexcept {
     const auto [visStart, visEnd] = visibleLineRange();

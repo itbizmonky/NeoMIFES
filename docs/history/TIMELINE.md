@@ -3984,4 +3984,32 @@ Debug/Release/ubsan全1566/1566件green(3構成とも実行、`FrameState`修正
 
 **これでWI-21e完了、折り返し機能が初めてユーザーから実際に触れるようになった。** 次はWI-21f(カーソル移動は無変更(承認済みの「論理行単位を維持」判断の反映のみ、コード変更なし)、ミニマップは近似のまま維持+コメント更新+新規P3 issue起票、`view_menu_and_word_wrap_incomplete.md`を解決済みへ更新、最終ドッグフーディング)——WI-21全体の最終段階。
 
+**続けてユーザーが「進めよ」と指示、WI-21f(カーソル移動/ミニマップの設計判断確定+issue解決)を完了(2026-09-03)。🎉 これでWI-21全体(a〜f)が完結した。**
+
+### WI-21f実装
+
+**カーソル移動: コード変更なし。** `core::moveVertically()`(`src/core/src/selection_model.cpp`)の実装をコードレビューで直接確認したところ、`document::Document::offsetToLine()`/`lineToOffset()`/`lineCount()`のみに依存する純粋な論理行ベースの実装であり、`RenderPipeline`/`Viewport`/折り返し状態への依存が一切無いと確認できた。WI-21計画策定時にAskUserQuestionで承認済みの「論理行単位を維持(推奨)」という判断により、この関数は折り返しの有無に関わらず無変更のまま正しく動作する。既存の自動テスト(`tests/unit/core_selection_model_test.cpp`の`MovementKind::Up`/`Down`関連ケース)がそのまま回帰カバレッジとして機能し続けることを確認した。
+
+**ミニマップ: コード変更なし、方針確定コメント+新規issue。** `RenderPipeline::drawMinimapViewportHighlight()`の比率計算(`visibleLineRange()`が返す論理行番号ベース)を、折り返し有効時もそのまま論理行ベースの近似として維持する方針を再確認した。正確なビジュアル行数ベースの比率を求めるには文書全体の`visualRowCountForLine()`合計が必要で、これはO(文書サイズ)の全文書走査になりCLAUDE.mdの10GBファイル対応コミットメントに反するため、意図的に対応しないという判断を関数直前の詳細コメントとして明記した。新規issue [`minimap_highlight_ignores_word_wrap_row_density.md`](../issues/minimap_highlight_ignores_word_wrap_row_density.md)(P3、対応しない意図的な設計判断として記録)を起票、`docs/issues/README.md`に新規「P3 — 意図的な設計判断」節を新設して登録した。
+
+**[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)を解決済みへ更新。** 完了条件3項目全てにチェックを入れ、WI-21a〜fの実装経緯・WI-21eで発見した`FrameState`バグ・本WIでの2つの設計判断確定を追記した。`docs/issues/README.md`索引も同期(P2の一覧から解決済みの一覧へ移動、新規P3 issueを追加、最終更新日の要約文も更新)。
+
+### 🔴 実機ドッグフーディングで遭遇した新しい環境制約
+
+折り返しが有効な状態でのカーソル移動(Up/Down等が折り返し境界をまたいでも論理行単位で正しく動作すること)を実機で確認しようと試みた。行番号表示・ダークテーマ・折り返し有効を`settings.json`へ事前設定した上でワイドウィンドウで長い折り返し行を含むテストファイルを開き、行頭でマウスクリックにより位置決め(この操作自体は既存WIで確立済みの信頼できる手法)した上で、`Shift+Down`のキー合成入力(`keybd_event`)を送信して選択範囲の広がりを観測しようとした。
+
+**結果、選択範囲が拡張される代わりに、IME経由と見られる予期しない文字列("真剣"という日本語)がドキュメントへ挿入されるという副作用が発生した。** タイトルバーに`*`(未保存マーカー)が現れ、ステータスバーが「3:2」(行3・列2)を示し、ドキュメント末尾に無関係な行が追加されていた。
+
+この環境のキーストローク合成に関する既知の制約(`SendKeys`/`SendInput`が確実に届かない、`reference_no_win32_gui_automation.md`に記録済み)は把握済みだったが、本件は「反応しない」だけでなく「IME関連の予期しない副作用が起きる」という一段深刻な新しいパターンであり、正直に記録する(既存メモリファイルへの追記をバックグラウンドタスクとして起票済み、緊急性は低いため別セッションでの対応を想定)。汚染された編集内容は保存せずプロセスを強制終了(`Stop-Process -Force`)して破棄した——スクラッチ用テストファイル(`%TEMP%\claude\...\scratchpad\`配下)のみが対象で、リポジトリへの実害は無い。
+
+**代替検証として、コードレビュー+既存自動テストによる検証に切り替えた。** `moveVertically()`のロジックが折り返し状態を一切参照しないことをコード直読で確認済みであり、`core_selection_model_test.cpp`の既存テストスイート(本WIで無変更、全てgreenのまま)がその正しさを保証する。これはWI-20a/bで既に確立された「コード経路が無変更であることの確認+既存自動テストのgreenによる代替」という同じ論拠パターンであり、この環境の制約下での確立された正直な検証手法である。
+
+その他の項目(折り返しON/OFF・行番号・テーマ・View menu表示・永続化)は既にWI-21eの実機ドッグフーディングで確認済みのため、本WIでは再確認していない。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1566/1566件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし、コメントのみの変更)。
+
+**これでWI-21全体(a: ヘッドレス計算モジュール、b: Settings/RenderPipeline配線、c: 単一の真実の源の確立、d: ヒットテスト書き換え+多行描画バグ2件修正、e: 実配線+View menu拡充、f: カーソル移動/ミニマップ設計判断確定+issue解決)が完結した。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)が解決済みへ移動した。次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`search_grep_multi_gb_performance_gap.md`/`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
+
 <!-- 次セッションはここに追記 -->

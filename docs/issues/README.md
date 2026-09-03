@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-03 (WI-20b: `CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲が完了、`no_multiple_window_support.md`〔P1〕を解決済みへ移動。先行してWI-20a: 複数ウィンドウ対応の内部再構成〔`EditorWindow`/`SessionManager`〕完了。さらに先行してWI-18: ユーザー報告の基本UI品質バグ3件を修正。品質監査で新規発見した`view_menu_and_word_wrap_incomplete.md`〔P2〕は未対応のまま)
+**最終更新:** 2026-09-03 (WI-21a〜f: 折り返し(word wrap)機能+表示メニュー拡充が完結、`view_menu_and_word_wrap_incomplete.md`〔P2〕を解決済みへ移動。実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグを発見・修正(WI-15i/WI-21bに続く3度目の同型再発)。ミニマップの折り返し対応方針を`minimap_highlight_ignores_word_wrap_row_density.md`〔新規P3〕として記録。先行してWI-20a/b: 複数ウィンドウ対応完結、`no_multiple_window_support.md`〔P1〕解決済み)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -40,9 +40,14 @@
 | [`search`/`utf8_convert` の小規模改善 3 件](search_utf8_convert_minor_cleanup.md) | 正しさ・性能に実害なし | 待機 |
 | [`asan` プリセットがCIに常設化されていない](asan_preset_not_in_ci.md) | WI-13でローカル初回実行しDoD自体は満たしたが、以後の継続検証機構が無い | 待機 (CI実行時間とのトレードオフ検討) |
 | [Phase 10.1 v2.0拡張候補が未実装](phase_10_1_v2_extended_patterns.md) | リアルタイムテール/分散トレース/構造化ログ/統計ダッシュボード/SAP・AWS・Azure等ベンダー固有パターンは実データ入手まで意図的に先送り (WI-14a) | 待機 (WI-14c MVP達成後、実データ入手時に再評価) |
-| [表示メニューが手薄・折り返し(word wrap)機能が存在しない](view_menu_and_word_wrap_incomplete.md) | 表示メニューはアウトライン/構造ツリー/CSVグリッドの3項目のみ、行番号/テーマ/折り返し切替が無い。折り返し機能自体が`DWRITE_WORD_WRAPPING_NO_WRAP`にハードコードされ未実装。WI-18の品質監査で発見 | 待機 (折り返し実装は規模調査が必要) |
 | [CSVグリッドが末尾改行由来の暗黙の空行を表示してしまう](csv_grid_shows_trailing_implicit_empty_row.md) | `CsvModel`の既存仕様(WI-16a、Document全体と一貫)がグリッドUIで視覚的ノイズとして露呈。データ欠落・誤りは無い | 待機 (要望が出るかPhase 10.2次期UI改善サブWI着手時に再評価) |
 | [`tree-sitter-xml`が約505階層超のネストで整形式入力を誤検知する](xmltree_deep_nesting_misparse_limit.md) | クラッシュではなく`ERROR`ノードへの安全な縮退。実用上の発生頻度は極めて低いと想定 | 待機 (実例が確認された場合に再評価) |
+
+## P3 — 意図的な設計判断 (対応しない)
+
+| Issue | 概要 | 状態 |
+|---|---|---|
+| [ミニマップのビューポートハイライトが折り返し有効時のビジュアル行密度を反映しない](minimap_highlight_ignores_word_wrap_row_density.md) | 論理行ベースの近似のまま維持する意図的な設計判断(正確化にはO(文書サイズ)の全文書走査が必要で10GBファイル対応に反する)。スクロールで自己修正されるため実害は軽微 | ⛔ 対応しない (再評価条件は issue 本文参照) |
 
 ## 対応不能 / 外部要因待ち
 
@@ -71,6 +76,7 @@
 | [「100万Undo(24時間ソーク)」が実際にはUndo/Redoを回さないアイドル確認だった](undo_redo_active_usage_soak_not_performed.md) | 🟢 2026-09-01。ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施。`UndoStack`自体はリークしないことを確認(`push()`が`m_redo.clear()`を正しく実行)。観測された線形増加(非加速)は既知の`AddBuffer` append-only設計に起因、`undo_stack_unbounded_memory.md`で追跡中 |
 | [主要テキスト編集領域がUI Automation/スクリーンリーダーへ内容を一切公開していない](text_surface_no_screen_reader_exposure.md) | 🟢 2026-09-02。ユーザーが「簡易アナウンス実装」(フルTextPattern実装ではなく)を選択。`ui::TextSurfaceAccessible`(自前`IAccessible`、`CreateStdAccessibleObject()`への委譲+`get_accName()`のみ独自実装)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`経由の動的ディスパッチが独自実装を迂回する既存の見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで行移動ごとの正確・即時な内容反映を確認 |
 | [複数ウィンドウ (要件定義書§6必須機能) が構造的に未実装](no_multiple_window_support.md) | 🟢 WI-20a/b (2026-09-02〜03)。当初「複数プロセス方式」で合意しかけたが、`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記・プロセス分離を却下済みと判明、設計書通りへ差し戻し。新規`EditorWindow`/`SessionManager`(WI-20a)+`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲(WI-20b)で実装。実機ドッグフーディングで独立ウィンドウの開閉・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(`--open`あり/なし)を確認、キーストローク合成での独立編集の実演のみこの環境の制約で未確認のまま正直に記録 |
+| [表示メニューが手薄・折り返し(word wrap)機能が存在しない](view_menu_and_word_wrap_incomplete.md) | 🟢 WI-21a〜f (2026-09-03)。折り返し機能を新規実装(ヘッドレス計算層a〜d+実配線e)、`kViewMenuItems`を3→6項目へ拡張(折り返し/行番号/テーマ切替追加)。実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグ(`wordWrapEnabled`未追跡、WI-15i/WI-21bに続く3度目の同型再発)を発見・修正。カーソル移動はコード無変更で完了(`moveVertically()`が論理行のみに依存すると確認済み)、ミニマップは近似維持の設計判断を`minimap_highlight_ignores_word_wrap_row_density.md`(P3)として別途記録 |
 
 ---
 

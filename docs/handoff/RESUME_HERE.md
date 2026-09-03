@@ -338,6 +338,24 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-21eセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎉 最重要 (2026-09-03) — WI-21f完了、WI-21全体(折り返し機能+表示メニュー拡充)が完結
+
+> **WI-21eに続き、ユーザーの「進めよ」でWI-21fへ着手・完了した。これでWI-21全体(a〜f)が完結し、[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)が解決済みへ移動した。**
+>
+> **カーソル移動: コード変更なし。** `core::moveVertically()`をコードレビューで直接確認し、`Document`の論理行API(`offsetToLine()`/`lineToOffset()`/`lineCount()`)のみに依存する純粋な論理行ベースの実装で、`RenderPipeline`/`Viewport`/折り返し状態への依存が一切無いことを確認した。WI-21計画策定時に承認済みの「論理行単位を維持」という判断により無変更のまま正しく動作する。
+>
+> **ミニマップ: コード変更なし、方針確定コメント+新規issue。** `drawMinimapViewportHighlight()`の論理行ベースの近似計算をそのまま維持する方針を再確認し、理由(正確化にはO(文書サイズ)の全文書走査が必要で10GBファイル対応に反する)を説明するコメントを追加。新規issue [`minimap_highlight_ignores_word_wrap_row_density.md`](../issues/minimap_highlight_ignores_word_wrap_row_density.md)(P3、対応しない意図的な設計判断)を起票。
+>
+> **🔴 実機ドッグフーディング中に新しい環境制約に遭遇した。** 折り返し境界をまたぐカーソル移動を実機確認しようとマウスクリックで位置決めした上で`Shift+Down`のキー合成入力(`keybd_event`)を送信したところ、選択範囲が拡張される代わりにIME経由と見られる予期しない文字列("真剣")がドキュメントへ挿入される副作用が発生した。この環境の既知のキーストローク合成制約(`SendKeys`/`SendInput`が確実に届かない)は把握済みだったが、本件は「反応しない」を超えて「IME関連の予期しない副作用が起きる」という一段深刻な新しいパターン。汚染された編集内容は保存せず破棄し実害なし。**代替検証として、コードレビュー+既存自動テスト(`core_selection_model_test.cpp`)の green による確認に切り替えた**(WI-20a/bで確立済みの「コード経路無変更+既存テストgreenで代替」という同じ論拠パターン)。
+>
+> Debug/Release/ubsan全1566/1566件green(3構成とも実行)、clang-tidy exit 0(コメントのみの変更)。
+>
+> **これでWI-21全体(折り返し機能の実装〔a〜d〕+実配線〔e〕+設計判断確定〔f〕)が完結した。** 次回セッション最初にやること: 次にどの作業へ着手するかをユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧(特に`search_grep_multi_gb_performance_gap.md`/`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)を参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-21fセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

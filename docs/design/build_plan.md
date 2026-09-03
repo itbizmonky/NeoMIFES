@@ -82,10 +82,9 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-20(複数ウィンドウ対応)完結(2026-09-02〜03)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ対応、解決済みへ移動した。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)→WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)の2段階で実装、実機ドッグフーディングで複数ウィンドウの独立生成/破棄・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(--openあり/なし両方)を確認済み — 詳細は本ファイルのWI-20a/WI-20bセクション参照。
 >
-> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a〜eが完了(2026-09-03)** — a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)、b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`/`wrapWidthDips()`+レイアウトキャッシュ無効化トリガー4箇所)、c(`visualRowCountForLine()`——単一の真実の源の確立+`visibleLineRange()`/`drawVisibleLines()`の書き換え)、d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正)、**e(🎉初のユーザー到達可能段階——`Viewport::setWordWrapEnabled()`+水平スクロールバー無効化+View menu/コマンドパレット実配線+行番号/テーマ切替メニュー追加)**— 詳細は本ファイルのWI-21a〜eセクション参照。`FrameState`(粗粒度フレームスキップ、ADR-011)の既存バグが**3度**発見・修正された(WI-15iの`rightPaneWidthDips`、WI-21bの`showMinimap`/`showLineNumbers`、**WI-21eの`wordWrapEnabled`——実機ドッグフーディングでのみ発見できた実例、自動テストは全て`render()`より前にsetWordWrap()を呼んでいたためフレームスキップ判定自体が発動していなかった**)。次はWI-21f(カーソル移動無変更+ミニマップコメント更新+issue解決——WI-21最終段階)。
+> **🎉 WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)完結(2026-09-03)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)へ対応、解決済みへ移動した。着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)、b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`)、c(`visualRowCountForLine()`——単一の真実の源の確立)、d(ヒットテスト書き換え+多行描画バグ2件修正)、**e(🎉初のユーザー到達可能段階——実配線+View menu拡充)**、f(カーソル移動/ミニマップの設計判断確定+issue解決)の順で実装。`FrameState`(粗粒度フレームスキップ、ADR-011)の既存バグが**3度**発見・修正された(WI-15iの`rightPaneWidthDips`、WI-21bの`showMinimap`/`showLineNumbers`、**WI-21eの`wordWrapEnabled`——実機ドッグフーディングでのみ発見できた実例**)。WI-21fのカーソル移動検証中、キー合成入力(`Shift+Down`)がIME経由と見られる予期しない文字入力を引き起こす新しい環境制約に遭遇、コードレビュー+既存自動テストによる代替検証に切り替えた(WI-20a/bと同じ論拠パターン)。詳細は本ファイルのWI-21a〜fセクション参照。
 >
-> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
-> - [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md) (P2、WI-18の品質監査で発見) — 表示メニューが手薄・折り返し(word wrap)機能が存在しない
+> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 🟡 **2026-09-01部分対応。** 実測で真因はRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドは対象外のまま残存
 > - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
@@ -2525,6 +2524,38 @@ Debug/Release/ubsan全1566/1566件green(3構成とも実行、`FrameState`修正
 **これでWI-21e完了。** 次はWI-21f(カーソル移動は無変更(承認済みの「論理行単位を維持」判断の反映のみ、コード変更なし)、ミニマップは近似のまま維持+コメント更新+新規P3 issue起票、[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)を解決済みへ更新、最終ドッグフーディング)——WI-21全体の最終段階。
 
 コミット済み(`395e619`)、pushはユーザーの明示指示待ち。
+
+---
+
+## WI-21f — 折り返し(word wrap): カーソル移動方針の確定 + ミニマップ方針の確定 + issue解決 — 🎉 WI-21全体の最終段階
+
+### 目的
+
+WI-21eまでで折り返し機能全体(計算層a〜d+実配線e)が完成し、ユーザーが実際に利用できる状態になった。本WIはWI-21計画の最終段階として、承認済みの2つの設計判断(カーソル移動は論理行単位を維持/ミニマップは近似のまま維持)を実装へ反映(または「コード変更が不要であること」を確認)し、[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)を解決済みへ更新してWI-21全体を完結させる。
+
+### 実装
+
+- **カーソル移動: コード変更なし。** `core::moveVertically()`(`selection_model.cpp`)の実装をコードレビューで直接確認し、`document::Document::offsetToLine()`/`lineToOffset()`/`lineCount()`のみに依存する純粋な論理行ベースの実装であり、`RenderPipeline`/`Viewport`/折り返し状態への依存が一切無いことを確認した。承認済みの「論理行単位を維持(推奨)」という判断(WI-21計画策定時)により、この関数は折り返しの有無に関わらず無変更のまま正しく動作する。既存の自動テスト(`tests/unit/core_selection_model_test.cpp`の`MovementKind::Up`/`Down`関連ケース)がそのまま回帰カバレッジとして機能し続ける。
+- **ミニマップ: コード変更なし、方針確定コメントを追加。** `RenderPipeline::drawMinimapViewportHighlight()`の比率計算(`visibleLineRange()`が返す論理行番号ベース)は、折り返し有効時にビジュアル行の実際の分布とは乖離しうる近似のままとする方針を再確認し、その理由(正確化にはO(文書サイズ)の全文書走査が必要で10GBファイル対応の既存コミットメントに反する)を説明する詳細コメントを関数直前に追加した。新規issue [`minimap_highlight_ignores_word_wrap_row_density.md`](../issues/minimap_highlight_ignores_word_wrap_row_density.md)(P3、対応しない意図的な設計判断として記録)を起票。
+- **[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)を解決済みへ更新。** 完了条件3項目全てにチェックを入れ、WI-21a〜fの実装経緯・WI-21eで発見した`FrameState`バグ・本WIでの2つの設計判断確定を追記した。`docs/issues/README.md`索引も同期(P2→解決済みへ移動、新規P3 issueを追加)。
+
+### 実機ドッグフーディング(試行し、環境制約により代替検証へ切替)
+
+折り返しが有効な状態でのカーソル移動(Up/Down等が折り返し境界をまたいでも論理行単位で正しく動作すること)を実機で確認しようと試みた。ワイドウィンドウで長い折り返し行を含むテストファイルを開き、行頭でマウスクリックにより位置決め(この操作自体は既存WIで確立済みの信頼できる手法)した上で、`Shift+Down`のキー合成入力(`keybd_event`)を送信して選択範囲の広がりを観測しようとしたところ、**選択範囲が拡張される代わりに、IME経由と見られる予期しない文字列("真剣")がドキュメントへ挿入されるという副作用が発生した。**
+
+この環境のキーストローク合成に関する既知の制約(`SendKeys`/`SendInput`が確実に届かない、`reference_no_win32_gui_automation.md`に記録済み)は把握済みだったが、本件は「反応しない」だけでなく「IME関連の予期しない副作用が起きる」という一段深刻な新しいパターンであり、正直に記録する。汚染された編集内容は保存せずプロセスを強制終了して破棄した(スクラッチ用テストファイルのみが対象で、リポジトリへの実害は無い)。
+
+**代替検証として、コードレビュー+既存自動テストによる検証に切り替えた** — `moveVertically()`のロジックが折り返し状態を一切参照しないことをコード直読で確認済みであり(上記「実装」参照)、`core_selection_model_test.cpp`の既存テストスイート(本WIで無変更、全てgreenのまま)がその正しさを保証する。これはWI-20a/bで既に確立された「コード経路が無変更であることの確認+既存自動テストの green による代替」という同じ論拠パターンであり、この環境の制約下での確立された正直な検証手法である。
+
+その他の項目(折り返しON/OFF・行番号・テーマ・View menu表示・永続化)は既にWI-21eの実機ドッグフーディングで確認済みのため、本WIでは再確認していない。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1566/1566件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし、コメントのみの変更)。
+
+**これでWI-21全体(a〜f)が完結した。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)は解決済み。次にどの作業へ着手するかはユーザーへ確認する。
+
+コミット済み(`<WI-21f-commit-hash>`)、pushはユーザーの明示指示待ち。
 
 ---
 
