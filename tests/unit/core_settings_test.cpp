@@ -88,6 +88,14 @@ TEST(SettingsTest, LoadFromPartiallyPopulatedJsonKeepsOtherFieldsAtDefault) {
     fs::remove(path);
 }
 
+TEST(SettingsTest, LoadFromWordWrapTrueOverridesDefault) {
+    auto path = tempJsonPath();
+    writeRaw(path, R"({"version": 1, "wordWrap": true})");
+    const Settings settings = Settings::loadFrom(path);
+    EXPECT_TRUE(settings.wordWrap);
+    fs::remove(path);
+}
+
 TEST(SettingsTest, LoadFromZeroAutoSaveIntervalIsPreservedAsAnExplicitDisableNotClampedAway) {
     // Unlike tabWidth, 0 is a MEANINGFUL value for autoSaveIntervalSeconds
     // (WI-11's "autosave disabled" sentinel) - it must NOT be clamped back
@@ -107,6 +115,7 @@ TEST(SettingsTest, SaveThenLoadRoundTripsAllFields) {
     modified.insertSpacesForTab      = true;
     modified.showLineNumbers         = false;
     modified.showMinimap             = false;
+    modified.wordWrap                = true;
     modified.autoSaveIntervalSeconds = 30;
     modified.createBackupOnSave      = false;
     modified.themeName               = u"ライト";

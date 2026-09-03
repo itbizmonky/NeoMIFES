@@ -13,6 +13,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -2042,6 +2043,107 @@ TEST(RenderTextSmokeTest, RightPaneWidthOnlyChangeForcesRedrawInsteadOfFrameSkip
     EXPECT_TRUE(statsAfterSecond.hits != statsAfterFirst.hits ||
                 statsAfterSecond.misses != statsAfterFirst.misses)
         << "rightPaneWidthDips-only change was frame-skipped instead of triggering a redraw";
+}
+
+// WI-21b: TextLayoutCache is keyed only by LineNumber (see text_layout_cache.h)
+// - a cache hit never re-validates against the maxWidthDips a call was given,
+// so RenderPipeline itself must clear() whenever the effective wrap width
+// could have moved. Pre-WI-21 this was a non-issue because the width passed
+// to getOrCreate() was always the fixed kMaxLayoutWidthDips regardless of
+// window size/gutter/minimap - resize()/setMinimapVisible()/
+// setLineNumbersVisible()/setRightPaneWidthDips() never needed to touch the
+// cache. Word wrap makes the width dependent on all four, so each of those
+// setters now clears the cache, but ONLY when word wrap is on (wrapWidthDips()
+// is irrelevant to a non-wrapping layout, so the pre-WI-21 no-op-when-off
+// behavior must be preserved exactly). The 8 tests below pin both halves of
+// that contract for each of the 4 triggers.
+void expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+    bool wordWrapEnabled, bool expectClear, const std::function<void(RenderPipeline&)>& mutate) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    pipeline.setWordWrap(wordWrapEnabled);
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    Document doc;
+    doc.insertText(0, std::u16string(u"line0\nline1\nline2\nline3\nline4"));
+    pipeline.setDocument(&doc);
+
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto missesAfterFirst = pipeline.layoutCacheStats().misses;
+    ASSERT_GT(missesAfterFirst, 0U);
+
+    mutate(pipeline);
+
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (after mutation) failed: " << neomifes::render::describe(second.error());
+    if (expectClear) {
+        EXPECT_GT(pipeline.layoutCacheStats().misses, missesAfterFirst)
+            << "expected the mutation to have cleared the layout cache while word wrap is on";
+    } else {
+        EXPECT_EQ(pipeline.layoutCacheStats().misses, missesAfterFirst)
+            << "mutation cleared the layout cache while word wrap is off - pre-WI-21 behavior regressed";
+    }
+}
+
+TEST(RenderTextSmokeTest, ResizeWhileWordWrapEnabledClearsLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/true, /*expectClear=*/true, [](RenderPipeline& pipeline) {
+            const auto resized = pipeline.resize(300, 100, 1.0F);
+            ASSERT_TRUE(resized.has_value());
+        });
+}
+
+TEST(RenderTextSmokeTest, ResizeWhileWordWrapDisabledDoesNotClearLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/false, /*expectClear=*/false, [](RenderPipeline& pipeline) {
+            const auto resized = pipeline.resize(300, 100, 1.0F);
+            ASSERT_TRUE(resized.has_value());
+        });
+}
+
+TEST(RenderTextSmokeTest, SetMinimapVisibleWhileWordWrapEnabledClearsLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/true, /*expectClear=*/true,
+        [](RenderPipeline& pipeline) { pipeline.setMinimapVisible(false); });
+}
+
+TEST(RenderTextSmokeTest, SetMinimapVisibleWhileWordWrapDisabledDoesNotClearLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/false, /*expectClear=*/false,
+        [](RenderPipeline& pipeline) { pipeline.setMinimapVisible(false); });
+}
+
+TEST(RenderTextSmokeTest, SetLineNumbersVisibleWhileWordWrapEnabledClearsLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/true, /*expectClear=*/true,
+        [](RenderPipeline& pipeline) { pipeline.setLineNumbersVisible(false); });
+}
+
+TEST(RenderTextSmokeTest, SetLineNumbersVisibleWhileWordWrapDisabledDoesNotClearLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/false, /*expectClear=*/false,
+        [](RenderPipeline& pipeline) { pipeline.setLineNumbersVisible(false); });
+}
+
+TEST(RenderTextSmokeTest, SetRightPaneWidthDipsWhileWordWrapEnabledClearsLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/true, /*expectClear=*/true,
+        [](RenderPipeline& pipeline) { pipeline.setRightPaneWidthDips(50.0F); });
+}
+
+TEST(RenderTextSmokeTest, SetRightPaneWidthDipsWhileWordWrapDisabledDoesNotClearLayoutCache) {
+    expectMutationClearsLayoutCacheOnlyWhenWordWrapEnabled(
+        /*wordWrapEnabled=*/false, /*expectClear=*/false,
+        [](RenderPipeline& pipeline) { pipeline.setRightPaneWidthDips(50.0F); });
 }
 
 }  // namespace

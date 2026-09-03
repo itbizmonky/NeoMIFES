@@ -57,6 +57,9 @@ void applyFields(const nlohmann::json& parsed, Settings& out) {
     if (const auto it = parsed.find("showMinimap"); it != parsed.end() && it->is_boolean()) {
         out.showMinimap = it->get<bool>();
     }
+    if (const auto it = parsed.find("wordWrap"); it != parsed.end() && it->is_boolean()) {
+        out.wordWrap = it->get<bool>();
+    }
     if (const auto it = parsed.find("autoSaveIntervalSeconds"); it != parsed.end() && it->is_number_unsigned()) {
         out.autoSaveIntervalSeconds = it->get<std::uint32_t>();
     }
@@ -104,6 +107,7 @@ void Settings::saveTo(const std::filesystem::path& path) const {
     j["insertSpacesForTab"]       = insertSpacesForTab;
     j["showLineNumbers"]          = showLineNumbers;
     j["showMinimap"]              = showMinimap;
+    j["wordWrap"]                  = wordWrap;
     j["autoSaveIntervalSeconds"]  = autoSaveIntervalSeconds;
     j["createBackupOnSave"]       = createBackupOnSave;
     j["themeName"]                = toUtf8(themeName);

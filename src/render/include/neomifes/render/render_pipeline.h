@@ -284,7 +284,26 @@ public:
     // Deliberately included in FrameState's coarse-frame-skip comparison for
     // exactly that reason - see FrameState::rightPaneWidthDips's own
     // comment.
-    void setRightPaneWidthDips(float widthDips) noexcept { m_rightPaneWidthDips = widthDips; }
+    // WI-21b: no-op guard + wrap-conditional layout-cache invalidation added
+    // (previously an unconditional one-liner) - a pane toggling open/closed
+    // changes wrapWidthDips() (gutterWidthDips()/minimapWidthDips()/
+    // m_rightPaneWidthDips are all wrapWidthDips() inputs), and
+    // TextLayoutCache::getOrCreate() does not re-validate a cache hit
+    // against the maxWidthDips it was given (text_layout_cache.h's own
+    // contract) - stale wrapped layouts built at the old width would keep
+    // being returned otherwise. No-op when word wrap is off (wrapWidthDips()
+    // is never consulted there - see the getOrCreate() call sites in
+    // drawTextLine()/hitTest()), matching every wrap-off code path staying
+    // byte-identical to its pre-WI-21 behavior.
+    void setRightPaneWidthDips(float widthDips) noexcept {
+        if (widthDips == m_rightPaneWidthDips) {
+            return;
+        }
+        m_rightPaneWidthDips = widthDips;
+        if (m_wordWrapEnabled) {
+            m_layoutCache.clear();
+        }
+    }
 
     // WI-08: changes the font family/size used by ensureTextFormat(). No-op
     // if both are already the current values (avoids needless invalidation,
@@ -340,13 +359,33 @@ public:
     // gutterWidthDips() below also consults this - hiding the numbers
     // shrinks the gutter back to its pre-WI-07 bookmark/fold-marker-only
     // width rather than leaving the now-empty digit-count space reserved.
-    void setLineNumbersVisible(bool visible) noexcept { m_showLineNumbers = visible; }
+    // WI-21b: no-op guard + wrap-conditional cache clear added - see
+    // setRightPaneWidthDips()'s own comment for why (gutterWidthDips()
+    // changing is a wrapWidthDips() input the same way).
+    void setLineNumbersVisible(bool visible) noexcept {
+        if (visible == m_showLineNumbers) {
+            return;
+        }
+        m_showLineNumbers = visible;
+        if (m_wordWrapEnabled) {
+            m_layoutCache.clear();
+        }
+    }
 
     // WI-08: show/hide the minimap strip (drawMinimap()). minimapWidthDips()
     // below also consults this so visibleColumnCount()/minimapLeftDips()
     // reclaim the strip's width when hidden instead of leaving it reserved
-    // and blank.
-    void setMinimapVisible(bool visible) noexcept { m_showMinimap = visible; }
+    // and blank. WI-21b: no-op guard + wrap-conditional cache clear added -
+    // see setRightPaneWidthDips()'s own comment for why.
+    void setMinimapVisible(bool visible) noexcept {
+        if (visible == m_showMinimap) {
+            return;
+        }
+        m_showMinimap = visible;
+        if (m_wordWrapEnabled) {
+            m_layoutCache.clear();
+        }
+    }
 
     // WI-09: switches the color palette every ensureXxxBrush() creates from
     // (theme.h's themeForKind()). No-op if `kind` already matches - same
@@ -365,6 +404,33 @@ public:
         }
         m_themeKind = kind;
         resetThemeBrushes();
+    }
+
+    // WI-21b: toggles real DirectWrite word wrapping. No-op guard + apply-
+    // immediately-if-a-format-already-exists shape, same as setTabWidth()
+    // above (SetWordWrapping() is a mutator on the live IDWriteTextFormat,
+    // no recreation needed - unlike setFontSettings(), which must tear down
+    // m_textFormat entirely since family/size aren't mutable in place).
+    // Unconditionally clears the layout cache (same rationale
+    // setFontSettings()/setTabWidth() already have): every cached
+    // IDWriteTextLayout was built with the OLD wrapping mode + OLD width
+    // (kMaxLayoutWidthDips when off, wrapWidthDips() when on - see the
+    // getOrCreate() call sites in drawTextLine()/hitTest()), and
+    // TextLayoutCache::getOrCreate() does not re-validate a cache hit
+    // against either. Deliberately does NOT reset m_leftColumn - that is
+    // core::Viewport's own authoritative state (this class only mirrors it
+    // via setLeftColumn(), called fresh every frame), so resetting the
+    // mirror here would just be overwritten a frame later; WI-21e's
+    // Viewport::setWordWrapEnabled() is where the real reset belongs.
+    void setWordWrap(bool enabled) noexcept {
+        if (enabled == m_wordWrapEnabled) {
+            return;
+        }
+        m_wordWrapEnabled = enabled;
+        if (m_textFormat) {
+            m_textFormat->SetWordWrapping(enabled ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+        m_layoutCache.clear();
     }
 
     // WI-03: the length (UTF-16 code units) of the longest line among those
@@ -733,6 +799,20 @@ private:
         // is toggled, exactly the "mutated field not in FrameState silently
         // disables redraw" hazard leftColumn's own comment warns about.
         float rightPaneWidthDips = 0.0F;
+        // WI-21b: same rationale as rightPaneWidthDips above, discovered
+        // while writing that WI's own layoutCacheStats() invalidation tests
+        // - setMinimapVisible()/setLineNumbersVisible() toggling with
+        // nothing else changed was silently coarse-frame-skipped (these two
+        // fields were never in FrameState), so the TextLayoutCache::clear()
+        // those setters trigger while word wrap is on had no visible effect
+        // until some unrelated state change forced a real redraw. Pre-WI-21b
+        // this was latent (toggling minimap/gutter visibility with the rest
+        // of FrameState unchanged still skipped a real redraw, silently
+        // leaving the strip/gutter on screen) - it just had no test catching
+        // it because nothing downstream depended on the redraw actually
+        // happening promptly.
+        bool showMinimap     = true;
+        bool showLineNumbers = true;
         // WI-06: same rationale as leftColumn above - a composition-only
         // change (the user keeps typing into an active IME session, with
         // topLine/cursor/document all otherwise unchanged) must not be
@@ -938,6 +1018,22 @@ private:
     // since kMinimapWidthDips is a .cpp-anonymous-namespace constant, not
     // visible to an inline header definition.
     [[nodiscard]] float minimapWidthDips() const noexcept;
+    // WI-21b: the layout box width drawTextLine()/hitTest() pass to
+    // TextLayoutCache::getOrCreate() when word wrap is on (kMaxLayoutWidthDips
+    // is used instead when it's off - see those call sites). Reuses
+    // visibleColumnCount() (already computes exactly "how many monospace
+    // columns fit after subtracting the gutter/minimap/right-pane widths")
+    // rather than re-deriving the same subtraction, so the wrap point stays
+    // aligned to the same whole-column mental model the gutter/indent-guide/
+    // horizontal-scroll math already uses - a fractional-DIP wrap point
+    // would otherwise drift by a hair across resizes as m_width/m_dpiScale
+    // change independently. Falls back to kMaxLayoutWidthDips (effectively
+    // "don't wrap yet") when no column fits or m_charWidthDips isn't
+    // measured yet (pre-first-render/degenerate-window state) - same
+    // graceful-degradation shape computeVisibleColumnCount() itself already
+    // has for a 0 input, rather than returning a 0-or-negative width that
+    // would make CreateTextLayout()/getOrCreate() behave unpredictably.
+    [[nodiscard]] float wrapWidthDips() const noexcept;
     // X-DIP offset where the minimap strip begins (kMinimapWidthDips before
     // the client-area's right edge). Extracted (Phase 7v) once drawMinimap()
     // and hitTestMinimap() both needed it - same "2nd call site" rule as
@@ -1423,6 +1519,12 @@ private:
     // pre-WI-08 frame, which always drew both).
     bool m_showLineNumbers = true;
     bool m_showMinimap     = true;
+    // WI-21b:折り返し(word wrap). See setWordWrap()/wrapWidthDips() below -
+    // default false matches the pre-WI-21 hardcoded DWRITE_WORD_WRAPPING_NO_WRAP
+    // exactly, so any code path that never calls setWordWrap() (every
+    // existing test, --measure-* launch modes) keeps its exact prior
+    // appearance.
+    bool m_wordWrapEnabled = false;
 
     // WI-09: the currently-applied theme. themeForKind(m_themeKind) is what
     // every ensureXxxBrush() and renderOnce()'s background dc->Clear() now

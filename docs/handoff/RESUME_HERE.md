@@ -272,6 +272,22 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-21aセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎯 最重要 (2026-09-03) — WI-21b: `Settings::wordWrap` + `RenderPipeline::setWordWrap()`完了、`FrameState`の既存バグを1件発見・修正
+
+> **WI-21aに続き、ユーザーの「継続せよ」でWI-21bへ着手・完了した。** `core::Settings::wordWrap`フィールド(`showLineNumbers`/`showMinimap`と同じ永続化パターン)、`RenderPipeline::setWordWrap()`/`wrapWidthDips()`、`resize()`/`setRightPaneWidthDips()`/`setLineNumbersVisible()`/`setMinimapVisible()`の4トリガーでの`TextLayoutCache::clear()`を実装。**本WIの時点ではまだどのUI/コマンドパレットからも到達不可能なまま**(承認済みプラン通り、`visibleLineRange()`側がまだ折り返し未対応のため)。
+>
+> **テスト作成中に`FrameState`(粗粒度フレームスキップ、ADR-011)の既存バグを1件発見・修正した。** `layoutCacheStats()`で4トリガーの無効化がend-to-endに動作することを証明する8件の新規テスト(`tests/integration/render_text_smoke_test.cpp`)を書いたところ、`setMinimapVisible`/`setLineNumbersVisible`関連の2件が失敗した。原因は`FrameState`に`m_showMinimap`/`m_showLineNumbers`が含まれておらず、この2フィールド単独の変更では`render()`が実描画そのものを丸ごとスキップしていたため——セッター内の`m_layoutCache.clear()`は正しく実行されるが、次の`render()`がフレームスキップされてしまい、無関係な別の状態変化が起きるまでキャッシュへの問い合わせ自体が発生しない。これはWI-21bが生んだ新規バグではなく、WI-15iで`rightPaneWidthDips`について一度発見・修正されたのと全く同じ問題クラスの潜在バグで、**折り返し機能とは無関係に「他の状態が何も変わらないままミニマップ/行番号表示だけをトグルすると再描画がスキップされ画面に古い表示が残り続ける」という実害が既に存在していた**。`FrameState`に`showMinimap`/`showLineNumbers`の2フィールドを追加(`captureFrameState()`の初期化も追加)して修正、`rightPaneWidthDips`のWI-15i修正と同じパターン。
+>
+> **重要な教訓:** 「セッターがキャッシュクリアを呼んでいる」ことと「その効果が実際に次のフレームで観測できる」ことは別の主張であり、後者を検証するテストを書かなければ前者だけでは不十分だと今回も実証された。ビルドが通ることと`FrameState`のような横断的関心事が正しく連動していることは独立した検証軸。
+>
+> Debug/Release/ubsan全1560/1560件green(3構成とも実行)、clang-tidy exit 0。実機ドッグフーディングは実施せず(まだユーザー到達不可能なヘッドレス変更のみのため、承認済みプラン通り)。
+>
+> **次回セッション最初にやること:** WI-21c(`visualRowCountForLine()`——単一の真実の源の確立、既存の4箇所以上のアドホックな「非表示行スキップ」ループをこの1関数へ集約、`visibleLineRange()`/`drawVisibleLines()`の書き換え)に着手する。詳細設計は承認済みプラン(`C:\Users\kenbo\.claude\plans\eventual-crafting-lecun.md`)参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-21bセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

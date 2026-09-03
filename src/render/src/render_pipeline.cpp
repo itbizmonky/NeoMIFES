@@ -103,6 +103,18 @@ RenderExpected<void> RenderPipeline::resize(std::uint32_t width, std::uint32_t h
     m_width    = width;
     m_height   = height;
     m_dpiScale = dpiScale;
+    // WI-21b: wrapWidthDips() (a function of m_width/m_dpiScale) is a
+    // TextLayoutCache::getOrCreate() input once word wrap is on - see
+    // setRightPaneWidthDips()'s own comment for the full "why" (same
+    // "cache hit isn't re-validated against maxWidthDips" contract). No-op
+    // when word wrap is off, and cheap enough relative to resize()'s own
+    // cost (device/swap-chain teardown-rebuild below) that this is
+    // unconditional on whether the DIPS-converted width actually changed -
+    // resize() itself is already a real-size-change event in practice
+    // (WM_SIZE), not a per-frame call.
+    if (m_wordWrapEnabled) {
+        m_layoutCache.clear();
+    }
     if (!m_device) {
         return std::unexpected(RenderError{.stage = RenderStage::NotAttached, .hr = E_NOT_VALID_STATE});
     }
@@ -133,6 +145,8 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .diffViewLineMarkers = m_diffViewLineMarkers,
         .leftColumn      = m_leftColumn,
         .rightPaneWidthDips = m_rightPaneWidthDips,
+        .showMinimap     = m_showMinimap,
+        .showLineNumbers = m_showLineNumbers,
         .imeComposition  = m_imeComposition,
         .themeKind       = m_themeKind,
         .logLevelFilterMask = m_logLevelFilterMask,
@@ -358,11 +372,16 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
     // process-wide singleton every frame.
     m_dwriteFactory = *factory;
 
-    // The default DWRITE_WORD_WRAPPING_WRAP would silently break the fixed
-    // topLine*lineHeight row layout drawVisibleLines() relies on (a long
-    // line would wrap and push every following row down instead of being
-    // clipped at the client edge).
-    hr = format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    // WI-21b: the default DWRITE_WORD_WRAPPING_WRAP would - once WI-21c
+    // lands - silently break the fixed topLine*lineHeight row layout
+    // drawVisibleLines() relies on for WI-21a's own row-counting logic
+    // (visualRowCountForLine()) to already be consulted everywhere it needs
+    // to be. As of THIS WI, setWordWrap() is the only way m_wordWrapEnabled
+    // becomes true, and nothing calls it yet (no menu/command-palette entry
+    // exists until WI-21e) - so this conditional is not yet reachable in
+    // practice, but is written now so ensureTextFormat() doesn't need a
+    // second WI-21e change just to stop hardcoding NO_WRAP.
+    hr = format->SetWordWrapping(m_wordWrapEnabled ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
     }
@@ -914,7 +933,7 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
                                   std::size_t& tokenCursor) noexcept {
     const auto layoutResult =
         m_layoutCache.getOrCreate(line, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
-                                  kMaxLayoutWidthDips, kMaxLayoutHeightDips);
+                                  m_wordWrapEnabled ? wrapWidthDips() : kMaxLayoutWidthDips, kMaxLayoutHeightDips);
     // A layout-creation failure for a single line is no worse than the
     // pre-Phase-3c behavior of DrawText() silently failing per-call - it
     // skips just that line, not the whole frame.
@@ -1532,6 +1551,14 @@ std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
     return computeVisibleColumnCount(availableWidthDips, m_charWidthDips);
 }
 
+float RenderPipeline::wrapWidthDips() const noexcept {
+    const std::uint32_t columns = visibleColumnCount();
+    if (columns == 0 || m_charWidthDips <= 0.0F) {
+        return kMaxLayoutWidthDips;
+    }
+    return static_cast<float>(columns) * m_charWidthDips;
+}
+
 std::u16string RenderPipeline::extractLineText(LineNumber line) const noexcept {
     const std::uint64_t totalLines = m_document->lineCount();
     const TextPos        lineStart = m_document->lineToOffset(line);
@@ -1815,7 +1842,7 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
 
     const auto layoutResult =
         m_layoutCache.getOrCreate(targetLine, lineSpan, *m_dwriteFactory.Get(), *m_textFormat.Get(),
-                                  kMaxLayoutWidthDips, kMaxLayoutHeightDips);
+                                  m_wordWrapEnabled ? wrapWidthDips() : kMaxLayoutWidthDips, kMaxLayoutHeightDips);
     if (!layoutResult.has_value()) {
         return std::nullopt;
     }

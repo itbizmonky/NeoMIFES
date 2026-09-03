@@ -50,6 +50,11 @@ public:
                                                     // Tab-key insertion path (out of scope, see build_plan.md)
     bool           showLineNumbers       = true;
     bool           showMinimap           = true;
+    // WI-21b:折り返し(word wrap) - see render::RenderPipeline::setWordWrap()
+    // for the DirectWrite/layout-cache side of this toggle. Not yet
+    // reachable from any menu/command-palette entry as of WI-21b - see that
+    // WI's own build_plan.md section for why (WI-21e wires the caller).
+    bool           wordWrap              = false;
     // WI-11: autosave interval in seconds (app::autoSaveAllDirtySessions(),
     // wired via MainWindow::startAutoSaveTimer()). 0 is a distinct,
     // explicit sentinel meaning "autosave disabled" (not merely "not yet

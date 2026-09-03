@@ -82,7 +82,7 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-20(複数ウィンドウ対応)完結(2026-09-02〜03)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ対応、解決済みへ移動した。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)→WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)の2段階で実装、実機ドッグフーディングで複数ウィンドウの独立生成/破棄・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(--openあり/なし両方)を確認済み — 詳細は本ファイルのWI-20a/WI-20bセクション参照。
 >
-> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)完了(2026-09-03)** — 詳細は本ファイルのWI-21aセクション参照。次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`)。
+> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)完了(2026-09-03)。WI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`/`wrapWidthDips()`+レイアウトキャッシュ無効化トリガー4箇所)も完了(2026-09-03)** — 詳細は本ファイルのWI-21a/WI-21bセクション参照。WI-21bのテスト作成中に`FrameState`の既存バグ(`showMinimap`/`showLineNumbers`単独変更が粗粒度フレームスキップの比較対象に含まれておらず、無関係な状態変化が起きるまで再描画されない)を発見・修正済み(WI-15iの`rightPaneWidthDips`と同じ修正パターン)。次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立)。
 >
 > **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md) (P2、WI-18の品質監査で発見) — 表示メニューが手薄・折り返し(word wrap)機能が存在しない
@@ -2385,6 +2385,36 @@ WI-21aはこの中で最もリスクの低い段階——新規ヘッドレス�
 Debug/Release/ubsan全1559/1559件green(3構成とも実行、flaky再実行なし、Release 78.88秒/ubsan 92.54秒)。clang-tidy exit code 0(新規テストフィクスチャの`protected`メンバー変数について`cppcoreguidelines-non-private-member-variables-in-classes`警告2件が出たが、これは既存の`TextLayoutCacheTest`と全く同じフィクスチャ形状に由来する非ブロッキングの既知パターンであり、warnings-as-errors対象外)。
 
 コミット済み(`b025725`)、pushはユーザーの明示指示待ち。次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加) — 詳細設計は承認済みプラン参照。
+
+---
+
+## WI-21b — 折り返し(word wrap): `Settings::wordWrap` + `RenderPipeline::setWordWrap()` + レイアウトキャッシュ無効化トリガー4箇所
+
+### 目的
+
+WI-21aに続く第2段階。`TextLayoutCache`は文書バージョン/フォント/タブ幅の変更でのみ`clear()`されており、リサイズ・ミニマップ表示切替・行番号ガター幅変化では呼ばれていなかった(折り返し無効時は`getOrCreate()`に渡す幅が常に`kMaxLayoutWidthDips`固定だったため実害が無かった)。折り返しが有効になると、これら4トリガーで幅そのものが変わりうるため`clear()`が必須になる——承認済みプランのWI-21b節が規定する通り。**このWIの時点ではまだどのUI/コマンドパレットからも`setWordWrap()`を呼ぶ配線をしない**(`visibleLineRange()`/`drawVisibleLines()`側がまだ「1論理行=1描画行」前提のままで、先に到達可能にすると行がはみ出して壊れて見えるため)。
+
+### 実装
+
+- `core::Settings`に`bool wordWrap = false;`を追加、`showLineNumbers`/`showMinimap`と全く同じ`loadFrom()`/`saveTo()`パターンで永続化(`applyFields()`の分岐+`saveTo()`の1行、円ラウンドトリップテスト+単独`LoadFromWordWrapTrueOverridesDefault`テストを追加)。
+- `RenderPipeline`に`bool m_wordWrapEnabled = false;`+`setWordWrap(bool)`(`setTabWidth()`と同じ「値が変わらなければ何もしない→変更あれば`IDWriteTextFormat::SetWordWrapping()`を即座に適用+レイアウトキャッシュ全クリア」の形、`m_leftColumn`のリセットは意図的に行わない——`RenderPipeline`側の`m_leftColumn`はViewportの値を毎フレームミラーするだけなので、本当のリセットはWI-21eの`Viewport::setWordWrapEnabled()`側の責務)。
+- `wrapWidthDips()`(private) — 既存の`visibleColumnCount()`を再利用し、列数を文字幅で量子化した値を返す(列数0または文字幅未測定なら`kMaxLayoutWidthDips`)。
+- `ensureTextFormat()`の`SetWordWrapping`呼び出しを`m_wordWrapEnabled`に応じて分岐(従来はハードコードで`DWRITE_WORD_WRAPPING_NO_WRAP`固定)。
+- `drawTextLine()`/`hitTest()`の`getOrCreate()`呼び出しの幅引数を、折り返し有効時は`wrapWidthDips()`、無効時は従来通り`kMaxLayoutWidthDips`に分岐。
+- `resize()`に、折り返し有効時は無条件で`m_layoutCache.clear()`する処理を追加。
+- 従来ガード無しだった`setRightPaneWidthDips()`/`setLineNumbersVisible()`/`setMinimapVisible()`の3セッターに「値が変わらなければ何もしない」ガード+「折り返し有効時のみ`m_layoutCache.clear()`」を追加(`setRightPaneWidthDips()`は元々ガード無し=毎回無条件で処理していた挙動だったが、他の2つと形を揃えるため統一)。
+
+### テスト作成中に発見・修正した既存バグ: `FrameState`の粗粒度フレームスキップ漏れ
+
+`tests/integration/render_text_smoke_test.cpp`へ8件の新規テスト(4トリガー×折り返しON/OFF各1件、`layoutCacheStats()`のmiss数before/after比較で検証、既存の`RightPaneWidthOnlyChangeForcesRedrawInsteadOfFrameSkip`等と同じ手法)を追加したところ、`SetMinimapVisibleWhileWordWrapEnabledClearsLayoutCache`/`SetLineNumbersVisibleWhileWordWrapEnabledClearsLayoutCache`の2件が失敗した。原因調査の結果、`RenderPipeline::FrameState`(`render()`の粗粒度フレームスキップ判定、ADR-011)に`m_showMinimap`/`m_showLineNumbers`が含まれておらず、この2フィールド単独の変更(他の全フィールドが不変)では`render()`が実際の描画処理を丸ごとスキップしていたと判明——セッター内の`m_layoutCache.clear()`自体は正しく実行されるが、次の`render()`がフレームスキップされるため、キャッシュがクリアされたことが一切見えない(次にキャッシュへ問い合わせが飛ぶのは、無関係な別の状態変化が偶然起きるまで先延ばしになる)。
+
+これはWI-21bが原因で新しく生まれたバグではなく、`showMinimap`/`showLineNumbers`がこのクラスに導入された当初から存在していた潜在バグ(WI-15iで`rightPaneWidthDips`について既に一度発見・修正された全く同じ問題クラス、`FrameState`本体のコメントが「ここに含まれないフィールドの変更は静かに再描画を無効化する」と繰り返し警告している通り)。折り返し機能がクリア呼び出しを追加するまで誰にも観測されていなかっただけで、**折り返し抜きでも、他の状態が何も変わらないままミニマップ/行番号表示だけをトグルすると再描画がスキップされ、画面上に古い表示が残り続ける実害が既にあった**。WI-21b自身のDoD(「4トリガーの無効化が`layoutCacheStats()`経由でend-to-endに動作すること」)を満たすために必須の修正と判断し、`FrameState`に`showMinimap`/`showLineNumbers`の2フィールドを追加(`captureFrameState()`側の初期化も追加)——`rightPaneWidthDips`がWI-15iで辿ったのと全く同じ修正パターン。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1560/1560件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`/`settings.cpp`とも新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点ではまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため(WI-21eで初めてユーザー到達可能になる)。
+
+コミット済み(`<WI-21b-commit-hash>`)、pushはユーザーの明示指示待ち。次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立、`visibleLineRange()`/`drawVisibleLines()`の書き換え) — 詳細設計は承認済みプラン参照。
 
 ---
 

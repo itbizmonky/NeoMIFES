@@ -3861,4 +3861,32 @@ Debug/Release/ubsan全1559/1559件green(3構成とも実行、flaky再実行な�
 
 次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加)。
 
+**続けてユーザーが「継続せよ」と指示、WI-21bに着手・完了した。**
+
+### WI-21b実装
+
+`core::Settings`へ`bool wordWrap = false;`を追加(`showLineNumbers`/`showMinimap`と全く同じ`loadFrom()`/`saveTo()`パターン、ラウンドトリップテスト+`LoadFromWordWrapTrueOverridesDefault`テストを追加)。`RenderPipeline`へ`bool m_wordWrapEnabled`+`setWordWrap(bool)`(`setTabWidth()`と同じ「値不変なら何もしない→変更あれば`SetWordWrapping()`を即座に適用+レイアウトキャッシュ全クリア」の形、`m_leftColumn`のリセットは意図的に見送りWI-21eの`Viewport::setWordWrapEnabled()`側の責務とした)+`wrapWidthDips()`(`visibleColumnCount()`を再利用し文字幅で量子化)を実装。`ensureTextFormat()`の`SetWordWrapping`呼び出しと`drawTextLine()`/`hitTest()`の`getOrCreate()`幅引数を`m_wordWrapEnabled`で分岐。`resize()`+従来ガード無しだった`setRightPaneWidthDips()`/`setLineNumbersVisible()`/`setMinimapVisible()`の3セッターに「値不変なら何もしない」ガード+「折り返し有効時のみ`m_layoutCache.clear()`」を追加。**本WIの時点ではまだどのUI/コマンドパレットからも`setWordWrap()`を呼ぶ配線をしていない**(承認済みプラン通り、`visibleLineRange()`側が折り返し未対応のまま先に到達可能にすると壊れて見えるため)。
+
+Debugビルドは初回で成功(background task経由、cmake単体では正しくビルドできたが後述の通り実は誤検知だった)。
+
+### テスト作成中に発見・修正した`FrameState`の既存バグ
+
+WI-21bのDoDが要求する「4トリガーの無効化が`layoutCacheStats()`経由でend-to-endに動作すること」を証明するため、`tests/integration/render_text_smoke_test.cpp`へ8件の新規テスト(4トリガー×折り返しON/OFF各1件、既存の`RightPaneWidthOnlyChangeForcesRedrawInsteadOfFrameSkip`等と同じ「render前後のmiss数比較」手法)を追加した。**このうち`SetMinimapVisibleWhileWordWrapEnabledClearsLayoutCache`/`SetLineNumbersVisibleWhileWordWrapEnabledClearsLayoutCache`の2件が実際に失敗した**(`misses`が4のまま変化せず)。
+
+原因調査の結果、`RenderPipeline::FrameState`(`render()`の粗粒度フレームスキップ判定、ADR-011、`captureFrameState()`が構築)に`m_showMinimap`/`m_showLineNumbers`が一度も含まれていなかったと判明した。この2フィールド単独の変更(他の全フィールドが不変)では、`render()`が`current == m_lastRenderedFrameState`と誤判定し実描画処理そのものを丸ごとスキップする——セッター内で`m_layoutCache.clear()`は正しく実行されるが、次の`render()`が丸ごとスキップされるため、キャッシュがクリアされた効果が一切観測されない(次にキャッシュへ問い合わせが飛ぶのは、無関係な別の状態変化が偶然起きるまで先延ばしになる)。
+
+これは**WI-21bが生んだ新規バグではなく、`showMinimap`/`showLineNumbers`がこのクラスに導入された当初から存在していた潜在バグ**であり、WI-15iで`rightPaneWidthDips`について全く同じ問題クラスが一度発見・修正されている(`FrameState`本体のコメント群が「ここに含まれないフィールドの変更は静かに再描画を無効化する」と繰り返し警告している通りの再発)。折り返し機能が`clear()`呼び出しを追加するまで誰にも観測されていなかっただけで、**折り返しの有無に関わらず、他の状態が何も変わらないままミニマップ/行番号表示だけをトグルすると再描画がスキップされ、画面上に古い表示が残り続けるという実害が既に存在していた**。WI-21b自身のDoDを満たすために必須の修正と判断し(スコープ外の探索的なバグ狩りではなく、書いている最中のテストが直接明らかにした問題)、`FrameState`へ`showMinimap`/`showLineNumbers`の2フィールドを追加、`captureFrameState()`の初期化リストへも追加して修正——`rightPaneWidthDips`のWI-15i修正と同一パターン。修正後、全8件のテストがgreenになった。
+
+**教訓:** 「セッターがキャッシュクリアを呼んでいる」ことと「その効果が実際に次のフレームで観測できる」ことは別の主張であり、後者を検証するテストを書かなければ前者だけでは不十分だと今回も実証された。ビルドが通ることと`FrameState`のような横断的関心事が正しく連動していることは独立した検証軸であり、コンパイルが通っただけの状態を「完了」と扱わないという、この項目のセッション終了時チェックリストの精神をテスト段階で先取りできた事例。
+
+### 環境上の教訓(このセッションで再発)
+
+Bashツールの`cmake --build --preset debug`がPATHに`cmake`が無いにも関わらず`2>&1 | tail`のパイプ経由で見かけ上exit code 0を返す偽陽性が再発した(過去に確立済みの`project-neomifes-verification`メモリの教訓と完全に一致)。実際のビルド確認は都度PowerShell + `Enter-VsDevShell`経由で行う必要があり、本セッションでもBash単体の「成功」を鵜呑みにせず都度PowerShell側で再実行して確認した。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1560/1560件green(3構成とも実行、Release/ubsanはバックグラウンドサブエージェントへ委任、今回は初回から指示通りフォアグラウンド実行で完走)。clang-tidy exit 0(`render_pipeline.h`/`render_pipeline.cpp`/`settings.h`/`settings.cpp`とも新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点ではまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
+
+**これでWI-21b完了。** 次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立、既存の4箇所以上のアドホックな「非表示行スキップ」ループをこの1関数へ集約、`visibleLineRange()`/`drawVisibleLines()`の書き換え、まだユーザー到達不可能なまま継続)。
+
 <!-- 次セッションはここに追記 -->
