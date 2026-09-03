@@ -2621,7 +2621,7 @@ Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanは�
 
 Debug/Release/ubsan全1576/1576件green(ベンチ追加後も無変化、bench targetはctest未登録の既存慣習通り)、clang-tidy新規指摘0件(新規`grep_service_bench.cpp`は既存`search_find_all_bench.cpp`と同種・同程度の警告——BENCHMARK()マクロ由来のグローバル変数警告等、全てpre-existingパターン——のみ)。新規ベンチマーク実行ファイル自体もDebug/Release/asanの3構成全てで実際に実行し、正常終了・両ベンチマーク行の出力・一時ディレクトリの削除・サニタイザ検出0件を確認済み(Release: 約3.7秒、asan: 約45.2秒)。
 
-コミット済み(`48833ad`)、pushはユーザーの明示指示待ち。
+コミット済み(`48833ad`本体+`48b79a8`ハッシュ反映+`047dd05`ベンチマーク追加)。本体2コミットはpush済み(`31798f6..48b79a8`)、ベンチマーク追加コミットのpushはユーザーの明示指示待ち。
 
 ---
 
