@@ -2619,7 +2619,7 @@ Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanは�
 
 `search_grep_multi_gb_performance_gap.md`の完了条件は「GrepService側のオーバーヘッド削減」を達成、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、CI常設化は別途検討)。
 
-コミット済み、pushはユーザーの明示指示待ち。
+コミット済み(`48833ad`)、pushはユーザーの明示指示待ち。
 
 ---
 
