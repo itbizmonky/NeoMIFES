@@ -2414,7 +2414,7 @@ WI-21aに続く第2段階。`TextLayoutCache`は文書バージョン/フォン�
 
 Debug/Release/ubsan全1560/1560件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`/`settings.cpp`とも新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点ではまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため(WI-21eで初めてユーザー到達可能になる)。
 
-コミット済み(`<WI-21b-commit-hash>`)、pushはユーザーの明示指示待ち。次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立、`visibleLineRange()`/`drawVisibleLines()`の書き換え) — 詳細設計は承認済みプラン参照。
+コミット済み(`1cc2a49`)、pushはユーザーの明示指示待ち。次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立、`visibleLineRange()`/`drawVisibleLines()`の書き換え) — 詳細設計は承認済みプラン参照。
 
 ---
 
