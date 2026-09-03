@@ -342,4 +342,87 @@ TEST(SearchServiceTest, MoreThanNineCapturingGroupsAreCappedWithoutOverflow) {
     EXPECT_EQ(result[0].groups[8], (TextRange{.start = 8, .end = 9}));   // "i"
 }
 
+// search_crlf_line_ending.md: RE2's (?m) '$'/'^' anchor immediately
+// before/after '\n' only - a CRLF document's trailing '\r' used to sit
+// between the matched content and the '\n' RE2 actually anchors to, so
+// "bar$" never matched the visual end of "foo bar\r\n". scanDocument()
+// now strips CRLF's '\r' from the buffer RE2 searches (only when at least
+// one '\r' is present) and maps match positions back through
+// stripCrBeforeLf()'s boundary map.
+
+TEST(SearchServiceTest, DollarAnchorMatchesVisualEndOfLineOnCrlfDocument) {
+    // Exact scenario from search_crlf_line_ending.md's own bug report.
+    const Document doc = makeDoc(u"foo bar\r\nbaz");
+    const Query    query{.pattern = u"bar$", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    // "bar" is UTF-16 offsets [4,7) - excludes the '\r' at offset 7, same as
+    // it would if the document used '\n' alone.
+    EXPECT_EQ(result[0], (TextRange{.start = 4, .end = 7}));
+}
+
+TEST(SearchServiceTest, CaretAnchorMatchesVisualStartOfLineOnCrlfDocument) {
+    const Document doc = makeDoc(u"foo\r\nbar\r\nbaz");
+    const Query    query{.pattern = u"^bar", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    // "foo\r\n" is 5 UTF-16 code units (f,o,o,\r,\n) - "bar" starts at 5.
+    EXPECT_EQ(result[0], (TextRange{.start = 5, .end = 8}));
+}
+
+TEST(SearchServiceTest, CrlfHandlingLeavesLfOnlyDocumentsByteForByteUnaffected) {
+    // Same query/content as CaretAndDollarStillAnchorToLineNotWholeDocument
+    // above, but written independently here as an explicit regression guard
+    // for scanDocument()'s "no '\r' at all" fast path (stripCrBeforeLf() is
+    // never even called) - this test's own expected offsets must never
+    // change no matter how the CRLF-handling code evolves.
+    const Document doc = makeDoc(u"foo\nbar\nbaz");
+    const Query    startQuery{.pattern = u"^bar", .regex = true};
+    const Query    endQuery{.pattern = u"foo$", .regex = true};
+
+    EXPECT_EQ(ranges(SearchService::findAll(doc, startQuery))[0], (TextRange{.start = 4, .end = 7}));
+    EXPECT_EQ(ranges(SearchService::findAll(doc, endQuery))[0], (TextRange{.start = 0, .end = 3}));
+}
+
+TEST(SearchServiceTest, MultipleCrlfLinesAllAnchorCorrectlyNotJustTheFirst) {
+    const Document doc = makeDoc(u"one\r\ntwo\r\nthree\r\nfour");
+    const Query    query{.pattern = u"^\\w+$", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 4U);
+    EXPECT_EQ(result[0], (TextRange{.start = 0, .end = 3}));    // "one"
+    EXPECT_EQ(result[1], (TextRange{.start = 5, .end = 8}));    // "two"
+    EXPECT_EQ(result[2], (TextRange{.start = 10, .end = 15}));  // "three"
+    EXPECT_EQ(result[3], (TextRange{.start = 17, .end = 21}));  // "four" (last line, no trailing CRLF)
+}
+
+TEST(SearchServiceTest, CapturingGroupRangesAreRemappedOnCrlfDocumentToo) {
+    const Document doc = makeDoc(u"key: bar\r\nnext");
+    const Query    query{.pattern = u"key: (\\w+)$", .regex = true};
+
+    const std::vector<Match> result = SearchService::findAll(doc, query);
+    ASSERT_EQ(result.size(), 1U);
+    ASSERT_EQ(result[0].groups.size(), 1U);
+    // Group 1 ("bar") must land at [5,8), not include the '\r' at offset 8.
+    EXPECT_EQ(result[0].groups[0], (TextRange{.start = 5, .end = 8}));
+}
+
+TEST(SearchServiceTest, LiteralCarriageReturnSearchFindsLoneCrButNotACrlfPairsCr) {
+    // Documented trade-off (search_crlf_line_ending.md): stripCrBeforeLf()
+    // only removes a '\r' immediately followed by '\n' - treating it as
+    // invisible line-ending punctuation, the same way '\n' itself is never
+    // "found" by a content search. A lone '\r' (old Mac line ending, not
+    // followed by '\n') is ordinary content and stays findable, consistent
+    // with core::selection_model.cpp's lineContentEnd() treating it the
+    // same way.
+    const Document doc = makeDoc(u"a\rb\r\nc");  // lone \r at 1, CRLF's \r at 3
+    const Query    query{.pattern = u"\\r", .regex = true};
+
+    const std::vector<TextRange> result = ranges(SearchService::findAll(doc, query));
+    ASSERT_EQ(result.size(), 1U);
+    EXPECT_EQ(result[0], (TextRange{.start = 1, .end = 2}));  // only the lone '\r'
+}
+
 }  // namespace

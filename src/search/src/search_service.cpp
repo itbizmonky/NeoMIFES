@@ -148,6 +148,59 @@ void findAllInBuffer(const re2::RE2& re, const util::Utf8Conversion& conv,
     }
 }
 
+// search_crlf_line_ending.md: findAllInBuffer()'s pattern is compiled with
+// "(?m)" (buildPattern() above), so RE2's own '^'/'$' anchor immediately
+// after/before a '\n' - it has no concept of "\r\n" as a single unit, so a
+// CRLF document's trailing '\r' sits between the matched content and the
+// '\n' RE2 actually anchors to, and a pattern like "bar$" never matches
+// "foo bar\r\n" even though "bar" is visually the end of that line. Stripped
+// out below (only when at least one '\r' is present - see scanDocument()'s
+// own early-out for the common LF-only case) before the buffer ever reaches
+// RE2, then match positions are mapped back through boundaryToOriginal so
+// callers still see offsets into the real, unmodified document.
+//
+// A lone '\r' NOT immediately followed by '\n' (old Mac line endings) is
+// left untouched - this project's line-splitting convention
+// (document::LineIndex, and core::selection_model.cpp's own
+// lineContentEnd()) only ever recognizes '\n' as a line separator, so a lone
+// '\r' is ordinary line content everywhere else in this codebase too; this
+// fix stays consistent with that rather than inventing a second definition
+// of "line ending" just for search.
+struct CrStrippedText {
+    std::u16string text;
+    // boundaryToOriginal[k] is the smallest ORIGINAL-buffer position that
+    // has produced exactly k characters of `text` so far - the ORIGINAL
+    // position immediately after the k-th kept character, and BEFORE any
+    // run of stripped '\r's that immediately follows it. Sized
+    // text.size() + 1, same "sentinel entry for one-past-the-end"
+    // convention util::toUtf8WithOffsets()'s byteToUtf16 already uses. This
+    // "leftmost boundary" choice is what makes a match ending right before a
+    // stripped '\r' (a '$' anchor - this struct's whole reason for existing)
+    // resolve to the original position right before the '\r', not right
+    // after it. The mirror case - a match STARTING with a literal '\n'
+    // immediately after a stripped '\r' - is a narrow, unaffected edge case
+    // this fix does not target (searches for literal '\r'/'\n' content are
+    // not what search_crlf_line_ending.md is about; '^' anchors, which are
+    // the common case, land one character later at the following kept
+    // character and are unaffected by this ambiguity).
+    std::vector<document::TextPos> boundaryToOriginal;
+};
+
+[[nodiscard]] CrStrippedText stripCrBeforeLf(std::u16string_view original) {
+    CrStrippedText result;
+    result.text.reserve(original.size());
+    result.boundaryToOriginal.reserve(original.size() + 1);
+    result.boundaryToOriginal.push_back(0);
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        if (original[i] == u'\r' && i + 1 < original.size() && original[i + 1] == u'\n') {
+            continue;
+        }
+        result.text.push_back(original[i]);
+        result.boundaryToOriginal.push_back(static_cast<document::TextPos>(i) + 1);
+    }
+    return result;
+}
+
 // Single forward pass over the snapshot's pieces, concatenating the whole
 // document into one UTF-16 buffer before searching it as a unit (Phase 5b1:
 // this is what makes matches able to span line boundaries - see
@@ -179,7 +232,30 @@ void scanDocument(const re2::RE2& re, const document::BufferSnapshot& snapshot, 
     for (const auto& piece : snapshot.pieces()) {
         buffer.append(snapshot.pieceTextNoCache(piece));
     }
-    findAllInBuffer(re, util::toUtf8WithOffsets(buffer), /*bufferStart=*/0, matches);
+    // Common case (no '\r' at all, e.g. any LF-only document): skip
+    // stripCrBeforeLf() entirely and take the exact pre-existing code path -
+    // no extra buffer copy or position map for documents this fix doesn't
+    // need to touch.
+    if (buffer.find(u'\r') == std::u16string::npos) {
+        findAllInBuffer(re, util::toUtf8WithOffsets(buffer), /*bufferStart=*/0, matches);
+        return;
+    }
+    const CrStrippedText stripped = stripCrBeforeLf(buffer);
+    const std::size_t    matchesBeforeThisScan = matches.size();
+    findAllInBuffer(re, util::toUtf8WithOffsets(stripped.text), /*bufferStart=*/0, matches);
+    // Remap every match this call just appended from stripped-buffer
+    // coordinates back to the real document's - see stripCrBeforeLf()'s own
+    // comment for why a match's start/end/group boundaries are always valid
+    // indices into boundaryToOriginal (0..stripped.text.size() inclusive).
+    for (std::size_t i = matchesBeforeThisScan; i < matches.size(); ++i) {
+        Match& match  = matches[i];
+        match.range.start = stripped.boundaryToOriginal[match.range.start];
+        match.range.end   = stripped.boundaryToOriginal[match.range.end];
+        for (document::TextRange& group : match.groups) {
+            group.start = stripped.boundaryToOriginal[group.start];
+            group.end   = stripped.boundaryToOriginal[group.end];
+        }
+    }
 }
 
 }  // namespace

@@ -4012,4 +4012,30 @@ Debug/Release/ubsan全1566/1566件green(3構成とも実行)。clang-tidy exit c
 
 **これでWI-21全体(a: ヘッドレス計算モジュール、b: Settings/RenderPipeline配線、c: 単一の真実の源の確立、d: ヒットテスト書き換え+多行描画バグ2件修正、e: 実配線+View menu拡充、f: カーソル移動/ミニマップ設計判断確定+issue解決)が完結した。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)が解決済みへ移動した。次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`search_grep_multi_gb_performance_gap.md`/`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
 
+### 運用上の出来事: 10時間以上放置されたバックグラウンドタスクの発見・停止
+
+WI-21fの完了報告後、ユーザーから「現在バックグラウンドタスクとして実行中の処理は意味があるのか、もう10時間以上経過している」と指摘を受けた。調査したところ、WI-21bのビルド確認中(本セッションのかなり早い段階)に実行した`until grep -qE "error|\[100%\]|ninja: build stopped|FAILED" ... ; do sleep 5; done`という待機ループ(タスクID `bkny8wlm3`)が、待機条件がninjaのquietモード出力(`[100%]`という文字列を出力しない)と一度も一致しないまま、5秒おきの無意味なポーリングを10時間以上継続していたと判明した。該当ビルド自体は当時別の確認手段で成功済みと判っていたため実害は無かったが、リソースの無駄遣いという点でユーザー指摘は正当だった。`TaskStop`ツールで該当タスクを停止し、他に同種の放置タスクが無いことを確認した。**教訓: `until grep`形式の待機ループは、grep条件が実際に出力と一致するか(特にninjaのquietモードのように進捗表示が無いツール)を事前に確認すること。** 以降、`TaskOutput`ツール(`block=true`)による直接的な完了待機に切り替えた(grepパターンの妥当性に依存しない、より確実な手法)。
+
+**続けてユーザーへAskUserQuestionで次の作業を確認し「CRLF検索issue (P1)」が選ばれ、WI-22(検索のCRLF行末対応)に着手・完了した(2026-09-03)。**
+
+### WI-22実装
+
+**着手前調査で前提の変化を発見した。** [`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(2026-07-19起票、Phase 5aコードレビューで指摘)は、正規表現の`$`/`^`がCRLF行末の`\r`を行内容として扱ってしまい、`u"foo bar\r\nbaz"`に対する`"bar$"`が視覚上の行末にもかかわらずマッチしない問題を報告していた。`src/search/src/search_service.cpp`の`scanDocument()`を確認したところ、issue起票時点(Phase 5a)の「行ごとにバッファを分けて`findAllInLine()`へ渡す」設計は、Phase 5b1(マッチが行境界をまたげるようにする変更)で「文書全体を1つのバッファとして`(?m)`フラグ付きでRE2へ渡す」設計へ既に変わっており、`findAllInLine()`という関数自体がもう存在しないと判明した。根本原因(RE2の`(?m)`モードの`$`/`^`は`\n`の直前/直後にしかアンカーせず`\r\n`を1単位として認識しない)は変わらず有効だが、issue起票時の対応方針案をPhase 5b1後の単一バッファアーキテクチャ向けに再設計する必要があった。
+
+**実装:** 新規`stripCrBeforeLf()`——`scanDocument()`が文書全体を連結したバッファをRE2へ渡す直前に、`\n`の直前の`\r`だけを取り除く(単独の`\r`、旧Mac形式の改行はそのまま残す——`core::selection_model.cpp`の`lineContentEnd()`等、このコードベースの他の箇所が既に踏襲している「`\n`だけが行区切り」という規約と一貫させるため)。新規`boundaryToOriginal`(境界位置→元の文書上の位置のマッピング、`util::toUtf8WithOffsets()`の`byteToUtf16`と同じ「size()+1のセンチネル付き」規約)で位置ズレを復元し、`findAllInBuffer()`が返すマッチ位置(範囲全体+キャプチャグループ全て)を1パスで元の文書座標へ変換し直す。設計中、境界マッピングの構築方式に1つ罠があった——「各保持文字ごとにその文字自身の元位置を記録する」素朴な実装では、`$`アンカーで終わるマッチの終端位置が誤って`\r`の直後(`\n`の位置)を指してしまい、`\r`を含んだ範囲になってしまうバグを手計算のトレースで発見・修正した。「保持文字を処理した直後の境界位置(元位置+1)を記録する」という構築順序に直すことで、`$`直前の境界が正しく`\r`の手前を指すようになることを手計算で検証してから実装した。`\r`が1文字も無い文書(LFのみ、大多数のケース)は`stripCrBeforeLf()`自体を呼ばず既存コードパスをそのまま通る早期リターンを追加し、この変更が影響しない文書では性能・挙動とも完全に無変更であることを保証した。
+
+**`core::selection_model.cpp`の同種の制約(word movement等)は今回は直さない、明示的な判断としてissueへ記録した。** 理由: (1) `lineContentEnd()`は`moveVertically()`/`skipWhitespaceForward/Backward()`/`moveByWordForward/Backward()`/複数カーソル矩形選択/`selectWordAt()`/`selectLineAt()`など9箇所以上から使われており、本Issue単独の修正よりはるかに影響範囲が大きい。(2) `\r`は何のグリフも描画しないため、実害がほぼ視覚的に現れない(検索の`$`アンカーのような「マッチが見つからない」という明確な失敗症状が無い)。(3) issue起票当初の「Phase 6 Encoding Engineまで持ち越す」という前提自体、WI番号体系への移行に伴いPhase 6という括りが既に形骸化している。将来ユーザーから実害が報告されたら独立した作業項目として再検討する。
+
+**既知のトレードオフとして記録:** `stripCrBeforeLf()`はCRLFの`\r`をRE2に一切見せなくする設計のため、CRLFペアの`\r`そのものを明示的に検索する正規表現(パターン`"\\r"`)はヒットしなくなった(単独の`\r`は引き続きヒットする)。`\r`を「行の外にある透過的な文字」として扱う設計の自然な帰結であり、意図的なトレードオフとしてテストで明示的に固定した。
+
+### テスト作成
+
+`tests/unit/search_search_service_test.cpp`へ6件追加、いずれも実装前に手計算でオフセットを事前検証してから記述した。`DollarAnchorMatchesVisualEndOfLineOnCrlfDocument`(issue本来のシナリオそのもの)、`CaretAnchorMatchesVisualStartOfLineOnCrlfDocument`、`CrlfHandlingLeavesLfOnlyDocumentsByteForByteUnaffected`(早期リターンの回帰ガード)、`MultipleCrlfLinesAllAnchorCorrectlyNotJustTheFirst`(3行のCRLF文書全てで`^\w+$`が正しく検出されることの網羅性確認)、`CapturingGroupRangesAreRemappedOnCrlfDocumentToo`(キャプチャグループも正しく座標変換されることの確認)、`LiteralCarriageReturnSearchFindsLoneCrButNotACrlfPairsCr`(上記トレードオフの固定、単独`\r`は引き続き検索可能なことも同時に確認)。既存の全テスト(LFのみの文書を使う既存回帰含む)は無変更のまま通過した。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1572/1572件green(3構成とも実行、ubsanは新規`boundaryToOriginal`の境界外アクセスを特に注視するようサブエージェントへ明示指示、`runtime error:`診断は検出されず)。clang-tidy exit code 0(`search_service.cpp`新規警告なし)。実機ドッグフーディングは実施せず——`search::`は既にDocument/Query入出力のみで完結する純粋ロジック層であり、既存の`GrepBar`/`FindBar`UI経由の実機確認は本Issueが変更した検索アルゴリズムそのものの正しさに寄与しない(UIコードは無変更)ため、単体テストによる網羅的な検証で十分と判断した。
+
+**これで[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(P1、2026-07-19起票)が解決済みとなった。WI-22完了。** 次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`search_grep_multi_gb_performance_gap.md`/`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
+
 <!-- 次セッションはここに追記 -->

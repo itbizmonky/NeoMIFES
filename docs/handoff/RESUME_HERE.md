@@ -356,6 +356,24 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-21fセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎉 最重要 (2026-09-03) — WI-22完了: 検索のCRLF行末対応(`search_crlf_line_ending.md`、P1解決済み)
+
+> **WI-21完結後、AskUserQuestionでユーザーへ次の作業を確認し「CRLF検索issue (P1)」が選ばれ、着手・完了した。** [`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(2026-07-19起票、Phase 5aコードレビューで指摘)——正規表現の`$`/`^`がCRLF行末の`\r`を行内容として扱ってしまい`"bar$"`が`"foo bar\r\n"`の視覚上の行末にマッチしない問題。
+>
+> **着手前調査で前提の変化を発見した。** issue起票時(Phase 5a)の`scanDocument()`は行ごとにバッファを分けていたが、Phase 5b1(マッチが行境界をまたげる変更)で文書全体を単一バッファ化する設計へ変わっており、issue起票時の対応方針案(`findAllInLine()`の行バッファから`\r`を除く)がそのままでは適用できないと判明、新設計向けに再構築した。
+>
+> **実装:** 新規`stripCrBeforeLf()`(`search_service.cpp`)が、CRLFの`\r`のみ(単独の`\r`は対象外——`core::selection_model.cpp`の`lineContentEnd()`と同じ「`\n`だけが行区切り」規約に合わせた)をRE2へ渡す直前に除去し、新規`boundaryToOriginal`マッピングでマッチ位置(範囲+キャプチャグループ全て)を元の文書座標へ復元する。`\r`が1文字も無い文書(LFのみ、大多数)は`stripCrBeforeLf()`を呼ばない早期リターンで既存コードパスを完全に無変更のまま維持。
+>
+> **`core::selection_model.cpp`側の同種制約(word movement等)は明示的に対象外と判断し、issueへ理由を記録した** — `lineContentEnd()`は9箇所以上から使われ影響範囲が本Issue単独よりはるかに大きく、`\r`は無描画のため実害がほぼ視覚化しない。将来ユーザーから実害報告があれば独立した作業項目として再検討する。
+>
+> 新規テスト6件(`tests/unit/search_search_service_test.cpp`)を追加、CRLFペアの`\r`自体を明示的に検索する正規表現(`"\\r"`)がヒットしなくなるという既知のトレードオフも明示的にテスト化した。Debug/Release/ubsan全1572/1572件green、clang-tidy exit 0。実機ドッグフーディングは実施せず(`search::`はDocument/Query入出力のみで完結する純粋ロジック層、UIコードは無変更のため単体テストで十分と判断)。
+>
+> **次回セッション最初にやること:** 次にどの作業へ着手するかをユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧(`search_grep_multi_gb_performance_gap.md`/`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)を参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-22セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

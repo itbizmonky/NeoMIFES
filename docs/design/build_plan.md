@@ -84,6 +84,8 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)完結(2026-09-03)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)へ対応、解決済みへ移動した。着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)、b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`)、c(`visualRowCountForLine()`——単一の真実の源の確立)、d(ヒットテスト書き換え+多行描画バグ2件修正)、**e(🎉初のユーザー到達可能段階——実配線+View menu拡充)**、f(カーソル移動/ミニマップの設計判断確定+issue解決)の順で実装。`FrameState`(粗粒度フレームスキップ、ADR-011)の既存バグが**3度**発見・修正された(WI-15iの`rightPaneWidthDips`、WI-21bの`showMinimap`/`showLineNumbers`、**WI-21eの`wordWrapEnabled`——実機ドッグフーディングでのみ発見できた実例**)。WI-21fのカーソル移動検証中、キー合成入力(`Shift+Down`)がIME経由と見られる予期しない文字入力を引き起こす新しい環境制約に遭遇、コードレビュー+既存自動テストによる代替検証に切り替えた(WI-20a/bと同じ論拠パターン)。詳細は本ファイルのWI-21a〜fセクション参照。
 >
+> **🎉 WI-22(検索のCRLF行末対応)完結(2026-09-03)。** WI-21完結後、AskUserQuestionでユーザーへ次の作業を確認し「CRLF検索issue (P1)」が選ばれ、[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(2026-07-19起票、Phase 5aコードレビューで指摘)へ対応、解決済みへ移動した。着手前調査で、issue起票時の前提(行ごとのバッファ+`findAllInLine()`)がPhase 5b1の全文書単一バッファ設計で既に崩れていたと判明、新設計向けに対応方針を再構築。新規`stripCrBeforeLf()`がCRLFの`\r`のみをRE2に渡す直前に除去し、`boundaryToOriginal`でマッチ位置を元の文書座標へ復元、`\r`が無いLFのみの文書は既存コードパスをそのまま通る早期リターン付き。`core::selection_model.cpp`側の同種制約(word movement等、9箇所以上)は影響範囲の大きさと実害の軽微さ(`\r`は無描画)を理由に明示的に対象外と判断・issueへ記録。詳細は本ファイルのWI-22セクション参照。
+>
 > **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 🟡 **2026-09-01部分対応。** 実測で真因はRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドは対象外のまま残存
@@ -2556,6 +2558,36 @@ Debug/Release/ubsan全1566/1566件green(3構成とも実行)。clang-tidy exit c
 **これでWI-21全体(a〜f)が完結した。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)は解決済み。次にどの作業へ着手するかはユーザーへ確認する。
 
 コミット済み(`e8e6144`)、pushはユーザーの明示指示待ち。
+
+---
+
+## WI-22 — 検索の CRLF 行末対応(`search_crlf_line_ending.md`、P1)
+
+### 目的
+
+WI-21完結後、次の作業をAskUserQuestionでユーザーへ確認し「CRLF検索issue (P1)」が選ばれた。[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(2026-07-19起票、Phase 5aコードレビューで指摘)——正規表現の`$`/`^`がCRLF行末の`\r`を行内容として扱ってしまい、`u"foo bar\r\nbaz"`に対する`"bar$"`が視覚上の行末にもかかわらずマッチしない問題への対応。
+
+### 実装
+
+**着手前調査で判明した前提の変化。** issue起票時(Phase 5a)の`scanDocument()`は行ごとにバッファを分けて`findAllInLine()`へ渡す設計だったが、Phase 5b1(マッチが行境界をまたげるようにする変更)で文書全体を1つのバッファとして`(?m)`フラグ付きでRE2へ渡す設計へ変わっており、`findAllInLine()`という関数自体がもう存在しない。根本原因(RE2の`(?m)`モードの`$`/`^`は`\n`の直前/直後にしかアンカーせず`\r\n`を1単位として認識しない)は変わらず有効だが、issue起票時の対応方針案(行バッファから`\r`を除く)をPhase 5b1後の単一バッファアーキテクチャ向けに再設計する必要があった。
+
+**新規`stripCrBeforeLf()`**(`src/search/src/search_service.cpp`)——`scanDocument()`が文書全体を連結したバッファをRE2へ渡す直前に、`\n`の直前の`\r`だけを取り除く(単独の`\r`、旧Mac形式の改行はそのまま残す——`core::selection_model.cpp`の`lineContentEnd()`等、このコードベースの他の箇所が既に踏襲している「`\n`だけが行区切り」という規約と一貫させるため)。新規`boundaryToOriginal`(境界位置→元の文書上の位置のマッピング、`\r`の直前を指す「左寄せ」規約——`util::toUtf8WithOffsets()`の`byteToUtf16`と同じ「size()+1のセンチネル付き」規約)で位置ズレを復元し、`findAllInBuffer()`が返すマッチ位置(範囲全体+キャプチャグループ全て)を1パスで元の文書座標へ変換し直す。`\r`が1文字も無い文書(LFのみ、大多数のケース)は`stripCrBeforeLf()`自体を呼ばず既存コードパスをそのまま通る早期リターンを追加し、この変更が影響しない文書では性能・挙動とも完全に無変更であることを保証した。
+
+**`core::selection_model.cpp`の同種の制約(word movement等)は今回は直さない、明示的な判断としてissueへ記録した。** 理由: (1) `lineContentEnd()`は9箇所以上から使われており本Issue単独の修正よりはるかに影響範囲が大きい、(2) `\r`は無描画のため実害がほぼ視覚的に現れない、(3) issue起票当初の「Phase 6 Encoding Engineまで持ち越す」という前提自体、WI番号体系への移行に伴いPhase 6という括りが形骸化している。将来ユーザーから体感される実害が報告されたら独立した作業項目として再検討する。
+
+**既知のトレードオフとして記録:** `stripCrBeforeLf()`はCRLFの`\r`をRE2に一切見せなくする設計のため、CRLFペアの`\r`そのものを明示的に検索する正規表現(パターン`"\\r"`)はヒットしなくなった(単独の`\r`は引き続きヒットする)。`\r`を「行の外にある透過的な文字」として扱う設計の自然な帰結であり、意図的なトレードオフとしてテストで明示的に固定した。
+
+### テスト作成
+
+`tests/unit/search_search_service_test.cpp`へ6件追加。`DollarAnchorMatchesVisualEndOfLineOnCrlfDocument`(issue本来のシナリオそのもの)、`CaretAnchorMatchesVisualStartOfLineOnCrlfDocument`、`CrlfHandlingLeavesLfOnlyDocumentsByteForByteUnaffected`(早期リターンの回帰ガード)、`MultipleCrlfLinesAllAnchorCorrectlyNotJustTheFirst`(複数行での網羅性)、`CapturingGroupRangesAreRemappedOnCrlfDocumentToo`(キャプチャグループも正しく座標変換されることの確認)、`LiteralCarriageReturnSearchFindsLoneCrButNotACrlfPairsCr`(上記トレードオフの固定)。全て手計算でオフセットを事前検証してから記述した。既存の全テスト(LFのみの文書を使う既存回帰含む)は無変更のまま通過。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1572/1572件green(3構成とも実行)。clang-tidy exit code 0(`search_service.cpp`新規警告なし)。実機ドッグフーディングは実施せず——`search::`は既にDocument/Query入出力のみで完結する純粋ロジック層であり、既存の`GrepBar`/`FindBar`UI経由の実機確認は本Issueが変更した検索アルゴリズムそのものの正しさに寄与しない(UIコードは無変更)ため、単体テストによる網羅的な検証で十分と判断した。
+
+**これで[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(P1)が解決済みとなった。** 次にどの作業へ着手するかはユーザーへ確認する。
+
+コミット済み(`<WI-22-commit-hash>`)、pushはユーザーの明示指示待ち。
 
 ---
 
