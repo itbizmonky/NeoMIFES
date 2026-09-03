@@ -3889,4 +3889,29 @@ Debug/Release/ubsan全1560/1560件green(3構成とも実行、Release/ubsanは�
 
 **これでWI-21b完了。** 次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立、既存の4箇所以上のアドホックな「非表示行スキップ」ループをこの1関数へ集約、`visibleLineRange()`/`drawVisibleLines()`の書き換え、まだユーザー到達不可能なまま継続)。
 
+**続けてユーザーが「進めよ」と指示、WI-21c(`visualRowCountForLine()`——単一の真実の源の確立+`visibleLineRange()`/`drawVisibleLines()`の書き換え)を完了(2026-09-03)。**
+
+### WI-21c実装
+
+新規private `visualRowCountForLine(LineNumber)`を追加。`isLineHidden(line)`が真なら0(既存の折り畳み/ログレベルフィルタ判定を再利用、可視性判定箇所を1つに保つ)、`m_wordWrapEnabled`が偽なら1(レイアウトを一切構築しない、pre-WI-21の挙動そのまま)、それ以外は`extractLineText()`でその行の実テキストを取得し`TextLayoutCache::getOrCreate()`(`drawTextLine()`が直後に呼ぶのと同じキャッシュ、二重コストではなくキャッシュヒット)経由でレイアウトを構築、WI-21aの`visual_row_layout.h::computeVisualRows()`が返す行数を返す。ドキュメント/DirectWrite状態が未準備なら1にフォールバック(0ではない——実在する行を「0行占有」として扱ってはならないため)。
+
+`visibleLineRange()`の集計ループを、`isLineHidden()`による「可視行を1つずつ数える」方式から`visualRowCountForLine()`の合計行数を`visibleCount`まで積み上げる方式へ書き換えた。最後の1論理行がラップ後の行数だけで残り予算を超過してもその行は最後まで含める設計にした——`drawVisibleLines()`側のクリップが画面全体の高さで行われるため、画面下端をはみ出す分は自然にクリップされる(承認済みプランが明記していた「1論理行=1回のDrawTextLayout呼び出し」のまま、yの増分だけを行数倍にする設計の帰結)。`drawVisibleLines()`のy座標増分も、`isLineHidden()`チェック+固定`m_lineHeightDips`加算から、`visualRowCountForLine(line)`×`m_lineHeightDips`へ変更した。折り畳み時の「非表示行はテキスト走査のみ行いyを進めない」という既存契約は`rowCount==0`分岐としてそのまま維持されている。
+
+**`m_layoutCache`を`mutable`化した。** `visualRowCountForLine()`がconst宣言の`visibleLineRange()`から呼ばれつつ`getOrCreate()`でキャッシュへ書き込む必要があり、非mutableのままではconstメソッドから非constメソッドを呼び出せずコンパイルエラーになるため。このコードベースには既に`document.h`の`mutable LineIndex m_lineIndex`、`original_buffer.h`の`mutable`デコードキャッシュ(このセッション冒頭で扱った`decode_cache_unbounded_growth.md`の当該フィールド)という同型の前例が存在すると確認した上で採用し、「論理的には読み取り専用、実装上はメモ化する」という同じ契約であると判断した。
+
+### テスト作成
+
+`visualRowCountForLine()`自体はprivateで直接の単体テスト経路が無いため、`tests/integration/render_text_smoke_test.cpp`へ`render()`の観測可能な副作用(`layoutCacheStats().misses`)経由でブラックボックス検証する2件を追加した——`TextLayoutCache`は行番号でキー化されるため、コールドキャッシュに対する初回`render()`後の`misses`は「実際に描画された相異なる論理行の数」に等しいという性質を利用。
+
+- `WordWrapReducesDistinctVisibleLinesWhenLinesWrapIntoMultipleRows` — 各行が折り返し有効時に約4行へラップする長さ(400文字、空白なしでDirectWriteの既定の強制改行を誘発、WI-21a自身のテストと同じシナリオ)の20行の文書を用意し、同一ウィンドウサイズ(600×300dips、ミニマップ非表示)で折り返しOFF/ONそれぞれ独立した`HiddenWindow`+`RenderPipeline`で`render()`した`misses`を比較。ONの方が有意に少ないことを確認した(1論理行が複数行を占有する分、同じ画面の高さに収まる論理行数が減るはず)。
+- `FoldedRegionStillContributesNoVisualRowsWithWordWrapEnabled` — 折り返し有効時でも、折り畳まれた行(約4行分に相当する長さ)が`misses`に一切寄与しない(=0行として扱われる)ことを確認、`isLineHidden()`優先の分岐順序がWI-21cの書き換えで壊れていないことを保証する回帰テスト。
+
+**テスト作成中に1件の実装ミスを発見・修正した(バグではなくテスト自体の不備)。** `visibleColumnCount()`を`render()`より前(`attach()`/`resize()`直後)に呼んで「テストウィンドウが折り返しを検証するのに十分な幅を持つか」を確認しようとしたところ、`ASSERT_GT(..., 0U)`が実際に0で失敗した。原因は`visibleColumnCount()`が依存する`m_charWidthDips`(フォント文字幅の実測値)が`ensureTextFormat()`(`render()`内部でのみ呼ばれる)実行前は常に0のままという既存の遅延初期化の仕組みで、チェックの呼び出し位置を`render()`の後へ移動して解消した。実装コード側の不具合ではなく、テストコードが「まだ測定されていない値」を早すぎるタイミングで検証しようとしていた誤り。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1560/1560件green(3構成とも実行、Release/ubsanはバックグラウンドサブエージェントへ委任、今回も初回から指示通りフォアグラウンド実行で完走)。clang-tidy exit 0(`render_pipeline.h`/`render_pipeline.cpp`とも新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点でもまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
+
+**これでWI-21c完了。** 次はWI-21d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替、まだユーザー到達不可能なまま継続——WI-21eで初めてユーザー到達可能になる)。
+
 <!-- 次セッションはここに追記 -->

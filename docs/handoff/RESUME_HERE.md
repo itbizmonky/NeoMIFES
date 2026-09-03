@@ -288,6 +288,24 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-21bセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎯 最重要 (2026-09-03) — WI-21c: `visualRowCountForLine()`(単一の真実の源)確立 + `visibleLineRange()`/`drawVisibleLines()`書き換え完了
+
+> **WI-21bに続き、ユーザーの「進めよ」でWI-21cへ着手・完了した。** 承認済みプランが規定する「既存の4箇所以上のアドホックな『非表示行だけスキップする』ループを1関数へ集約する」の第一弾——ただしスコープは`visibleLineRange()`/`drawVisibleLines()`の2箇所のみ(ヒットテスト系3箇所はWI-21dのスコープ)。**本WIの時点でもまだユーザー到達不可能**(ヒットテスト/キャレット/選択範囲がまだ折り返し未対応のため)。
+>
+> **実装:** 新規private `visualRowCountForLine(LineNumber)`——`isLineHidden()`が真なら0、`m_wordWrapEnabled`が偽なら1(レイアウト構築なし)、それ以外は`extractLineText()`+`TextLayoutCache::getOrCreate()`(`drawTextLine()`と同じキャッシュ)経由でレイアウトを構築し`visual_row_layout.h::computeVisualRows()`の行数を返す。`visibleLineRange()`の集計ループを「可視行を1つずつ数える」方式から`visualRowCountForLine()`の合計行数を積み上げる方式へ、`drawVisibleLines()`のy座標増分を固定`m_lineHeightDips`から`visualRowCountForLine(line)`倍へそれぞれ書き換えた。最後の1論理行がラップ後の行数だけで残り予算を超過してもその行は最後まで含める設計(`drawVisibleLines()`のクリップが画面全体の高さで行われるため自然にクリップされる、承認済みプラン通り)。
+>
+> **`m_layoutCache`を`mutable`化した。** `visualRowCountForLine()`がconst宣言の`visibleLineRange()`から呼ばれつつキャッシュへ書き込む必要があるため——`document.h`の`mutable LineIndex`/`original_buffer.h`の`mutable`デコードキャッシュという同型の前例があり、「論理的には読み取り専用、実装上はメモ化する」という同じ契約と判断した。
+>
+> **テスト作成:** `visualRowCountForLine()`自体はprivateで直接の単体テスト経路が無いため、`render()`の観測可能な副作用(`layoutCacheStats().misses`、`TextLayoutCache`が行番号キー化されている性質を利用)経由でブラックボックス検証する2件を`tests/integration/render_text_smoke_test.cpp`へ追加。①折り返しON/OFFで同一ウィンドウの`misses`数を比較(ONの方が有意に少ない=1論理行が複数行を占有する分、収まる論理行数が減る)、②折り畳まれた行が折り返し有効時でも`misses`に一切寄与しないことを確認する回帰テスト(`isLineHidden()`優先の分岐順序の保護)。
+>
+> Debug/Release/ubsan全1560/1560件green(3構成とも実行)、clang-tidy exit 0。実機ドッグフーディングは実施せず(まだユーザー到達不可能なヘッドレス変更のみのため)。
+>
+> **次回セッション最初にやること:** WI-21d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替)に着手する。詳細設計は承認済みプラン(`C:\Users\kenbo\.claude\plans\eventual-crafting-lecun.md`)参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-21cセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

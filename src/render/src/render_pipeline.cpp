@@ -13,6 +13,7 @@
 #include "neomifes/render/indent_guide_math.h"
 #include "neomifes/render/resize_math.h"
 #include "neomifes/render/viewport_math.h"
+#include "neomifes/render/visual_row_layout.h"
 #include "neomifes/util/wchar_cast.h"
 
 namespace neomifes::render {
@@ -791,17 +792,24 @@ std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexc
     if (visibleCount == 0) {
         return {startLine, startLine};
     }
-    // Phase 7i: walk forward counting only VISIBLE (non-folded-hidden) lines,
+    // Phase 7i: walk forward counting only VISIBLE (non-folded-hidden) rows,
     // so a screen holding `visibleCount` rows can span more than
     // `visibleCount` logical lines when folds are active. m_foldRegions
     // empty (folding disabled/no folds yet) makes this identical to the
-    // pre-Phase-7i arithmetic (every logical line counts as visible).
+    // pre-Phase-7i arithmetic (every logical line counts as one visible row).
+    // WI-21c: generalized from "1 logical line = 1 row" to
+    // visualRowCountForLine()'s actual per-line row count, so a wrapped line
+    // consumes its real share of `visibleCount` instead of being undercounted
+    // as a single row - see that method's own comment. A line whose wrapped
+    // rows alone exceed the remaining budget is still included in full (the
+    // loop's ++endLineExclusive already happened for it by the time the
+    // while condition is next checked) - drawVisibleLines()'s per-line clip
+    // is the full client height, not per-row, so any rows past the visible
+    // area are naturally clipped rather than needing to be excluded here.
     LineNumber    endLineExclusive = startLine;
-    std::uint32_t visibleSeen      = 0;
-    while (endLineExclusive < totalLines && visibleSeen < visibleCount) {
-        if (!isLineHidden(endLineExclusive)) {
-            ++visibleSeen;
-        }
+    std::uint32_t rowsSeen         = 0;
+    while (endLineExclusive < totalLines && rowsSeen < visibleCount) {
+        rowsSeen += visualRowCountForLine(endLineExclusive);
         ++endLineExclusive;
     }
     return {startLine, endLineExclusive};
@@ -912,10 +920,16 @@ void RenderPipeline::drawVisibleLines(ID2D1DeviceContext6& dc) noexcept {
         // Phase 7i: hidden lines (inside a folded region, not its header)
         // are walked (to advance lineStart/remaining correctly) but never
         // drawn, and y does not advance for them - the next visible line
-        // simply lands where this one would have.
-        if (!isLineHidden(line)) {
+        // simply lands where this one would have. WI-21c: y now advances by
+        // m_lineHeightDips times the line's actual visual row count
+        // (visualRowCountForLine() - a cache hit here, already computed once
+        // by visibleLineRange()'s walk above) instead of a flat single-row
+        // step, so a wrapped line reserves enough vertical space for all its
+        // rows before the next logical line starts drawing.
+        const std::uint32_t rowCount = visualRowCountForLine(line);
+        if (rowCount > 0) {
             drawTextLine(dc, line, y, lineSpan, lineStart, lineEnd, caretDraws, tokenCursor);
-            y += m_lineHeightDips;
+            y += m_lineHeightDips * static_cast<float>(rowCount);
             maxLineLength = std::max(maxLineLength, static_cast<std::uint32_t>(lineSpan.size()));
         }
         if (newlinePos == std::u16string_view::npos) {
@@ -1026,6 +1040,26 @@ bool RenderPipeline::isLineHidden(document::LineNumber line) const noexcept {
         }
     }
     return false;
+}
+
+std::uint32_t RenderPipeline::visualRowCountForLine(LineNumber line) const noexcept {
+    if (isLineHidden(line)) {
+        return 0;
+    }
+    if (!m_wordWrapEnabled) {
+        return 1;
+    }
+    if (!m_cachedSnapshot || m_document == nullptr || !m_dwriteFactory || !m_textFormat) {
+        return 1;
+    }
+    const std::u16string lineText = extractLineText(line);
+    const auto layoutResult =
+        m_layoutCache.getOrCreate(line, lineText, *m_dwriteFactory.Get(), *m_textFormat.Get(),
+                                  wrapWidthDips(), kMaxLayoutHeightDips);
+    if (!layoutResult.has_value()) {
+        return 1;
+    }
+    return static_cast<std::uint32_t>(computeVisualRows(**layoutResult).size());
 }
 
 void RenderPipeline::drawFoldedHeaderMarker(ID2D1DeviceContext6& dc, float x, float y) noexcept {

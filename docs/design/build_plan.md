@@ -82,7 +82,7 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-20(複数ウィンドウ対応)完結(2026-09-02〜03)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ対応、解決済みへ移動した。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)→WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)の2段階で実装、実機ドッグフーディングで複数ウィンドウの独立生成/破棄・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(--openあり/なし両方)を確認済み — 詳細は本ファイルのWI-20a/WI-20bセクション参照。
 >
-> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)完了(2026-09-03)。WI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`/`wrapWidthDips()`+レイアウトキャッシュ無効化トリガー4箇所)も完了(2026-09-03)** — 詳細は本ファイルのWI-21a/WI-21bセクション参照。WI-21bのテスト作成中に`FrameState`の既存バグ(`showMinimap`/`showLineNumbers`単独変更が粗粒度フレームスキップの比較対象に含まれておらず、無関係な状態変化が起きるまで再描画されない)を発見・修正済み(WI-15iの`rightPaneWidthDips`と同じ修正パターン)。次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立)。
+> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a〜cが完了(2026-09-03)** — a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)、b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`/`wrapWidthDips()`+レイアウトキャッシュ無効化トリガー4箇所)、c(`visualRowCountForLine()`——単一の真実の源の確立+`visibleLineRange()`/`drawVisibleLines()`の書き換え)— 詳細は本ファイルのWI-21a/b/cセクション参照。WI-21bのテスト作成中に`FrameState`の既存バグ(`showMinimap`/`showLineNumbers`単独変更が粗粒度フレームスキップの比較対象に含まれておらず、無関係な状態変化が起きるまで再描画されない)を発見・修正済み(WI-15iの`rightPaneWidthDips`と同じ修正パターン)。次はWI-21d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正)。
 >
 > **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md) (P2、WI-18の品質監査で発見) — 表示メニューが手薄・折り返し(word wrap)機能が存在しない
@@ -2415,6 +2415,34 @@ WI-21aに続く第2段階。`TextLayoutCache`は文書バージョン/フォン�
 Debug/Release/ubsan全1560/1560件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`/`settings.cpp`とも新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点ではまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため(WI-21eで初めてユーザー到達可能になる)。
 
 コミット済み(`1cc2a49`)、pushはユーザーの明示指示待ち。次はWI-21c(`visualRowCountForLine()`——単一の真実の源の確立、`visibleLineRange()`/`drawVisibleLines()`の書き換え) — 詳細設計は承認済みプラン参照。
+
+---
+
+## WI-21c — 折り返し(word wrap): `visualRowCountForLine()`(単一の真実の源)の確立 + `visibleLineRange()`/`drawVisibleLines()`の書き換え
+
+### 目的
+
+WI-21bに続く第3段階。承認済みプランが規定する「既存の4箇所以上のアドホックな『非表示行だけスキップする』ループを、この1関数(`visualRowCountForLine()`)を軸に集約する」の第一弾——ただしWI-21cのスコープは`visibleLineRange()`/`drawVisibleLines()`の2箇所のみ(ヒットテスト系3箇所(`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`)はWI-21dのスコープ)。**このWIの時点でもまだユーザー到達不可能**(承認済みプラン通り、ヒットテスト/キャレット/選択範囲がまだ折り返し未対応のため)。
+
+### 実装
+
+- 新規private `RenderPipeline::visualRowCountForLine(LineNumber)`——単一の真実の源。`isLineHidden(line)`が真なら0(折り込み済みの既存判定を再利用、フォールディング可視性の決定箇所を1つに保つ)、`m_wordWrapEnabled`が偽なら1(レイアウトを一切構築しない、pre-WI-21の挙動そのまま)、それ以外は`extractLineText()`でその行の実テキストを取得し`TextLayoutCache::getOrCreate()`(=`drawTextLine()`が直後に呼ぶのと同じキャッシュ)経由でレイアウトを構築、WI-21aの`visual_row_layout.h::computeVisualRows()`が返す行数を返す。ドキュメント/DirectWrite状態が未準備なら1にフォールバック(0ではない——実在する行を「0行占有」として扱ってはならないため)。
+- `visibleLineRange()`の集計ループを、`isLineHidden()`による「可視行を1つずつ数える」方式から`visualRowCountForLine()`の合計行数を`visibleCount`(画面に収まる行数)まで積み上げる方式へ書き換え。最後の1論理行がラップ後の行数だけで残り予算を超過してもその行は最後まで含める(`drawVisibleLines()`側のクリップが画面全体の高さで行われるため、画面下端をはみ出す分は自然にクリップされる——1行単位でぴったり打ち切る必要はないという承認済みプランの設計判断通り)。
+- `drawVisibleLines()`のy座標の増分を、`isLineHidden()`チェック+固定`m_lineHeightDips`加算から、`visualRowCountForLine(line)`(=`visibleLineRange()`の集計ループで一度計算済みのキャッシュヒット、二重コストではない)×`m_lineHeightDips`へ変更。折り畳み時の「非表示行はテキスト走査のみ行いyを進めない」という既存契約は`rowCount==0`分岐としてそのまま維持。
+- `m_layoutCache`を`mutable`化——`visualRowCountForLine()`がconst宣言の`visibleLineRange()`から呼ばれつつ`getOrCreate()`でキャッシュへ書き込む必要があるため。このコードベースには既に`document.h`の`mutable LineIndex m_lineIndex`、`original_buffer.h`の`mutable`デコードキャッシュという同型の前例があり、いずれも「論理的には読み取り専用、実装上はメモ化する」という同じ契約。
+
+### テスト作成
+
+`tests/integration/render_text_smoke_test.cpp`へ2件追加。`visualRowCountForLine()`自体はprivateで直接の単体テスト経路が無いため、`render()`の観測可能な副作用(`layoutCacheStats().misses`)経由でブラックボックス検証する方針にした——`TextLayoutCache`は行番号でキー化されるため、コールドキャッシュに対する初回`render()`後の`misses`は「実際に描画された相異なる論理行の数」に等しい。
+
+- `WordWrapReducesDistinctVisibleLinesWhenLinesWrapIntoMultipleRows` — 各行が折り返し有効時に約4行へラップする長さ(400文字、空白なしでDirectWriteの既定の強制改行を誘発、WI-21a自身のテストと同じシナリオ)の文書を用意し、同一ウィンドウサイズで折り返しOFF/ONそれぞれ`render()`した`misses`を比較。ONの方が有意に少ないことを確認(1論理行が複数行を占有する分、同じ画面の高さに収まる論理行数が減るはず)。
+- `FoldedRegionStillContributesNoVisualRowsWithWordWrapEnabled` — 折り返し有効時でも、折り畳まれた行(400文字、本来なら約4行分)が`misses`に一切寄与しない(=0行として扱われる)ことを確認、`isLineHidden()`優先の分岐順序がWI-21cの書き換えで壊れていないことを保証する回帰テスト。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1560/1560件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点でもまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
+
+コミット済み(`<WI-21c-commit-hash>`)、pushはユーザーの明示指示待ち。次はWI-21d(ヒットテスト(`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`)の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替) — 詳細設計は承認済みプラン参照。
 
 ---
 

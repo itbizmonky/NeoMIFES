@@ -901,6 +901,25 @@ private:
     // sites) means the log-level filter automatically gets correct
     // scrolling/hit-testing behavior for free.
     [[nodiscard]] bool isLineHidden(document::LineNumber line) const noexcept;
+    // WI-21c: the single source of truth for "how many on-screen rows does
+    // this logical line occupy", replacing the "1 logical line = 1 drawn
+    // row" assumption visibleLineRange()/drawVisibleLines() used to bake in
+    // directly. 0 for a folded-hidden line (isLineHidden() above - keeps
+    // that single existing predicate as the one place folding visibility is
+    // decided, per its own declaration comment), 1 when word wrap is off
+    // (the pre-WI-21 behavior, unconditionally - no layout is even built),
+    // otherwise the actual visual_row_layout.h::computeVisualRows() count
+    // for that line's real text and the current wrapWidthDips(). Builds (or
+    // reuses, via TextLayoutCache) the same cached layout drawTextLine()
+    // will draw a moment later, so calling this ahead of drawing is not
+    // wasted work - it warms the cache entry drawTextLine() then hits.
+    // Falls back to 1 if the document/DirectWrite state needed to build a
+    // layout isn't ready yet (mirrors every other "not attached/measured
+    // yet" degrade-to-something-safe path in this class - see
+    // computeDesiredTokenRange()'s own whole-document fallback for the same
+    // spirit) rather than 0, since a real (if not-yet-measured) line must
+    // never be treated as occupying zero rows.
+    [[nodiscard]] std::uint32_t visualRowCountForLine(document::LineNumber line) const noexcept;
     // Walks forward from `startLine`, skipping folded-hidden lines, until
     // the `visibleRowOffset`-th VISIBLE line is reached (or the document
     // ends). Extracted from hitTest() (Phase 7j) so hitTestFoldMarker() can
@@ -1537,8 +1556,14 @@ private:
     // Line-keyed IDWriteTextLayout cache (Phase 3c, ADR-011). Also not
     // device-bound (unlike m_textBrush) - NOT cleared in recreateDevice().
     // Cleared wholesale only when refreshDocumentCacheIfStale() detects a
-    // Document::version() change.
-    TextLayoutCache m_layoutCache;
+    // Document::version() change. WI-21c: mutable - visualRowCountForLine()
+    // (called from the const-qualified visibleLineRange()) populates this
+    // cache via getOrCreate() as a pure memoization side effect (same
+    // "logically read-only, physically caches" contract every other memoized
+    // getter in this codebase uses mutable for) - it never changes what
+    // visibleLineRange() reports, only how expensively the answer is
+    // computed the next time.
+    mutable TextLayoutCache m_layoutCache;
 
     // nullopt means "no successful frame yet, or the device was just
     // (re)created" - either way the next render() must draw unconditionally

@@ -2146,4 +2146,131 @@ TEST(RenderTextSmokeTest, SetRightPaneWidthDipsWhileWordWrapDisabledDoesNotClear
         [](RenderPipeline& pipeline) { pipeline.setRightPaneWidthDips(50.0F); });
 }
 
+// WI-21c: visibleLineRange()/drawVisibleLines() were rewritten from a flat
+// "1 logical line = 1 row" walk to accumulating visualRowCountForLine()'s
+// real per-line row count (visualRowCountForLine() itself still private, no
+// direct unit-test seam - render_pipeline.h's own private: section - so this
+// exercises it black-box through render()'s observable effect on
+// TextLayoutCache). There is no direct public accessor for "how many
+// logical lines got drawn", but layoutCacheStats().misses after a first
+// render() equals exactly that count: TextLayoutCache is keyed by line
+// number, so the number of distinct lines getOrCreate() is asked to build
+// on a cold cache is the number of distinct logical lines
+// visibleLineRange()'s walk (and drawVisibleLines()'s draw loop) actually
+// visited (visualRowCountForLine() itself calls getOrCreate() once per line
+// while word wrap is on, and drawTextLine()'s own call right after is a
+// cache hit for that same line - see visualRowCountForLine()'s own comment -
+// so this doesn't inflate the miss count per line).
+TEST(RenderTextSmokeTest, WordWrapReducesDistinctVisibleLinesWhenLinesWrapIntoMultipleRows) {
+    // Every long line wraps into ~4 rows once word wrap is on (a run of
+    // identical characters ~4x wider than the available wrap width forces
+    // DirectWrite's default mid-word break, same scenario
+    // render_visual_row_layout_test.cpp's own "single word wider than the
+    // wrap width" case already exercises) - so the same window height must
+    // fit noticeably fewer distinct logical lines than it does with word
+    // wrap off, where every line takes exactly one row regardless of length.
+    std::u16string doc;
+    for (int i = 0; i < 20; ++i) {
+        if (i > 0) {
+            doc += u'\n';
+        }
+        doc += std::u16string(400, u'x');
+    }
+    Document document;
+    document.insertText(0, doc);
+
+    std::uint64_t missesWrapOff = 0;
+    {
+        HiddenWindow windowOff;
+        ASSERT_NE(windowOff.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+        RenderPipeline pipelineOff;
+        pipelineOff.setMinimapVisible(false);  // simplifies wrapWidthDips()'s column math below
+        auto attachedOff = pipelineOff.attach(windowOff.get());
+        if (!attachedOff.has_value()) {
+            GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                         << neomifes::render::describe(attachedOff.error());
+        }
+        const auto resizedOff = pipelineOff.resize(600, 300, 1.0F);
+        ASSERT_TRUE(resizedOff.has_value());
+        pipelineOff.setDocument(&document);
+        // visibleColumnCount() needs m_charWidthDips, only measured once
+        // ensureTextFormat() runs inside render() - checked after the first
+        // render() below, not before.
+        const auto rendered = pipelineOff.render();
+        ASSERT_TRUE(rendered.has_value())
+            << "wrap-off render() failed: " << neomifes::render::describe(rendered.error());
+        ASSERT_GT(pipelineOff.visibleColumnCount(), 0U)
+            << "test window too narrow to exercise word wrap meaningfully";
+        missesWrapOff = pipelineOff.layoutCacheStats().misses;
+    }
+
+    std::uint64_t missesWrapOn = 0;
+    {
+        HiddenWindow windowOn;
+        ASSERT_NE(windowOn.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+        RenderPipeline pipelineOn;
+        pipelineOn.setMinimapVisible(false);
+        pipelineOn.setWordWrap(true);
+        auto attachedOn = pipelineOn.attach(windowOn.get());
+        if (!attachedOn.has_value()) {
+            GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                         << neomifes::render::describe(attachedOn.error());
+        }
+        const auto resizedOn = pipelineOn.resize(600, 300, 1.0F);
+        ASSERT_TRUE(resizedOn.has_value());
+        pipelineOn.setDocument(&document);
+        const auto rendered = pipelineOn.render();
+        ASSERT_TRUE(rendered.has_value())
+            << "wrap-on render() failed: " << neomifes::render::describe(rendered.error());
+        ASSERT_GT(pipelineOn.visibleColumnCount(), 0U)
+            << "test window too narrow to exercise word wrap meaningfully";
+        missesWrapOn = pipelineOn.layoutCacheStats().misses;
+    }
+
+    ASSERT_GT(missesWrapOff, 0U);
+    EXPECT_LT(missesWrapOn, missesWrapOff)
+        << "with word wrap on, each drawn logical line should occupy several"
+           " rows, so the same window height must fit fewer distinct logical"
+           " lines than with word wrap off (misses=" << missesWrapOn
+        << " vs " << missesWrapOff << ")";
+}
+
+// WI-21c: a folded-hidden line must still contribute 0 rows regardless of
+// word wrap (visualRowCountForLine() checks isLineHidden() before even
+// looking at m_wordWrapEnabled - see its own declaration comment) - this
+// pins that the WI-21c rewrite didn't regress folding's existing "hidden
+// lines are walked but never drawn, y does not advance for them" contract
+// now that y advances by a variable amount instead of a flat per-line step.
+TEST(RenderTextSmokeTest, FoldedRegionStillContributesNoVisualRowsWithWordWrapEnabled) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    pipeline.setMinimapVisible(false);
+    pipeline.setWordWrap(true);
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+    const auto resized = pipeline.resize(600, 300, 1.0F);
+    ASSERT_TRUE(resized.has_value());
+
+    Document document;
+    document.insertText(0, std::u16string(u"header\n") + std::u16string(400, u'x') + u'\n' +
+                               std::u16string(u"tail"));
+    pipeline.setDocument(&document);
+    pipeline.setFoldRegions(
+        {neomifes::render::FoldVisual{.headerLine = 0, .endLineInclusive = 1, .folded = true}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with an active fold failed: " << neomifes::render::describe(rendered.error());
+    // Line 1 (the ~400-char line, ~4 wrapped rows if drawn) is folded away -
+    // only line 0 (the header, still shown) and line 2 ("tail") should ever
+    // reach TextLayoutCache::getOrCreate(), i.e. exactly 2 misses.
+    EXPECT_EQ(pipeline.layoutCacheStats().misses, 2U)
+        << "a folded-hidden wrapped line must contribute 0 rows/cache lookups, not its wrapped row count";
+}
+
 }  // namespace
