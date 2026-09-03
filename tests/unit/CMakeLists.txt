@@ -23,6 +23,7 @@ add_executable(neomifes_unit_tests
     render_gutter_math_test.cpp
     render_reparse_edit_conversion_test.cpp
     render_text_layout_cache_test.cpp
+    render_visual_row_layout_test.cpp
     render_theme_test.cpp
     core_selection_model_test.cpp
     core_bookmark_manager_test.cpp

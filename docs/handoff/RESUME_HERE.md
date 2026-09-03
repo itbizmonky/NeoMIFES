@@ -252,6 +252,26 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-20bセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎯 最重要 (2026-09-03) — WI-21a: 折り返し(word wrap) ヘッドレス計算モジュール完了、WI-21a〜f全6段階の計画確定
+
+> **WI-20完結後、ユーザーの「次に進めよ」で[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)へ着手。** Explore agent調査で、折り返し機能は既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(`RenderPipeline`の11箇所以上が「1論理行=1描画行」を前提)と判明——折り畳みは「1論理行→0または1行」という逆のカーディナリティであり、折り返しが必要な「1論理行→1〜N行」には使えない。AskUserQuestionで「折り返しも含めて設計から着手」が選ばれ、Plan agentへ詳細設計を委任した。
+>
+> **設計検証で折り返し有効時に顕在化する未発見の実バグ2件を発見した:** `drawCaretOnLine()`/`drawSelectionOnLine()`/`drawMatchOnLine()`(`render_pipeline.cpp:1188-1274`)が`HitTestTextPosition()`の行内Y座標を計算しながら破棄している(現在は全レイアウトが常に1行のため無害、折り返し有効時に選択範囲が複数行にまたがると意味不明な矩形が描画される)、`hitTest()`(`:1826`)がY座標をハードコード。いずれもWI-21dで修正予定として計画に組み込んだ。
+>
+> **3つのオープンな判断(上下カーソル移動/Home-End/マウスホイールの粒度)を1つの質問にまとめてAskUserQuestionで提示し「論理行単位を維持(推奨)」が選ばれた** — `core::moveVertically()`/`editor_input.cpp`/`core::Viewport`の公開APIが無変更で済むことが確定、後続段階(WI-21f)の実装コストが実質ゼロに縮小した。ミニマップの精度は10GBファイル対応というCLAUDE.mdのコミットメントとの兼ね合いから「論理行ベースの近似のまま維持」と自ら判断(技術的制約がほぼ一意なため質問枠は使わず)。
+>
+> **JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習でWI-21a〜fの6段階に分割:** a(ヘッドレス計算モジュール、今回完了)/b(Settings+RenderPipeline配線、まだユーザー到達不可)/c(単一の真実の源の確立)/d(ヒットテスト+上記2バグ修正)/e(Viewport/水平スクロールバー+実配線、初のユーザー到達可能段階)/f(カーソル移動は無変更・ミニマップ対応方針の反映のみ+issue解決)。
+>
+> **WI-21a実装:** 新規`src/render/include/neomifes/render/visual_row_layout.h`(`viewport_math.h`/`gutter_math.h`と同じヘッダオンリー配置)。`IDWriteTextLayout::GetLineMetrics()`の2段階サイジングパターンで、1論理行分のレイアウトが実際に何行のビジュアル行に折り返されたか+各行の`[startColumn, endColumn)`範囲を返す`computeVisualRows()`を実装、`TextLayoutCache`が確立した「DirectWriteは使うがHWND不要」というテスト容易性の階層を踏襲。新規`tests/unit/render_visual_row_layout_test.cpp`(5テストケース)。実装中に2件のビルドエラーを発見・修正: `ComPtr<T>::operator*()`がconstオブジェクトで呼べず`.Get()`経由へ統一、`DWRITE_TEXT_METRICS`に`textLength`フィールドが実在しないと判明しフォールバック簡略化。**既存ファイルへの変更はCMakeLists.txt登録のみ、既存動作への影響ゼロ。**
+>
+> Debug/Release/ubsan全1559/1559件green(3構成とも実行、flaky再実行なし)、clang-tidy exit 0。
+>
+> **次回セッション最初にやること:** WI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加)に着手する——詳細設計は承認済みプラン(`C:\Users\kenbo\.claude\plans\eventual-crafting-lecun.md`、および`docs/design/build_plan.md`のWI-21aセクション末尾)参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-21aセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

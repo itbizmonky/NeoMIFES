@@ -3843,4 +3843,22 @@ Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は�
 
 次は、次に着手する作業をユーザーに確認する。`view_menu_and_word_wrap_incomplete.md`(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ残っている。
 
+**続けてユーザーが「次に進めよ」と指示、`view_menu_and_word_wrap_incomplete.md`(P2)に着手した。** 表示メニュー拡充(行番号/テーマ切替)は小規模な一方、折り返し(word wrap)機能はissue自身が「規模次第で別途設計レビューが必要」と記していた通り大規模な変更である可能性が高いと判断、Explore agentへ調査を委任した。
+
+**Explore agent調査の結論: 折り返しは既存の折り畳み機能(`FoldingModel`)を流用できない。** 折り畳みは「1論理行→0または1行描画」という逆のカーディナリティのモデルであり(`folding_model.h:10-17`が「表示行という別の座標空間を意図的に導入していない」と明記)、折り返しが必要とする「1論理行→1〜N行描画」には使えないと判明。`RenderPipeline`の可視行範囲計算・描画ループ・ヒットテスト・キャレット/選択範囲描画・ガター行番号・ミニマップ・水平スクロールバー・`core::Viewport`のスクロール計算・上下カーソル移動など11箇所以上が「1論理行=1描画行」を前提にしていることを`file:line`付きで確認した。
+
+**着手の進め方をAskUserQuestionで確認し「折り返しも含めて設計から着手」が選ばれた。** Plan agentへ詳細設計を委任、`GetLineMetrics()`ベースの新規ヘッドレスモジュール設計に加え、**設計検証の過程で折り返し有効時に顕在化する未発見の実バグ2件を発見した**: `drawCaretOnLine()`/`drawSelectionOnLine()`/`drawMatchOnLine()`(`render_pipeline.cpp:1188-1274`)が`HitTestTextPosition()`が返す行内Y座標(`caretY`/`startY`/`endY`)を計算しておきながら破棄しており、現在は全レイアウトが常に1行(折り返し無効)のため実害が無いだけで、折り返し有効時に選択範囲が複数ビジュアル行にまたがると意味不明な矩形が描画される。`hitTest()`(`:1826`)も同様にY座標0.0Fをハードコードしている。いずれもWI-21dで修正予定として計画に組み込んだ。
+
+JSON/XML Tree(WI-15a〜i)・Git統合(WI-17a〜f)と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習に倣い、WI-21a〜fの6段階(a: ヘッドレス計算モジュール、b: Settings+RenderPipeline配線(まだ到達不可)、c: 単一の真実の源の確立、d: ヒットテスト+上記2バグ修正、e: Viewport/水平スクロールバー+実配線(初のユーザー到達可能段階)、f: カーソル移動+ミニマップ対応方針+issue解決)に分割。3つのオープンな判断(上下カーソル移動・Home/End・マウスホイールスクロールの粒度)を1つの質問にまとめてAskUserQuestionで提示し、**「論理行単位を維持(推奨)」が選ばれた** — これにより`core::moveVertically()`/`editor_input.cpp`/`core::Viewport`の公開APIが無変更で済むことが確定し、WI-21fの実装コストが実質ゼロに縮小した。ミニマップの精度についても、10GBファイル対応というCLAUDE.mdの既存コミットメントとの兼ね合いから「論理行ベースの近似のまま維持、正確化はしない」という判断を自ら下し(質問枠を使わず、技術的制約がほぼ一意に決まるため)、計画へ明記した。
+
+### WI-21a実装
+
+新規`src/render/include/neomifes/render/visual_row_layout.h`(`viewport_math.h`/`gutter_math.h`と同じヘッダオンリー配置慣習)。`IDWriteTextLayout::GetLineMetrics()`の2段階サイジングパターンで、既に構築済みの1論理行分のレイアウトが実際に何行のビジュアル行に折り返されたか+各行の`[startColumn, endColumn)`範囲を返す`computeVisualRows()`を実装。`TextLayoutCache`が既に確立した「DirectWriteは使うがHWNDは不要」というテスト容易性の階層(`sharedDWriteFactory()`)を踏襲。新規`tests/unit/render_visual_row_layout_test.cpp`(5テストケース: 短い行/空行/狭い幅での複数語折り返し/空白無し1単語の強制改行/折り返し無効幅での長い行、いずれも「返された範囲が隙間・重複なく元のテキスト長を覆う」不変条件を検証)。
+
+実装中に2件のビルドエラーを発見・修正: `Microsoft::WRL::ComPtr<T>::operator*()`がconstオブジェクトに対してこのSDKのWRLヘッダでは呼び出せず`.Get()`経由の生ポインタ参照へ統一(`TextLayoutCacheTest`の既存パターンと一致させた)、`DWRITE_TEXT_METRICS`に`textLength`フィールドが実際には存在しない(誤った前提だった)と判明しフォールバック実装を簡略化。
+
+Debug/Release/ubsan全1559/1559件green(3構成とも実行、flaky再実行なし)、clang-tidy exit 0(新規テストフィクスチャの非ブロッキング警告2件のみ、既存`TextLayoutCacheTest`と同型)。
+
+次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加)。
+
 <!-- 次セッションはここに追記 -->

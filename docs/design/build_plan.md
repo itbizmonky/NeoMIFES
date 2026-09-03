@@ -82,6 +82,8 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-20(複数ウィンドウ対応)完結(2026-09-02〜03)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ対応、解決済みへ移動した。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)→WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)の2段階で実装、実機ドッグフーディングで複数ウィンドウの独立生成/破棄・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(--openあり/なし両方)を確認済み — 詳細は本ファイルのWI-20a/WI-20bセクション参照。
 >
+> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)完了(2026-09-03)** — 詳細は本ファイルのWI-21aセクション参照。次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`)。
+>
 > **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md) (P2、WI-18の品質監査で発見) — 表示メニューが手薄・折り返し(word wrap)機能が存在しない
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
@@ -2356,6 +2358,33 @@ Debug/Release/ubsan全1554/1554件green(3構成とも実行、flaky再実行は�
 これで[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1、要件定義書§6必須機能)が完全に解決した。
 
 コミット済み(`36588d9`)、pushはユーザーの明示指示待ち。次にどの作業へ着手するかはユーザーへ確認する — `view_menu_and_word_wrap_incomplete.md`(P2)が唯一の新規候補、他は既存の凍結/見送り済み項目のみ。
+
+---
+
+## WI-21a — 折り返し(word wrap): ヘッドレスな折り返し計算モジュール `visual_row_layout.h`
+
+### 目的
+
+[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)への対応第1段階。着手前のExplore agent調査で、折り返し機能は既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したため、Plan agentへ詳細設計を委任しWI-21a〜fの6段階に分割した(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。設計検証の過程で、折り返し有効時に顕在化する未発見の実バグ2件も発見した(`drawCaretOnLine()`/`drawSelectionOnLine()`/`drawMatchOnLine()`が`HitTestTextPosition()`の行内Y座標を計算しながら破棄している、`hitTest()`がY座標0.0Fをハードコードしている——いずれもWI-21dで修正予定)。カーソル移動の粒度についてAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIが無変更で済むことが確定、実装規模が大きく縮小した。
+
+WI-21aはこの中で最もリスクの低い段階——新規ヘッドレスモジュール1個+単体テストのみ、既存ファイルへの変更はCMakeLists.txt登録のみで、既存動作への影響はゼロ。
+
+### 実装
+
+新規`src/render/include/neomifes/render/visual_row_layout.h`(ヘッダオンリー、`viewport_math.h`/`gutter_math.h`と同じ配置慣習)。`IDWriteTextLayout::GetLineMetrics()`(2段階サイジングパターン、`E_NOT_SUFFICIENT_BUFFER`で件数取得→実データ取得)を使い、既に構築済みの1論理行分のレイアウトが実際に何行のビジュアル行に折り返されたか+各行の`[startColumn, endColumn)`範囲を返す`computeVisualRows(IDWriteTextLayout&)`を実装。`TextLayoutCache`が既に確立した「DirectWriteは使うがHWNDは不要」というテスト容易性の階層(`sharedDWriteFactory()`で実HWNDなしにテスト)を踏襲。`GetLineMetrics()`失敗時(実質到達不能、レイアウト生成自体が成功していればまず起きない)のフォールバックは「常に1行以上を返す」という呼び出し側の不変条件を守るため空範囲の1行を返す設計にした(`DWRITE_TEXT_METRICS`にテキスト全長を保持するフィールドが無いと実装中に判明、より情報量のあるフォールバックは断念)。
+
+新規`tests/unit/render_visual_row_layout_test.cpp`(`tests/unit/CMakeLists.txt`へ登録)。短い行(1行)/空行(1行・空範囲)/多数の空白区切り単語を狭い幅で折り返す場合(複数行、隙間・重複なしの連続範囲)/空白の無い1単語が幅を超える場合(DirectWriteの既定の単語内強制改行を確認)/折り返し無効幅での長い行(常に1行)の5ケース、いずれも「返された範囲が隙間・重複なく元のテキスト長をちょうど覆う」という不変条件を共通ヘルパーで検証。
+
+### 実装中に発見・修正したビルドエラー
+
+- `Microsoft::WRL::ComPtr<T>::operator*()`がconstオブジェクトに対して(このSDKのWRLヘッダでは)呼び出せず、テストコードを`*m_factory.Get()`のように`.Get()`経由の生ポインタ参照へ統一(`TextLayoutCacheTest`の既存パターンと完全に一致させた)。
+- `DWRITE_TEXT_METRICS`に`textLength`フィールドが存在しない(実際のフィールドは`left`/`top`/`width`/`widthIncludingTrailingWhitespace`/`height`/`layoutWidth`/`layoutHeight`/`maxBidiReorderingDepth`/`lineCount`のみ)と判明、フォールバック実装を簡略化して解消。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1559/1559件green(3構成とも実行、flaky再実行なし、Release 78.88秒/ubsan 92.54秒)。clang-tidy exit code 0(新規テストフィクスチャの`protected`メンバー変数について`cppcoreguidelines-non-private-member-variables-in-classes`警告2件が出たが、これは既存の`TextLayoutCacheTest`と全く同じフィクスチャ形状に由来する非ブロッキングの既知パターンであり、warnings-as-errors対象外)。
+
+コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加) — 詳細設計は承認済みプラン参照。
 
 ---
 
