@@ -4038,4 +4038,38 @@ Debug/Release/ubsan全1572/1572件green(3構成とも実行、ubsanは新規`bou
 
 **これで[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(P1、2026-07-19起票)が解決済みとなった。WI-22完了。** 次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`search_grep_multi_gb_performance_gap.md`/`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
 
+**続けてユーザーへAskUserQuestionで次の作業を確認し「Grep多GB性能の残り(P1)」が選ばれ、WI-23(GrepServiceのファイルあたり固定オーバーヘッド削減)に着手・完了した(2026-09-04)。**
+
+## セッション: WI-23 — GrepServiceのファイルあたり固定オーバーヘッド削減
+
+### 着手前調査で仮説が覆った
+
+[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)が2026-09-01の部分対応時に明示的にスコープ外としていた「`GrepService::findAll()`(マルチファイル、5,000ファイル)のファイルあたり固定オーバーヘッド」への対応。着手前は「`document::OriginalBuffer::openMemoryMapped()`が無条件に走らせる`scanUtf8()`(mmap全体への1バイトずつのUTF-8検証+チェックポイント構築パス)が支配的コストだろう」という仮説を立てていたが、これは`GrepService`の「1回読んで1回スキャンして捨てる」というアクセスパターンがそもそも使わない機能(ランダムアクセス用のLazy Decodeチェックポイント)を無条件に構築している点が引っかかったための推測であり、CLAUDE.mdルール10(性能改善は必ず計測を根拠とする)に従い、実装前にサブエージェントへ計測を委譲した。
+
+サブエージェントは`tests/bench/`へ一時的な専用プローブ(`grep_overhead_probe.cpp`)を追加し、2,000ファイル(各約150KB、合計約293MB、1/500行に"ERROR"を含む)を生成、`loadUtf8File()`の処理を「`openMemoryMapped()`(mmapオープン+`scanUtf8()`込み)」と「それ以外全て」の2段階に分けて実測した。結果、**`scanUtf8()`は2,000ファイル合計で約570msに過ぎず、仮説通りには支配的でなかった。むしろ「`openMemoryMapped()`以外の全て」が約969msとより大きい要因だった。** さらに絞り込むため`loadUtf8File()`内部の各行を個別に計測させたところ、`detectLineEndingBounded()`が原因だと判明した——この関数は`BufferSnapshot::extract()`(デコード結果を`OriginalBuffer`の`m_decodeCache`へ永久保持するキャッシュ付き経路)を使っており、検証に使った約150KBのテストファイルは行末検出の走査上限(`kLineEndingDetectionHeadCodeUnits` ≈ 1<<20コード単位 ≈ 1MiB)を下回るため、「先頭の一部だけを見る」という関数の設計意図に反して実質ファイル全体をデコード+キャッシュしていた。`decode_cache_unbounded_growth.md`(2026-08-31発見・修正済み)が確立した「1回使って捨てるだけの呼び出しはキャッシュしない」パターン(`extractNoCache()`)の適用漏れがこの箇所に残っていたことになる。`GrepService::grepOneFile()`(`grep_service.cpp:55`)を確認したところ、`LoadResult::hadBom`/`.lineEnding`のいずれも一度も読まず`.document`のみを使っていると確認できた——つまりこのキャッシュ書き込みはGrepServiceにとって完全な無駄だった。プローブ自体は使用後に完全に削除し、リポジトリには残していない(`git status --short`/`git diff --stat`両方が空であることを確認済み)。
+
+### 実装(3件)
+
+1. **Fix A — `detectLineEndingBounded()`の冗長デコード除去(`src/document/src/file_loader.cpp`)。** `snap->extract(TextRange{...})`を`snap->extractNoCache(TextRange{...})`へ切替。動作は完全に無変更、`loadUtf8File()`/`loadFile()`の全呼び出し元(GrepServiceに限らない)が恩恵を受ける性能改善。
+2. **Fix B — GrepService専用の新規ローダ`loadUtf8FileForGrep()`(`file_loader.h`/`.cpp`)。** 既存`loadUtf8File()`は`document_file_loader_test.cpp`の7箇所の`.lineEnding`直接検証が依存しているため契約を変えられないと着手前に確認済みだったので、`loadUtf8File()`の本体を内部共有ヘルパー`loadUtf8FileImpl(path, maxBytes, bool detectLineEnding)`へ抽出し、`loadUtf8File()`は`detectLineEnding=true`、新設の`loadUtf8FileForGrep()`は`detectLineEnding=false`でこのヘルパーを呼ぶ形にした。`detectLineEnding=false`の場合`detectLineEndingBounded()`の呼び出し自体を丸ごとスキップし、`LoadResult::lineEnding`は既定値`Lf`のまま返る。`grep_service.cpp`の`grepOneFile()`をこの新関数へ切替。ヘッダの冒頭ドキュメントコメント(元々「GrepServiceは`loadUtf8File()`の契約に依存」と書いていた箇所)も実態に合わせて更新した。
+3. **Fix C — `preflightFile()`の`file_size()`重複呼び出し除去(`file_loader.cpp`)。** `preflightFile()`は既に内部で`std::filesystem::file_size()`を呼んでサイズ上限チェックに使っていたが、その結果を呼び出し元へ返していなかったため、`loadUtf8File()`/`loadFile()`双方が直後に同じパスへ2回目の`file_size()`を呼んでいた。`preflightFile()`のシグネチャに`std::uint64_t& outSize`引数を追加してこの冗長な2回目呼び出しを両方から削除した。
+
+### テスト作成
+
+`tests/unit/document_file_loader_test.cpp`へ`LoadUtf8FileForGrepTest`として4件追加。`LoadsContentSameAsLoadUtf8File`(BOM付きファイルで内容・`hadBom`・`byteLength`が既存`loadUtf8File()`と同等)、`DoesNotDetectLineEndingEvenForObviousCrlf`(本WIの核心——CRLFファイルを`loadUtf8FileForGrep()`で読むと`.lineEnding`が既定値`Lf`のまま残ること、同じ内容を`loadFile()`経由で読ませると正しく`Crlf`と検出されることの対比で「検出できないのではなく意図的にスキップしている」ことを立証)、`RejectsMalformedUtf8`、`EnforcesMaxBytes`(既存`loadUtf8File()`の同名テストとの契約対称性確認)。既存テスト(7箇所の`.lineEnding`直接検証含む)は無変更のまま全通過を確認した。
+
+### 最終ゲート
+
+Debug全1576件green(新規4件含む)。clang-tidyを変更4ファイル(`file_loader.cpp`/`.h`、`grep_service.cpp`、`document_file_loader_test.cpp`)へ個別実行、新規指摘0件(テストファイルの既存warning群——lowercase整数リテラルサフィックス等——は本WI以前から全体に存在する既知のスタイルで、新規追加した1行もその既存パターンをそのまま踏襲しているだけであり退行ではない)。`file_loader.h`への`--header-filter`直接指定を試したところ、無関係な既存`enum class LoadError`(本WIでは触れていない)への`performance-enum-size`指摘が出たが、これは`reference_windows_cpp_ci_gotchas.md`が既に記録済みの「clang-tidyへの.h直接指定」の落とし穴の再現であり、本WIの変更とは無関係と判断し無視した。
+
+Release/ubsan検証はサブエージェントへ委譲した。1回目の実行中にセッションのレート制限に達して中断(`API error: rate_limit, resets 11:50pm`)したが、ユーザーから「利用制限に達しましたが、現在はリセットされています。中断したところから続けてください」と再開指示があり、同じ検証タスクを再度サブエージェントへ委譲して完走させた。**結果: release/asan(ubsan)いずれもビルド成功・全1576/1576件green(実時間: release 74.48秒、asan 313.84秒)、warnings-as-errors下でも新規warning 0件(release唯一の警告`D9025`〔`/Ob2`より`/Ob3`優先〕・asan唯一の警告`libgit2`サードパーティ`C4819`はいずれも本WIと無関係の既存警告)、ASan/UBSanのクラッシュ・エラー検出も0件。**
+
+### 運用上の教訓: サブエージェントのレート制限中断からの再開
+
+背景で実行していたサブエージェント(Release/ubsanビルド検証)がAPIレート制限(HTTP 429)で強制終了する`task-notification`(`status: failed`)を受け取った。これはコード上の失敗ではなく、セッションの利用枠を使い切ったことによる中断だったため、実際の検証結果は一切得られていない状態だった。ユーザーの明示的な「リセット後、中断箇所から続行せよ」という指示を受け、**同一内容のプロンプトで同じ検証タスクを新規サブエージェントとして再起動した**(失敗したエージェントIDを`SendMessage`で再開するのではなく、新規`Agent`呼び出しとした——失敗理由がタスク内容ではなく外部要因〔レート制限〕であり、失敗した実行のコンテキストを引き継ぐ意味が無かったため)。
+
+### まとめ
+
+**これで[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)(P1、2026-08-31起票)のGrepServiceオーバーヘッド項目が解決した。WI-23完了。** 残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、優先度は相対的に低い)。次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
+
 <!-- 次セッションはここに追記 -->

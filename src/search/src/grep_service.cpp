@@ -52,7 +52,7 @@ bool shouldProcessFile(const GrepQuery& query, const fs::path& filePath) {
 // deliberately not distinguished by error kind: 5c1 has no UI to surface a
 // per-file diagnostic to, and inventing one now would be speculative.
 void grepOneFile(const GrepQuery& query, const fs::path& path, std::vector<GrepMatch>& out) {
-    auto loaded = document::loadUtf8File(path);
+    auto loaded = document::loadUtf8FileForGrep(path);
     if (!std::holds_alternative<LoadResult>(loaded)) {
         return;
     }

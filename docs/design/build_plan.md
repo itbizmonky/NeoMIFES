@@ -86,9 +86,11 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-22(検索のCRLF行末対応)完結(2026-09-03)。** WI-21完結後、AskUserQuestionでユーザーへ次の作業を確認し「CRLF検索issue (P1)」が選ばれ、[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(2026-07-19起票、Phase 5aコードレビューで指摘)へ対応、解決済みへ移動した。着手前調査で、issue起票時の前提(行ごとのバッファ+`findAllInLine()`)がPhase 5b1の全文書単一バッファ設計で既に崩れていたと判明、新設計向けに対応方針を再構築。新規`stripCrBeforeLf()`がCRLFの`\r`のみをRE2に渡す直前に除去し、`boundaryToOriginal`でマッチ位置を元の文書座標へ復元、`\r`が無いLFのみの文書は既存コードパスをそのまま通る早期リターン付き。`core::selection_model.cpp`側の同種制約(word movement等、9箇所以上)は影響範囲の大きさと実害の軽微さ(`\r`は無描画)を理由に明示的に対象外と判断・issueへ記録。詳細は本ファイルのWI-22セクション参照。
 >
-> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
+> **🎉 WI-23(GrepServiceのファイルあたり固定オーバーヘッド削減)完結(2026-09-04)。** WI-22完結後、AskUserQuestionでユーザーへ次の作業を確認し「Grep多GB性能の残り(P1)」が選ばれた。当初の仮説(`scanUtf8()`のUTF-8検証パスが支配的コスト)はサブエージェント実測(2,000ファイルの専用プローブ)で誤りと判明、真因は`detectLineEndingBounded()`の`extract()`(キャッシュ付き)経由の冗長デコードだった。Fix A(`extractNoCache()`切替)+Fix B(GrepService専用ローダ`loadUtf8FileForGrep()`新設、line-ending検出を丸ごとスキップ)+Fix C(`preflightFile()`の`file_size()`重複呼び出し除去)で対応。Debug/Release/ubsan全1576/1576件green、clang-tidy新規指摘0件。これで[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)(P1)が解決済みへ移動した。詳細は本ファイルのWI-23セクション参照。
+>
+> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)+検索CRLF(WI-22)+Grep固定オーバーヘッド(WI-23)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
-> - [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1) — 🟡 **2026-09-01部分対応。** 実測で真因はRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドは対象外のまま残存
+> - ~~[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1)~~ — 🟡 **2026-09-01部分対応 → 2026-09-04残項目対応(WI-23)。** 単一ファイル側は実測で真因がRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドも対応済み(WI-23参照)、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ
 > - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
 > - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — 🟡 **2026-09-01部分対応。** `CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB、旧参照8.3GBから大幅改善)。10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定、10GB規模でのリスクは軽減されつつも残存
 > - ~~[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。早期リターンで解消、47秒→約1秒(約47倍改善)、Debug/Release/ubsan全1554件green
@@ -2588,6 +2590,36 @@ Debug/Release/ubsan全1572/1572件green(3構成とも実行)。clang-tidy exit c
 **これで[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(P1)が解決済みとなった。** 次にどの作業へ着手するかはユーザーへ確認する。
 
 コミット済み(`9f18532`)、pushはユーザーの明示指示待ち。
+
+---
+
+## WI-23 — GrepServiceのファイルあたり固定オーバーヘッド削減(`search_grep_multi_gb_performance_gap.md`、P1残項目)
+
+### 目的
+
+WI-22完結後、AskUserQuestionでユーザーへ次の作業を確認し「Grep多GB性能の残り(P1)」が選ばれた。[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)が2026-09-01に部分対応した際、明示的にスコープ外として残していた「`GrepService::findAll()`(マルチファイル)のファイルあたり固定オーバーヘッド」への対応。
+
+### 実装
+
+**着手前調査で判明した前提の誤り。** 当初の仮説は「`OriginalBuffer::scanUtf8()`(mmap時に走る全バイトのUTF-8検証パス)が支配的コスト」だったが、サブエージェントへ委譲した実測(2,000ファイル、各約150KB、合計約293MB、`tests/bench/`へ一時的に追加し使用後に完全削除した専用プローブによる5段階の切り分け計測)でこれは誤りと判明した。`loadUtf8File()`のコスト内訳(2,000ファイル合計)は`scanUtf8()`が約570msに対し、**「`openMemoryMapped()`以外の全て」が約969msとより大きい単一要因だった。** さらに絞り込むと、原因は`detectLineEndingBounded()`が`BufferSnapshot::extract()`(デコード結果を`OriginalBuffer`のデコードキャッシュへ永久保持するキャッシュ付き経路)を使っていたことだった——検証に使った約150KBのテストファイルは行末検出の走査上限(`kLineEndingDetectionHeadCodeUnits` ≈ 1MiB)を下回るため、「先頭の一部だけ見る」という設計意図に反して実質ファイル全体をデコード+キャッシュしていた。`decode_cache_unbounded_growth.md`が確立した「使い捨てはキャッシュしない」パターン(`extractNoCache()`)の適用漏れがこの箇所に残っていたことになる。`GrepService::grepOneFile()`は`LoadResult`を1回読んで捨てるだけで`.lineEnding`を一度も参照しないため、このキャッシュ書き込みは完全な無駄だった。
+
+以下3件を実施(`src/document/src/file_loader.cpp`/`.h`、`src/search/src/grep_service.cpp`):
+
+1. **Fix A:** `detectLineEndingBounded()`を`snap->extract()`から`snap->extractNoCache()`へ切替。`loadUtf8File()`/`loadFile()`の全呼び出し元(GrepServiceに限らない)が恩恵を受ける、動作無変更の性能改善。
+2. **Fix B:** `search::GrepService`専用の新規ローダ`document::loadUtf8FileForGrep()`を追加。`loadUtf8File()`と実装を共有する内部ヘルパー`loadUtf8FileImpl(path, maxBytes, bool detectLineEnding)`を新設し、`detectLineEnding=false`で`detectLineEndingBounded()`の呼び出し自体を丸ごとスキップする(`LoadResult::lineEnding`は既定値`Lf`のまま)。既存`loadUtf8File()`は無変更——`document_file_loader_test.cpp`の7箇所の`.lineEnding`直接検証が依存しているため契約を変えられないと着手前に確認した。`grep_service.cpp`の`grepOneFile()`をこの新関数へ切替。
+3. **Fix C:** `preflightFile()`が内部で計算済みの`std::filesystem::file_size()`結果を`std::uint64_t& outSize`引数で呼び出し元へ返すよう変更し、`loadUtf8File()`/`loadFile()`双方にあった冗長な2回目の`file_size()`呼び出しを削除。
+
+### テスト作成
+
+`tests/unit/document_file_loader_test.cpp`へ`LoadUtf8FileForGrepTest`として4件追加。`LoadsContentSameAsLoadUtf8File`(BOM付きファイルで内容読み込みが既存関数と同等)、`DoesNotDetectLineEndingEvenForObviousCrlf`(明らかにCRLFなファイルでも`.lineEnding`が既定値`Lf`のまま——同じ内容を`loadFile()`経由で読ませて実際は`Crlf`と検出されることの対比確認も含む)、`RejectsMalformedUtf8`、`EnforcesMaxBytes`(既存`loadUtf8File()`の同名テストと対の契約確認)。既存テスト(7箇所の`.lineEnding`直接検証含む)は無変更のまま全通過。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——1回目はセッションのレート制限で中断、リセット後に再委譲し完走)。clang-tidy(変更4ファイル)新規指摘0件(`file_loader.h`への`--header-filter`直接指定は既知の落とし穴 — 事前に存在した`LoadError`のenumサイズ指摘のみでこちらの変更とは無関係、`reference_windows_cpp_ci_gotchas.md`の前例通り無視)。実機ドッグフーディングは実施せず——`document::`/`search::`は入出力のみで完結する純粋ロジック層であり、GUI経由の実機確認は本WIが変更した性能特性そのものの正しさに寄与しない(UIコードは無変更)ため、単体テストによる網羅的な検証で十分と判断した。
+
+`search_grep_multi_gb_performance_gap.md`の完了条件は「GrepService側のオーバーヘッド削減」を達成、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、CI常設化は別途検討)。
+
+コミット済み、pushはユーザーの明示指示待ち。
 
 ---
 

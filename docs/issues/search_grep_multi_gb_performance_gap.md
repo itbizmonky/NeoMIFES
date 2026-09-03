@@ -59,14 +59,27 @@ v1出荷判定チェックリストの「数GB Grep ≤ 30秒」項目を実測�
 
 **注意:** issueが最初に報告した38.94秒という数値は、本修正前の時点でも本セッションの実測環境では再現できなかった(本セッションでの「修正前」ベースラインは約17秒で、既に38.94秒より大幅に小さい)。ディスクキャッシュの状態(本セッションのテストファイルは生成直後でOSキャッシュが温まっていた可能性が高い)や実行環境の違いによるものと推定されるが、厳密な原因特定はできていない。したがって「○倍改善」という単純な比較は避け、本セッションで実測した相対的な改善(UTF-8変換で約38〜40%、全体で約28%)のみを実測値として記録する。
 
-**`GrepService::findAll()`(マルチファイル、5,000ファイル)は今回のスコープ外のまま残る。** `GrepService`は内部で`SearchService::findAll()`を呼ぶため、上記のUTF-8変換最適化は各ファイルにも及ぶが、issue自身の分析が示す通りマルチファイルケースの支配的コストは「ファイルあたりの`loadUtf8File()`固定オーバーヘッド」であり、これは対象方針③(GrepService側のオーバーヘッド削減、並列ファイル処理)に相当する、今回は選ばれなかった別の作業。
+**`GrepService::findAll()`(マルチファイル、5,000ファイル)は当初今回のスコープ外として残っていたが、2026-09-03に対応した(下記参照)。** `GrepService`は内部で`SearchService::findAll()`を呼ぶため、上記のUTF-8変換最適化は各ファイルにも及ぶが、issue自身の分析が示す通りマルチファイルケースの支配的コストは「ファイルあたりの`loadUtf8File()`固定オーバーヘッド」であり、これは対象方針③(GrepService側のオーバーヘッド削減、並列ファイル処理)に相当する。
 
 実機ドッグフーディングで、日本語テキストとASCII"ERROR"が混在するファイルでの検索(3件中1/3、いずれも正しくハイライト)、および3GBファイルでの実際の検索(WM_COMMAND経由でFindBarへ"ERROR"を送信、1/2667件と正しい件数、ハング無く復帰)の両方をスクリーンショットで確認した。
+
+## GrepServiceのファイルあたり固定オーバーヘッド対応 (2026-09-03)
+
+**着手前調査で、当初の仮説(`OriginalBuffer::scanUtf8()`のバイト単位UTF-8検証パスが支配的コスト)は誤りだったと判明した。** サブエージェントへ委譲した実測(2,000ファイル、各約150KB、合計約293MB、`tests/bench/`へ一時的に追加し使用後に削除した専用プローブによる)で`loadUtf8File()`のコスト内訳を分解したところ、`scanUtf8()`(mmap時に走る全バイトのUTF-8検証+チェックポイント構築)は全体(約1,572ms/2,000ファイル)のうち約570msに過ぎず、**残る約969ms(「`openMemoryMapped()`以外の全て」)の方が大きい単一要因だった。** さらに絞り込むと、`detectLineEndingBounded()`が`BufferSnapshot::extract()`(デコード結果を`OriginalBuffer`のデコードキャッシュへ永久保持するキャッシュ付き経路)を使っていたことが原因と判明した——本検証で使ったテストファイル(約150KB)は行末検出の走査上限(`kLineEndingDetectionHeadCodeUnits` = 1<<20コード単位 ≈ 1MiB)を下回るため、「先頭の一部だけを見る」という設計意図に反し、実質ファイル全体をデコード+キャッシュしていた。`GrepService::grepOneFile()`は`LoadResult`を1回読んで捨てるだけで`.lineEnding`を一度も参照しないため、このキャッシュは書き込まれるだけで二度と読まれない。
+
+以下3件を実施した:
+
+1. **Fix A:** `detectLineEndingBounded()`を`snap->extract()`から`snap->extractNoCache()`へ切替(`decode_cache_unbounded_growth.md`が確立した「使い捨てはキャッシュしない」パターンの適用漏れだった箇所)。`loadUtf8File()`/`loadFile()`両方の全呼び出し元(GrepServiceに限らない)が恩恵を受ける、動作無変更の性能改善。
+2. **Fix B:** `search::GrepService`専用の新規ローダ`document::loadUtf8FileForGrep()`(`file_loader.h`/`.cpp`)を追加。`loadUtf8File()`と実装を共有する内部ヘルパー`loadUtf8FileImpl(path, maxBytes, bool detectLineEnding)`を新設し、`detectLineEnding=false`で`detectLineEndingBounded()`の呼び出し自体を丸ごとスキップする(`LoadResult::lineEnding`は既定値`Lf`のまま)。既存`loadUtf8File()`は無変更(`document_file_loader_test.cpp`の7箇所の`.lineEnding`直接検証が依存しているため契約を変えられない)。`grep_service.cpp`の`grepOneFile()`をこの新関数へ切替。
+3. **Fix C:** `preflightFile()`が内部で計算済みの`std::filesystem::file_size()`結果を`std::uint64_t& outSize`引数で呼び出し元へ返すよう変更し、`loadUtf8File()`/`loadFile()`双方にあった冗長な2回目の`file_size()`呼び出しを削除。
+
+新規テスト4件(`LoadUtf8FileForGrepTest`、`tests/unit/document_file_loader_test.cpp`)で、新関数が内容を正しく読み込みつつ明らかにCRLFなファイルでも`.lineEnding`を検出しない(既定値`Lf`のまま)ことを検証。Debug全1576テスト・変更4ファイルのclang-tidy(新規指摘0件)・Release/asan構成で確認済み(詳細は本ファイル末尾の完了条件参照)。
 
 ## 完了条件
 
 - [x] 上記4方針のいずれかを採用するかを決定する(ユーザー確認) — 「ストリーミング化+UTF-8変換最適化」を選択(ストリーミング化は実測後に撤回)
 - [x] (方針1〜3採用の場合) 実装し、同じ`grep_probe.cpp`相当の手法で3GB/30秒以内を再実測する — 3GBで約17〜18秒(loadFile含む)、目標30秒以内を達成。ただし元issueの38.94秒という基準値は再現できておらず、単純比較は避けて記録した
+- [x] `GrepService`側のファイルあたり固定オーバーヘッドを削減する(方針③) — 2026-09-03、`detectLineEndingBounded()`の冗長デコード除去(Fix A)+GrepService専用ローダ新設(Fix B)+`file_size()`重複呼び出し除去(Fix C)で対応。サブエージェント実測で`loadUtf8File()`単体コストの主要因(約969ms/2,000ファイル、`scanUtf8()`の約570msより大)を特定した上での対応
 - [ ] `tests/bench/search_find_all_bench.cpp`/`GrepService`用の新規ベンチマークを`tests/bench/`へ追加し、継続的な計測を可能にする(現状は200,000行規模のベンチのみでGB規模の計測がCIに存在しない) — 未実施のまま残る
 
 ## 再検証コマンド

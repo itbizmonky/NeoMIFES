@@ -588,4 +588,56 @@ TEST(LoadFileLineEndingTest,
     fs::remove(path);
 }
 
+// -----------------------------------------------------------------------------
+// search_grep_multi_gb_performance_gap.md (P1): loadUtf8FileForGrep() is
+// search::GrepService's loader - same load behavior as loadUtf8File(), but
+// LoadResult::lineEnding is left at its default (Lf) rather than detected,
+// since grepOneFile() never reads that field.
+// -----------------------------------------------------------------------------
+
+using neomifes::document::loadUtf8FileForGrep;
+
+TEST(LoadUtf8FileForGrepTest, LoadsContentSameAsLoadUtf8File) {
+    auto path = tempFileWith("\xEF\xBB\xBFhello");
+    auto result = loadUtf8FileForGrep(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    auto& r = std::get<LoadResult>(result);
+    EXPECT_TRUE(r.hadBom);
+    EXPECT_EQ(r.byteLength, 8u);
+    EXPECT_EQ(r.document->toU16String(), u"hello");
+    fs::remove(path);
+}
+
+TEST(LoadUtf8FileForGrepTest, DoesNotDetectLineEndingEvenForObviousCrlf) {
+    // A file that loadFile()/loadUtf8File() would unambiguously detect as
+    // Crlf - loadUtf8FileForGrep() must still report the untouched default
+    // (Lf) rather than pay for the scan.
+    auto path = tempFileWith("line1\r\nline2\r\n");
+    auto result = loadUtf8FileForGrep(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(result));
+    EXPECT_EQ(std::get<LoadResult>(result).lineEnding, LineEnding::Lf);
+    // Sanity check: the same content genuinely is Crlf via the normal path,
+    // so this isn't merely a case where detection would have said Lf anyway.
+    auto viaLoadFile = loadFile(path);
+    ASSERT_TRUE(std::holds_alternative<LoadResult>(viaLoadFile));
+    EXPECT_EQ(std::get<LoadResult>(viaLoadFile).lineEnding, LineEnding::Crlf);
+    fs::remove(path);
+}
+
+TEST(LoadUtf8FileForGrepTest, RejectsMalformedUtf8) {
+    auto path = tempFileWith("\xC2");
+    auto result = loadUtf8FileForGrep(path);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::InvalidUtf8);
+    fs::remove(path);
+}
+
+TEST(LoadUtf8FileForGrepTest, EnforcesMaxBytes) {
+    auto path = tempFileWith("abcdef");
+    auto result = loadUtf8FileForGrep(path, /*maxBytes=*/3);
+    ASSERT_TRUE(std::holds_alternative<LoadError>(result));
+    EXPECT_EQ(std::get<LoadError>(result), LoadError::TooLarge);
+    fs::remove(path);
+}
+
 }  // namespace

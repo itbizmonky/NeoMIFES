@@ -374,6 +374,24 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-22セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎉 最重要 (2026-09-04) — WI-23完了: GrepServiceのファイルあたり固定オーバーヘッド削減(`search_grep_multi_gb_performance_gap.md`のP1残項目、解決)
+
+> **WI-22完結後、AskUserQuestionでユーザーへ次の作業を確認し「Grep多GB性能の残り(P1)」が選ばれ、着手・完了した。** [`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)が2026-09-01の部分対応時に明示的にスコープ外としていた「`GrepService::findAll()`(マルチファイル)のファイルあたり固定オーバーヘッド」への対応。
+
+> **着手前の仮説が実測で覆った。** 当初「`OriginalBuffer::scanUtf8()`(mmap時の全バイトUTF-8検証パス)が支配的コスト」と推測していたが、サブエージェントへ委譲した実測(2,000ファイル・各約150KB・合計約293MBの専用プローブ、`tests/bench/`へ一時追加し使用後に完全削除)で誤りと判明。`scanUtf8()`は2,000ファイル合計で約570msに過ぎず、**「`openMemoryMapped()`以外の全て」が約969msとより大きい要因だった。** 真因は`detectLineEndingBounded()`が`BufferSnapshot::extract()`(キャッシュ付き経路)を使っており、検証用の約150KBファイルが行末検出の走査上限(≈1MiB)を下回るため実質ファイル全体をデコード+キャッシュしていたこと——`GrepService::grepOneFile()`は`.lineEnding`を一度も読まないため完全な無駄だった。CLAUDE.mdルール10(性能改善はベンチマーク根拠必須)通り、仮説のまま実装せず実測してから対応方針を決めた好例。
+
+> **実装(3件、`file_loader.cpp`/`.h`、`grep_service.cpp`):** Fix A = `detectLineEndingBounded()`を`extract()`→`extractNoCache()`へ切替(`decode_cache_unbounded_growth.md`パターンの適用漏れ箇所、全呼び出し元が恩恵)。Fix B = GrepService専用の新規ローダ`loadUtf8FileForGrep()`を追加、内部共有ヘルパー`loadUtf8FileImpl(path, maxBytes, bool detectLineEnding)`経由で行末検出そのものをスキップ(既存`loadUtf8File()`は無変更——7箇所の`.lineEnding`直接テストが依存)。Fix C = `preflightFile()`が既に計算済みの`file_size()`結果を`outSize`引数で返すようにし、両呼び出し元の冗長な2回目`file_size()`呼び出しを削除。
+
+> 新規テスト4件(`LoadUtf8FileForGrepTest`、`document_file_loader_test.cpp`)、Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——レート制限で一度中断、リセット後に再委譲し完走)、clang-tidy新規指摘0件(変更4ファイル)。実機ドッグフーディングは実施せず(`document::`/`search::`は入出力のみの純粋ロジック層、UI無変更のため単体テストで十分と判断)。
+
+> **これで`search_grep_multi_gb_performance_gap.md`(P1)のGrepServiceオーバーヘッド項目が解決した。** 残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、優先度は低い)。次回セッション最初にやること: 次にどの作業へ着手するかをユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)を参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+
+> 詳細は`docs/design/build_plan.md`のWI-23セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

@@ -7,10 +7,13 @@
 // EUC-JP, ISO-2022-JP, decode()/encode()/detectBom()/detectEncoding()).
 // Phase 6d wires it into this module via loadFile() - see its doc comment.
 // loadUtf8File() itself is UNCHANGED (still UTF-8-only, same error
-// taxonomy): search::GrepService depends on its exact existing contract
-// (see grep_service.cpp), and a directory-crawling grep deliberately stays
-// on the simple, fast "assume UTF-8, skip anything that fails" path rather
-// than paying auto-detection/legacy-decode cost per candidate file.
+// taxonomy): tests/unit/document_file_loader_test.cpp asserts directly
+// against it, and a directory-crawling grep deliberately stays on the
+// simple, fast "assume UTF-8, skip anything that fails" path rather than
+// paying auto-detection/legacy-decode cost per candidate file.
+// search::GrepService uses the sibling loadUtf8FileForGrep() instead (P1,
+// search_grep_multi_gb_performance_gap.md) - same contract, minus the
+// line-ending detection grepOneFile() never reads.
 // Loading is synchronous; async loading via a worker is a later concern.
 
 #include <cstdint>
@@ -69,6 +72,18 @@ struct LoadResult {
 [[nodiscard]] std::variant<LoadResult, LoadError>
 loadUtf8File(const std::filesystem::path& path,
              std::uint64_t                maxBytes = 512ULL * 1024ULL * 1024ULL);
+
+// Same as loadUtf8File(), for search::GrepService's specific access pattern
+// (grep_service.cpp's grepOneFile(): load once, scan once, discard - see
+// search_grep_multi_gb_performance_gap.md, P1). Identical in every respect
+// except LoadResult::lineEnding is left at its default (Lf) rather than
+// computed - grepOneFile() never reads that field, so detecting it would
+// only pay for a decode (of the file's ENTIRE content, for anything at or
+// under the bound detectLineEndingBounded() scans) that nobody consumes.
+// Do NOT use this for anything that reads LoadResult::lineEnding.
+[[nodiscard]] std::variant<LoadResult, LoadError>
+loadUtf8FileForGrep(const std::filesystem::path& path,
+                     std::uint64_t                maxBytes = 512ULL * 1024ULL * 1024ULL);
 
 // Auto-detects `path`'s encoding (neomifes::encoding::detectBom() on the
 // file's head, then detectEncoding() if no BOM matched, falling back to

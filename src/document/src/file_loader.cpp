@@ -63,9 +63,13 @@ LoadError mapFileMappingError(platform::FileMappingError err) noexcept {
 // both callers must special-case this before ever reaching mmap). Returns
 // the concrete LoadResult/LoadError to return immediately if the caller
 // should stop here, or nullopt if `path` is a non-empty, appropriately
-// sized file the caller should proceed to open.
+// sized file the caller should proceed to open - in which case `outSize` is
+// set to the file's size, so the caller never needs its own second
+// std::filesystem::file_size() call for the same path (search_grep_multi_gb_
+// performance_gap.md, P1: both callers used to immediately re-query this
+// themselves right after preflightFile() had already computed it).
 std::optional<std::variant<LoadResult, LoadError>>
-preflightFile(const std::filesystem::path& path, std::uint64_t maxBytes) {
+preflightFile(const std::filesystem::path& path, std::uint64_t maxBytes, std::uint64_t& outSize) {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) || ec) {
         return LoadError::NotFound;
@@ -74,6 +78,7 @@ preflightFile(const std::filesystem::path& path, std::uint64_t maxBytes) {
     if (ec) {
         return LoadError::IoFailure;
     }
+    outSize = size;
     if (size > maxBytes) {
         return LoadError::TooLarge;
     }
@@ -171,6 +176,19 @@ constexpr std::uint64_t kLineEndingDetectionHeadCodeUnits = 1ULL << 20;
 // `document` (never the whole thing - see LoadResult::lineEnding's doc
 // comment) and classifies the line-ending convention via
 // encoding::detectLineEnding(). Falls back to Lf when nothing is detected.
+//
+// search_grep_multi_gb_performance_gap.md (P1): uses extractNoCache(), not
+// extract() - this call happens exactly once per file load (nothing re-reads
+// the same [0, headEnd) range again), so caching the decoded prefix in
+// OriginalBuffer's decode cache would only add bookkeeping cost and retain
+// memory for text nobody asks for again - the same "used once, discard"
+// pattern decode_cache_unbounded_growth.md already established
+// extractNoCache()/pieceTextNoCache() for elsewhere in this codebase; this
+// call site was simply missed when that fix went in. For a file at or under
+// the ~1MiB bound (the common case for most real files), this decodes the
+// file's ENTIRE content - previously via the caching path, so the immediate
+// caller (loadUtf8File()) paid for both the decode AND a full-document cache
+// entry it would never read from again.
 encoding::LineEnding detectLineEndingBounded(const Document& document) {
     const auto totalLength = document.length();
     if (totalLength == 0) {
@@ -178,7 +196,7 @@ encoding::LineEnding detectLineEndingBounded(const Document& document) {
     }
     const auto snap    = document.snapshot();
     const auto headEnd = std::min<std::uint64_t>(totalLength, kLineEndingDetectionHeadCodeUnits);
-    std::u16string prefix = snap->extract(TextRange{.start = 0, .end = headEnd});
+    std::u16string prefix = snap->extractNoCache(TextRange{.start = 0, .end = headEnd});
     // Truncated mid-scan and the slice ends on a lone '\r' - the code unit
     // just past the bound (not visible here) might be the paired '\n'.
     // Trim it so detectLineEnding() doesn't misreport an otherwise-uniform
@@ -191,15 +209,22 @@ encoding::LineEnding detectLineEndingBounded(const Document& document) {
 
 }  // namespace
 
+namespace {
+
+// Shared by loadUtf8File() and loadUtf8FileForGrep() - identical up through
+// opening the mmap; they differ only in whether the caller needs
+// LoadResult::lineEnding. `detectLineEnding = false` skips
+// detectLineEndingBounded() entirely (search_grep_multi_gb_performance_gap.md,
+// P1: GrepService::grepOneFile() never reads .lineEnding, so paying for a
+// decode of the file's head - the file's ENTIRE content for anything at or
+// under the ~1MiB bound - just to compute a field nobody looks at was pure
+// waste on the multi-file grep path).
 std::variant<LoadResult, LoadError>
-loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes) {
-    if (auto early = preflightFile(path, maxBytes)) {
+loadUtf8FileImpl(const std::filesystem::path& path, std::uint64_t maxBytes,
+                  bool detectLineEnding) {
+    std::uint64_t size = 0;
+    if (auto early = preflightFile(path, maxBytes, size)) {
         return std::move(*early);
-    }
-    std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec) {
-        return LoadError::IoFailure;
     }
 
     // Peek the first 3 bytes for a UTF-8 BOM with a tiny fopen/fread - simpler
@@ -226,19 +251,29 @@ loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes) {
         std::move(std::get<std::shared_ptr<const OriginalBuffer>>(opened)));
     result.hadBom     = hadBom;
     result.byteLength = size;
-    result.lineEnding = detectLineEndingBounded(*result.document);
+    if (detectLineEnding) {
+        result.lineEnding = detectLineEndingBounded(*result.document);
+    }
     return result;
+}
+
+}  // namespace
+
+std::variant<LoadResult, LoadError>
+loadUtf8File(const std::filesystem::path& path, std::uint64_t maxBytes) {
+    return loadUtf8FileImpl(path, maxBytes, /*detectLineEnding=*/true);
+}
+
+std::variant<LoadResult, LoadError>
+loadUtf8FileForGrep(const std::filesystem::path& path, std::uint64_t maxBytes) {
+    return loadUtf8FileImpl(path, maxBytes, /*detectLineEnding=*/false);
 }
 
 std::variant<LoadResult, LoadError>
 loadFile(const std::filesystem::path& path, std::uint64_t maxBytes) {
-    if (auto early = preflightFile(path, maxBytes)) {
+    std::uint64_t size = 0;
+    if (auto early = preflightFile(path, maxBytes, size)) {
         return std::move(*early);
-    }
-    std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec) {
-        return LoadError::IoFailure;
     }
 
     auto detection = detectFileEncoding(path, size);
