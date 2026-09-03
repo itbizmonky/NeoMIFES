@@ -2384,7 +2384,7 @@ WI-21aはこの中で最もリスクの低い段階——新規ヘッドレス�
 
 Debug/Release/ubsan全1559/1559件green(3構成とも実行、flaky再実行なし、Release 78.88秒/ubsan 92.54秒)。clang-tidy exit code 0(新規テストフィクスチャの`protected`メンバー変数について`cppcoreguidelines-non-private-member-variables-in-classes`警告2件が出たが、これは既存の`TextLayoutCacheTest`と全く同じフィクスチャ形状に由来する非ブロッキングの既知パターンであり、warnings-as-errors対象外)。
 
-コミットはユーザー承認後に実施予定、pushはユーザーの明示指示待ち。次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加) — 詳細設計は承認済みプラン参照。
+コミット済み(`b025725`)、pushはユーザーの明示指示待ち。次はWI-21b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`+レイアウトキャッシュ無効化トリガー4箇所、まだユーザー到達不可能なまま追加) — 詳細設計は承認済みプラン参照。
 
 ---
 
