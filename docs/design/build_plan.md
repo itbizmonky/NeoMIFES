@@ -2555,7 +2555,7 @@ Debug/Release/ubsan全1566/1566件green(3構成とも実行)。clang-tidy exit c
 
 **これでWI-21全体(a〜f)が完結した。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2)は解決済み。次にどの作業へ着手するかはユーザーへ確認する。
 
-コミット済み(`<WI-21f-commit-hash>`)、pushはユーザーの明示指示待ち。
+コミット済み(`e8e6144`)、pushはユーザーの明示指示待ち。
 
 ---
 
