@@ -2524,7 +2524,7 @@ Debug/Release/ubsan全1566/1566件green(3構成とも実行、`FrameState`修正
 
 **これでWI-21e完了。** 次はWI-21f(カーソル移動は無変更(承認済みの「論理行単位を維持」判断の反映のみ、コード変更なし)、ミニマップは近似のまま維持+コメント更新+新規P3 issue起票、[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)を解決済みへ更新、最終ドッグフーディング)——WI-21全体の最終段階。
 
-コミット済み(`<WI-21e-commit-hash>`)、pushはユーザーの明示指示待ち。
+コミット済み(`395e619`)、pushはユーザーの明示指示待ち。
 
 ---
 
