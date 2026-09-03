@@ -2442,7 +2442,7 @@ WI-21bに続く第3段階。承認済みプランが規定する「既存の4箇
 
 Debug/Release/ubsan全1560/1560件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点でもまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
 
-コミット済み(`<WI-21c-commit-hash>`)、pushはユーザーの明示指示待ち。次はWI-21d(ヒットテスト(`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`)の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替) — 詳細設計は承認済みプラン参照。
+コミット済み(`61fed01`)、pushはユーザーの明示指示待ち。次はWI-21d(ヒットテスト(`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`)の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替) — 詳細設計は承認済みプラン参照。
 
 ---
 
