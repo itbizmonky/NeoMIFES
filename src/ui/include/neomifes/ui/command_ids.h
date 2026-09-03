@@ -53,6 +53,20 @@ enum class CommandId : std::uint16_t {
     // OutlineToggle/JsonTreeToggle's shared shape - see csv_grid_pane.h's
     // own header comment for why.
     CsvGridToggle,
+    // WI-21e: View menu/palette-only, same "menu-only, no approved design
+    // point calls for a keyboard shortcut yet" treatment as
+    // ToggleOverwriteMode below - see command_id_name.h's own comment for
+    // why these 3 aren't in kAllRemappableCommandIds. WordWrapToggle/
+    // LineNumbersToggle mirror an existing Settings field 1:1
+    // (settings.wordWrap/showLineNumbers); ThemeCycle steps through the 3
+    // ThemeKind values in a fixed order rather than duplicating the command
+    // palette's existing 3 flat view.theme.dark/light/highContrast entries
+    // (which stay as-is, for direct single-theme selection) - a flat
+    // top-level menu has no submenu mechanism for a 3-way choice the way
+    // "最近使ったファイル" has for recent files (menu_bar.h's own comment).
+    WordWrapToggle,
+    LineNumbersToggle,
+    ThemeCycle,
     GotoLineShow,
     BookmarkToggle,
     BookmarkNext,

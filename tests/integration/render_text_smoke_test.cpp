@@ -2393,4 +2393,55 @@ TEST(RenderTextSmokeTest, RendersWithoutErrorWhenMatchSpansMultipleWrappedRows) 
         << neomifes::render::describe(rendered.error());
 }
 
+// WI-21e: real-machine dogfooding of CommandId::WordWrapToggle found that
+// setWordWrap() alone - called on an ALREADY-RENDERED pipeline with nothing
+// else in FrameState changed (document/topLine/cursor/size all identical,
+// exactly what an interactive menu/palette click on an idle window
+// produces) - never actually took visible effect: render()'s coarse
+// frame-skip (ADR-011) compared the unchanged FrameState and skipped the
+// entire draw pass, so setWordWrap()'s own m_layoutCache.clear() had
+// nothing to show for itself until some unrelated redraw (a resize) forced
+// a real one. Every WI-21b/c/d test calling setWordWrap() before that
+// pipeline's very FIRST render() never exercised this path
+// (m_lastRenderedFrameState is nullopt pre-first-frame, so the frame-skip
+// comparison never triggers) - this test deliberately renders once FIRST,
+// matching an interactive session's already-idle state, before toggling.
+TEST(RenderTextSmokeTest, SetWordWrapAloneAfterFirstRenderIsNotCoarseFrameSkipped) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    pipeline.setMinimapVisible(false);
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+    const auto resized = pipeline.resize(600, 300, 1.0F);
+    ASSERT_TRUE(resized.has_value());
+
+    Document document;
+    document.insertText(0, std::u16string(400, u'x'));
+    pipeline.setDocument(&document);
+
+    // First render() with word wrap still off - establishes
+    // m_lastRenderedFrameState, the precondition the pre-WI-21e bug needed.
+    const auto first = pipeline.render();
+    ASSERT_TRUE(first.has_value())
+        << "first render() failed: " << neomifes::render::describe(first.error());
+    const auto missesAfterFirst = pipeline.layoutCacheStats().misses;
+    ASSERT_GT(missesAfterFirst, 0U);
+
+    // The only thing changing is word wrap - same "nothing else in
+    // FrameState moved" shape an interactive toggle click produces.
+    pipeline.setWordWrap(true);
+    const auto second = pipeline.render();
+    ASSERT_TRUE(second.has_value())
+        << "second render() (after setWordWrap(true) alone) failed: "
+        << neomifes::render::describe(second.error());
+    EXPECT_GT(pipeline.layoutCacheStats().misses, missesAfterFirst)
+        << "setWordWrap(true) alone (document/topLine/cursor/size all unchanged) was coarse-frame-skipped "
+           "instead of triggering a real redraw - FrameState::wordWrapEnabled regression";
+}
+
 }  // namespace

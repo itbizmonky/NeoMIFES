@@ -55,6 +55,26 @@ public:
     // WI-03: horizontal counterpart to setVisibleLineCount().
     void setVisibleColumnCount(std::uint32_t count) noexcept { m_visibleColumnCount = count; }
 
+    // WI-21e: when word wrap is on, ensureVisible()'s horizontal clamp below
+    // is skipped entirely - a wrapped line never needs horizontal scrolling
+    // (every column is already visible on some row), so the clamp would
+    // otherwise silently drift m_leftColumn away from 0 the first time a
+    // cursor move (End/Ctrl+Right) reaches past the window width, offsetting
+    // the whole wrapped view sideways with no horizontal scrollbar visible
+    // to explain why (render::RenderPipeline's own wrapWidthDips()-based
+    // layout has no use for a nonzero leftColumn at all). Resets
+    // m_leftColumn to 0 on the OFF->ON transition so a leftColumn carried
+    // over from before word wrap was enabled doesn't linger; the ON->OFF
+    // transition leaves m_leftColumn alone (0, since it was never touched
+    // while wrap was on) - ensureVisible() naturally re-derives a nonzero
+    // value the next time it's needed.
+    void setWordWrapEnabled(bool enabled) noexcept {
+        m_wordWrapEnabled = enabled;
+        if (enabled) {
+            m_leftColumn = 0;
+        }
+    }
+
     [[nodiscard]] document::LineNumber topLine() const noexcept { return m_topLine; }
     // WI-03: horizontal counterpart to topLine().
     [[nodiscard]] std::uint32_t leftColumn() const noexcept { return m_leftColumn; }
@@ -69,6 +89,8 @@ private:
     // as the vertical members above.
     std::uint32_t          m_leftColumn         = 0;
     std::uint32_t          m_visibleColumnCount = 0;
+    // WI-21e: see setWordWrapEnabled() above.
+    bool                    m_wordWrapEnabled    = false;
 };
 
 }  // namespace neomifes::core

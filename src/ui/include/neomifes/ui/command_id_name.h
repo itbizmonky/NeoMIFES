@@ -98,6 +98,11 @@ inline constexpr std::array<CommandId, 37> kAllRemappableCommandIds{
         case CommandId::Exit:
         case CommandId::TabCloseOthers:
         case CommandId::TabCloseAll:
+        // WI-21e: menu/palette-only, no keyboard path - see command_ids.h's
+        // own declaration comment on these 3.
+        case CommandId::WordWrapToggle:
+        case CommandId::LineNumbersToggle:
+        case CommandId::ThemeCycle:
         case CommandId::None:
             return u"";
     }

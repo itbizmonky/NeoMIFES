@@ -347,6 +347,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
     renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
     renderPipeline.setMinimapVisible(settings.showMinimap);
     renderPipeline.setTheme(parseThemeKind(settings.themeName));
+    renderPipeline.setWordWrap(settings.wordWrap);
 
     // Measurement modes never load keybindings.json either - a default
     // HACCEL is built purely so runMessageLoop() has something to call

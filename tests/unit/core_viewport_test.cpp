@@ -104,4 +104,48 @@ TEST(ViewportTest, EnsureVisibleScrollsRightWhenColumnPastWindow) {
     EXPECT_EQ(viewport.leftColumn(), 14U);  // window becomes [14, 19)
 }
 
+// WI-21e: setWordWrapEnabled()'s effect on ensureVisible()'s horizontal
+// clamp - a wrapped line never needs horizontal scrolling, so the clamp
+// must be skipped entirely (not just parked at some value) while word wrap
+// is on. See viewport.h's own setWordWrapEnabled() comment for why.
+
+TEST(ViewportTest, EnsureVisibleSkipsHorizontalClampWhileWordWrapIsEnabled) {
+    Document doc;
+    doc.insertText(0, u"0123456789ABCDEFGHIJ");
+    Viewport viewport;
+    viewport.setWordWrapEnabled(true);
+    viewport.scrollToColumn(0);
+    viewport.setVisibleColumnCount(5);  // window = [0, 5), same as the past-window test above
+
+    viewport.ensureVisible(18, doc);  // column 18, would scroll right to 14 with wrap off
+    EXPECT_EQ(viewport.leftColumn(), 0U)
+        << "leftColumn must not drift away from 0 while word wrap is on";
+}
+
+TEST(ViewportTest, SetWordWrapEnabledResetsLeftColumnToZero) {
+    Viewport viewport;
+    viewport.scrollToColumn(14);  // simulates scroll state carried over from before wrap was enabled
+    ASSERT_EQ(viewport.leftColumn(), 14U);
+
+    viewport.setWordWrapEnabled(true);
+    EXPECT_EQ(viewport.leftColumn(), 0U);
+}
+
+TEST(ViewportTest, SetWordWrapEnabledFalseLeavesLeftColumnAtZero) {
+    Viewport viewport;
+    viewport.setWordWrapEnabled(true);   // leftColumn already 0 from construction
+    viewport.setWordWrapEnabled(false);  // OFF->ON transition: leftColumn left alone, per header comment
+    EXPECT_EQ(viewport.leftColumn(), 0U);
+
+    // ensureVisible()'s horizontal clamp is live again once word wrap is
+    // back off - same assertion as EnsureVisibleScrollsRightWhenColumnPast
+    // Window above, now reached via the disable path instead of a
+    // freshly-constructed Viewport.
+    Document doc;
+    doc.insertText(0, u"0123456789ABCDEFGHIJ");
+    viewport.setVisibleColumnCount(5);
+    viewport.ensureVisible(18, doc);
+    EXPECT_EQ(viewport.leftColumn(), 14U);
+}
+
 }  // namespace

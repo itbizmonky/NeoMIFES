@@ -89,10 +89,16 @@ TEST(MenuBarTest, SearchMenuCoversFindReplaceAndGrep) {
 }
 
 TEST(MenuBarTest, ViewMenuTogglesOutlineJsonTreeAndCsvGrid) {
-    ASSERT_EQ(kViewMenuItems.size(), 3U);
+    ASSERT_EQ(kViewMenuItems.size(), 6U);
     EXPECT_EQ(kViewMenuItems[0].commandId, CommandId::OutlineToggle);
     EXPECT_EQ(kViewMenuItems[1].commandId, CommandId::JsonTreeToggle);
     EXPECT_EQ(kViewMenuItems[2].commandId, CommandId::CsvGridToggle);
+    // WI-21e: word wrap/line numbers/theme, added for View-menu
+    // discoverability of settings already reachable via the command
+    // palette - see menu_bar.h's own kViewMenuItems comment.
+    EXPECT_EQ(kViewMenuItems[3].commandId, CommandId::WordWrapToggle);
+    EXPECT_EQ(kViewMenuItems[4].commandId, CommandId::LineNumbersToggle);
+    EXPECT_EQ(kViewMenuItems[5].commandId, CommandId::ThemeCycle);
 }
 
 TEST(MenuBarTest, ToolsMenuShowsCommandPalette) {

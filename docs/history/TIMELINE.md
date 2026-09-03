@@ -3941,4 +3941,47 @@ Debug/Release/ubsan全1560/1560件green(3構成とも実行、ubsanは`HitTestTe
 
 **これでWI-21d完了、折り返し機能の計算層(WI-21a〜d)が完結した。** 次はWI-21e(`Viewport::setWordWrapEnabled()`+水平スクロールバーの無効化+`Settings`/メニュー/コマンドパレットへの実配線+表示メニュー拡充(行番号・テーマ)。**ここで初めてユーザーが実際に折り返しをトグルできるようになる、実機ドッグフーディングの最初のチェックポイント。**)。
 
+**続けてユーザーが「進めよ」と指示、WI-21e(折り返し実配線+表示メニュー拡充)を完了(2026-09-03)。🎉 折り返し機能が初めてユーザーから実際に触れるようになった。**
+
+### WI-21e実装
+
+**`core::Viewport::setWordWrapEnabled(bool)`。** `ensureVisible()`の水平クランプ処理を折り返し有効時は完全にスキップするよう変更した(設計時点で発見していた見落とし通り、水平スクロールバーを非表示にするだけではクランプ処理自体は生き続け、End/Ctrl+Right等の操作でユーザーに見えないまま`m_leftColumn`がずれる実害が起きるため)。OFF→ON遷移時のみ`m_leftColumn`を0にリセットする設計にした。
+
+**`RenderPipeline::wordWrapEnabled()`新規publicゲッター**+**新規`CommandId`3種(`WordWrapToggle`/`LineNumbersToggle`/`ThemeCycle`)**。いずれもメニュー/パレット専用でキーボードショートカット無し(`kAllRemappableCommandIds`には含めない、`ToggleOverwriteMode`と同じ「承認済みの設計判断が無い限りキー割当は追加しない」扱い)。`ThemeCycle`は既存の`view.theme.dark/light/highContrast`3コマンドを廃止せず併存させ、Dark→Light→HighContrast→Darkを固定順で巡回する専用コマンドにした(フラットな最上位メニューには「最近使ったファイル」のようなサブメニュー機構が無いため)。`kViewMenuItems`を3→6項目へ拡張。`dispatchWidgetShowCommand()`に3ケース追加(`core::Settings&`+`settingsPath`を新規パラメータとして受け取るようシグネチャ変更)、コマンドパレット側は新規`appendViewToggleCommands()`に同一ロジックを重複実装した——`JsonTreeToggle`/`CsvGridToggle`が既に確立している「小さなトグル本体はパレット/メニューそれぞれに独立してコピーする」という明文化された慣習に倣い、共有ヘルパーへは括り出さなかった。
+
+**`syncHorizontalScrollBar()`が`renderPipeline.wordWrapEnabled()`を見て水平スクロールバーを表示/非表示するようになった。** `handlePaintEvent()`に`session.viewport().setWordWrapEnabled(renderPipeline.wordWrapEnabled())`という毎フレーム同期を追加——折り返しは`RenderPipeline`側でウィンドウ全体1つのグローバル状態だが`core::Viewport`はセッション(タブ)ごとに存在するため、既存の`setVisibleColumnCount(...)`と全く同じ「毎フレーム最新値を反映する」設計で、タブ切替/新規タブ作成/起動直後のどのタイミングでも自動的に正しい状態へ追従させた(`syncViewForActiveSession()`の全14箇所前後の呼び出し元を個別に追跡する代わりに、この1行で完結する設計判断)。起動時配線(`session_manager.cpp`/`main.cpp`)と`settings.reload`コマンドにも`renderPipeline.setWordWrap(settings.wordWrap)`を追加した。
+
+**実装中に発見・修正した小さな不備:** `ThemeCycle`のロジックをネストした三項演算子で書いたところ、clang-tidyの`readability-avoid-nested-conditional-operator`(このプロジェクトの`-WX`下ではエラー)に2箇所(パレット側/メニュー側の重複実装それぞれ)で検出された。`switch`文ベースの新規`nextThemeKind()`ヘルパー(`theme_settings.h`、`parseThemeKind()`/`themeKindToSettingsString()`と同じ配置)へ書き換えて解消し、重複していたロジックも1関数へ統合した(値のみを返す純粋関数のため、状態変更を伴う「トグル本体は重複させる」慣習の対象外と判断)。
+
+### 🔴 実機ドッグフーディングで発見した重大バグ: `FrameState`に`wordWrapEnabled`が含まれていなかった
+
+**本WIで初めて実機ドッグフーディングを実施したところ、`WordWrapToggle`をメニュー/コマンドパレットから実行しても画面に一切反映されないという重大な実害を発見した。** 長い1行を含むテスト用ファイルをワイドウィンドウで開き、`CommandId::WordWrapToggle`(WM_COMMAND直接送信、値は`command_ids.h`のenum宣言順から手計算した40009)を送信して確認したが、テキストは折り返されず横スクロールバーも消えなかった。`settings.json`を直接読むと`wordWrap:true`が正しく永続化されており、ロジック自体は実行されていると判明——しかし画面には一切反映されない。**不可解なことに、ウィンドウをリサイズすると突如として正しく折り返されるようになった。**
+
+原因調査の結果、`RenderPipeline::FrameState`(`render()`の粗粒度フレームスキップ判定、ADR-011)に`wordWrapEnabled`が一度も含まれていなかったと判明した——**WI-15iの`rightPaneWidthDips`、WI-21bの`showMinimap`/`showLineNumbers`に続く、全く同じ問題クラスの3度目の再発。** `setWordWrap(true)`自体は`m_wordWrapEnabled`更新+レイアウトキャッシュクリアを正しく行っていたが、それ以外のFrameStateの全フィールド(文書/topLine/カーソル/サイズ等)が不変なままトグルだけが実行される場面(対話的なメニュークリックがまさにこの状況を作る)では、`render()`が「何も変わっていない」と誤判定し描画パス全体を丸ごとスキップしていた。リサイズは`width`/`height`がFrameStateに含まれるため、たまたま無関係な再描画のトリガーとして機能していただけだった。
+
+**WI-21b〜dの自動テストが誰もこれを検出できなかった理由も特定した。** いずれのテストも`setWordWrap()`をそのパイプラインの**最初の`render()`より前**に呼んでいたため、`m_lastRenderedFrameState`がまだ`nullopt`(比較対象が無い)の状態で、フレームスキップ判定自体が発動せず常に素通りしていた。実際に発生したバグは「既に1回以上描画済みのセッションに対して、単独でトグルする」という対話的な使用パターンでしか顕在化しない——自動テストでは原理的に発見不可能で、実機ドッグフーディングでのみ発見できた実例だったと言える。
+
+`FrameState`に`bool wordWrapEnabled = false;`フィールドを追加、`captureFrameState()`側の初期化も追加して修正(`rightPaneWidthDips`/`showMinimap`/`showLineNumbers`と全く同じ修正パターン)。新規回帰テスト`SetWordWrapAloneAfterFirstRenderIsNotCoarseFrameSkipped`(`tests/integration/render_text_smoke_test.cpp`)を追加——「最初の`render()`を先に済ませてから`setWordWrap()`単体を呼ぶ」という、まさにこのバグを再現する手順を明示的にテスト化した。
+
+### ビルド時に遭遇した既知の環境問題
+
+`FrameState`修正後の再ビルド中、ドッグフーディング用に起動していたNeoMIFES.exeプロセスがexeファイルをロックしたままとなり(`LNK1104`)、`Stop-Process`が「アクセスが拒否されました」で失敗する既知の「killできないゾンビNeoMIFESプロセス」に再度遭遇した。確立済みの回避策(ロックされた`NeoMIFES.exe`を別名へリネームし新規ビルドを通す)で対処、再ビルド後に正常に検証を継続できた。
+
+### 実機ドッグフーディング(全て確認済み)
+
+WM_COMMAND直接送信(`WordWrapToggle`=40009/`LineNumbersToggle`=40010/`ThemeCycle`=40011)+スクリーンショット+`GetWindowLong`/`settings.json`直接確認の組み合わせで以下を確認した。
+
+- **折り返しON(`FrameState`修正後)**: ワイドウィンドウでリサイズ無しに長い行が正しく複数行へ折り返されることを確認。`GetWindowLong`で`WS_HSCROLL`スタイルビットが消えていることを確認し、水平スクロールバーが実際に非表示になっていることを裏付けた。
+- **折り返しOFF(トグルバック)**: 折り返しが解除され元の1行表示に戻ること、`WS_HSCROLL`が復活し水平スクロールバーが再表示されることを確認。
+- **行番号トグル**: ガターの行番号(1,2,3...)が消え、テキスト開始位置が左へシフトすることを確認。
+- **テーマ切替**: Dark→Lightへ正しく切り替わる(背景色反転)ことを確認。
+- **表示メニューの目視確認**: 表示(V)メニューを実際にマウスクリック(`SetCursorPos`+`mouse_event`)で開き、既存3項目(アウトライン/構造ツリー/CSVグリッド)に続き新規3項目(折り返し(W)/行番号(L)/テーマ切替(T))が正しい日本語ラベル・キーボードショートカット無しの表示で並んでいることをスクリーンショットで確認。
+- **再起動後の永続化**: 折り返しOFF/行番号非表示/テーマLightの状態でプロセスを終了→再起動したところ、`settings.json`から正しく読み込まれ同じ表示状態(スクリーンショットで再確認)で起動することを確認——起動時配線(`session_manager.cpp`)の検証を兼ねる。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1566/1566件green(3構成とも実行、`FrameState`修正+回帰テスト追加という2段階の変更を経た**最終**状態に対して再検証、レースコンディションの懸念から念のためRelease/ubsanを2回検証しどちらも green を確認)。clang-tidy exit code 0(`render_pipeline.h`/`render_pipeline.cpp`/`normal_mode_wiring.cpp`/`viewport.cpp`/`session_manager.cpp`/`main.cpp`/`theme_settings.h`とも新規警告なし、ネストした三項演算子1件検出・修正)。実機ドッグフーディング完了(上記参照)。
+
+**これでWI-21e完了、折り返し機能が初めてユーザーから実際に触れるようになった。** 次はWI-21f(カーソル移動は無変更(承認済みの「論理行単位を維持」判断の反映のみ、コード変更なし)、ミニマップは近似のまま維持+コメント更新+新規P3 issue起票、`view_menu_and_word_wrap_incomplete.md`を解決済みへ更新、最終ドッグフーディング)——WI-21全体の最終段階。
+
 <!-- 次セッションはここに追記 -->

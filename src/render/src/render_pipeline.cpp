@@ -151,6 +151,7 @@ RenderPipeline::FrameState RenderPipeline::captureFrameState() const noexcept {
         .imeComposition  = m_imeComposition,
         .themeKind       = m_themeKind,
         .logLevelFilterMask = m_logLevelFilterMask,
+        .wordWrapEnabled = m_wordWrapEnabled,
     };
 }
 

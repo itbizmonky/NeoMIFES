@@ -213,6 +213,16 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
 // syncRenderStateAndInvalidate() above.
 void syncHorizontalScrollBar(HWND hwnd, const RenderPipeline& renderPipeline,
                              const Viewport& viewport) noexcept {
+    // WI-21e: a wrapped line never needs horizontal scrolling (every column
+    // is already visible on some row) - hiding the bar rather than merely
+    // leaving it at a stale range/position also matches Viewport::
+    // setWordWrapEnabled()'s own reasoning for why the underlying leftColumn
+    // clamp is skipped while wrap is on, not just visually suppressed here.
+    if (renderPipeline.wordWrapEnabled()) {
+        ::ShowScrollBar(hwnd, SB_HORZ, FALSE);
+        return;
+    }
+    ::ShowScrollBar(hwnd, SB_HORZ, TRUE);
     SCROLLINFO si{};
     si.cbSize = sizeof(si);
     si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
@@ -2449,6 +2459,57 @@ void appendStructuralViewCommands(std::vector<CommandDescriptor>& commands, HWND
         }});
 }
 
+// WI-21e: "view.wordWrap.toggle"/"view.lineNumbers.toggle"/"view.theme.cycle"
+// - palette counterparts to CommandId::WordWrapToggle/LineNumbersToggle/
+// ThemeCycle's dispatchWidgetShowCommand() cases (menu/WM_COMMAND path).
+// Pulled into its own function for the same cognitive-complexity reason
+// appendStructuralViewCommands() above was (see that function's own doc
+// comment) - buildCommandRegistry() is already near its threshold. Bodies
+// duplicate dispatchWidgetShowCommand()'s own case bodies rather than
+// calling a shared helper - same documented small-duplicated-toggle-body
+// precedent (see CommandId::WordWrapToggle's own dispatchWidgetShowCommand()
+// case comment).
+void appendViewToggleCommands(std::vector<CommandDescriptor>& commands, HWND hwnd, Workspace& workspace,
+                              RenderPipeline& renderPipeline, core::Settings& settings,
+                              const std::optional<std::filesystem::path>& settingsPath) {
+    commands.push_back(CommandDescriptor{
+        .id = u"view.wordWrap.toggle", .title = u"View: Toggle Word Wrap", .keybindingLabel = u"",
+        .commandId = CommandId::WordWrapToggle,
+        .action = [hwnd, &workspace, &renderPipeline, &settings, settingsPath]() {
+            settings.wordWrap = !settings.wordWrap;
+            renderPipeline.setWordWrap(settings.wordWrap);
+            workspace.active().viewport().setWordWrapEnabled(settings.wordWrap);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"view.lineNumbers.toggle", .title = u"View: Toggle Line Numbers", .keybindingLabel = u"",
+        .commandId = CommandId::LineNumbersToggle,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            settings.showLineNumbers = !settings.showLineNumbers;
+            renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"view.theme.cycle", .title = u"View: Cycle Theme", .keybindingLabel = u"",
+        .commandId = CommandId::ThemeCycle,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            const ThemeKind current = neomifes::app::parseThemeKind(settings.themeName);
+            const ThemeKind next    = neomifes::app::nextThemeKind(current);
+            settings.themeName = std::u16string(neomifes::app::themeKindToSettingsString(next));
+            renderPipeline.setTheme(next);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+}
+
 std::vector<CommandDescriptor> buildCommandRegistry(
     HWND hwnd, FindBar& findBar, FindReplaceDialog& findReplaceDialog, Workspace& workspace,
     RenderPipeline& renderPipeline, core::Settings& settings,
@@ -2684,8 +2745,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .commandId = CommandId::None,
         // WI-08: re-reads settings.json (missing/corrupt -> safe defaults,
         // same Settings::loadFrom() contract core_settings_test.cpp
-        // verifies) and re-applies the 5 live-wired setters (WI-09 added
-        // setTheme()). This is the only in-app mutation path for `settings`
+        // verifies) and re-applies the 6 live-wired setters (WI-09 added
+        // setTheme(), WI-21e added setWordWrap()). This is the only
+        // in-app mutation path for `settings`
         // in WI-08 - there is no settings dialog yet (see build_plan.md's
         // WI-08 section for why: out of scope for this WI), so users
         // hand-edit settings.json externally and run this command
@@ -2703,6 +2765,11 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
             renderPipeline.setMinimapVisible(settings.showMinimap);
             renderPipeline.setTheme(neomifes::app::parseThemeKind(settings.themeName));
+            // WI-21e: 6th live-wired setter - the active session's Viewport
+            // itself picks this up via handlePaintEvent()'s per-frame sync
+            // (see that call site's own comment), so nothing further is
+            // needed here.
+            renderPipeline.setWordWrap(settings.wordWrap);
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-09: 3 flat palette-only commands rather than a single
@@ -2912,6 +2979,11 @@ std::vector<CommandDescriptor> buildCommandRegistry(
     appendStructuralViewCommands(commands, hwnd, workspace, renderPipeline, keyBindings, jsonTreePane, outlinePane,
                                  gitPane, jsonTreeWorker, xmlTreeWorker, jsonTreePanePendingSessionToken,
                                  csvGridPane, csvModelWorker, csvGridPanePendingSessionToken);
+
+    // WI-21e: "view.wordWrap.toggle"/"view.lineNumbers.toggle"/
+    // "view.theme.cycle" - see appendViewToggleCommands()'s own doc comment
+    // for why this block lives in its own function rather than inline here.
+    appendViewToggleCommands(commands, hwnd, workspace, renderPipeline, settings, settingsPath);
 
     // WI-14c: "Log: Enable/Disable/Toggle*/Show*/Jump*" - see
     // appendLogModeCommands()'s own doc comment for why this block lives in
@@ -4120,7 +4192,8 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
                                std::optional<xmltree::XmlTreeWorker>& xmlTreeWorker,
                                const void*& jsonTreePanePendingSessionToken, CsvGridPane& csvGridPane,
                                std::optional<csvmode::CsvModelWorker>& csvModelWorker,
-                               const void*& csvGridPanePendingSessionToken) {
+                               const void*& csvGridPanePendingSessionToken, core::Settings& settings,
+                               const std::optional<std::filesystem::path>& settingsPath) {
     switch (id) {
         case CommandId::FindShow:
             findBar.show();
@@ -4181,6 +4254,56 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             } else {
                 refreshCsvGridPane(session, csvGridPane, csvModelWorker, csvGridPanePendingSessionToken);
             }
+            return true;
+        }
+        // WI-21e: same "instant reflect + instant persist" shape the
+        // command palette's own view.theme.* entries already established
+        // (buildCommandRegistry()) - duplicated here rather than shared via
+        // a helper, matching this codebase's own documented precedent for
+        // small toggle bodies (see appendStructuralViewCommands()'s header
+        // comment on why JsonTreeToggle/CsvGridToggle's palette and
+        // dispatchWidgetShowCommand() bodies are likewise independent
+        // copies). The active session's Viewport picks up the new word-wrap
+        // state immediately here; any OTHER open tab's Viewport catches up
+        // the next time it becomes active (handlePaintEvent()'s per-frame
+        // sync, see that call site's own comment) rather than needing every
+        // session eagerly touched now.
+        case CommandId::WordWrapToggle: {
+            settings.wordWrap = !settings.wordWrap;
+            renderPipeline.setWordWrap(settings.wordWrap);
+            workspace.active().viewport().setWordWrapEnabled(settings.wordWrap);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+        case CommandId::LineNumbersToggle: {
+            settings.showLineNumbers = !settings.showLineNumbers;
+            renderPipeline.setLineNumbersVisible(settings.showLineNumbers);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+        // Steps Dark -> Light -> HighContrast -> Dark - a flat top-level
+        // menu has no submenu mechanism for a 3-way choice (see
+        // command_ids.h's own ThemeCycle comment), so this reaches every
+        // theme via repeated invocation instead. Reads the CURRENT theme
+        // from settings.themeName (parseThemeKind()) rather than a
+        // RenderPipeline getter - settings.themeName is already the single
+        // source of truth every view.theme.* command keeps in lockstep with
+        // the live renderer.
+        case CommandId::ThemeCycle: {
+            const ThemeKind current = neomifes::app::parseThemeKind(settings.themeName);
+            const ThemeKind next    = neomifes::app::nextThemeKind(current);
+            settings.themeName = std::u16string(neomifes::app::themeKindToSettingsString(next));
+            renderPipeline.setTheme(next);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
             return true;
         }
         case CommandId::About: {
@@ -4546,6 +4669,14 @@ void handlePaintEvent(HWND paintHwnd, MainWindow& window, RenderPipeline& render
     // manually resized the window. See syncHorizontalScrollBar()'s
     // comment for why the scrollbar sync itself belongs here too.
     session.viewport().setVisibleColumnCount(renderPipeline.visibleColumnCount());
+    // WI-21e: kept fresh every frame, same rationale as
+    // setVisibleColumnCount() immediately above - renderPipeline's word-wrap
+    // flag is a single global toggle, but core::Viewport is one-per-
+    // EditorSession, so whichever session just became active (tab switch,
+    // Ctrl+O/Ctrl+N, or simply the very first frame after startup) needs its
+    // OWN Viewport to learn the current global state without requiring every
+    // session-creation/tab-switch call site to push it individually.
+    session.viewport().setWordWrapEnabled(renderPipeline.wordWrapEnabled());
     syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
     // WI-05 step 3: rebuilt from Workspace's actual session list every
     // frame (not just on tab-count changes) - the simplest way to keep
@@ -4964,7 +5095,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                      &jsonTreePane, &gitPane,
                      &jsonTreeWorker, &xmlTreeWorker, &jsonTreePanePendingSessionToken, &csvGridPane,
                      &csvModelWorker, &csvGridPanePendingSessionToken, &workspace, &renderPipeline, &recentFiles,
-                     menuHandles, &settings, &autosave, &gitDiffWorker,
+                     menuHandles, &settings, settingsPath, &autosave, &gitDiffWorker,
                      &sessionManager](HWND hwnd, WPARAM wParam, LPARAM lParam) {
         findBar.handleCommand(wParam, lParam);
         commandPalette.handleCommand(wParam, lParam);
@@ -5014,7 +5145,7 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
                                       commandPalette, grepBar, gotoLineBar, outlinePane, jsonTreePane, gitPane,
                                       jsonTreeWorker,
                                       xmlTreeWorker, jsonTreePanePendingSessionToken, csvGridPane, csvModelWorker,
-                                      csvGridPanePendingSessionToken)) {
+                                      csvGridPanePendingSessionToken, settings, settingsPath)) {
             return;
         }
         dispatchCommand(commandId, ctx);

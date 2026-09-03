@@ -184,6 +184,10 @@ bool SessionManager::wireAndShow(EditorWindow& w) {
     w.renderPipeline.setLineNumbersVisible(m_settings.showLineNumbers);
     w.renderPipeline.setMinimapVisible(m_settings.showMinimap);
     w.renderPipeline.setTheme(parseThemeKind(m_settings.themeName));
+    // WI-21e: the freshly-constructed EditorWindow's initial session's own
+    // Viewport picks this up via handlePaintEvent()'s per-frame sync (see
+    // that call site's own comment) - no separate viewport push needed here.
+    w.renderPipeline.setWordWrap(m_settings.wordWrap);
 
     w.menuHandles = buildMenuBar(m_recentFiles);
 

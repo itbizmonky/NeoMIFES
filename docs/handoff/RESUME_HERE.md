@@ -322,6 +322,22 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-21dセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎉 最重要 (2026-09-03) — WI-21e: 折り返し実配線完了、初のユーザー到達可能段階 + `FrameState`バグを実機ドッグフーディングで発見・修正
+
+> **WI-21dに続き、ユーザーの「進めよ」でWI-21eへ着手・完了した。折り返し機能(WI-21a〜e)がついにユーザーから実際に触れるようになった。** `core::Viewport::setWordWrapEnabled()`(水平クランプのスキップ)、新規`CommandId`3種(`WordWrapToggle`/`LineNumbersToggle`/`ThemeCycle`)をView menu(`kViewMenuItems`、3→6項目)+コマンドパレット両方へ配線、`syncHorizontalScrollBar()`の水平スクロールバー表示/非表示切替、`handlePaintEvent()`の毎フレームViewport同期、起動時/`settings.reload`への配線を実装した。
+>
+> **🔴 実機ドッグフーディングで重大バグを発見・修正した。** `WordWrapToggle`をメニュー/パレットから実行しても画面に一切反映されない(横スクロールバーも消えない)問題を発見——`settings.json`は正しく`wordWrap:true`と永続化されているのに、**ウィンドウをリサイズすると突如正しく折り返される**という不可解な挙動だった。原因は`RenderPipeline::FrameState`(粗粒度フレームスキップ、ADR-011)に`wordWrapEnabled`が含まれていなかったこと——**WI-15iの`rightPaneWidthDips`、WI-21bの`showMinimap`/`showLineNumbers`に続く3度目の同型バグ再発**。`setWordWrap()`自体は正しく動作していたが、他のFrameStateフィールドが全て不変なままトグルだけが実行される場面(対話的なメニュークリックがまさにこの状況)で`render()`が「何も変わっていない」と誤判定し描画パス全体をスキップしていた。**WI-21b〜dの自動テストは全て「最初の`render()`より前に`setWordWrap()`を呼ぶ」形だったため、フレームスキップ判定自体が発動せずこのバグを一度も検出できなかった**——自動テストでは原理的に発見不可能で、実機ドッグフーディングでのみ発見できた実例。`FrameState`へ`wordWrapEnabled`フィールドを追加して修正、この手順そのものを再現する回帰テストも追加した。
+>
+> **実機ドッグフーディングで確認した項目(全て合格):** 修正後、ワイドウィンドウでリサイズ無しに折り返しが即座に反映されること、`GetWindowLong`で`WS_HSCROLL`ビットが消える(横スクロールバー非表示)こと、トグルバックで両方とも正しく復元されること、行番号トグル・テーマ切替(Dark→Light)も正しく動作すること、View menuを実際にクリックで開いて新規3項目が正しい日本語ラベルで表示されること、プロセス再起動後も`settings.json`から状態が正しく復元されること。
+>
+> Debug/Release/ubsan全1566/1566件green(3構成とも、`FrameState`修正+回帰テスト追加後に再検証)、clang-tidy exit 0(ネストした三項演算子1件検出・`nextThemeKind()`ヘルパーへの切り出しで修正)。
+>
+> **次回セッション最初にやること:** WI-21f(カーソル移動は無変更(承認済みの「論理行単位を維持」判断の反映のみ、コード変更なし)、ミニマップは近似のまま維持+コメント更新+新規P3 issue起票、[`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)を解決済みへ更新、最終ドッグフーディング)に着手する——**WI-21全体の最終段階。** 詳細設計は承認済みプラン(`C:\Users\kenbo\.claude\plans\eventual-crafting-lecun.md`)参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-21eセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

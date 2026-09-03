@@ -90,7 +90,14 @@ inline constexpr std::array<MenuItemSpec, 6> kSearchMenuItems = {{
     {ui::CommandId::GotoLineShow, L"指定行へ移動(&L)\tCtrl+G"},
 }};
 
-inline constexpr std::array<MenuItemSpec, 3> kViewMenuItems = {{
+// WI-21e: 折り返し/行番号/テーマの3項目を追加 - view_menu_and_word_wrap_
+// incomplete.md(P2)の第2の指摘(表示メニューが手薄で、core::Settings/コマンド
+// パレットには既に存在する設定項目がメニューから発見できなかった)への対応。
+// 折り返し/行番号はSettingsの対応フィールドを直接反映する単純なトグル、
+// テーマは3値(Dark/Light/HighContrast)を固定順で巡回する単一のCycleコマンド
+// (command_ids.h::ThemeCycleの宣言コメント参照 - 既存のview.theme.*3コマンド
+// を廃止・変更せず併存させる設計)。
+inline constexpr std::array<MenuItemSpec, 6> kViewMenuItems = {{
     {ui::CommandId::OutlineToggle, L"アウトライン(&O)\tCtrl+Shift+O"},
     // WI-15h: label genericized from "JSON構造ツリー" - the same toggle now
     // auto-detects JSON vs XML documents (see normal_mode_wiring.cpp's
@@ -98,6 +105,9 @@ inline constexpr std::array<MenuItemSpec, 3> kViewMenuItems = {{
     // identifier is left unrenamed (not user-visible).
     {ui::CommandId::JsonTreeToggle, L"構造ツリー(&J)\tCtrl+Shift+J"},
     {ui::CommandId::CsvGridToggle, L"CSVグリッド(&G)\tCtrl+Shift+G"},
+    {ui::CommandId::WordWrapToggle, L"折り返し(&W)"},
+    {ui::CommandId::LineNumbersToggle, L"行番号(&L)"},
+    {ui::CommandId::ThemeCycle, L"テーマ切替(&T)"},
 }};
 
 inline constexpr std::array<MenuItemSpec, 1> kToolsMenuItems = {{

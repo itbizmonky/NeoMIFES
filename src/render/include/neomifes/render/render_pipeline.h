@@ -433,6 +433,13 @@ public:
         m_layoutCache.clear();
     }
 
+    // WI-21e: read by app-layer per-frame sync (handlePaintEvent()) to push
+    // the current global word-wrap state into whichever EditorSession's
+    // core::Viewport is now active (Viewport::setWordWrapEnabled()) and to
+    // decide whether the horizontal scrollbar should be shown at all
+    // (syncHorizontalScrollBar()) - see those call sites' own comments.
+    [[nodiscard]] bool wordWrapEnabled() const noexcept { return m_wordWrapEnabled; }
+
     // WI-03: the length (UTF-16 code units) of the longest line among those
     // ACTUALLY drawn last frame (drawVisibleLines() updates this as a side
     // effect of its existing per-line loop, at no extra cost - lineSpan.size()
@@ -836,6 +843,24 @@ private:
         // own comment for why (O(document size), forces a redraw via
         // m_lastRenderedFrameState.reset() on arrival instead).
         std::uint8_t logLevelFilterMask = logmode::kAllLogLevelsVisible;
+        // WI-21e: same rationale as showMinimap/showLineNumbers above
+        // (WI-21b) - discovered via real-machine dogfooding of
+        // CommandId::WordWrapToggle, the same bug class those two fields
+        // were added to fix, now recurring a third time for the same
+        // reason: setWordWrap() itself was never in doubt (it correctly
+        // flips m_wordWrapEnabled and clears the layout cache), but calling
+        // it with NOTHING else in FrameState changed (document/topLine/
+        // cursor/size all identical, the exact case an interactive menu/
+        // palette toggle click produces) made render() coarse-frame-skip
+        // the entire draw pass, leaving the pre-toggle (unwrapped) pixels
+        // on screen until some unrelated state change - a resize, a
+        // scroll - happened to force a real redraw. Every automated WI-21b/
+        // c/d test happened to call setWordWrap() before that
+        // RenderPipeline's very FIRST render() (m_lastRenderedFrameState is
+        // still nullopt then, so the frame-skip comparison never
+        // triggers), which is why this went undetected until an
+        // interactive, already-rendered session's toggle exposed it.
+        bool wordWrapEnabled = false;
 
         friend bool operator==(const FrameState&, const FrameState&) = default;
     };

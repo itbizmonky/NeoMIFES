@@ -4,6 +4,7 @@
 
 namespace {
 
+using neomifes::app::nextThemeKind;
 using neomifes::app::parseThemeKind;
 using neomifes::app::themeKindToSettingsString;
 using neomifes::render::ThemeKind;
@@ -41,6 +42,21 @@ TEST(ThemeSettingsTest, ThemeKindToSettingsStringProducesTheExactPersistedLitera
     EXPECT_EQ(themeKindToSettingsString(ThemeKind::Dark), u"dark");
     EXPECT_EQ(themeKindToSettingsString(ThemeKind::Light), u"light");
     EXPECT_EQ(themeKindToSettingsString(ThemeKind::HighContrast), u"high-contrast");
+}
+
+// WI-21e: CommandId::ThemeCycle's fixed step order.
+TEST(ThemeSettingsTest, NextThemeKindCyclesDarkLightHighContrastDark) {
+    EXPECT_EQ(nextThemeKind(ThemeKind::Dark), ThemeKind::Light);
+    EXPECT_EQ(nextThemeKind(ThemeKind::Light), ThemeKind::HighContrast);
+    EXPECT_EQ(nextThemeKind(ThemeKind::HighContrast), ThemeKind::Dark);
+}
+
+TEST(ThemeSettingsTest, NextThemeKindVisitsAllThreeKindsInThreeSteps) {
+    ThemeKind kind = ThemeKind::Dark;
+    kind = nextThemeKind(kind);
+    kind = nextThemeKind(kind);
+    kind = nextThemeKind(kind);
+    EXPECT_EQ(kind, ThemeKind::Dark) << "3 steps from Dark should return to Dark";
 }
 
 }  // namespace

@@ -13,6 +13,11 @@ void Viewport::ensureVisible(document::TextPos pos, const document::Document& do
     }
 
     // WI-03: horizontal counterpart, same clamp-into-window shape as above.
+    // WI-21e: skipped while word wrap is on - see setWordWrapEnabled()'s own
+    // comment for why a wrapped line never needs this clamp.
+    if (m_wordWrapEnabled) {
+        return;
+    }
     const auto column = static_cast<std::uint32_t>(pos - doc.lineToOffset(line));
     if (column < m_leftColumn) {
         m_leftColumn = column;

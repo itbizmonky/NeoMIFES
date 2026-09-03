@@ -32,6 +32,14 @@ TEST(CommandIdNameTest, NoneAndAboutAreExcluded) {
     EXPECT_TRUE(commandIdToString(CommandId::About).empty());
 }
 
+// WI-21e: menu/palette-only, no keyboard path - see command_ids.h's own
+// WordWrapToggle declaration comment for why.
+TEST(CommandIdNameTest, ViewToggleCommandsAreExcluded) {
+    EXPECT_TRUE(commandIdToString(CommandId::WordWrapToggle).empty());
+    EXPECT_TRUE(commandIdToString(CommandId::LineNumbersToggle).empty());
+    EXPECT_TRUE(commandIdToString(CommandId::ThemeCycle).empty());
+}
+
 TEST(CommandIdNameTest, RoundTripsForEveryRemappableCommandId) {
     for (const CommandId id : kAllRemappableCommandIds) {
         EXPECT_EQ(commandIdFromString(commandIdToString(id)), id);

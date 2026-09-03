@@ -58,4 +58,23 @@ namespace neomifes::app {
     return u"dark";  // unreachable (all enumerators handled above)
 }
 
+// WI-21e: Dark -> Light -> HighContrast -> Dark, the fixed cycle order
+// CommandId::ThemeCycle steps through (see that enumerator's own
+// declaration comment for why a cycle command exists alongside the 3
+// existing direct-selection view.theme.* palette entries). A switch, not a
+// chained ternary - the equivalent nested ?: form trips clang-tidy's
+// readability-avoid-nested-conditional-operator (treated as an error under
+// this project's -WX).
+[[nodiscard]] inline render::ThemeKind nextThemeKind(render::ThemeKind current) noexcept {
+    switch (current) {
+        case render::ThemeKind::Dark:
+            return render::ThemeKind::Light;
+        case render::ThemeKind::Light:
+            return render::ThemeKind::HighContrast;
+        case render::ThemeKind::HighContrast:
+            return render::ThemeKind::Dark;
+    }
+    return render::ThemeKind::Dark;  // unreachable (all enumerators handled above)
+}
+
 }  // namespace neomifes::app
