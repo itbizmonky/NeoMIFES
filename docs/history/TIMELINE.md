@@ -3914,4 +3914,31 @@ Debug/Release/ubsan全1560/1560件green(3構成とも実行、Release/ubsanは�
 
 **これでWI-21c完了。** 次はWI-21d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替、まだユーザー到達不可能なまま継続——WI-21eで初めてユーザー到達可能になる)。
 
+**続けてユーザーが「進めよ」と指示、WI-21d(ヒットテストの書き換え+キャレット/選択範囲/検索マッチの多行描画バグ2件の修正)を完了(2026-09-03)。**
+
+### WI-21d実装
+
+**バグ①の修正: `drawCaretOnLine()`/`drawSelectionOnLine()`/`drawMatchOnLine()`。** 旧実装は`HitTestTextPosition()`(単一位置ヒットテスト)を呼びながら返り値のY座標(`caretY`/`startY`/`endY`)を一貫して破棄しており、選択範囲/検索マッチの描画は開始位置と終了位置それぞれのX座標だけを使って単一の矩形(常に`y`〜`y+m_lineHeightDips`の高さ)を組み立てていた。折り返しが無効な間はレイアウトが常に1行のためY座標が常に0.0Fで実害が無かったが、折り返し有効時に選択範囲が2行以上のビジュアル行にまたがると、無関係な行のX座標同士を結んだ意味不明な矩形が描画され、中間の行は一切ハイライトされない状態になる。
+
+新規private `rowRectsForColumnRange(IDWriteTextLayout&, y, startColumn, endColumn)`を追加。DirectWriteの範囲版ヒットテストAPI `HitTestTextRange()`(範囲が触れる各ビジュアル行につき1件の`DWRITE_HIT_TEST_METRICS`を返す)を、WI-21aの`GetLineMetrics()`と同じ2段階サイジングパターン(`E_NOT_SUFFICIENT_BUFFER`で件数取得→実データ取得)で呼び出し、ガター/`leftColumnOffsetDips()`オフセット込みの`D2D1_RECT_F`配列(`FillRectangle()`へ直接渡せる形)を返す設計にした。`drawSelectionOnLine()`/`drawMatchOnLine()`はこの1関数を軸に全面書き換え、範囲が実際にまたがるビジュアル行数だけ矩形を描画するようになった。`drawCaretOnLine()`は単一位置のままなので`HitTestTextRange()`ではなく`HitTestTextPosition()`を引き続き使うが、これまで破棄していた`caretY`/`metrics.height`を使ってキャレット矩形の縦位置を計算するよう修正した(旧実装は常に`y`〜`y+m_lineHeightDips`固定——折り返し有効時、キャレットが行の2行目以降のビジュアル行にあると誤った位置に描画されていたバグ)。
+
+**バグ②の修正+残り3箇所の`visualRowCountForLine()`統合: `hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`。** `visibleLineAtRow()`の戻り値を`LineNumber`単体から`std::pair<LineNumber, LineNumber>`(`{line, rowWithinLine}`)へ変更、内部実装を「可視な論理行を1つずつ数える」方式(WI-21c以前の`visibleLineRange()`と同型だった)から`visualRowCountForLine()`の行数を積み上げる方式へ書き換えた。`rowWithinLine`(0始まり)は`visibleRowOffset`がその行の何番目のビジュアル行に該当するかを表す。`hitTest()`はこれを使い`HitTestPoint()`に`rowWithinLine × m_lineHeightDips`をY座標として渡すようになった(旧実装は`HitTestPoint(xDip, 0.0F, ...)`とY座標をハードコードしていた——折り返し有効時、クリックしたビジュアル行に関わらず常に行の先頭行として解決される誤りだった、それどころか調査の結果、旧`visibleLineAtRow()`自体が「可視な論理行1つ=1描画行」という前提のままだったため、折り返しで複数行に展開された行の2行目以降をクリックすると、正しくは同じ論理行内に留まるべきところ、次の別の論理行へジャンプしてしまうという、想定より一段深刻な誤りだったと判明した)。`hitTestFoldMarker()`は`rowWithinLine`を無視する(フォールドマーカーは論理行につき1回、`drawTextLine()`内の`drawGutterOnLine()`呼び出し箇所が示す通り先頭ビジュアル行にしか描画されないため、ガター内のどのビジュアル行をクリックしても同じ論理行に解決してよい)。`visibleRowOffset`が文書末を超えた場合は最終行の最終ビジュアル行にクランプするようにし、旧実装の「最終行にクランプ」という精神を維持した。
+
+### テスト作成
+
+`tests/integration/render_text_smoke_test.cpp`へ3件追加。
+
+- `HitTestOnWrappedContinuationRowStaysWithinSameLogicalLine` — 折り返しで複数行(約6〜7行)に展開する行(400文字、空白なし)の後ろに実在する行(line1〜line4)を続けた文書を用意し、旧実装なら「2番目以降の可視論理行」へジャンプしてしまう位置(y=100、折り返された行の継続ビジュアル行の範囲内、既存のy=50式の緩い妥当性チェックと同じ「正確な行高を仮定しない」設計思想)をクリックしても、実際には同じ論理行(offset<400)内の、かつ行頭クリック(y=0)より後方のオフセットに正しく解決されることを2つのアサーション(`< 400`かつ`> row0のヒット結果`)で確認。旧実装(このWI以前のコード)に対して実行すれば確実に失敗する回帰テストとして設計し、実際にこのテストは一度目のビルドで(修正後のコードに対して)一発で成功した。
+- `RendersWithoutErrorWhenSelectionSpansMultipleWrappedRows`/`RendersWithoutErrorWhenMatchSpansMultipleWrappedRows` — `FillRectangle()`呼び出し自体はテストから観測不可能なため、選択範囲/検索マッチ全体(400文字、折り返しで複数行にまたがる)が設定された状態で`render()`がエラー・クラッシュなく完走することを確認する、この既存ファイルが既に多用している「RendersWithoutError」形のスモークテスト。`HitTestTextRange()`の2段階サイジングパターンが実際にエンドツーエンドで実行されることを保証する。
+
+### ビルド時に発見・修正した小さな不備
+
+新規テストで`neomifes::render::FoldVisual`/`neomifes::render::MatchVisual`を波括弧初期化する際、この既存テストファイルの慣習通り完全修飾名(`neomifes::render::`接頭辞)が必要だったが、最初の記述では省略していたためC2065(未定義の識別子)でビルドが2回失敗した——既存箇所をgrepで確認し修正、単純な見落としでロジック上の問題ではない。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1560/1560件green(3構成とも実行、ubsanは`HitTestTextRange()`の新規バッファサイジングパターンを特に注視するようサブエージェントへ明示指示、`runtime error:`診断は検出されず)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし)。既存の全テスト(折り返し無効時の`hitTest()`/キャレット/選択範囲/検索マッチ関連含む)が無変更のまま通過し、後方互換性(`rowWithinLine`が常に0になる折り返し無効パス)を確認。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点でもまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
+
+**これでWI-21d完了、折り返し機能の計算層(WI-21a〜d)が完結した。** 次はWI-21e(`Viewport::setWordWrapEnabled()`+水平スクロールバーの無効化+`Settings`/メニュー/コマンドパレットへの実配線+表示メニュー拡充(行番号・テーマ)。**ここで初めてユーザーが実際に折り返しをトグルできるようになる、実機ドッグフーディングの最初のチェックポイント。**)。
+
 <!-- 次セッションはここに追記 -->

@@ -2273,4 +2273,124 @@ TEST(RenderTextSmokeTest, FoldedRegionStillContributesNoVisualRowsWithWordWrapEn
         << "a folded-hidden wrapped line must contribute 0 rows/cache lookups, not its wrapped row count";
 }
 
+// WI-21d: pre-WI-21d, visibleLineAtRow() treated every VISIBLE LOGICAL LINE
+// as occupying exactly one screen row (the same assumption WI-21c already
+// fixed for visibleLineRange()/drawVisibleLines()) - so a click landing on a
+// wrapped line's own SECOND (or later) visual row would resolve rowOffset
+// against the NEXT logical line entirely, not the correct continuation row
+// of the line actually under the cursor. This test's document deliberately
+// has real lines after the wrapped one (line1..line4) so a reverted fix
+// would land on one of them (offset >= 400) instead of staying inside
+// line0's own text - the same "give the bug something concretely wrong to
+// resolve to" technique WordWrapReducesDistinctVisibleLinesWhenLines
+// WrapIntoMultipleRows above already relies on for its window/line-length
+// choice (400 same-char columns wraps reliably at this window width).
+TEST(RenderTextSmokeTest, HitTestOnWrappedContinuationRowStaysWithinSameLogicalLine) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    pipeline.setMinimapVisible(false);
+    pipeline.setWordWrap(true);
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+    const auto resized = pipeline.resize(600, 300, 1.0F);
+    ASSERT_TRUE(resized.has_value());
+
+    Document document;
+    document.insertText(0, std::u16string(400, u'x') + u"\nline1\nline2\nline3\nline4");
+    pipeline.setDocument(&document);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    const auto rowZeroHit = pipeline.hitTest(0, 0);
+    ASSERT_TRUE(rowZeroHit.has_value());
+    EXPECT_LT(*rowZeroHit, 400U) << "row-0 click should land inside line0's own text";
+
+    // y=100 lands well inside line0's wrapped row span (several rows deep at
+    // any plausible line height, comfortably short of where line0's ~6-7
+    // wrapped rows end at this window width/line length).
+    const auto laterRowHit = pipeline.hitTest(0, 100);
+    ASSERT_TRUE(laterRowHit.has_value());
+    EXPECT_LT(*laterRowHit, 400U)
+        << "a click on line0's own wrapped continuation row must resolve to a position still inside "
+           "line0's text (offset "
+        << *laterRowHit << "), not jump to a different logical line";
+    EXPECT_GT(*laterRowHit, *rowZeroHit)
+        << "a click further down a wrapped line's rows should resolve to a later column than a click "
+           "on its first row";
+}
+
+// WI-21d: drawSelectionOnLine()/drawMatchOnLine() switched from a single
+// X-to-X rectangle built from two HitTestTextPosition() calls (silently
+// discarding their own Y output - meaningless once the two columns land on
+// different wrapped rows) to rowRectsForColumnRange()'s HitTestTextRange()-
+// based one-rect-per-row approach. FillRectangle() calls aren't observable
+// from a test, so this pins the weaker but still meaningful invariant that
+// render() completes without error/crash when an active selection or match
+// range spans a genuinely multi-row wrapped line (exercising
+// HitTestTextRange()'s 2-call sizing pattern end to end) - the same
+// "RendersWithoutError" smoke-test shape this file already uses for other
+// draw paths with no other observable seam (e.g. MinimapRendersWithoutError).
+TEST(RenderTextSmokeTest, RendersWithoutErrorWhenSelectionSpansMultipleWrappedRows) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    pipeline.setMinimapVisible(false);
+    pipeline.setWordWrap(true);
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+    const auto resized = pipeline.resize(600, 300, 1.0F);
+    ASSERT_TRUE(resized.has_value());
+
+    Document document;
+    document.insertText(0, std::u16string(400, u'x'));
+    pipeline.setDocument(&document);
+    pipeline.setCursorVisuals({CursorVisual{
+        .position       = 400,
+        .selectionRange = TextRange{.start = 0, .end = 400},
+    }});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with a selection spanning the whole wrapped line failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
+TEST(RenderTextSmokeTest, RendersWithoutErrorWhenMatchSpansMultipleWrappedRows) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    pipeline.setMinimapVisible(false);
+    pipeline.setWordWrap(true);
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+    const auto resized = pipeline.resize(600, 300, 1.0F);
+    ASSERT_TRUE(resized.has_value());
+
+    Document document;
+    document.insertText(0, std::u16string(400, u'x'));
+    pipeline.setDocument(&document);
+    pipeline.setMatchVisuals(
+        {neomifes::render::MatchVisual{.range = TextRange{.start = 0, .end = 400}, .isCurrent = true}});
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() with a match spanning the whole wrapped line failed: "
+        << neomifes::render::describe(rendered.error());
+}
+
 }  // namespace

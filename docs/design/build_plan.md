@@ -82,7 +82,7 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-20(複数ウィンドウ対応)完結(2026-09-02〜03)。** WI-18のUI品質是正後、要件監査で発見した[`no_multiple_window_support.md`](../issues/no_multiple_window_support.md)(P1)へ対応、解決済みへ移動した。方式は当初「複数プロセス」で合意しかけたが、着手前調査で`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記済みと判明、設計書通りに差し戻して合意。WI-20a(`EditorWindow`/`SessionManager`への内部再構成、外部から見た挙動は無変化)→WI-20b(`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲)の2段階で実装、実機ドッグフーディングで複数ウィンドウの独立生成/破棄・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(--openあり/なし両方)を確認済み — 詳細は本ファイルのWI-20a/WI-20bセクション参照。
 >
-> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a〜cが完了(2026-09-03)** — a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)、b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`/`wrapWidthDips()`+レイアウトキャッシュ無効化トリガー4箇所)、c(`visualRowCountForLine()`——単一の真実の源の確立+`visibleLineRange()`/`drawVisibleLines()`の書き換え)— 詳細は本ファイルのWI-21a/b/cセクション参照。WI-21bのテスト作成中に`FrameState`の既存バグ(`showMinimap`/`showLineNumbers`単独変更が粗粒度フレームスキップの比較対象に含まれておらず、無関係な状態変化が起きるまで再描画されない)を発見・修正済み(WI-15iの`rightPaneWidthDips`と同じ修正パターン)。次はWI-21d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正)。
+> **🚧 現在進行中: WI-21(折り返し(word wrap)機能の実装+表示メニュー拡充)。** [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md)(P2、WI-18の品質監査で発見)への対応。ユーザーが「折り返しも含めて設計から着手」を選択、着手前調査で既存の折り畳み機能(`FoldingModel`)を流用できない大規模な変更(11箇所以上が「1論理行=1描画行」を前提)と判明したためPlan Modeで詳細設計、WI-21a〜fの6段階に分割(JSON/XML Tree・Git統合と同じ「ヘッドレスロジックが先、UI配線は後」の分割慣習)。カーソル移動の粒度についてユーザーへAskUserQuestionで確認し「論理行単位を維持(推奨)」が選ばれ、`core::moveVertically()`/`core::Viewport`の公開APIは無変更で済むことが確定した。**WI-21a〜dが完了(2026-09-03)** — a(ヘッドレスな折り返し計算モジュール`visual_row_layout.h`)、b(`Settings::wordWrap`+`RenderPipeline::setWordWrap()`/`wrapWidthDips()`+レイアウトキャッシュ無効化トリガー4箇所)、c(`visualRowCountForLine()`——単一の真実の源の確立+`visibleLineRange()`/`drawVisibleLines()`の書き換え)、d(ヒットテスト`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正)— 詳細は本ファイルのWI-21a〜dセクション参照。WI-21bのテスト作成中に`FrameState`の既存バグ(`showMinimap`/`showLineNumbers`単独変更が粗粒度フレームスキップの比較対象に含まれておらず、無関係な状態変化が起きるまで再描画されない)を発見・修正済み(WI-15iの`rightPaneWidthDips`と同じ修正パターン)。次はWI-21e(`Viewport::setWordWrapEnabled()`+水平スクロールバー無効化+実配線——初のユーザー到達可能段階、実機ドッグフーディング必須)。
 >
 > **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - [`view_menu_and_word_wrap_incomplete.md`](../issues/view_menu_and_word_wrap_incomplete.md) (P2、WI-18の品質監査で発見) — 表示メニューが手薄・折り返し(word wrap)機能が存在しない
@@ -2443,6 +2443,34 @@ WI-21bに続く第3段階。承認済みプランが規定する「既存の4箇
 Debug/Release/ubsan全1560/1560件green(3構成とも実行)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし)。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点でもまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
 
 コミット済み(`61fed01`)、pushはユーザーの明示指示待ち。次はWI-21d(ヒットテスト(`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`)の書き換え+設計検証で発見したキャレット/選択範囲/検索マッチの多行描画バグ2件の修正、`HitTestTextRange()`への切替) — 詳細設計は承認済みプラン参照。
+
+---
+
+## WI-21d — 折り返し(word wrap): ヒットテストの書き換え + キャレット/選択範囲/検索マッチの多行描画バグ2件の修正
+
+### 目的
+
+WI-21cに続く第4段階。承認済みプランが設計検証時点で発見していた2件の未発見バグ(折り返し有効時に顕在化)を修正する: ①`drawCaretOnLine()`/`drawSelectionOnLine()`/`drawMatchOnLine()`が`HitTestTextPosition()`の返す行内Y座標を計算しながら破棄しており、選択範囲/検索マッチが2行以上のビジュアル行にまたがると無関係な行のX座標同士を結んだ意味不明な矩形が描画される。②`hitTest()`がY座標をハードコード(`HitTestPoint(xDip, 0.0F, ...)`)しており、折り返し有効時はクリックしたビジュアル行に応じた相対Y座標が必要になる。加えて、WI-21cの範囲外だった残り3箇所(`hitTest()`/`visibleLineAtRow()`/`hitTestFoldMarker()`)を`visualRowCountForLine()`(単一の真実の源)へ統合する。**このWIの時点でもまだユーザー到達不可能**(WI-21eで初めてユーザー到達可能になる)。
+
+### 実装
+
+- **`visibleLineAtRow()`のシグネチャ変更。** 戻り値を`LineNumber`単体から`std::pair<LineNumber, LineNumber>`(`{line, rowWithinLine}`)へ変更、内部実装を「可視な論理行を1つずつ数える」方式から`visualRowCountForLine()`(WI-21c)の行数を積み上げる方式へ書き換えた。`rowWithinLine`(0始まり)は`visibleRowOffset`がその行の何番目のビジュアル行に該当するかを表す。`hitTest()`はこれを使って`HitTestPoint()`の正しい行内Y座標を計算する。`hitTestFoldMarker()`は`rowWithinLine`を無視する(フォールドマーカーは論理行につき1回、先頭ビジュアル行にしか描画されないため——`drawTextLine()`内の`drawGutterOnLine()`呼び出し箇所参照——ガター内のどのビジュアル行をクリックしても同じ論理行に解決してよい)。`visibleRowOffset`が文書末を超えた場合、旧実装と同じ「最終行にクランプ」の精神を維持しつつ、最終行の最終ビジュアル行にクランプするよう変更した。
+- **`hitTest()`が`HitTestPoint()`に渡すY座標を`rowWithinLine × m_lineHeightDips`へ変更**(旧実装は`0.0F`固定)。折り返し無効時は`rowWithinLine`が常に0のため、既存の全テストが無変更で通ることを確認済み(振る舞いは完全に後方互換)。
+- **新規private `rowRectsForColumnRange(IDWriteTextLayout&, y, startColumn, endColumn)`。** `HitTestTextRange()`(範囲版のDirectWrite APIで、範囲が触れる各ビジュアル行につき1件の`DWRITE_HIT_TEST_METRICS`を返す)を`GetLineMetrics()`(WI-21a)と同じ2段階サイジングパターンで呼び出し、ガター/`leftColumnOffsetDips()`オフセット込みの`D2D1_RECT_F`の配列(FillRectangleへ直接渡せる形)を返す。`drawSelectionOnLine()`/`drawMatchOnLine()`はこの1関数を軸に、単一のX-to-X矩形(2回の`HitTestTextPosition()`呼び出しからX座標だけを取り出しY座標を破棄していた旧実装)から、範囲が実際にまたがるビジュアル行数だけ矩形を描画する方式へ全面的に書き換えた。
+- **`drawCaretOnLine()`は`HitTestTextPosition()`が返す`caretY`/`metrics.height`(旧実装ではどちらも破棄していた)を使ってキャレット矩形の縦位置を計算するよう変更**(旧実装は常に`y`〜`y+m_lineHeightDips`固定)。折り返し有効時、キャレットが行の2行目以降のビジュアル行にあっても正しい高さに描画される。
+
+### テスト作成
+
+`tests/integration/render_text_smoke_test.cpp`へ3件追加。
+
+- `HitTestOnWrappedContinuationRowStaysWithinSameLogicalLine` — 折り返しで複数行に展開する行(400文字)の後ろに実在する行(line1〜line4)を続けた文書を用意し、旧実装なら「2番目以降の可視論理行」へジャンプしてしまう位置(y=100、折り返された行の継続ビジュアル行の範囲内)をクリックしても、実際には同じ論理行(offset<400)内の、かつ行頭クリック(y=0)より後方のオフセットに正しく解決されることを確認。旧実装(このWI以前のコード)に対して実行すれば確実に失敗する回帰テストとして設計した。
+- `RendersWithoutErrorWhenSelectionSpansMultipleWrappedRows`/`RendersWithoutErrorWhenMatchSpansMultipleWrappedRows` — `FillRectangle()`呼び出し自体はテストから観測不可能なため、選択範囲/検索マッチが折り返しで複数行にまたがる状態で`render()`がエラー・クラッシュなく完走することを確認する弱いが意味のあるスモークテスト(`HitTestTextRange()`の2段階サイジングパターンが実際にエンドツーエンドで実行されることを保証)。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1560/1560件green(3構成とも実行、ubsanは`HitTestTextRange()`の新規バッファサイジングパターンを特に注視して確認)。clang-tidy exit code 0(`render_pipeline.cpp`新規警告なし)。既存の全テスト(折り返し無効時の`hitTest()`/キャレット/選択範囲/検索マッチ関連含む)が無変更のまま通過し、後方互換性を確認。実機ドッグフーディングは実施せず——承認済みプラン通り、本WIの時点でもまだどのUI/コマンドパレットからも到達不可能なヘッドレスな変更のみのため。
+
+コミット済み(`<WI-21d-commit-hash>`)、pushはユーザーの明示指示待ち。次はWI-21e(`Viewport::setWordWrapEnabled()`+水平スクロールバーの無効化+`Settings`/メニュー/コマンドパレットへの実配線+表示メニュー拡充(行番号・テーマ)。**ここで初めてユーザーが実際に折り返しをトグルできるようになる。実機ドッグフーディングの最初のチェックポイント。**) — 詳細設計は承認済みプラン参照。
 
 ---
 

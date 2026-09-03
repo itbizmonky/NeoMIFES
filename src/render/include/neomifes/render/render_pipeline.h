@@ -920,12 +920,22 @@ private:
     // spirit) rather than 0, since a real (if not-yet-measured) line must
     // never be treated as occupying zero rows.
     [[nodiscard]] std::uint32_t visualRowCountForLine(document::LineNumber line) const noexcept;
-    // Walks forward from `startLine`, skipping folded-hidden lines, until
-    // the `visibleRowOffset`-th VISIBLE line is reached (or the document
-    // ends). Extracted from hitTest() (Phase 7j) so hitTestFoldMarker() can
-    // resolve a screen row to the same logical line drawVisibleLines()
-    // actually drew there, without duplicating the walk a third time.
-    [[nodiscard]] document::LineNumber visibleLineAtRow(
+    // Walks forward from `startLine`, skipping folded-hidden lines and
+    // accounting for wrapped lines' real row count (visualRowCountForLine(),
+    // WI-21c), until the `visibleRowOffset`-th VISUAL row on screen is
+    // reached (or the document ends). Extracted from hitTest() (Phase 7j) so
+    // hitTestFoldMarker() can resolve a screen row to the same logical line
+    // drawVisibleLines() actually drew there, without duplicating the walk a
+    // third time. WI-21d: returns {line, rowWithinLine} instead of just
+    // `line` - rowWithinLine (0-based) is which of that line's own visual
+    // rows visibleRowOffset landed on, needed by hitTest() to hit-test the
+    // correct row of a wrapped layout instead of always row 0
+    // (hitTestFoldMarker() ignores it - a fold marker is drawn once per
+    // logical line regardless of how many rows it wraps into, see
+    // drawGutterOnLine()'s call site in drawTextLine()). Clamps to the last
+    // row of the last line if `visibleRowOffset` runs past the end of the
+    // document, same clamping spirit the pre-WI-21d version had for lines.
+    [[nodiscard]] std::pair<document::LineNumber, document::LineNumber> visibleLineAtRow(
         document::LineNumber startLine, document::LineNumber visibleRowOffset) const noexcept;
     // Logical line span [startLine, endLineExclusive) currently visible,
     // given m_topLine/m_height/m_lineHeightDips/m_dpiScale - the same walk
@@ -1223,6 +1233,25 @@ private:
     // which itself sits behind the glyphs.
     void drawMatchesOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                            document::TextPos lineStart, document::TextPos lineEnd) noexcept;
+    // WI-21d: shared by drawSelectionOnLine()/drawMatchOnLine() below -
+    // [startColumn, endColumn) of `layout` can span more than one visual row
+    // once word wrap is on, and a single X-to-X rectangle (the pre-WI-21d
+    // shape, built from two HitTestTextPosition() calls that silently
+    // discarded their own Y output) draws a meaningless rectangle connecting
+    // two different rows' X coordinates when that happens. HitTestTextRange()
+    // is DirectWrite's purpose-built range-hit-test API: it returns one
+    // DWRITE_HIT_TEST_METRICS per contiguous run within a single visual row
+    // the range touches, so a range spanning N rows yields N metrics/rects -
+    // exactly the correctly-shaped highlight this class was missing. Uses
+    // the same 2-call sizing pattern as GetLineMetrics()
+    // (visual_row_layout.h::computeVisualRows()) and every other "ask
+    // DirectWrite how many, then fetch them" call in this codebase. Returns
+    // rects already translated to `y` + the gutter/leftColumn origin
+    // (gutterWidthDips() - leftColumnOffsetDips(), same offset
+    // drawCaretOnLine() applies) - ready to FillRectangle() directly.
+    [[nodiscard]] std::vector<D2D1_RECT_F> rowRectsForColumnRange(
+        IDWriteTextLayout& layout, float y, std::uint32_t startColumn,
+        std::uint32_t endColumn) const noexcept;
     // Draws a thin solid caret bar at `column` (UTF-16 code units into the
     // line) within `layout`, at vertical offset `y`, shifted right by
     // `virtualColumnOffset` * m_charWidthDips if nonzero (Phase 4b8e - an
@@ -1230,18 +1259,26 @@ private:
     // requires, see ensureTextFormat()'s Consolas comment; not correct for a
     // proportional font). Called from drawCaretsOnLine() for whichever
     // visible line a caret is on, reusing that line's already-fetched layout
-    // and m_textBrush (Phase 4b1).
+    // and m_textBrush (Phase 4b1). WI-21d: now also honors
+    // HitTestTextPosition()'s own Y/height output instead of discarding it -
+    // `column` can land on any wrapped row of `layout`, not just row 0, once
+    // word wrap is on.
     void drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                          std::uint32_t column, std::uint32_t virtualColumnOffset) noexcept;
     // Draws a translucent highlight rectangle spanning [startColumn,
     // endColumn) of `layout`, at vertical offset `y`. Called from
-    // drawSelectionsOnLine() once per overlapping selection range.
+    // drawSelectionsOnLine() once per overlapping selection range. WI-21d:
+    // now draws one rectangle per visual row the range spans (via
+    // rowRectsForColumnRange() above) instead of a single row-0-shaped
+    // rectangle - see that method's own comment.
     void drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                              std::uint32_t startColumn, std::uint32_t endColumn) noexcept;
     // Draws a translucent highlight rectangle spanning [startColumn,
     // endColumn) of `layout`, at vertical offset `y`, using m_matchBrush or
     // m_currentMatchBrush depending on `isCurrent`. Called from
     // drawMatchesOnLine() once per overlapping match range (Phase 5b3a).
+    // WI-21d: same rowRectsForColumnRange()-based multi-row fix as
+    // drawSelectionOnLine() above.
     void drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                          std::uint32_t startColumn, std::uint32_t endColumn, bool isCurrent) noexcept;
     // Draws the gutter strip's per-line contents at vertical offset `y`:

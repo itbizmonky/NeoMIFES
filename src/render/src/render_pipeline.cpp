@@ -1238,6 +1238,37 @@ void RenderPipeline::drawMatchesOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayou
     }
 }
 
+std::vector<D2D1_RECT_F> RenderPipeline::rowRectsForColumnRange(
+    IDWriteTextLayout& layout, float y, std::uint32_t startColumn, std::uint32_t endColumn) const noexcept {
+    if (endColumn <= startColumn) {
+        return {};
+    }
+    UINT32 actualCount = 0;
+    const HRESULT sizingHr = layout.HitTestTextRange(startColumn, endColumn - startColumn, 0.0F, 0.0F,
+                                                      nullptr, 0, &actualCount);
+    if ((sizingHr != E_NOT_SUFFICIENT_BUFFER && sizingHr != S_OK) || actualCount == 0) {
+        return {};
+    }
+    std::vector<DWRITE_HIT_TEST_METRICS> metrics(actualCount);
+    const HRESULT fillHr = layout.HitTestTextRange(startColumn, endColumn - startColumn, 0.0F, 0.0F,
+                                                    metrics.data(), actualCount, &actualCount);
+    if (FAILED(fillHr)) {
+        return {};
+    }
+    // See drawCaretOnLine()'s comment - layout-local coordinates need the
+    // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
+    // (Phase 4b8c).
+    const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
+    std::vector<D2D1_RECT_F> rects;
+    rects.reserve(actualCount);
+    for (UINT32 i = 0; i < actualCount; ++i) {
+        rects.push_back(D2D1::RectF(leftDip + metrics[i].left, y + metrics[i].top,
+                                    leftDip + metrics[i].left + metrics[i].width,
+                                    y + metrics[i].top + metrics[i].height));
+    }
+    return rects;
+}
+
 void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
                                      std::uint32_t column,
                                      std::uint32_t virtualColumnOffset) noexcept {
@@ -1263,9 +1294,12 @@ void RenderPipeline::drawCaretOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     // call sequence - see drawVisibleLines()). WI-03: leftColumnOffsetDips()
     // subtracted the same way DrawTextLayout()'s own origin now is.
     const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
-    const D2D1_RECT_F caretRect = D2D1::RectF(leftDip + caretX, y,
+    // WI-21d: caretY/metrics.height (previously discarded, always 0.0F/
+    // m_lineHeightDips assumed) now position the caret on whichever wrapped
+    // row `column` actually falls on, instead of always row 0.
+    const D2D1_RECT_F caretRect = D2D1::RectF(leftDip + caretX, y + caretY,
                                               leftDip + caretX + kCaretWidthDips,
-                                              y + m_lineHeightDips);
+                                              y + caretY + metrics.height);
     dc.FillRectangle(caretRect, m_textBrush.Get());
 }
 
@@ -1274,27 +1308,9 @@ void RenderPipeline::drawSelectionOnLine(ID2D1DeviceContext6& dc, IDWriteTextLay
     if (!m_selectionBrush) {
         return;
     }
-    DWRITE_HIT_TEST_METRICS startMetrics{};
-    DWRITE_HIT_TEST_METRICS endMetrics{};
-    float   startX = 0.0F;
-    float   startY = 0.0F;
-    float   endX   = 0.0F;
-    float   endY   = 0.0F;
-    HRESULT hr = layout.HitTestTextPosition(startColumn, FALSE, &startX, &startY, &startMetrics);
-    if (FAILED(hr)) {
-        return;
+    for (const D2D1_RECT_F& rect : rowRectsForColumnRange(layout, y, startColumn, endColumn)) {
+        dc.FillRectangle(rect, m_selectionBrush.Get());
     }
-    hr = layout.HitTestTextPosition(endColumn, FALSE, &endX, &endY, &endMetrics);
-    if (FAILED(hr)) {
-        return;
-    }
-    // See drawCaretOnLine()'s comment - layout-local coordinates need the
-    // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
-    // (Phase 4b8c).
-    const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
-    const D2D1_RECT_F selectionRect = D2D1::RectF(leftDip + startX, y, leftDip + endX,
-                                                  y + m_lineHeightDips);
-    dc.FillRectangle(selectionRect, m_selectionBrush.Get());
 }
 
 void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout& layout, float y,
@@ -1304,27 +1320,9 @@ void RenderPipeline::drawMatchOnLine(ID2D1DeviceContext6& dc, IDWriteTextLayout&
     if (brush == nullptr) {
         return;
     }
-    DWRITE_HIT_TEST_METRICS startMetrics{};
-    DWRITE_HIT_TEST_METRICS endMetrics{};
-    float   startX = 0.0F;
-    float   startY = 0.0F;
-    float   endX   = 0.0F;
-    float   endY   = 0.0F;
-    HRESULT hr = layout.HitTestTextPosition(startColumn, FALSE, &startX, &startY, &startMetrics);
-    if (FAILED(hr)) {
-        return;
+    for (const D2D1_RECT_F& rect : rowRectsForColumnRange(layout, y, startColumn, endColumn)) {
+        dc.FillRectangle(rect, brush);
     }
-    hr = layout.HitTestTextPosition(endColumn, FALSE, &endX, &endY, &endMetrics);
-    if (FAILED(hr)) {
-        return;
-    }
-    // See drawCaretOnLine()'s comment - layout-local coordinates need the
-    // gutter offset (minus leftColumnOffsetDips(), WI-03) added explicitly
-    // (Phase 4b8c).
-    const float leftDip = gutterWidthDips() - leftColumnOffsetDips();
-    const D2D1_RECT_F matchRect =
-        D2D1::RectF(leftDip + startX, y, leftDip + endX, y + m_lineHeightDips);
-    dc.FillRectangle(matchRect, brush);
 }
 
 void RenderPipeline::drawGutterOnLine(ID2D1DeviceContext6& dc, float y, LineNumber line) noexcept {
@@ -1859,8 +1857,9 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
         yDip >= 0.0F ? static_cast<LineNumber>(yDip / m_lineHeightDips) : LineNumber{0};
     // Phase 7i/7j: resolves `rowOffset` (a drawn-row count) to the same
     // logical line drawVisibleLines() actually drew there, skipping
-    // folded-hidden lines - see visibleLineAtRow()'s comment.
-    const LineNumber targetLine = visibleLineAtRow(startLine, rowOffset);
+    // folded-hidden lines and accounting for wrapped lines' real row count
+    // (WI-21d) - see visibleLineAtRow()'s comment.
+    const auto [targetLine, rowWithinLine] = visibleLineAtRow(startLine, rowOffset);
 
     const TextPos lineStart = m_document->lineToOffset(targetLine);
     const TextPos lineEndExclusive = (targetLine + 1 >= totalLines)
@@ -1881,10 +1880,19 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
         return std::nullopt;
     }
 
+    // WI-21d: was hardcoded 0.0F, correct only while every layout was
+    // exactly one row (word wrap always off). rowWithinLine is 0 for an
+    // unwrapped line (unchanged behavior) and the wrapped row's index
+    // otherwise - HitTestPoint()'s originY is layout-local, and every row is
+    // treated as m_lineHeightDips tall throughout this class (same
+    // assumption drawVisibleLines()'s y-increment and drawCaretOnLine()/
+    // drawSelectionOnLine() below rely on).
+    const float yWithinLayoutDip = static_cast<float>(rowWithinLine) * m_lineHeightDips;
     BOOL                     isTrailingHit = FALSE;
     BOOL                     isInside      = FALSE;
     DWRITE_HIT_TEST_METRICS  metrics{};
-    const HRESULT hr = (*layoutResult)->HitTestPoint(xDip, 0.0F, &isTrailingHit, &isInside, &metrics);
+    const HRESULT hr =
+        (*layoutResult)->HitTestPoint(xDip, yWithinLayoutDip, &isTrailingHit, &isInside, &metrics);
     if (FAILED(hr)) {
         return std::nullopt;
     }
@@ -1893,24 +1901,22 @@ std::optional<document::TextPos> RenderPipeline::hitTest(std::int32_t xPx, std::
     return lineStart + column;
 }
 
-document::LineNumber RenderPipeline::visibleLineAtRow(LineNumber startLine,
-                                                       LineNumber visibleRowOffset) const noexcept {
-    const std::uint64_t totalLines = m_document->lineCount();
-    LineNumber          targetLine   = startLine;
-    LineNumber          visibleSteps = 0;
+std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineAtRow(
+    LineNumber startLine, LineNumber visibleRowOffset) const noexcept {
+    const std::uint64_t totalLines  = m_document->lineCount();
+    LineNumber          targetLine  = startLine;
+    LineNumber          rowsSeen    = 0;
     for (;;) {
-        if (!isLineHidden(targetLine)) {
-            if (visibleSteps == visibleRowOffset) {
-                break;
-            }
-            ++visibleSteps;
+        const auto rowCount = static_cast<LineNumber>(visualRowCountForLine(targetLine));
+        if (visibleRowOffset < rowsSeen + rowCount) {
+            return {targetLine, visibleRowOffset - rowsSeen};
         }
+        rowsSeen += rowCount;
         if (targetLine + 1 >= totalLines) {
-            break;
+            return {targetLine, rowCount > 0 ? rowCount - 1 : LineNumber{0}};
         }
         ++targetLine;
     }
-    return targetLine;
 }
 
 std::optional<document::LineNumber> RenderPipeline::hitTestFoldMarker(std::int32_t xPx,
@@ -1930,7 +1936,12 @@ std::optional<document::LineNumber> RenderPipeline::hitTestFoldMarker(std::int32
     const LineNumber startLine =
         m_topLine < totalLines ? m_topLine : static_cast<LineNumber>(totalLines - 1);
     const auto        rowOffset  = static_cast<LineNumber>(yDip / m_lineHeightDips);
-    const LineNumber   targetLine = visibleLineAtRow(startLine, rowOffset);
+    // WI-21d: fold markers are drawn once per logical line (at its first
+    // row only - drawGutterOnLine()'s call site in drawTextLine()), so the
+    // row-within-line half of visibleLineAtRow()'s result is irrelevant
+    // here - a click anywhere in the gutter strip alongside any of a
+    // wrapped line's rows still resolves to that same line.
+    const LineNumber targetLine = visibleLineAtRow(startLine, rowOffset).first;
     if (std::ranges::find(m_foldRegions, targetLine, &FoldVisual::headerLine) == m_foldRegions.end()) {
         return std::nullopt;
     }

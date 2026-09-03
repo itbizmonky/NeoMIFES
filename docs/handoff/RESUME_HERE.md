@@ -306,6 +306,22 @@
 >
 > 詳細は`docs/design/build_plan.md`のWI-21cセクション、`docs/history/TIMELINE.md`最新セッション参照。
 
+> ---
+
+> # 🎯 最重要 (2026-09-03) — WI-21d: ヒットテスト書き換え + キャレット/選択範囲/検索マッチの多行描画バグ2件を修正、折り返しの計算層が完結
+
+> **WI-21cに続き、ユーザーの「進めよ」でWI-21dへ着手・完了した。** 設計検証時点(WI-21計画策定時)で発見済みだった2件の未発見バグを修正する段階——①`drawCaretOnLine()`/`drawSelectionOnLine()`/`drawMatchOnLine()`が`HitTestTextPosition()`の行内Y座標を計算しながら破棄しており、選択範囲/検索マッチが複数ビジュアル行にまたがると意味不明な矩形が描画される、②`hitTest()`がY座標をハードコードしておりクリックしたビジュアル行を無視する。**本WIの時点でもまだユーザー到達不可能**(WI-21eで初めてユーザー到達可能になる)。
+>
+> **実装:** `visibleLineAtRow()`の戻り値を`LineNumber`単体から`{line, rowWithinLine}`のペアへ変更、内部実装を`visualRowCountForLine()`(WI-21c)の行数を積み上げる方式へ書き換えた。`hitTest()`は`rowWithinLine × m_lineHeightDips`を`HitTestPoint()`のY座標として渡すようになった(旧実装は`0.0F`固定)。`hitTestFoldMarker()`は`rowWithinLine`を無視する(フォールドマーカーは論理行の先頭ビジュアル行にしか描画されないため)。新規private `rowRectsForColumnRange()`が`HitTestTextRange()`(範囲版DirectWrite API、`GetLineMetrics()`と同じ2段階サイジングパターン)を使い、範囲が実際にまたがるビジュアル行数だけ矩形を返すようになり、`drawSelectionOnLine()`/`drawMatchOnLine()`はこれを軸に全面書き換えた。`drawCaretOnLine()`も`HitTestTextPosition()`の`caretY`/`metrics.height`(旧実装で破棄していた)を使うようになった。
+>
+> **テスト作成:** 3件追加。`HitTestOnWrappedContinuationRowStaysWithinSameLogicalLine`(旧実装なら別の論理行へジャンプしてしまう位置をクリックしても同じ論理行内の正しいオフセットに解決されることを確認する回帰テスト)、`RendersWithoutErrorWhenSelectionSpansMultipleWrappedRows`/`RendersWithoutErrorWhenMatchSpansMultipleWrappedRows`(`FillRectangle()`は観測不可能なため、`HitTestTextRange()`のエンドツーエンド実行を保証する弱いが意味のあるスモークテスト)。
+>
+> Debug/Release/ubsan全1560/1560件green(3構成とも実行、ubsanは新規`HitTestTextRange()`バッファサイジングパターンを特に注視)、clang-tidy exit 0。既存の全テスト(折り返し無効時)が無変更のまま通過し後方互換性を確認。実機ドッグフーディングは実施せず(まだユーザー到達不可能なヘッドレス変更のみのため)。
+>
+> **これで折り返し機能の計算層(WI-21a〜d)が完結した。** 次回セッション最初にやること: **WI-21e**(`Viewport::setWordWrapEnabled()`+水平スクロールバーの無効化+`Settings`/メニュー/コマンドパレットへの実配線+表示メニュー拡充(行番号・テーマ)。**ここで初めてユーザーが実際に折り返しをトグルできるようになる——実機ドッグフーディングの最初のチェックポイント。**)に着手する。詳細設計は承認済みプラン(`C:\Users\kenbo\.claude\plans\eventual-crafting-lecun.md`)参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+>
+> 詳細は`docs/design/build_plan.md`のWI-21dセクション、`docs/history/TIMELINE.md`最新セッション参照。
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**
