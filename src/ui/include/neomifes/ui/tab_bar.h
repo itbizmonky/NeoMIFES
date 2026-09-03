@@ -7,7 +7,7 @@
 // vector is what onTabSelected echoes back, the same "opaque index" shape
 // GrepBarConfig::onResultActivated/OutlinePaneConfig::onItemSelected use).
 //
-// Like OutlinePane (WC_TREEVIEW) and unlike FindBar/GrepBar/CommandPalette
+// Like OutlinePane (WC_TREEVIEW) and unlike FindDialog/GrepBar/CommandPalette
 // (all WC_EDIT/WC_LISTBOX, which notify via WM_COMMAND), WC_TABCONTROL
 // notifies via WM_NOTIFY - see MainWindowConfig::onNotify's doc comment
 // (main_window.h). Unlike OutlinePane (toggleable, hidden by default,
@@ -19,7 +19,7 @@
 // built-in one (would need TCS_OWNERDRAWFIXED + WM_DRAWITEM custom
 // painting), and build_plan.md's WI-05 DoD only requires Ctrl+W to close
 // the active tab. No keyboard handling inside this control either (no
-// SetWindowSubclass, unlike OutlinePane/FindBar) - v1 has nothing for it to
+// SetWindowSubclass, unlike OutlinePane/FindDialog) - v1 has nothing for it to
 // intercept (Escape-to-close etc. are not part of this DoD).
 
 #include <windows.h>

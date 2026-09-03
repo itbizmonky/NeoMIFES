@@ -2,8 +2,8 @@
 
 // CommandDescriptor - one entry in the command palette (Phase 5b3c). Lives
 // in ui:: rather than core:: because `action` is a UI-facing callback
-// supplied by src/app/main.cpp, the same relationship FindBarConfig's
-// callbacks have to their domain logic (find_bar.h's file header).
+// supplied by src/app/main.cpp, the same relationship FindDialogConfig's
+// callbacks have to their domain logic (find_dialog.h's file header).
 
 #include <functional>
 #include <string>

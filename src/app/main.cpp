@@ -271,7 +271,7 @@ int WINAPI wWinMain(HINSTANCE hInstance,
 
     enableHighDpi();
     // Phase 5b3a: defensive, see initCommonControls()'s comment. Cheap and
-    // harmless even on modes that never create a FindBar (Measure*).
+    // harmless even on modes that never create a FindDialog (Measure*).
     initCommonControls();
 
     // WI-17c bugfix: see Libgit2Guard's own comment above for why this call

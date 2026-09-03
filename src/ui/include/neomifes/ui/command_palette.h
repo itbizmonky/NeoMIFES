@@ -1,18 +1,22 @@
 #pragma once
 
 // CommandPalette - the command palette's WC_EDIT + WC_LISTBOX child
-// controls (Phase 5b3c). Modeled directly on ui::FindBar (find_bar.h):
+// controls (Phase 5b3c). Modeled directly on ui::FindBar as it originally
+// existed (Phase 5b3c; FindBar itself was later replaced by ui::FindDialog,
+// WI-24, and find_bar.h no longer exists, but the WS_CHILD+subclass pattern
+// it established is what this class still follows):
 // Win32-mechanics-only, knows nothing about neomifes::core/document/search -
 // it deals only in a caller-supplied CommandDescriptor registry (each
 // entry's `action` is an opaque std::function<void()> the app layer
-// supplies, same relationship FindBarConfig's callbacks have to their
+// supplies, same relationship FindDialogConfig's callbacks have to their
 // domain logic) plus command_palette_filter.h's pure ranking function.
 //
-// Unlike FindBar's two WC_EDIT controls sharing one subclass, this class
-// subclasses two DIFFERENT control types (an edit and a listbox) through
-// the same SetWindowSubclass callback/dwRefData, distinguished by the HWND
-// each message carries. The listbox needs its own subclass for a reason
-// FindBar's controls didn't: a standard WC_LISTBOX calls SetFocus on itself
+// Unlike FindReplaceDialog's two WC_EDIT controls sharing one subclass,
+// this class subclasses two DIFFERENT control types (an edit and a
+// listbox) through the same SetWindowSubclass callback/dwRefData,
+// distinguished by the HWND each message carries. The listbox needs its
+// own subclass for a reason FindDialog's edit doesn't: a standard
+// WC_LISTBOX calls SetFocus on itself
 // inside its own default WM_LBUTTONDOWN handling, which would otherwise
 // steal focus away from the query edit the instant a result row is
 // clicked - after which Up/Down/Enter/Escape would reach the listbox's own
@@ -39,7 +43,7 @@ namespace neomifes::ui {
 struct CommandPaletteConfig {
     // Escape while the query edit has focus. The caller is responsible for
     // restoring focus to the document editing area - CommandPalette does
-    // not know where that is (same contract as FindBarConfig::onClosed).
+    // not know where that is (same contract as FindDialogConfig::onClosed).
     std::function<void()> onClosed;
 };
 
@@ -54,10 +58,10 @@ public:
     CommandPalette& operator=(CommandPalette&&)      = delete;
 
     // `commands` is the full static registry, supplied once. Unlike
-    // FindBarConfig there is no per-keystroke callback out to the app layer -
+    // FindDialogConfig there is no per-keystroke callback out to the app layer -
     // filtering is entirely internal (command_palette_filter.h), since the
     // candidate list is small enough to re-rank synchronously on every
-    // keystroke (no debounce needed, unlike FindBar's document search).
+    // keystroke (no debounce needed, unlike FindDialog's document search).
     [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const CommandPaletteConfig& config,
                               std::vector<CommandDescriptor> commands);
 
@@ -73,7 +77,7 @@ public:
     // Clears the query, shows every command unfiltered, selects the first,
     // focuses the query edit. Re-invoking while already open (Ctrl+Shift+P
     // pressed twice) resets to this same known state - same "always land
-    // somewhere well-defined" convention as FindBar::show()'s select-all.
+    // somewhere well-defined" convention as FindDialog::show()'s select-all.
     void show() noexcept;
     void hide() noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
@@ -81,7 +85,7 @@ public:
     void onParentResized(std::uint32_t parentWidth, float dpiScale) noexcept;
     // Routes a WM_COMMAND the owning MainWindow received (EN_CHANGE from
     // the edit, LBN_SELCHANGE/LBN_DBLCLK from the listbox all arrive here,
-    // not at the child itself - same Win32 routing FindBar::handleCommand()
+    // not at the child itself - same Win32 routing GrepBar::handleCommand()
     // relies on). Call from MainWindowConfig::onCommand.
     void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
 

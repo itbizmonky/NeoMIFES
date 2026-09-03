@@ -19,7 +19,8 @@ constexpr UINT_PTR kSubclassId = 1;
 
 // Layout constants in DIPs (96-DPI baseline, same convention as
 // find_bar.cpp's kFontSizeDips) - centered near the top of the parent,
-// unlike FindBar's top-right positioning.
+// unlike FindBar's original top-right docking (Phase 5b3a; FindBar was
+// later replaced by ui::FindDialog, a top-level non-docking window, WI-24).
 constexpr float kWidthDips      = 480.0F;
 constexpr float kEditHeightDips = 32.0F;
 constexpr float kListHeightDips = 200.0F;  // ~8 rows
@@ -52,7 +53,8 @@ bool CommandPalette::create(HWND parent, HINSTANCE hInstance, const CommandPalet
 
     // Both controls share one subclass callback/dwRefData -
     // handleSubclassMessage() distinguishes them by the `hwnd` it receives
-    // (same pattern as FindBar's Find/Replace edits, see find_bar.cpp).
+    // (same pattern as FindReplaceDialog's Find/Replace edits, see
+    // find_replace_dialog.cpp).
     if (::SetWindowSubclass(m_hwndEdit.get(), &CommandPalette::subclassProc, kSubclassId,
                             reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
         return false;
@@ -210,7 +212,7 @@ void CommandPalette::moveSelection(int delta) noexcept {
     }
     const auto count    = static_cast<int>(m_filtered.size());
     // Clamped, not wrapped (VSCode convention: Up at the top row stays put) -
-    // unlike FindBar's F3 wraparound, which navigates matches in a
+    // unlike FindDialog's F3 wraparound, which navigates matches in a
     // document with no natural "edge".
     const int  newIndex = std::clamp(static_cast<int>(m_selectedIndex) + delta, 0, count - 1);
     m_selectedIndex      = static_cast<std::size_t>(newIndex);
@@ -231,7 +233,7 @@ void CommandPalette::runSelectedCommand() noexcept {
 bool CommandPalette::handleEditKeyDown(UINT vkCode) noexcept {
     // While an IME composition is active, Up/Down/Enter/Escape belong to
     // the IME (candidate navigation, confirm/cancel) - same "CJK IME一級市民"
-    // requirement as FindBar's identical guard (find_bar.cpp).
+    // requirement as FindDialog's identical guard (find_dialog.cpp).
     if (m_composing) {
         return false;
     }
@@ -271,7 +273,7 @@ LRESULT CommandPalette::handleListSubclassMessage(HWND hwnd, UINT msg, WPARAM wP
             // handling, stealing focus from the query edit - reclaim it,
             // but ONLY if still visible. A double-click's command may have
             // already hidden this palette and moved focus elsewhere (e.g.
-            // FindBar::show()); reclaiming unconditionally here would steal
+            // FindDialog::show()); reclaiming unconditionally here would steal
             // focus right back from whatever the command just opened.
             if (isVisible()) {
                 ::SetFocus(m_hwndEdit.get());

@@ -96,7 +96,9 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     // WI-07 step 0 (native_overlay_widgets_invisible.md hypothesis test):
     // WS_CLIPCHILDREN was never set, so every WM_PAINT this window handles
     // paints over the full client rect INCLUDING the area occupied by
-    // child HWNDs (FindBar/TabBar/etc.) - without WS_CLIPCHILDREN, Windows
+    // child HWNDs (GrepBar/TabBar/etc. - FindDialog is a top-level window,
+    // not a child HWND, so it is unaffected either way) - without
+    // WS_CLIPCHILDREN, Windows
     // does not exclude child-window regions from the parent's paint clip
     // region, so our own D2D full-frame present can legally end up
     // compositing on top of what the child just drew, one message-loop

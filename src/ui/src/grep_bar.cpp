@@ -62,7 +62,7 @@ bool GrepBar::create(HWND parent, HINSTANCE hInstance, const GrepBarConfig& conf
 
     // All three controls share one subclass callback/dwRefData -
     // handleSubclassMessage() distinguishes them by the `hwnd` it receives
-    // (same pattern as FindBar's two edits / CommandPalette's edit+list).
+    // (same pattern as FindReplaceDialog's two edits / CommandPalette's edit+list).
     if (::SetWindowSubclass(m_hwndQueryEdit.get(), &GrepBar::subclassProc, kSubclassId,
                             reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
         return false;
@@ -88,7 +88,7 @@ void GrepBar::show() noexcept {
     ::ShowWindow(m_hwndFolderEdit.get(), SW_SHOW);
     ::ShowWindow(m_hwndList.get(), SW_SHOW);
     ::SetFocus(m_hwndQueryEdit.get());
-    // Select-all, same "re-press reselects" convention as FindBar::show().
+    // Select-all, same "re-press reselects" convention as FindDialog::show().
     ::SendMessageW(m_hwndQueryEdit.get(), EM_SETSEL, 0, -1);
 }
 
@@ -251,7 +251,7 @@ void GrepBar::moveSelection(int delta) noexcept {
 
 bool GrepBar::handleEditKeyDown(HWND hwnd, UINT vkCode) noexcept {
     // While an IME composition is active, Up/Down/Enter/Escape belong to the
-    // IME (candidate navigation, confirm/cancel) - same guard as FindBar/
+    // IME (candidate navigation, confirm/cancel) - same guard as FindDialog/
     // CommandPalette.
     if (m_composing) {
         return false;

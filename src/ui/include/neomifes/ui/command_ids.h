@@ -16,9 +16,12 @@
 // UI plumbing, unrelated to the plugin_sdk.h C ABI surface.
 //
 // Range: 40000+, chosen to sit far above every widget's own child-control-id
-// block (find_bar.cpp 1001-1003, command_palette.cpp 2001-2002,
-// goto_line_bar.cpp 3001, grep_bar.cpp 4001-4003, outline_pane.cpp 5001,
-// tab_bar.cpp 6001, status_bar.cpp 7001 - see each file's own `namespace {
+// block (command_palette.cpp 2001-2002, goto_line_bar.cpp 3001,
+// grep_bar.cpp 4001-4003, outline_pane.cpp 5001, tab_bar.cpp 6001,
+// status_bar.cpp 7001 - FindDialog's 9101-9107 and FindReplaceDialog's
+// 9001-9010 are separate top-level windows with their own WM_COMMAND space,
+// so they don't actually need to avoid this range at all, unlike the rest -
+// see each file's own `namespace {
 // constexpr int kXxxId = ...; }`) so accelerator command ids and native
 // child-window control ids can never collide inside the same WM_COMMAND
 // dispatch. WI-11's "recent files" menu items (menu_bar.h's

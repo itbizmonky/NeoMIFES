@@ -14,7 +14,7 @@
 // MainWindowConfig::onNotify's doc comment (main_window.h) for why that
 // required a new hook rather than reusing onCommand.
 //
-// Unlike FindBar/GrepBar/CommandPalette (all of which hide themselves after
+// Unlike FindDialog/GrepBar/CommandPalette (all of which hide themselves after
 // a single action - a search or a command is a one-shot tool), OutlinePane
 // stays open after a jump: browsing an outline means visiting several
 // symbols in a row, closer in spirit to BookmarkManager's persistent gutter
@@ -45,7 +45,7 @@ struct OutlinePaneConfig {
     // target (e.g. landing on `class Widget {`).
     std::function<void(std::uint64_t targetPos)> onItemSelected;
     // Escape. Caller restores focus to the document (same contract as
-    // FindBarConfig::onClosed / CommandPaletteConfig::onClosed).
+    // FindDialogConfig::onClosed / CommandPaletteConfig::onClosed).
     std::function<void()> onClosed;
 };
 

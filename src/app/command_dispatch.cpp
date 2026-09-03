@@ -10,13 +10,13 @@
 // conflict that ruled out a wider table (WI-07): TranslateAcceleratorW
 // intercepts a matching WM_KEYDOWN BEFORE Win32's normal focus-based
 // delivery ever reaches the window that actually has keyboard focus. The
-// overlay widgets (FindBar/GrepBar/CommandPalette/GotoLineBar - all
+// overlay widgets (FindDialog/GrepBar/CommandPalette/GotoLineBar - all
 // standard WC_EDIT-based text fields) rely on receiving Ctrl+C/X/V/Z
 // themselves via comctl32's own built-in copy/cut/paste/undo handling; a
 // GLOBAL accelerator entry for the same key combo would silently break
 // editing INSIDE those text fields (e.g. Ctrl+V while typing a Find query
 // would paste into the DOCUMENT instead of the query field). F3/Shift+F3
-// have a subtler version of the same problem: FindBarConfig::onFindNext/
+// have a subtler version of the same problem: FindDialogConfig::onFindNext/
 // onFindPrevious (fired while the find edit has focus) additionally record
 // search history - promoting F3 to a global accelerator would silently
 // skip that recording whenever F3 is pressed while the find edit itself

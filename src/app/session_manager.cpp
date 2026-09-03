@@ -215,7 +215,7 @@ bool SessionManager::wireAndShow(EditorWindow& w) {
         static_cast<void>(createWindow(path));
     };
 
-    wireNormalMode(cfg, w.window, w.renderPipeline, w.workspace, m_hInstance, w.findBar, w.findReplaceDialog,
+    wireNormalMode(cfg, w.window, w.renderPipeline, w.workspace, m_hInstance, w.findDialog, w.findReplaceDialog,
                    w.commandPalette, w.gotoLineBar, w.structuralViews.jsonPathBar, w.grepBar, w.grepState,
                    m_searchHistory, w.outlinePane, w.tabBar, w.statusBar, m_settings, m_settingsPath, m_keyBindings,
                    m_keyBindingsPath, m_accelTable, w.freeCursorModeEnabled, w.isDraggingMinimap, w.imeComposing,

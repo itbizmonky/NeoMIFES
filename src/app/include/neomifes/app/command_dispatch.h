@@ -47,7 +47,7 @@
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/ui/command_ids.h"
 #include "neomifes/ui/csv_grid_pane.h"
-#include "neomifes/ui/find_bar.h"
+#include "neomifes/ui/find_dialog.h"
 
 namespace neomifes::app {
 
@@ -85,7 +85,7 @@ struct AutosaveContext {
 // logic; this function's only job is the Win32 call itself. nullptr (falsy
 // AcceleratorTableHandle) if CreateAcceleratorTableW fails - runMessageLoop()
 // treats that as "no accelerators", same non-fatal-degradation convention
-// findBar.create()'s own failure gets (see wireNormalMode()'s header
+// findDialog.create()'s own failure gets (see wireNormalMode()'s header
 // comment).
 [[nodiscard]] platform::AcceleratorTableHandle buildAcceleratorTable(const core::KeyBindings& keyBindings);
 
@@ -96,7 +96,7 @@ struct CommandDispatchContext {
     HWND                    hwnd;
     Workspace&              workspace;
     render::RenderPipeline& renderPipeline;
-    ui::FindBar&            findBar;
+    ui::FindDialog&         findDialog;
     // WI-11: recorded into after Save/SaveAs/Open succeed
     // (dispatchSaveCommand()/dispatchOpenCommand()), read from by the
     // "最近使ったファイル" menu.

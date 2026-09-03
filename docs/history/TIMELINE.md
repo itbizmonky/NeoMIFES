@@ -4088,4 +4088,74 @@ Debug/Release/ubsan全1576/1576件green(ベンチ追加後も無変化、bench t
 
 **これで[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)(P1、2026-08-31起票)の完了条件3件全てを達成し、issueは解決済みへ移動した。WI-23完了(pushとベンチマーク追加を含む全作業)。** 次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
 
+**続けてWI-23完結後、次フェーズ候補一覧をユーザーへ提示したところ「検索バーをダイアログ形式とする改修は実施されていないのか」との質問があり、経緯調査を経てWI-24(Ctrl+F検索の独立ダイアログ化)へ着手・完了した(2026-09-04)。**
+
+## セッション: WI-24 — Ctrl+F検索を秀丸風の独立ダイアログ化(`ui::FindDialog`新設)
+
+### 経緯調査
+
+ユーザーの質問に対し、まず既存の実装状況を実コードで確認した。WI-18(2026-09-02、`build_plan.md`該当セクション)で「検索が埋め込みバーで秀丸/MIFES流のダイアログになっていない」という報告に対応済みだったが、対象は**Ctrl+H(置換)のみ**で、新規`ui::FindReplaceDialog`(このコードベース初のMainWindow以外の独立トップレベルウィンドウ)として実装されていた。一方Ctrl+F(単純検索、`ui::FindBar`)はVSCode流の埋め込みバーのまま残されていた——WI-18当時のAskUserQuestionで「本物のWin32ダイアログ化」が選ばれていたにもかかわらず、実装は「検索/置換ダイアログ」という当初のスコープ記述の通りCtrl+Hのみに絞られていた。要件定義書§6(検索)が「通常検索」と「インクリメンタル検索」を別項目として挙げていることを根拠に、`FindBar`はインクリメンタル検索(VSCode流)の実装として、新設`FindReplaceDialog`は通常検索+置換(秀丸/MIFES流)の実装として、意図的に役割分担する設計判断が下されていた。
+
+この経緯をユーザーへ説明したところ、**「ダイアログとしたい、秀丸エディタのような検索ダイアログが理想」との明確な要望**があり、Ctrl+Fも`FindReplaceDialog`と同じ独立ダイアログ方式へ揃えることが今回のスコープとなった。
+
+### 設計
+
+着手前にAskUserQuestionで2点を確認: ①検索トリガー方式は既存`FindReplaceDialog`と同じライブ検索(150msデバウンス自動検索)を採用(推奨、既に実装・ドッグフーディング済みの`FindReplaceDialog`との一貫性を優先、本物の秀丸のEnter/ボタン押下トリガーより)、②Ctrl+Up/Downの検索履歴呼び出し(`core::SearchHistory`)は現行`FindBar`の機能を新ダイアログへ引き継ぐ(推奨、既存機能の後退を避ける)。
+
+続けて一般探索エージェントへ`FindBar`/`FindReplaceDialog`の現状アーキテクチャの詳細調査を委任し(Win32メカニクス・`MatchCountSink`ダックタイピングパターン・`normal_mode_wiring.cpp`の配線経路・キーバインドプリセット・GrepBar等の姉妹ウィジェットとの関係)、続けてPlan agentへ実装計画の設計を委任した。EnterPlanModeで正式にPlan Modeへ移行し、Plan agentの調査結果を踏まえた計画をユーザーへ提示、ExitPlanModeで承認を得た。
+
+**設計判断: `FindReplaceDialog`への置換モードランタイムトグル追加ではなく、新規`ui::FindDialog`クラスを新設する方針を採用した。** 理由は3点: (1) WI-18時点で`FindBar`から置換モード一式(`showWithReplace()`/`onReplaceCurrent`/`onReplaceAll`/`m_hwndReplaceEdit`/`m_replaceVisible`/`handleReplaceReturn()`/`cycleFocus()`)を意図的に完全削除した経緯があり、同種のトグルを`FindReplaceDialog`側に復活させるのは方針の逆行になる。(2) `FindReplaceDialog`のジオメトリ(`kDialogWidthDips`/`kDialogHeightDips`)は`constexpr`で`create()`時に1回だけ計算される固定5行レイアウトであり、実行時に行を出し隠しする設計を持たない——対応するには新規の可変ジオメトリロジックが必要になり、既に出荷・ドッグフーディング済みの`FindReplaceDialog`を不安定化させるリスクがある。(3) このコードベースは`FindBar`/`GrepBar`/`GotoLineBar`/`CommandPalette`/`OutlinePane`いずれも「1クラス1責務」を貫いており、新規クラスの新設(既存`FindReplaceDialog`の骨格をフォークしたコピー中心の設計)の方が一貫性が高く低リスク。
+
+### 実装
+
+**新規`ui::FindDialog`**(`src/ui/include/neomifes/ui/find_dialog.h` + `src/ui/src/find_dialog.cpp`)——`find_replace_dialog.h`/`.cpp`を骨格としてフォークした(独自`WNDCLASSEXW`/`wndProcTrampoline`/`wndProc`、`WS_POPUP | WS_CAPTION | WS_SYSMENU` + `WS_EX_TOOLWINDOW`、所有〔非親子〕、150msデバウンス、edit subclass、IME合成ガード——いずれも既存`FindReplaceDialog`と同一パターン)。
+
+- **`FindReplaceDialog`からそのまま流用:** `ensureWindowClass()`(クラス名を`L"NeoMIFES.FindDialog"`に変更)、`show()`/`hide()`/`isVisible()`/`setMatchCount()`、`fireQueryChanged()`、`wndProcTrampoline()`/`wndProc()`、`readEditText()`。
+- **削った:** 置換欄・置換ボタン・すべて置換ボタン。レイアウトは5行→4行(検索欄/3チェックボックス/件数ラベル/次を検索・前を検索の2ボタン)。
+- **`FindBar`から移植した3機能(`FindReplaceDialog`には無い):** `setQueryText()`(`SetWindowTextW`+`EM_SETSEL`で末尾へキャレット、Ctrl+Up/Down用)、`FindDialogConfig::onHistoryOlder`/`onHistoryNewer`(`core::SearchHistory`連携をそのまま移植)、`FindDialogConfig::onReplaceRequested`(このダイアログの検索欄にフォーカスがある間のCtrl+Hは`MainWindow::onKeyDown`へ届かないため、`handleEditKeyDown()`に`'H'`ケースを追加し`findReplaceDialog.show(hwnd)`を呼ぶ設計、必須の機能でこれが無いとダイアログ使用中にCtrl+H置換ダイアログへの遷移が退行する)。Ctrl+F再押下時の全選択(`FindBar::handleSubclassKeyDown()`の`'F'`ケースを移植、同ダイアログの検索欄にフォーカスがある間のCtrl+Fも同じ理由で親へ届かないため、`::GetWindow(m_hwnd.get(), GW_OWNER)`でowner HWNDを都度取得)。
+- **Case/Word/Regex:** `FindReplaceDialog`と同じ可視チェックボックス(`BS_AUTOCHECKBOX`×3)を採用。`FindBar`現行のAlt+C/W/Rキーボード専用トグルは廃止(秀丸の実際のダイアログもチェックボックスが可視UIであり、姉妹ダイアログとの一貫性を優先)。
+
+**設計段階の手計算で、ジオメトリバグを1件発見・事前防止した。** `FindReplaceDialog`のダイアログ幅は元々「4ボタン行(その時点で最も幅が広い行)」を基準に決まっていた(`kButtonRowWidthDips = (5 * kMarginDips) + (4 * kButtonWidthDips)`)。`FindDialog`はボタンが2つしかないため、ボタン行の幅(`(3 * kMarginDips) + (2 * kButtonWidthDips)` = 222)がラベル+検索欄行(380)はおろか、3チェックボックス行(`kMarginDips + 3 * kCheckWidthDips` = 400、元の設計では幅計算に一度も含まれていなかった行)よりも狭くなることに気づいた。もし気づかずボタン行とラベル+検索欄行の2値だけで`std::max`を取っていたら、`FindReplaceDialog`が実際に一度踏んだ「最幅でない行を基準に幅を決めてボタンがはみ出す」バグ(このファイル自身のコメントに記録されている、実機ドッグフーディングで発見・修正された過去のバグ)が、今度はチェックボックスの側で再発するところだった。`kCheckRowWidthDips`を新規に追加し、3値比較のため`readability-avoid-nested-conditional-operator`(過去のWI-21fで`nextThemeKind()`ヘルパーを導入した際に学んだ知見)を避けて`<algorithm>`の`std::max({a, b, c})`初期化子リスト版を採用した。**コードを書く前の手計算で発見・防止できた**、実機ドッグフーディングで実際に400×166pxで3チェックボックス全て正しく収まることを確認した。
+
+**`normal_mode_wiring.cpp`/`.h`の機械的リネーム(最大の変更範囲)。** 着手前調査で、`FindBar`はCtrl+F専用ではなく、**アプリ全体でマッチ件数表示シンクとして約30箇所以上から参照される共有オブジェクト**(タブ切替・文書入替・Grep結果ジャンプ・タグジャンプ・ファイルドロップ・Gitペイン連携・Undo/Redoディスパッチ等)であることが判明していた(`grep -c FindBar`で67件、`findBar`小文字で130件がヒット)。`FindDialog`は同一の`setMatchCount(std::size_t, std::size_t)`シグネチャを実装するため、既存の`MatchCountSink`テンプレート(`jumpToMatch`/`refreshMatches`/`runFindQuery`/`navigateToMatch`/`replaceCurrentMatch`/`replaceAllMatches`、いずれもテンプレート自体は無変更)へダックタイピングでそのまま差し込める——型・シグネチャの変更ではなく、`FindBar`→`FindDialog`への機械的な名前置換が中心だった。
+
+実装はPowerShellの正規表現置換(大文字小文字を区別する2パス、`FindBar`→`FindDialog`、`findBar`→`findDialog`)で一括処理し、以下を手動で個別修正した: ①`cfg.onResize`の`findBar.onParentResized(w, dpiScale);`呼び出しを削除(`FindDialog`は`FindReplaceDialog`と同じくドッキングしないため、この再配置コールバックリストに含めない)し、`cfg.onResize`のラムダキャプチャリストからも今や不要になった`&findBar`を削除。②`cfg.onCommand`の`findBar.handleCommand(wParam, lParam);`呼び出しを削除(`FindDialog`は`FindReplaceDialog`同様、自身の`wndProc`内で独自に`WM_COMMAND`をルーティングするため`MainWindow`側の転送は不要)。③全ての`findDialog.show()`呼び出しに`hwnd`引数を追加(`FindDialog::show()`は`FindReplaceDialog::show(HWND)`と同じくowner引数が必要、旧`FindBar::show()`は引数無しだった——一括置換だけでは検出できない、実際にビルドエラーとして検出できた箇所)。④一括置換が意図せず書き換えてしまった「歴史的に`FindBar`を指す」コメント(例:「previously findBar.showWithReplace()」、WI-18b当時に削除された機能を指す注記)を手動で元へ戻した。**コンパイルエラーが置換漏れの検出網として機能した**——`CommandDispatchContext`はdesignated initializerで全フィールド必須のため、置換漏れは黙って通らずビルドエラーになる。フルビルドで全ファイルがエラー無くコンパイルできたことを確認した後、`grep -rn "FindBar\b" src/`で意図しない生き残りが無いことを最終確認した。
+
+**約30ファイルのドキュメントコメント更新。** `FindBar`を設計上の比較対象として参照していた兄弟ウィジェット(`GrepBar`/`CommandPalette`/`GotoLineBar`/`CsvGridPane`/`TabBar`/`JsonPathBar`/`OutlinePane`/`command_dispatch.h`/`keybinding_dispatch.h`/`command_descriptor.h`/`document_open.h`/`editor_session.h`/`menu_bar.h`/`launch_setup.h`/`search_history.h`等)のコメントを1件ずつ精査した。単純な`FindBar`→`FindDialog`置換で現在も意味が成立するもの(例:「同じCJK IMEガードのパターン」)と、`FindReplaceDialog`へ差し替えるべきもの(WI-18より前の`FindBar`が「検索欄+置換欄の2エディット構成」だった頃の記述——WI-18で既に削除済みの構成に対する陳腐化コメントで、今回の副次的発見)を判別した。歴史的に正確な記述(「WI-18b当時、`FindBar`と対比してこのクラスが設計された」等)はそのまま残し、`FindBar`自体が指す実体を`FindDialog`へ機械的に置換するだけでは不正確になる箇所——例えば`find_replace_dialog.h`の冒頭コメントは「このコードベース唯一のもう1つのトップレベルウィンドウ」と主張していたが、`FindDialog`もトップレベルウィンドウになった今この主張は崩れるため書き換えが必要だった——を1つずつ判断して修正した。
+
+**`ui::FindBar`(`find_bar.h`/`find_bar.cpp`)を完全削除。** 上記リネームが完了すると呼び出し元がゼロになったため、CLAUDE.mdの「使われていないコードは完全に削除してよい」方針に従い削除した(バックワード互換シムやコメントアウトでの残置はしない)。
+
+### テスト作成
+
+新規テストファイルは追加しなかった——既存慣習を確認した上での判断。`grep -rl "FindBar\|FindReplaceDialog" tests/`は何もヒットせず、このコードベースには生の Win32 `HWND` を保持するウィジェットクラス(`FindBar`/`FindReplaceDialog`/`GrepBar`等)への直接単体テストが一度も存在しない——それらが使う純粋ロジック層(`find_navigation.h`の`nextMatchIndex()`/`formatMatchCountLabel()`、`core::SearchHistory`)のみがテスト対象という既存パターンを踏襲した。これらのロジック層は本WIで無変更のため、既存テストのgreenそのものが回帰確認になる。
+
+### 実機ドッグフーディング
+
+PowerShell + Win32 P/Invoke(`EnumWindows`/`EnumChildWindows`/`PostMessage`/`SendMessage`/`PrintWindow`)で以下を確認した:
+
+- Ctrl+F(`WM_COMMAND`直接送信)でダイアログが中央配置で開く。実測400×166pxで、上記のジオメトリバグ修正が正しく機能し3チェックボックス・2ボタン全てクリッピング無く収まることをスクリーンショットで確認。
+- `WM_CHAR`による1文字ずつの入力(`WM_SETTEXT`は`EN_CHANGE`を発生させないため使えないとMSDN仕様通り実機で確認、`FindBar`由来のコメントの「Setting the text triggers EN_CHANGE」という主張自体は`EM_REPLACESEL`等の別経路を指しているか実機の挙動と食い違う可能性があるが、本WIの範囲外の既存コードなので深追いはしていない)で150msデバウンス後に検索が実行され「1/2」のマッチ件数表示・文書内ハイライトの両方が正しく更新されることを確認。
+- F3で次のマッチへ正しく移動(ステータスバー「2:6」→「4:6」、ハイライト位置ともスクリーンショットで確認)。
+- 検索欄フォーカス中のCtrl+Hで`FindReplaceDialog`(「検索と置換」ダイアログ)へ正しく遷移(初回はOSレベルの`keybd_event`合成、後述の理由でより確実な手法へ切り替えて再確認)。
+- Escapeでダイアログが閉じる。
+- 正規表現チェックボックスをクリックでON、`ERR\w+`パターンを1文字ずつ入力して正しく2件マッチ(空クエリでのチェックボックス単体クリックも問題なし)。
+
+### 🔴 実機ドッグフーディング中に遭遇した環境不安定性(コード上の問題ではないと特定)
+
+`keybd_event`によるOSレベルのCtrl+H同時押し合成(Ctrlキーダウン→Hキーダウン→Hキーアップ→Ctrlキーアップの完全なシーケンス)の直後に2回、Windowsイベントログ(Application ログ、`Application Error`ソース)に一切クラッシュ記録が残らないまま`NeoMIFES.exe`プロセスが終了する事象が発生した。1回目はCtrl+Hでの遷移確認+スクリーンショット撮影の直後、2回目は正規表現チェックボックスのテスト中に発生し、いずれも直前の操作と因果関係が明確ではなかった。
+
+原因切り分けのため、同じCtrl+Hの動作を「`keybd_event`でCtrlキーを押下状態にしつつ(`GetKeyState(VK_CONTROL)`で実際に押下状態〔-127〕になっていることを確認済み)、`PostMessage`で対象のFindDialogの検索欄HWNDへ直接`WM_KEYDOWN('H')`を届ける」という、OSレベルのフォーカス依存配送を経由しないより確実な方式に切り替えたところ、複数回にわたり安定して`FindReplaceDialog`が正しく開き、プロセスが終了しないことを確認できた。同じ手法(`keybd_event`でモディファイア状態のみ設定+`PostMessage`で直接配送)を使い、チェックボックスクリック+複数文字のWM_CHAR入力という長いシーケンスも新規プロセスで問題なく完走した(3回連続で新規起動→操作→プロセス生存確認のサイクルを回し、うち1回は`keybd_event`による完全なCtrl+H合成を含めて全て成功)。
+
+以上から、2回の予期しないプロセス終了は本WIのコードの欠陥ではなく、`keybd_event`によるOSレベルの完全なキー合成(特にCtrl等のモディファイアキーを含む組み合わせ)がこの環境で時折不安定になるという、`reference_no_win32_gui_automation.md`が既に記録している既知の環境制約(Phase 7l/7n1/7o、WI-21fのIME経由の予期しない文字入力に続き、今回で4回目の異なる現れ方)の再発と結論した。より確実な「モディファイアは`keybd_event`、実際のキー配送は対象コントロールへの直接`PostMessage`」というハイブリッド手法を、今後この種のモディファイアキー検証が必要になった際の代替手法として記録する。
+
+### ドキュメント更新
+
+`docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`(P2)の「対象」を更新した。独立ダイアログ化した`ui::FindDialog`/`ui::FindReplaceDialog`は、このissue本文が説明する「`SetWindowSubclass`→`DefSubclassProc`委譲」経路そのものには該当しない(`WS_CHILD`ではなく独立トップレベルウィンドウのため)が、`runMessageLoop()`の`GetAncestor(msg.hwnd, GA_ROOT)`が`WS_CHILD`の親チェーンしか辿らないため、これらのダイアログの検索欄にフォーカスがある間は`GA_ROOT`がダイアログ自身のHWNDに解決され、`TranslateAcceleratorW`がMainWindowの`HACCEL`テーブルを適用しない——体感としては同じ「Ctrl+S/O/N が届かない」症状が別の理由で生じることが今回の調査で判明した(`FindReplaceDialog`はWI-18から既にこの制約を持っていたが、当issueには一度も追加されていなかった)。対象を実質6件(埋め込みバー4+独立ダイアログ2)へ更新、本WIでは修正しない(記録のみ)。`docs/issues/README.md`の該当行も同期。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1576/1576件green(3構成とも実行)。clang-tidy(変更・新規13ファイルを個別実行、`--header-filter`は使わず——このプロジェクトの既知の落とし穴回避)、新規指摘0件——新規`find_dialog.cpp`もクリーンな兄弟ファイル`find_replace_dialog.cpp`(既存、無変更)と全く同じ出力形状(指摘0件)であることを比較確認した。Release/ubsanはサブエージェントへ委譲、警告0件(既存の`D9025`ノイズのみ、`/WX`対象外)、ubsanは全ログを`runtime error`/`AddressSanitizer`/`LeakSanitizer`/`ERROR:`でgrepし0件、新設した`find_dialog.cpp`/`normal_mode_wiring.cpp`のHWND/owner-windowプラミング・designated initializer構築に対する追加検出も無し。
+
+**これで検索(Ctrl+F)・置換(Ctrl+H)ともに独立ダイアログ方式へ揃い、`ui::FindBar`は完全に廃止された。WI-24完了。** 次にどの作業へ着手するかはユーザーへ確認する。
+
 <!-- 次セッションはここに追記 -->

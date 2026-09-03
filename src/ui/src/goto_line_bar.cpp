@@ -16,7 +16,8 @@ constexpr UINT_PTR kSubclassId = 1;
 
 // Layout constants in DIPs (96-DPI baseline), centered near the top of the
 // parent - same positioning family as CommandPalette, a different overlay
-// from FindBar's right-aligned placement.
+// from FindBar's original right-aligned placement (Phase 5b3a; FindBar was
+// later replaced by ui::FindDialog, a top-level non-docking window, WI-24).
 constexpr float kWidthDips     = 240.0F;
 constexpr float kHeightDips    = 28.0F;
 constexpr float kTopMarginDips = 60.0F;
@@ -109,7 +110,7 @@ std::u16string GotoLineBar::readEditText() const {
 
 bool GotoLineBar::handleSubclassKeyDown(UINT vkCode) noexcept {
     // While an IME composition is active, Enter/Escape belong to the IME -
-    // same guard as FindBar/CommandPalette (find_bar.cpp's class comment).
+    // same guard as FindDialog/CommandPalette (find_dialog.cpp's class comment).
     if (m_composing) {
         return false;
     }

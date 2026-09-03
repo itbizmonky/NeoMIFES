@@ -7,9 +7,11 @@
 // produces its data" principle this codebase already established for
 // OutlinePane/syntax:: and JsonTreePane/jsontree::). The filter edit's
 // WC_EDIT + 150ms-debounce + IME-composition-guard mechanics (WI-16e) are a
-// direct copy of ui::FindBar's own established pattern (find_bar.h/.cpp) -
-// this class does not invent a second UI-timing convention for the same
-// kind of "text input drives an incremental result" control.
+// direct copy of ui::FindBar's own established pattern as it existed at the
+// time (Phase 5b3a; FindBar was later replaced by ui::FindDialog, WI-24,
+// which still follows the identical debounce/IME-guard shape) - this class
+// does not invent a second UI-timing convention for the same kind of "text
+// input drives an incremental result" control.
 //
 // LVS_REPORT | LVS_OWNERDATA (virtual mode), NOT a normal WC_LISTVIEW that
 // holds every row as a real LVITEM - the requirements doc's own stated scale
@@ -97,7 +99,7 @@ struct CsvGridPaneConfig {
     // onClosed).
     std::function<void()> onClosed;
     // WI-16e: fires 150ms after the filter edit's text last changed (same
-    // UI-timing convention as ui::FindBarConfig::onQueryChanged - a burst of
+    // UI-timing convention as ui::FindDialogConfig::onQueryChanged - a burst of
     // keystrokes restarts the timer, so this fires once per pause, not once
     // per keystroke) OR immediately on Enter. The caller recomputes its own
     // filtered row order and reflects it via setRowCount()/showWith().
@@ -171,7 +173,7 @@ public:
 
     // Programmatically sets the filter edit's text WITHOUT firing
     // onFilterQueryChanged (WM_SETTEXT's standard contract - it does not
-    // generate EN_CHANGE) - unlike ui::FindBar::setQueryText(), this is
+    // generate EN_CHANGE) - unlike ui::FindDialog::setQueryText(), this is
     // deliberately a silent sync, not a "re-run the filter" trigger. Used to
     // restore a tab's own previously-set filter text when CsvGridPane is
     // reopened for a DIFFERENT EditorSession than the one it last showed
@@ -198,7 +200,7 @@ public:
 
     // WI-16e: routes a WM_COMMAND the owning MainWindow received (EN_CHANGE
     // from the filter edit arrives here, not at the child HWND itself - same
-    // routing ui::FindBar::handleCommand() already uses). Call from
+    // routing ui::GrepBar::handleCommand() already uses). Call from
     // MainWindowConfig::onCommand.
     void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
 
@@ -207,8 +209,8 @@ private:
                                          DWORD_PTR refData) noexcept;
     LRESULT handleSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
     // Returns true if the key was handled (caller should return 0 rather
-    // than falling through to DefSubclassProc) - mirrors ui::FindBar::
-    // handleSubclassKeyDown()'s own return-value contract. `hwnd` is always
+    // than falling through to DefSubclassProc) - mirrors ui::FindDialog::
+    // handleEditKeyDown()'s own return-value contract. `hwnd` is always
     // m_hwndFilterEdit.get() here (the ListView's own VK_ESCAPE handling
     // stays inline in handleSubclassMessage() - it has no VK_RETURN/IME
     // concern of its own to share this function's shape with).
@@ -278,7 +280,7 @@ private:
     void positionListViews(int listTopPx, int listHeightPx, int widthPx, float dpiScale) noexcept;
     // Fires onFilterQueryChanged with the filter edit's current text - shared
     // by the debounce WM_TIMER and VK_RETURN's "fire now" path (mirrors
-    // ui::FindBar::fireQueryChanged()).
+    // ui::FindDialog::fireQueryChanged()).
     void fireFilterQueryChanged() noexcept;
     // WI-16f: positions+shows m_hwndCellEditor over the given cell's
     // on-screen rect (LVM_GETSUBITEMRECT, mapped from the data list's own
@@ -362,7 +364,7 @@ private:
     // subclassed edit control (filter edit or, since WI-16f, the cell
     // editor) currently has focus, so Enter/Escape are left to the IME
     // (confirm/cancel the composition) instead of being intercepted while
-    // converting Japanese/Chinese/Korean input - same guard ui::FindBar::
+    // converting Japanese/Chinese/Korean input - same guard ui::FindDialog::
     // m_composing provides. One shared flag is safe across both edit
     // controls: Win32 IME composition is tied to whichever HWND currently
     // owns input focus, and losing focus force-ends composition before

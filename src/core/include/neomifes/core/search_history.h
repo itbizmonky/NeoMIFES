@@ -55,7 +55,7 @@ public:
     // starts browsing from the top regardless of what was being typed.
     // nullopt if history is empty. Deliberately stateless (derives the
     // answer from `currentText` alone, not a remembered browse position) so
-    // callers (ui::FindBar/ui::GrepBar) need no re-entrancy-guarded state of
+    // callers (ui::FindDialog/ui::GrepBar) need no re-entrancy-guarded state of
     // their own - see this header's file comment.
     [[nodiscard]] std::optional<std::u16string_view> older(std::u16string_view currentText) const noexcept;
 

@@ -109,7 +109,7 @@ std::u16string JsonPathBar::readEditText() const {
 
 bool JsonPathBar::handleSubclassKeyDown(UINT vkCode) noexcept {
     // While an IME composition is active, Enter/Escape belong to the IME -
-    // same guard as GotoLineBar/FindBar/CommandPalette.
+    // same guard as GotoLineBar/FindDialog/CommandPalette.
     if (m_composing) {
         return false;
     }

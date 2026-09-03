@@ -46,7 +46,7 @@
 #include "neomifes/render/render_pipeline.h"
 #include "neomifes/search/grep_service.h"
 #include "neomifes/ui/command_palette.h"
-#include "neomifes/ui/find_bar.h"
+#include "neomifes/ui/find_dialog.h"
 #include "neomifes/ui/find_replace_dialog.h"
 #include "neomifes/ui/goto_line_bar.h"
 #include "neomifes/ui/grep_bar.h"
@@ -100,12 +100,13 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // Real launches only - deferred so it never affects firstPaintNs timing
 // (ADR-009). If attach() fails, the window simply keeps the GDI placeholder
 // forever; there is no retry policy. Same non-fatal treatment for
-// findBar.create() (Phase 5b3a) - a Find bar that fails to create simply
+// findDialog.create() (originally findBar.create(), Phase 5b3a; replaced by
+// ui::FindDialog in WI-24) - a Find dialog that fails to create simply
 // isn't available this session, no retry policy either. WI-04: takes
 // EditorSession& instead of the ~15 separate refs it used to (document/
 // dispatcher/selection/viewport/altCursorAnchor/rectangularAnchor/
 // bookmarks/foldingModel/freeCursorVirtualColumns/findReplaceState); the
-// remaining individual parameters (findBar/commandPalette/gotoLineBar/
+// remaining individual parameters (findDialog/commandPalette/gotoLineBar/
 // grepBar/grepState/searchHistory/outlinePane/freeCursorModeEnabled/
 // isDraggingMinimap) are Workspace-wide or process-wide state that stays
 // outside any one EditorSession - see this file's EditorSession
@@ -114,7 +115,7 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // WI-05 step 1: takes Workspace& instead of EditorSession& - once
 // Workspace can hold more than one session, every lambda this function (or
 // the 5 buildXConfig()/createAndPositionOutlinePane() helpers it calls)
-// STORES for later invocation (FindBarConfig/CommandDescriptor::action/
+// STORES for later invocation (FindDialogConfig/CommandDescriptor::action/
 // GotoLineBarConfig/GrepBarConfig/OutlinePaneConfig callbacks, and
 // wireNormalMode's own cfg.onKeyDown/onChar/onMouseWheel/onMouseDown/
 // onMouseDrag/onHScroll/onSysKeyDown/onClose/onDropFiles/the paint handler)
@@ -191,7 +192,7 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // unlike render::RenderPipeline, there is no default-construct-then-attach()
 // shape available). cfg.onDeferredInit below emplace()s it once the real
 // hwnd is known - same timing this function already uses for
-// renderPipeline.attach(hwnd)/findBar.create(hwnd, ...)/outlinePane's
+// renderPipeline.attach(hwnd)/findDialog.create(hwnd, ...)/outlinePane's
 // CreateWindowExW, not the "construct in main.cpp right after
 // window.create() returns" phrasing an earlier draft of this WI's plan used
 // (window.create() returning true only means CreateWindowExW succeeded -
@@ -330,7 +331,7 @@ void debugLogRenderError(const char* what, const render::RenderError& err) noexc
 // command's own action (buildCommandRegistry()) ever touches this
 // parameter directly.
 void wireNormalMode(ui::MainWindowConfig& cfg, ui::MainWindow& window, render::RenderPipeline& renderPipeline,
-                    Workspace& workspace, HINSTANCE hInstance, ui::FindBar& findBar,
+                    Workspace& workspace, HINSTANCE hInstance, ui::FindDialog& findDialog,
                     ui::FindReplaceDialog& findReplaceDialog,
                     ui::CommandPalette& commandPalette, ui::GotoLineBar& gotoLineBar,
                     ui::JsonPathBar& jsonPathBar, ui::GrepBar& grepBar,

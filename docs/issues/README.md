@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-04 (WI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正。さらに先行してWI-21a〜f: 折り返し(word wrap)機能+表示メニュー拡充が完結、`view_menu_and_word_wrap_incomplete.md`〔P2〕解決済み、実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグを発見・修正(WI-15i/WI-21bに続く3度目の同型再発)、ミニマップ対応方針を`minimap_highlight_ignores_word_wrap_row_density.md`〔新規P3〕として記録)
+**最終更新:** 2026-09-04 (WI-24: Ctrl+F検索を`ui::FindDialog`新設で独立ダイアログ化(旧`ui::FindBar`は完全削除)。`overlay_focus_blocks_file_lifecycle_keys.md`〔P2〕の対象を更新、独立ダイアログ化した`FindDialog`/`FindReplaceDialog`も別機構で同じ症状を持つと判明し対象6件へ拡張。先行してWI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。さらに先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -26,7 +26,7 @@
 
 | Issue | 概要 | 状態 |
 |---|---|---|
-| [オーバーレイにフォーカスがある間 Ctrl+S/O/N が届かない](overlay_focus_blocks_file_lifecycle_keys.md) | FindBar/GrepBar/CommandPalette/GotoLineBar/OutlinePane のサブクラスプロシージャが未知のキーを親HWNDへ転送しない | 待機 (5ウィジェット全てへの転送ロジックが必要になった時点で再評価) |
+| [オーバーレイにフォーカスがある間 Ctrl+S/O/N が届かない](overlay_focus_blocks_file_lifecycle_keys.md) | GrepBar/CommandPalette/GotoLineBar/OutlinePaneのサブクラスプロシージャが未知のキーを親HWNDへ転送しない。2026-09-04: 独立ダイアログ化したFindDialog/FindReplaceDialogも別機構で同じ症状を持つと判明、対象6件に更新 | 待機 (6ウィジェット全てへの対策が必要になった時点で再評価) |
 | [メニューバーのキーバインド表示が実行時リマップに追従しない](menu_bar_keybinding_label_stale.md) | `\tCtrl+X` 等の表示は起動時固定、`keybindings.reload`/`.preset.*` 後も再起動まで古いまま (実際のキー入力自体は正しく機能する) | 待機 (メニュー再構築機構が必要になった時点で再評価) |
 | [`ts_parser_parse()` の文書サイズ比例コスト](tree_sitter_incremental_parse_cost.md) | 50万行で 155.95ms、DoD ≤50ms 未達。4 フェーズ挑戦し tree-sitter の構造的限界と結論 | 🧊 **凍結** (Phase 12 直前に「達成」か「DoD 改訂」かを判断) |
 | [`UndoStack` のメモリ無制限成長](undo_stack_unbounded_memory.md) | 圧縮/ディスクスワップ未実装。2026-09-01追記: ヘッドレスプローブで1pushあたり約4.06バイトと実測(AddBufferのappend-only設計に起因、線形増加で加速無し)、100万件規模でも約4MB程度と推定され256MB予算を大きく下回る見込み | 待機 (実UIを通した100万件規模の実測はまだ無い) |

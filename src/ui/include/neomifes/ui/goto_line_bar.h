@@ -1,11 +1,11 @@
 #pragma once
 
 // GotoLineBar - Ctrl+G's single WC_EDIT overlay (Phase 4b8b). Simpler than
-// FindBar: no debounce timer, no listbox, no toggle buttons - a single
+// FindDialog: no debounce timer, no listbox, no toggle buttons - a single
 // control that submits its raw text on Enter and lets the caller
 // (src/app/main.cpp) parse it via goto_line_parser.h and move the cursor.
 // Win32-mechanics-only, same "knows nothing about core::/document::"
-// separation as FindBar/CommandPalette.
+// separation as FindDialog/CommandPalette.
 
 #include <windows.h>
 
@@ -20,13 +20,13 @@ namespace neomifes::ui {
 
 struct GotoLineBarConfig {
     // Enter - the edit's current raw text, unparsed (same "push the current
-    // text" shape as FindBarConfig::onQueryChanged - the caller parses via
+    // text" shape as FindDialogConfig::onQueryChanged - the caller parses via
     // parseGotoLineInput()). Not fired while an IME composition is in
     // progress.
     std::function<void(std::u16string_view input)> onSubmit;
     // Escape. The caller is responsible for restoring focus to the document
     // editing area (GotoLineBar does not know where that is), same contract
-    // as FindBarConfig::onClosed.
+    // as FindDialogConfig::onClosed.
     std::function<void()> onClosed;
 };
 
@@ -44,7 +44,7 @@ public:
 
     // Clears the edit, shows it, focuses it. Re-invoking while already open
     // (Ctrl+G pressed twice) resets to this same state, matching
-    // FindBar::show()'s "always land somewhere well-defined" convention.
+    // FindDialog::show()'s "always land somewhere well-defined" convention.
     void show() noexcept;
     void hide() noexcept;
     [[nodiscard]] bool isVisible() const noexcept;
@@ -61,7 +61,7 @@ private:
 
     neomifes::platform::WindowHandle    m_hwndEdit;
     neomifes::platform::GdiObjectHandle m_font;
-    // Same "CJK IME一級市民" guard as FindBar/CommandPalette - Enter/Escape
+    // Same "CJK IME一級市民" guard as FindDialog/CommandPalette - Enter/Escape
     // must not be intercepted mid-composition.
     bool m_composing = false;
     GotoLineBarConfig m_config;

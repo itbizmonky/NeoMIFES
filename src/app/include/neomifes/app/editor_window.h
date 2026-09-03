@@ -10,7 +10,7 @@
 //
 // MUST be held behind std::unique_ptr (never by value in a std::vector, and
 // never moved) - wireNormalMode() (normal_mode_wiring.h) stores ~40 `[&...]`
-// reference-capturing lambdas into MainWindowConfig/FindBarConfig/etc. that
+// reference-capturing lambdas into MainWindowConfig/FindDialogConfig/etc. that
 // fire arbitrarily far in the future (any WM_* message); every member below
 // must keep the SAME address for the whole window's lifetime, which a
 // std::vector<EditorWindow> held by value cannot guarantee across
@@ -107,7 +107,7 @@ public:
     Workspace              workspace;
     ui::MainWindow          window;
     render::RenderPipeline  renderPipeline;
-    ui::FindBar             findBar;
+    ui::FindDialog          findDialog;
     ui::FindReplaceDialog   findReplaceDialog;
     ui::CommandPalette      commandPalette;
     ui::GotoLineBar         gotoLineBar;

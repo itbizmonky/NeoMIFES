@@ -1,5 +1,5 @@
 add_library(neomifes_ui STATIC
-    src/find_bar.cpp
+    src/find_dialog.cpp
     src/find_replace_dialog.cpp
     src/command_palette.cpp
     src/goto_line_bar.cpp
@@ -26,12 +26,15 @@ target_link_libraries(neomifes_ui
         neomifes::platform
     PRIVATE
         neomifes::compile_options
-        # find_bar.cpp: wchar_cast.h (char16_t/wchar_t boundary conversion
-        # for the edit control's text, Phase 5b3a).
+        # find_dialog.cpp/find_replace_dialog.cpp: wchar_cast.h (char16_t/
+        # wchar_t boundary conversion for the edit controls' text; this
+        # requirement traces back to find_bar.cpp, Phase 5b3a's original
+        # WC_EDIT child, before WI-24 replaced it with find_dialog.cpp).
         neomifes::util
         user32
         gdi32
-        # find_bar.cpp: SetWindowSubclass/DefSubclassProc (Phase 5b3a, this
+        # find_dialog.cpp/find_replace_dialog.cpp: SetWindowSubclass/
+        # DefSubclassProc (originally find_bar.cpp, Phase 5b3a, this
         # project's first child HWND).
         comctl32
         # main_window.cpp: ImmGetContext/ImmGetCompositionStringW/

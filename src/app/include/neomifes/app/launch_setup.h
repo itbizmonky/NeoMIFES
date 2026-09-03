@@ -83,8 +83,9 @@ struct LaunchArgs {
     const std::optional<std::filesystem::path>& openPath, DocumentFileState& fileStateOut,
     std::optional<std::filesystem::path>& currentDocumentPathOut);
 
-// Defensive: FindBar's SetWindowSubclass/DefSubclassProc (Phase 5b3a, first
-// comctl32 usage in this codebase) do not strictly require this per
+// Defensive: FindDialog's SetWindowSubclass/DefSubclassProc (originally
+// FindBar's, Phase 5b3a, first comctl32 usage in this codebase) do not
+// strictly require this per
 // Microsoft's docs (it is only load-bearing for visual-styles-aware
 // controls), but calling it costs nothing and removes any doubt about
 // comctl32 being loaded before the first CreateWindowExW(WC_EDITW, ...).

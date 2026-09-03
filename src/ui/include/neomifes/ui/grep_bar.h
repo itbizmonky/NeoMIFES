@@ -2,22 +2,22 @@
 
 // GrepBar - the Grep results pane's WC_EDIT x2 + WC_LISTBOX child controls
 // (Phase 5c3, Ctrl+Shift+F). Win32-mechanics-only, same separation as
-// FindBar/CommandPalette: GrepBar knows nothing about neomifes::search/
+// FindDialog/CommandPalette: GrepBar knows nothing about neomifes::search/
 // document/core - it deals only in u16string text (queries, folder paths,
 // pre-formatted result rows) and opaque std::function callbacks, exposing
 // GrepBarConfig the app layer (src/app/main.cpp) wires to actually run
 // search::GrepService::findAll() and call neomifes::app::openDocumentAt().
 //
 // Structurally a merge of its two precedents: two WC_EDIT controls sharing
-// one SetWindowSubclass callback/dwRefData (FindBar's find/replace edits),
-// plus a WC_LISTBOX subclassed the same way CommandPalette's is (a standard
-// listbox SetFocus()s itself inside its own default WM_LBUTTONDOWN handling,
-// which must be reclaimed for the query edit afterward - see
-// CommandPalette's class comment for the double-click subtlety this
-// requires). All three controls share the SAME subclass callback/dwRefData,
-// distinguished by the hwnd each message carries.
+// one SetWindowSubclass callback/dwRefData (FindReplaceDialog's find/
+// replace edits), plus a WC_LISTBOX subclassed the same way CommandPalette's
+// is (a standard listbox SetFocus()s itself inside its own default
+// WM_LBUTTONDOWN handling, which must be reclaimed for the query edit
+// afterward - see CommandPalette's class comment for the double-click
+// subtlety this requires). All three controls share the SAME subclass
+// callback/dwRefData, distinguished by the hwnd each message carries.
 //
-// Deliberately does NOT reuse FindBar's debounce timer or CommandPalette's
+// Deliberately does NOT reuse FindDialog's debounce timer or CommandPalette's
 // live-refresh-on-EN_CHANGE: Ctrl+Shift+F's search is a synchronous
 // directory walk (search::GrepService::findAll(), no async infrastructure
 // exists anywhere in this codebase), so re-running it on every keystroke
@@ -51,7 +51,7 @@ struct GrepBarConfig {
     std::function<void(std::size_t resultIndex)> onResultActivated;
     // Escape while either edit has focus. The caller is responsible for
     // restoring focus to the document editing area - GrepBar does not know
-    // where that is (same contract as FindBarConfig::onClosed).
+    // where that is (same contract as FindDialogConfig::onClosed).
     std::function<void()> onClosed;
     // Ctrl+Up while the QUERY edit has focus (Phase 5c5) - never fires for
     // the folder edit (a directory path isn't a "search pattern" history
@@ -82,10 +82,10 @@ public:
     [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const GrepBarConfig& config);
 
     // Reveals all three controls and focuses the query edit (select-all,
-    // same "re-press reselects" convention as FindBar::show()). Does NOT
+    // same "re-press reselects" convention as FindDialog::show()). Does NOT
     // clear the folder/query text or the existing results list - re-running
     // a Grep against the same folder with a tweaked query is the expected
-    // common case (FindBar's "preserve query" convention, not
+    // common case (FindDialog's "preserve query" convention, not
     // CommandPalette's "always reset" one - see this header's rationale).
     void show() noexcept;
     void hide() noexcept;
@@ -104,7 +104,7 @@ public:
     // Programmatically replaces the QUERY edit's text (Phase 5c5, Ctrl+Up/
     // Down history recall) and moves the caret to the end - not the folder
     // edit, which has no history concept (see GrepBarConfig::onHistoryOlder).
-    // Unlike FindBar::setQueryText(), this does NOT trigger a re-run (Grep
+    // Unlike FindDialog::setQueryText(), this does NOT trigger a re-run (Grep
     // stays Enter-only, the existing Phase 5c3 design - see this header's
     // file comment on why there is no debounce/live-refresh here).
     void setQueryText(std::u16string_view text) noexcept;
@@ -127,12 +127,13 @@ private:
     LRESULT handleListSubclassMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
     // `hwnd` distinguishes which of the two edits fired the key - both
     // trigger the identical action (fireRunQuery()/moveSelection()), unlike
-    // FindBar's find/replace edits, so no hwnd-based branching is needed
-    // beyond Tab-cycling and reading both edits' text on Enter.
+    // FindReplaceDialog's find/replace edits, so no hwnd-based branching is
+    // needed beyond Tab-cycling and reading both edits' text on Enter.
     [[nodiscard]] bool handleEditKeyDown(HWND hwnd, UINT vkCode) noexcept;
-    // Moves focus between the query and folder edits - unconditional
-    // two-way toggle (unlike FindBar::cycleFocus(), which is gated on
-    // m_replaceVisible; both of GrepBar's edits are always shown together).
+    // Moves focus between the query and folder edits - an unconditional
+    // two-way toggle, since both of GrepBar's edits are always shown
+    // together (no equivalent "is the second edit even visible right now"
+    // gating needed, unlike a find/replace-shaped widget would require).
     void cycleFocus(HWND hwnd) noexcept;
     void moveSelection(int delta) noexcept;
     // Reads both edits and invokes onRunQuery - shared by Enter in either
@@ -150,7 +151,7 @@ private:
     neomifes::platform::GdiObjectHandle m_font;
     // Tracks WM_IME_STARTCOMPOSITION/WM_IME_ENDCOMPOSITION so Enter/Up/Down/
     // Escape are left to the IME while converting Japanese/Chinese/Korean
-    // input - same "CJK IME一級市民" guard as FindBar/CommandPalette.
+    // input - same "CJK IME一級市民" guard as FindDialog/CommandPalette.
     bool        m_composing     = false;
     // Number of rows currently in the listbox (setResults()'s row count) -
     // needed by moveSelection()'s clamp without round-tripping through

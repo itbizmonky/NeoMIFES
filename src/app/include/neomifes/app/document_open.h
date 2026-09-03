@@ -7,11 +7,11 @@
 // than the one currently open and are this module's first real callers).
 //
 // Split out the same way editor_input.h was (see its file header): no
-// HWND, no RenderPipeline, no FindBar - everything here is Win32/render-
+// HWND, no RenderPipeline, no FindDialog - everything here is Win32/render-
 // independent, so it stays headlessly unit-testable. The caller still owns
 // two things this module cannot reach: RenderPipeline's cached bookmark/
 // match-highlight visuals (stale entries would draw over unrelated content
-// at the same line/byte positions in the new file) and FindBar's displayed
+// at the same line/byte positions in the new file) and FindDialog's displayed
 // match count. Whichever of 5c3/5c4 lands first must reset both immediately
 // after calling this, before repainting - see the Phase 5c2 plan (or
 // replaceAllMatches() in main.cpp, which already resets the same match-

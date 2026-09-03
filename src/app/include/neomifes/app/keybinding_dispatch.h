@@ -22,7 +22,7 @@
 //
 // This split exists because TranslateAcceleratorW intercepts a matching
 // WM_KEYDOWN BEFORE Win32's normal focus-based delivery reaches whichever
-// widget (FindBar/GrepBar/CommandPalette/GotoLineBar, all native WC_EDIT
+// widget (FindDialog/GrepBar/CommandPalette/GotoLineBar, all native WC_EDIT
 // controls) actually has keyboard focus - promoting the other 20 commands
 // into the real accelerator table would silently break in-focus editing in
 // those widgets (see command_dispatch.cpp's own comment for the concrete

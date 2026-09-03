@@ -170,7 +170,7 @@ struct MenuBarHandles {
 // AppendMenuW can all fail under resource exhaustion) - MainWindow::create()
 // treats a null MainWindowConfig::menuBar exactly like Win32's own "no
 // menu" default (the window simply has no menu bar), same non-fatal-
-// degradation convention findBar.create()'s own failure gets. No RAII
+// degradation convention findDialog.create()'s own failure gets. No RAII
 // wrapper: once handed to CreateWindowExW's hMenu parameter, the WINDOW
 // owns the HMENU for its lifetime and DestroyWindow destroys it
 // automatically (standard Win32 ownership transfer, including every nested

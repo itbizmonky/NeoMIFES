@@ -6,7 +6,7 @@
 // Enter" shape (no debounce/live-preview: an in-progress JSONPath expression
 // isn't evaluated until Enter, avoiding a stream of error dialogs while the
 // user is still typing). Win32-mechanics-only, same "knows nothing about
-// core::/document::/jsontree::" separation as GotoLineBar/FindBar -
+// core::/document::/jsontree::" separation as GotoLineBar/FindDialog -
 // json_path.h's actual parsing/evaluation happens in the caller
 // (src/app/normal_mode_wiring.cpp).
 
@@ -62,7 +62,7 @@ private:
 
     neomifes::platform::WindowHandle    m_hwndEdit;
     neomifes::platform::GdiObjectHandle m_font;
-    // Same "CJK IME一級市民" guard as GotoLineBar/FindBar/CommandPalette -
+    // Same "CJK IME一級市民" guard as GotoLineBar/FindDialog/CommandPalette -
     // Enter/Escape must not be intercepted mid-composition.
     bool m_composing = false;
     JsonPathBarConfig m_config;

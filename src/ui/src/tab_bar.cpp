@@ -26,7 +26,7 @@ bool TabBar::create(HWND parent, HINSTANCE hInstance, const TabBarConfig& config
     // expand to 0 (tabs-not-buttons and single-line are already the
     // WC_TABCONTROLW default); isolated on its own line (with NOLINT) and
     // kept for documentation value rather than collapsed away, same as
-    // FindBar::ensureFont()'s kPitchAndFamily.
+    // FindDialog::create()'s kPitchAndFamily.
     // NOLINTNEXTLINE(misc-redundant-expression)
     constexpr DWORD kTabStyle = TCS_TABS | TCS_SINGLELINE;
     HWND tab = ::CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | kTabStyle, 0, 0, 10, 10,

@@ -452,7 +452,7 @@ public:
     // findReplaceState() (same reasoning as openFile() above) or
     // folding/RenderPipeline-side visuals (the caller's responsibility, same
     // division as openFile(), since EditorSession has no RenderPipeline/
-    // FindBar dependency).
+    // FindDialog dependency).
     void resetToBlank();
 
 private:

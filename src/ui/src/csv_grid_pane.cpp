@@ -39,7 +39,7 @@ constexpr int      kDataListId      = 10006;
 constexpr int      kListDividerId   = 10007;
 constexpr UINT_PTR kSubclassId      = 1;
 // Scoped per-HWND by Win32 (SetTimer/KillTimer take the owning window as a
-// parameter) - safe to reuse id 1 here even though ui::FindBar also uses
+// parameter) - safe to reuse id 1 here even though ui::FindDialog also uses
 // id 1 for its own debounce timer, since the two are never set on the same
 // HWND.
 constexpr UINT_PTR kFilterDebounceTimerId = 1;
@@ -70,8 +70,8 @@ constexpr float kFilterControlHeightDips = 24.0F;
 
 // Shared by fireFilterQueryChanged() - identical
 // GetWindowTextLengthW/GetWindowTextW/fromWstringView() sequence
-// ui::FindBar::readEditText() (find_bar.cpp) already established for the
-// same purpose.
+// ui::FindDialog::readEditText() (find_dialog.cpp) already established for
+// the same purpose.
 [[nodiscard]] std::u16string readEditText(HWND hwnd) {
     const int length = ::GetWindowTextLengthW(hwnd);
     std::wstring buffer(static_cast<std::size_t>(length), L'\0');
@@ -241,7 +241,7 @@ bool CsvGridPane::create(HWND parent, HINSTANCE hInstance, const CsvGridPaneConf
     // The filter edit and the cell editor share the same subclass
     // callback/dwRefData the two lists already got in createListViews() -
     // handleSubclassMessage() distinguishes them by the `hwnd` it receives
-    // (same pattern ui::FindBar's find/replace edits already established).
+    // (same pattern ui::FindReplaceDialog's find/replace edits already established).
     if (::SetWindowSubclass(m_hwndFilterEdit.get(), &CsvGridPane::subclassProc, kSubclassId,
                             reinterpret_cast<DWORD_PTR>(this)) == FALSE) {
         return false;
@@ -712,7 +712,7 @@ void CsvGridPane::handleCommand(WPARAM wParam, LPARAM /*lParam*/) noexcept {
     if (LOWORD(wParam) != kFilterEditId || HIWORD(wParam) != EN_CHANGE || !m_hwndFilterEdit) {
         return;
     }
-    // Debounced (same convention ui::FindBar::handleCommand() established) -
+    // Debounced (same convention ui::GrepBar::handleCommand() established) -
     // rapid keystrokes each restart the timer, so onFilterQueryChanged only
     // fires once the user pauses for kFilterDebounceMs.
     ::KillTimer(m_hwndFilterEdit.get(), kFilterDebounceTimerId);
@@ -721,8 +721,8 @@ void CsvGridPane::handleCommand(WPARAM wParam, LPARAM /*lParam*/) noexcept {
 
 bool CsvGridPane::handleFilterEditKeyDown(HWND /*hwnd*/, UINT vkCode) noexcept {
     // While an IME composition is active, Enter belongs to the IME (confirm
-    // the current conversion) - same reasoning ui::FindBar::
-    // handleSubclassKeyDown() gives for its own m_composing guard.
+    // the current conversion) - same reasoning ui::FindDialog::
+    // handleEditKeyDown() gives for its own m_composing guard.
     if (m_composing) {
         return false;
     }
