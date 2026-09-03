@@ -1,10 +1,11 @@
-# Issue: 検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない (P1 — 🟡 部分対応)
+# Issue: 検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない (P1 — 🟢 解決済み)
 
 - **起票日:** 2026-08-31 (v1出荷判定、`master_roadmap.md` §12.5「数GB Grep ≤ 30秒」項目の実測中に発見)
 - **部分対応日:** 2026-09-01 (`SearchService::findAll()`単一ファイルケースを対応、`GrepService::findAll()`のファイルあたり固定オーバーヘッドは対象外)
-- **対象:** `src/search/src/search_service.cpp`(`SearchService::findAll()`)/ `src/search/src/grep_service.cpp`(`GrepService::findAll()`)
+- **解決日:** 2026-09-04 (WI-23、`GrepService`のファイルあたり固定オーバーヘッド削減+恒久ベンチマーク追加。完了条件3件全て達成)
+- **対象:** `src/search/src/search_service.cpp`(`SearchService::findAll()`)/ `src/search/src/grep_service.cpp`(`GrepService::findAll()`)/ `src/document/src/file_loader.cpp`
 - **優先度:** P1 (実測で目標を明確に超過。ただしクラッシュ・データ破損ではなく速度のみの問題)
-- **対応 Phase:** 未定 (SIMD/並列化は当初からPhase 5a設計時点で「将来の最適化」と明記され意図的に未実装だった)
+- **対応 Phase:** WI-23 (単一ファイル側はSIMD/並列化ではなくUTF-8変換最適化で解決、多ファイル側はファイルあたり固定オーバーヘッド削減で解決)
 
 ## 事実
 
@@ -63,7 +64,7 @@ v1出荷判定チェックリストの「数GB Grep ≤ 30秒」項目を実測�
 
 実機ドッグフーディングで、日本語テキストとASCII"ERROR"が混在するファイルでの検索(3件中1/3、いずれも正しくハイライト)、および3GBファイルでの実際の検索(WM_COMMAND経由でFindBarへ"ERROR"を送信、1/2667件と正しい件数、ハング無く復帰)の両方をスクリーンショットで確認した。
 
-## GrepServiceのファイルあたり固定オーバーヘッド対応 (2026-09-03)
+## GrepServiceのファイルあたり固定オーバーヘッド対応 (2026-09-04)
 
 **着手前調査で、当初の仮説(`OriginalBuffer::scanUtf8()`のバイト単位UTF-8検証パスが支配的コスト)は誤りだったと判明した。** サブエージェントへ委譲した実測(2,000ファイル、各約150KB、合計約293MB、`tests/bench/`へ一時的に追加し使用後に削除した専用プローブによる)で`loadUtf8File()`のコスト内訳を分解したところ、`scanUtf8()`(mmap時に走る全バイトのUTF-8検証+チェックポイント構築)は全体(約1,572ms/2,000ファイル)のうち約570msに過ぎず、**残る約969ms(「`openMemoryMapped()`以外の全て」)の方が大きい単一要因だった。** さらに絞り込むと、`detectLineEndingBounded()`が`BufferSnapshot::extract()`(デコード結果を`OriginalBuffer`のデコードキャッシュへ永久保持するキャッシュ付き経路)を使っていたことが原因と判明した——本検証で使ったテストファイル(約150KB)は行末検出の走査上限(`kLineEndingDetectionHeadCodeUnits` = 1<<20コード単位 ≈ 1MiB)を下回るため、「先頭の一部だけを見る」という設計意図に反し、実質ファイル全体をデコード+キャッシュしていた。`GrepService::grepOneFile()`は`LoadResult`を1回読んで捨てるだけで`.lineEnding`を一度も参照しないため、このキャッシュは書き込まれるだけで二度と読まれない。
 
@@ -75,12 +76,14 @@ v1出荷判定チェックリストの「数GB Grep ≤ 30秒」項目を実測�
 
 新規テスト4件(`LoadUtf8FileForGrepTest`、`tests/unit/document_file_loader_test.cpp`)で、新関数が内容を正しく読み込みつつ明らかにCRLFなファイルでも`.lineEnding`を検出しない(既定値`Lf`のまま)ことを検証。Debug全1576テスト・変更4ファイルのclang-tidy(新規指摘0件)・Release/asan構成で確認済み(詳細は本ファイル末尾の完了条件参照)。
 
+**続けて、本issueの完了条件に残っていた最後の1項目(`GrepService`用の恒久ベンチマーク追加)にも対応した。** 新規`tests/bench/grep_service_bench.cpp`(既存`search_find_all_bench.cpp`と同じ`neomifes_search_bench`ターゲットへ追加)——500ファイル(各約50KB、合計約25MB)を一時ディレクトリへ生成し`GrepService::findAll()`を計測する`BM_GrepService_FindAll_LiteralSparseMatch`/`BM_GrepService_FindAll_NoMatch`の2件、`ScratchDir`(RAII)がデストラクタでスクリーンショット用一時ファイルを確実に削除する。当初の診断プローブ(2,000ファイル・約293MB)より意図的に小規模化し、CI/日常のベンチ実行コストを圧迫しないようにした。ベンチ追加作業中に`grep_service.h`の2箇所のドキュメントコメントが`loadUtf8File()`のまま古くなっていた(Fix Bで`loadUtf8FileForGrep()`へ切替済みなのに未更新)ことも発見・修正した。
+
 ## 完了条件
 
 - [x] 上記4方針のいずれかを採用するかを決定する(ユーザー確認) — 「ストリーミング化+UTF-8変換最適化」を選択(ストリーミング化は実測後に撤回)
 - [x] (方針1〜3採用の場合) 実装し、同じ`grep_probe.cpp`相当の手法で3GB/30秒以内を再実測する — 3GBで約17〜18秒(loadFile含む)、目標30秒以内を達成。ただし元issueの38.94秒という基準値は再現できておらず、単純比較は避けて記録した
-- [x] `GrepService`側のファイルあたり固定オーバーヘッドを削減する(方針③) — 2026-09-03、`detectLineEndingBounded()`の冗長デコード除去(Fix A)+GrepService専用ローダ新設(Fix B)+`file_size()`重複呼び出し除去(Fix C)で対応。サブエージェント実測で`loadUtf8File()`単体コストの主要因(約969ms/2,000ファイル、`scanUtf8()`の約570msより大)を特定した上での対応
-- [ ] `tests/bench/search_find_all_bench.cpp`/`GrepService`用の新規ベンチマークを`tests/bench/`へ追加し、継続的な計測を可能にする(現状は200,000行規模のベンチのみでGB規模の計測がCIに存在しない) — 未実施のまま残る
+- [x] `GrepService`側のファイルあたり固定オーバーヘッドを削減する(方針③) — 2026-09-04、`detectLineEndingBounded()`の冗長デコード除去(Fix A)+GrepService専用ローダ新設(Fix B)+`file_size()`重複呼び出し除去(Fix C)で対応。サブエージェント実測で`loadUtf8File()`単体コストの主要因(約969ms/2,000ファイル、`scanUtf8()`の約570msより大)を特定した上での対応
+- [x] `tests/bench/search_find_all_bench.cpp`/`GrepService`用の新規ベンチマークを`tests/bench/`へ追加し、継続的な計測を可能にする(現状は200,000行規模のベンチのみでGB規模の計測がCIに存在しない) — 2026-09-04、新規`tests/bench/grep_service_bench.cpp`(500ファイル・約25MB、CI時間を圧迫しない規模)を追加、既存`neomifes_search_bench`ターゲットへ登録。本issueの完了条件を全て達成した
 
 ## 再検証コマンド
 

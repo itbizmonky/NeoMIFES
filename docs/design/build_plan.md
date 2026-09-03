@@ -2617,7 +2617,9 @@ WI-22完結後、AskUserQuestionでユーザーへ次の作業を確認し「Gre
 
 Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——1回目はセッションのレート制限で中断、リセット後に再委譲し完走)。clang-tidy(変更4ファイル)新規指摘0件(`file_loader.h`への`--header-filter`直接指定は既知の落とし穴 — 事前に存在した`LoadError`のenumサイズ指摘のみでこちらの変更とは無関係、`reference_windows_cpp_ci_gotchas.md`の前例通り無視)。実機ドッグフーディングは実施せず——`document::`/`search::`は入出力のみで完結する純粋ロジック層であり、GUI経由の実機確認は本WIが変更した性能特性そのものの正しさに寄与しない(UIコードは無変更)ため、単体テストによる網羅的な検証で十分と判断した。
 
-`search_grep_multi_gb_performance_gap.md`の完了条件は「GrepService側のオーバーヘッド削減」を達成、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、CI常設化は別途検討)。
+**続けて、ユーザーへ次の作業をAskUserQuestionで確認し「ベンチマーク追加(推奨)」が選ばれ、本issue最後の完了条件(`tests/bench/`への恒久ベンチマーク追加)にも対応した。** 新規`tests/bench/grep_service_bench.cpp`(既存`search_find_all_bench.cpp`と同じ`neomifes_search_bench`ターゲットへ追加)——500ファイル・約25MB(当初の診断プローブ2,000ファイル・約293MBより意図的に小規模化、CI/日常のベンチ実行コストを圧迫しないよう配慮)を一時ディレクトリへ生成し`GrepService::findAll()`を計測する2件のベンチマーク、RAII構造体`ScratchDir`がデストラクタでスクリーンショット用一時ファイルを確実に削除する。作業中に`grep_service.h`の2箇所のドキュメントコメントが`loadUtf8File()`のまま古くなっていた(Fix Bで`loadUtf8FileForGrep()`へ切替済みなのに未更新)ことも発見・修正した。これで`search_grep_multi_gb_performance_gap.md`の完了条件3件全てを達成、issueは解決済みへ移動した。
+
+Debug/Release/ubsan全1576/1576件green(ベンチ追加後も無変化、bench targetはctest未登録の既存慣習通り)、clang-tidy新規指摘0件(新規`grep_service_bench.cpp`は既存`search_find_all_bench.cpp`と同種・同程度の警告——BENCHMARK()マクロ由来のグローバル変数警告等、全てpre-existingパターン——のみ)。新規ベンチマーク実行ファイル自体もDebug/Release/asanの3構成全てで実際に実行し、正常終了・両ベンチマーク行の出力・一時ディレクトリの削除・サニタイザ検出0件を確認済み(Release: 約3.7秒、asan: 約45.2秒)。
 
 コミット済み(`48833ad`)、pushはユーザーの明示指示待ち。
 

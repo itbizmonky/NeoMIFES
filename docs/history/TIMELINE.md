@@ -4068,8 +4068,24 @@ Release/ubsan検証はサブエージェントへ委譲した。1回目の実行
 
 背景で実行していたサブエージェント(Release/ubsanビルド検証)がAPIレート制限(HTTP 429)で強制終了する`task-notification`(`status: failed`)を受け取った。これはコード上の失敗ではなく、セッションの利用枠を使い切ったことによる中断だったため、実際の検証結果は一切得られていない状態だった。ユーザーの明示的な「リセット後、中断箇所から続行せよ」という指示を受け、**同一内容のプロンプトで同じ検証タスクを新規サブエージェントとして再起動した**(失敗したエージェントIDを`SendMessage`で再開するのではなく、新規`Agent`呼び出しとした——失敗理由がタスク内容ではなく外部要因〔レート制限〕であり、失敗した実行のコンテキストを引き継ぐ意味が無かったため)。
 
+### 完了報告後、pushと次の作業をAskUserQuestionで確認
+
+WI-23完了報告(Debug/Release/ubsan全1576/1576件green)の際、「pushしますか、また次はどの作業に進めますか?」と2つの未確定事項をユーザーへ提示したところ、続く指示が単なる「継続せよ」だった。過去のセッションで同様に曖昧な「継続せよ」/「次に進め」が来た際は毎回AskUserQuestionで具体的な選択肢を提示して解消してきた実績があり、同じパターンを踏襲した。push可否(push する/まだしない)と次の作業(ベンチマーク追加/Authenticode証明書取得/他の指示)の2問を1回のAskUserQuestion呼び出しにまとめて提示し、**「pushする」+「ベンチマーク追加(推奨)」が選ばれた。**
+
+### push実施 + WI-23残項目(恒久ベンチマーク追加)対応
+
+まず2コミット(`48833ad`/`48b79a8`)を`origin/main`へpush(`31798f6..48b79a8`)。
+
+続けて、`search_grep_multi_gb_performance_gap.md`の完了条件に唯一残っていた「`GrepService`用の恒久ベンチマークを`tests/bench/`へ追加する」に対応した。既存`tests/bench/search_find_all_bench.cpp`(単一ファイル`SearchService::findAll()`向け、200,000行の合成文書)のパターンを踏襲し、新規`tests/bench/grep_service_bench.cpp`を追加した。500ファイル(各約50KB、合計約25MB)を一時ディレクトリへ生成する`ScratchDir`(RAII、デストラクタで確実に削除)を新設し、`BM_GrepService_FindAll_LiteralSparseMatch`(1/50行に"ERROR"を含む疎マッチ)/`BM_GrepService_FindAll_NoMatch`(一切マッチしないクエリ)の2件を`->Unit(benchmark::kMillisecond)->Iterations(5)`で登録。規模は、WI-23の実際の根本原因を突き止めた際に使った診断プローブ(2,000ファイル・約293MB、一度限りの調査ツールとして未コミットのまま削除済み)より意図的に小さくし、CI/日常のベンチ実行のたびに重いコストを払わせないようにした。既存`neomifes_search_bench`ターゲット(`tests/bench/CMakeLists.txt`)へファイルを1行追加するだけで済み、新規ターゲット・新規リンク依存は不要だった。
+
+**ベンチマークを書く過程で、`grep_service.h`の2箇所のドキュメントコメントが古いままだったことに気づいた。** ファイル冒頭のスコープコメントとクラス内の`findAll()`宣言直前のコメントの両方が「`document::loadUtf8File()`を再利用する」と書いたままで、直前のWI-23本体の変更(Fix B、`loadUtf8FileForGrep()`への切替)が反映されていなかった——CLAUDE.md §11の「ADRを発行・実装変更後に設計書コード例を同期し忘れる」反復パターンと同種の見落としで、今回はコミット前に自分で気づいて即座に修正できた。
+
+新規clang-tidy指摘のうち`readability-math-missing-parentheses`(`fileIndex * kLinesPerFile + i`)のみ、この特定チェックが過去に実際のCI失敗原因になった前例(`src/ui/src/csv_grid_pane.cpp:209`、直近2回のpush失敗)があるため明示的に括弧を追加して解消した。それ以外の警告群(`BENCHMARK()`マクロが構造的に生む非const globalの指摘、google-benchmarkの`for (auto _ : state)`イディオムが誤検知される`clang-analyzer-deadcode.DeadStores`等)は、既存の兄弟ファイル`search_find_all_bench.cpp`へ同じclang-tidyを走らせて同種・同程度の警告数(16件)が既に存在することを確認した上で、この種のベンチマークファイル特有の既知・受容済みパターンと判断し追加対応しなかった。
+
+Debug/Release/ubsan全1576/1576件green(ベンチ追加後も無変化、bench targetはctest未登録という既存の慣習通り)。ベンチマーク実行ファイル自体もDebug/Release/asanの3構成全てで実行し、正しくGrepServiceの計測結果(Release: `LiteralSparseMatch`約449ms/iter・`NoMatch`約170ms/iter、asan: 同約6343ms/約2056ms、サニタイザ計装によるスローダウンのみで検出エラーは0件)を出力し正常終了すること、`%TEMP%\neomifes_bench_grep_service`が実行後に削除されていることを確認した。Release/ubsan検証は前回同様サブエージェントへ委譲し完走させた。
+
 ### まとめ
 
-**これで[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)(P1、2026-08-31起票)のGrepServiceオーバーヘッド項目が解決した。WI-23完了。** 残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、優先度は相対的に低い)。次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
+**これで[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md)(P1、2026-08-31起票)の完了条件3件全てを達成し、issueは解決済みへ移動した。WI-23完了(pushとベンチマーク追加を含む全作業)。** 次にどの作業へ着手するかはユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧を参照(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)。
 
 <!-- 次セッションはここに追記 -->

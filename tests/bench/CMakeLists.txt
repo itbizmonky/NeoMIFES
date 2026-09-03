@@ -67,6 +67,7 @@ set_target_properties(neomifes_core_bench PROPERTIES
 
 add_executable(neomifes_search_bench
     search_find_all_bench.cpp
+    grep_service_bench.cpp
 )
 
 target_link_libraries(neomifes_search_bench

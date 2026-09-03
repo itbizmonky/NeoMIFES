@@ -14,9 +14,12 @@
 //   - No contextLines (surrounding lines of context): no consumer renders
 //     them yet; adding the field now would be speculative (CLAUDE.md
 //     rule 3). Add it to GrepQuery when a results-pane phase needs it.
-//   - Reuses document::loadUtf8File() per candidate file and
-//     search::SearchService::findAll() per loaded file, both unchanged -
-//     zero modification to either as part of this phase.
+//   - Reuses document::loadUtf8FileForGrep() per candidate file (Phase 5c1
+//     used loadUtf8File() itself here; WI-23 introduced the sibling
+//     loadUtf8FileForGrep() specifically for this call site - see
+//     GrepService::findAll()'s doc comment) and
+//     search::SearchService::findAll() per loaded file - the search side is
+//     unchanged since Phase 5c1.
 
 #include <filesystem>
 #include <string>
@@ -73,8 +76,11 @@ struct GrepMatch {
 class GrepService {
 public:
     // Walks every root in query.roots, applies the include/exclude filename
-    // filters, loads each surviving candidate via document::loadUtf8File(),
-    // and runs SearchService::findAll() against it. A root that doesn't
+    // filters, loads each surviving candidate via
+    // document::loadUtf8FileForGrep() (search_grep_multi_gb_performance_gap.md,
+    // WI-23 - same load behavior as loadUtf8File(), minus line-ending
+    // detection this call site never reads), and runs
+    // SearchService::findAll() against it. A root that doesn't
     // exist, a file that fails to load (any LoadError, including
     // InvalidUtf8 - i.e. a binary file), or a directory-traversal error
     // partway through a root is skipped rather than aborting the whole

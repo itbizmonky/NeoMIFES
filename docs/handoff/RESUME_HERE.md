@@ -386,7 +386,7 @@
 
 > 新規テスト4件(`LoadUtf8FileForGrepTest`、`document_file_loader_test.cpp`)、Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——レート制限で一度中断、リセット後に再委譲し完走)、clang-tidy新規指摘0件(変更4ファイル)。実機ドッグフーディングは実施せず(`document::`/`search::`は入出力のみの純粋ロジック層、UI無変更のため単体テストで十分と判断)。
 
-> **これで`search_grep_multi_gb_performance_gap.md`(P1)のGrepServiceオーバーヘッド項目が解決した。** 残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(継続的な計測の仕組み化、優先度は低い)。次回セッション最初にやること: 次にどの作業へ着手するかをユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)を参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+> **続けてユーザーへAskUserQuestionでpush可否+次の作業を確認し、「pushする」+「ベンチマーク追加(推奨)」が選ばれた。push完了後、新規`tests/bench/grep_service_bench.cpp`(既存`search_find_all_bench.cpp`と同じ`neomifes_search_bench`ターゲット、500ファイル・約25MBのCI時間に配慮した規模)を追加し、本issue最後の完了条件も達成した。** 作業中に`grep_service.h`の2箇所のドキュメントコメントが`loadUtf8File()`のまま古くなっていた(Fix Bで`loadUtf8FileForGrep()`へ切替済みなのに未更新)ことも発見・修正した。**これで`search_grep_multi_gb_performance_gap.md`(P1)の完了条件3件全てを達成、issueは解決済みへ移動した。** 次回セッション最初にやること: 次にどの作業へ着手するかをユーザーへ確認する。既知の残作業候補は`docs/issues/README.md`のP1/P2一覧(`csv_per_cell_index_memory_scaling.md`の部分対応項目、Authenticode証明書取得はユーザー判断待ち)を参照。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
 
 > 詳細は`docs/design/build_plan.md`のWI-23セクション、`docs/history/TIMELINE.md`最新セッション参照。
 

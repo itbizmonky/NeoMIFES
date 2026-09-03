@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-04 (WI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕のGrepServiceファイルあたり固定オーバーヘッド項目を解決、解決済みへ移動。当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去。先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正。さらに先行してWI-21a〜f: 折り返し(word wrap)機能+表示メニュー拡充が完結、`view_menu_and_word_wrap_incomplete.md`〔P2〕解決済み、実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグを発見・修正(WI-15i/WI-21bに続く3度目の同型再発)、ミニマップ対応方針を`minimap_highlight_ignores_word_wrap_row_density.md`〔新規P3〕として記録)
+**最終更新:** 2026-09-04 (WI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正。さらに先行してWI-21a〜f: 折り返し(word wrap)機能+表示メニュー拡充が完結、`view_menu_and_word_wrap_incomplete.md`〔P2〕解決済み、実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグを発見・修正(WI-15i/WI-21bに続く3度目の同型再発)、ミニマップ対応方針を`minimap_highlight_ignores_word_wrap_row_density.md`〔新規P3〕として記録)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -76,7 +76,7 @@
 | [複数ウィンドウ (要件定義書§6必須機能) が構造的に未実装](no_multiple_window_support.md) | 🟢 WI-20a/b (2026-09-02〜03)。当初「複数プロセス方式」で合意しかけたが、`basic_design.md` §2.3が既に単一プロセス・複数`MainWindow`方式(VS Code方式)を明記・プロセス分離を却下済みと判明、設計書通りへ差し戻し。新規`EditorWindow`/`SessionManager`(WI-20a)+`CommandId::NewWindow`のフル配線+`WM_COPYDATA`による2つ目起動時のIPC委譲(WI-20b)で実装。実機ドッグフーディングで独立ウィンドウの開閉・ウィンドウ数ゲート付き終了・2つ目/3つ目起動のIPC委譲(`--open`あり/なし)を確認、キーストローク合成での独立編集の実演のみこの環境の制約で未確認のまま正直に記録 |
 | [表示メニューが手薄・折り返し(word wrap)機能が存在しない](view_menu_and_word_wrap_incomplete.md) | 🟢 WI-21a〜f (2026-09-03)。折り返し機能を新規実装(ヘッドレス計算層a〜d+実配線e)、`kViewMenuItems`を3→6項目へ拡張(折り返し/行番号/テーマ切替追加)。実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグ(`wordWrapEnabled`未追跡、WI-15i/WI-21bに続く3度目の同型再発)を発見・修正。カーソル移動はコード無変更で完了(`moveVertically()`が論理行のみに依存すると確認済み)、ミニマップは近似維持の設計判断を`minimap_highlight_ignores_word_wrap_row_density.md`(P3)として別途記録 |
 | [検索が CRLF 行末を考慮しない](search_crlf_line_ending.md) | 🟢 2026-09-03。Phase 5b1で`scanDocument()`が文書全体を単一バッファ化する設計へ変わっていたため、起票時想定の対応方針(行バッファから`\r`を除く)を新設計向けに再構築。新規`stripCrBeforeLf()`がCRLFの`\r`のみをRE2に渡す直前に除去し、`boundaryToOriginal`でマッチ位置を元の文書座標へ復元。`\r`が無いLFのみの文書は既存コードパスをそのまま通る最適化付き。`core::selection_model.cpp`側の同種制約(word movement等)は影響範囲(9箇所以上)と実害の軽微さ(`\r`は無描画のため視覚的に無害)を理由に明示的に対象外と判断・記録 |
-| [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 🟢 2026-09-01単一ファイル側対応(真因はRE2ではなくUTF-8変換、ASCII高速パスで約38%削減)→2026-09-04 GrepServiceのファイルあたり固定オーバーヘッドも対応(WI-23)。当初仮説(`scanUtf8()`が支配的)は実測で誤りと判明、真因は`detectLineEndingBounded()`の`extract()`経由の冗長デコード。専用ローダ`loadUtf8FileForGrep()`新設等3件のFixで解消。残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ(優先度低) |
+| [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 🟢 2026-09-01単一ファイル側対応(真因はRE2ではなくUTF-8変換、ASCII高速パスで約38%削減)→2026-09-04 GrepServiceのファイルあたり固定オーバーヘッドも対応(WI-23)。当初仮説(`scanUtf8()`が支配的)は実測で誤りと判明、真因は`detectLineEndingBounded()`の`extract()`経由の冗長デコード。専用ローダ`loadUtf8FileForGrep()`新設等3件のFixで解消。恒久ベンチマーク`tests/bench/grep_service_bench.cpp`も追加し完了条件を全て達成 |
 
 ---
 
