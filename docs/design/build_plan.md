@@ -2587,7 +2587,7 @@ Debug/Release/ubsan全1572/1572件green(3構成とも実行)。clang-tidy exit c
 
 **これで[`search_crlf_line_ending.md`](../issues/search_crlf_line_ending.md)(P1)が解決済みとなった。** 次にどの作業へ着手するかはユーザーへ確認する。
 
-コミット済み(`<WI-22-commit-hash>`)、pushはユーザーの明示指示待ち。
+コミット済み(`9f18532`)、pushはユーザーの明示指示待ち。
 
 ---
 
