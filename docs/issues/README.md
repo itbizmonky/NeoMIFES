@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-04 (WI-24: Ctrl+F検索を`ui::FindDialog`新設で独立ダイアログ化(旧`ui::FindBar`は完全削除)。`overlay_focus_blocks_file_lifecycle_keys.md`〔P2〕の対象を更新、独立ダイアログ化した`FindDialog`/`FindReplaceDialog`も別機構で同じ症状を持つと判明し対象6件へ拡張。先行してWI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。さらに先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正)
+**最終更新:** 2026-09-04 (WI-25着手前調査で`master_roadmap_vertical_edit_terminology_drift.md`〔新規〕を発見・即日解決: master_roadmap.mdが「縦編集」をPhase 0確定済みの原義〔列編集〕から無断で「縦書き入力」へ再定義していたドキュメント不整合を修正。先行してWI-24: Ctrl+F検索を`ui::FindDialog`新設で独立ダイアログ化(旧`ui::FindBar`は完全削除)。`overlay_focus_blocks_file_lifecycle_keys.md`〔P2〕の対象を更新、独立ダイアログ化した`FindDialog`/`FindReplaceDialog`も別機構で同じ症状を持つと判明し対象6件へ拡張。先行してWI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。さらに先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -77,6 +77,7 @@
 | [表示メニューが手薄・折り返し(word wrap)機能が存在しない](view_menu_and_word_wrap_incomplete.md) | 🟢 WI-21a〜f (2026-09-03)。折り返し機能を新規実装(ヘッドレス計算層a〜d+実配線e)、`kViewMenuItems`を3→6項目へ拡張(折り返し/行番号/テーマ切替追加)。実機ドッグフーディングで`RenderPipeline::FrameState`の重大バグ(`wordWrapEnabled`未追跡、WI-15i/WI-21bに続く3度目の同型再発)を発見・修正。カーソル移動はコード無変更で完了(`moveVertically()`が論理行のみに依存すると確認済み)、ミニマップは近似維持の設計判断を`minimap_highlight_ignores_word_wrap_row_density.md`(P3)として別途記録 |
 | [検索が CRLF 行末を考慮しない](search_crlf_line_ending.md) | 🟢 2026-09-03。Phase 5b1で`scanDocument()`が文書全体を単一バッファ化する設計へ変わっていたため、起票時想定の対応方針(行バッファから`\r`を除く)を新設計向けに再構築。新規`stripCrBeforeLf()`がCRLFの`\r`のみをRE2に渡す直前に除去し、`boundaryToOriginal`でマッチ位置を元の文書座標へ復元。`\r`が無いLFのみの文書は既存コードパスをそのまま通る最適化付き。`core::selection_model.cpp`側の同種制約(word movement等)は影響範囲(9箇所以上)と実害の軽微さ(`\r`は無描画のため視覚的に無害)を理由に明示的に対象外と判断・記録 |
 | [検索・Grepが「数GB ≤ 30秒」目標を実測で満たさない](search_grep_multi_gb_performance_gap.md) | 🟢 2026-09-01単一ファイル側対応(真因はRE2ではなくUTF-8変換、ASCII高速パスで約38%削減)→2026-09-04 GrepServiceのファイルあたり固定オーバーヘッドも対応(WI-23)。当初仮説(`scanUtf8()`が支配的)は実測で誤りと判明、真因は`detectLineEndingBounded()`の`extract()`経由の冗長デコード。専用ローダ`loadUtf8FileForGrep()`新設等3件のFixで解消。恒久ベンチマーク`tests/bench/grep_service_bench.cpp`も追加し完了条件を全て達成 |
+| [master_roadmap.mdが「縦編集」の意味を確定済みの定義から無断で再定義していた](master_roadmap_vertical_edit_terminology_drift.md) | 🟢 2026-09-04解決済み(ドキュメント修正のみ)。Phase 0時点でユーザー確認済みの原義「列編集(MIFES由来)」を、後発のmaster_roadmap.mdが無断で「縦書き入力」(DirectWrite縦組み)へ再定義していたと判明。原義へ修正、矩形選択自体は既にPhase 4b8a/4b8gで実装済みで残作業は列編集専用コマンド4種のみと判明(想定よりはるかに小規模) |
 
 ---
 

@@ -35,6 +35,7 @@
 #include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
+#include "neomifes/app/reindent.h"
 #include "neomifes/app/status_bar_format.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/app/tab_index_math.h"
@@ -1453,6 +1454,32 @@ void dispatchMoveLineCommand(bool moveDown, HWND hwnd, RenderPipeline& renderPip
         moveDown ? "edit.moveLineDown" : "edit.moveLineUp", hwnd, renderPipeline, session);
 }
 
+// WI-25 (自動整形, command palette only - same "edit.duplicateLine"
+// precedent as the dispatch*Command() helpers above). Extracted into its
+// own named function (rather than inlined in buildCommandRegistry()'s
+// CommandDescriptor::action like edit.convertTabsToSpaces/convertSpacesToTabs
+// above) specifically to keep buildCommandRegistry()'s own cognitive
+// complexity under clang-tidy's threshold - this command's 2 early-return
+// checks (no detected language; a detected language without brace-based
+// block structure) push it past what an inline lambda body can absorb
+// there. A silent no-op for either check (dispatchGitRefreshDiffCommand()'s
+// established "quietly narrow the scope" precedent, not
+// dispatchJsonFormatCommand()'s modal-dialog one, right above) - "this file
+// type has no brace-based block structure" is a capability gate, not a
+// failure worth interrupting the user over.
+void dispatchReindentCommand(HWND hwnd, RenderPipeline& renderPipeline, EditorSession& session,
+                             const core::Settings& settings) {
+    const auto language = session.language();
+    if (!language || !neomifes::app::supportsReindent(*language)) {
+        return;
+    }
+    if (!neomifes::app::applyReindent(session.document(), session.dispatcher(), session.selection(), *language,
+                                      settings.tabWidth, settings.insertSpacesForTab)) {
+        return;
+    }
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
 // WI-15d ("JSON整形", command palette only - see this WI's plan for why no
 // CommandId/keybinding/menu entry, same "edit.duplicateLine" precedent
 // dispatchDuplicateLineCommand() above follows). Reparses the WHOLE
@@ -2625,6 +2652,20 @@ std::vector<CommandDescriptor> buildCommandRegistry(
                                                           session.selection(), settings.tabWidth)) {
                 ::InvalidateRect(hwnd, nullptr, FALSE);
             }
+        }});
+    // WI-25 (自動整形, 要件定義書 sec.6 - distinct from WI-12's 自動インデント):
+    // same palette-only footprint as edit.convertTabsToSpaces above. A
+    // silent no-op (dispatchGitRefreshDiffCommand()'s established "quietly
+    // narrow the scope" precedent, not json.format's modal-dialog one) when
+    // the active document has no detected language or a detected language
+    // without brace-delimited block structure (app::supportsReindent()) -
+    // this is a capability gate, not a failure worth interrupting the user
+    // over.
+    commands.push_back(CommandDescriptor{
+        .id = u"edit.reindent", .title = u"Reindent (Auto Format)", .keybindingLabel = u"",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline, &settings]() {
+            dispatchReindentCommand(hwnd, renderPipeline, workspace.active(), settings);
         }});
     // WI-12: Ctrl+A/Ctrl+D/Alt+Up/Alt+Down/Ctrl+Shift+K - CommandId::None
     // (same "palette-only, no keybindingLabelFor() lookup" pattern as

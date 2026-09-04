@@ -90,7 +90,9 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-24(Ctrl+F検索を秀丸風の独立ダイアログ化)完結(2026-09-04)。** WI-23完結後、次フェーズ候補確認でユーザーから「検索バーをダイアログ形式とする改修は実施されていないのか」との質問があり、WI-18(2026-09-02)で既にCtrl+H(置換)のみダイアログ化済みだった経緯を説明、ユーザーから「秀丸エディタのような検索ダイアログが理想」との明確な要望を受け着手した。新規`ui::FindDialog`を`FindReplaceDialog`の骨格からフォークして新設(置換モードのランタイムトグル追加は「1クラス1責務」の既存方針に反するため却下)、`FindBar`から検索履歴/Ctrl+H割り込みの2機能を移植、`normal_mode_wiring.cpp`約200箇所の機械的リネームを実施(コンパイルエラーで置換漏れを検出)。設計段階でチェックボックス行の幅計算バグを手計算で発見・事前修正(`FindReplaceDialog`が過去に踏んだのと同型のバグ)。`ui::FindBar`は呼び出し元ゼロになったため完全削除。実機ドッグフーディングでCtrl+F/ライブ検索/F3/Ctrl+H遷移/Escape/正規表現チェックボックスを全て確認、途中2回遭遇したプロセス終了は`keybd_event`によるグローバルキー合成の既知の環境不安定性と特定し、より確実な入力手法で問題なく再現できることを確認した。Debug/Release/ubsan全1576/1576件green、clang-tidy(変更・新規13ファイル)新規指摘0件。詳細は本ファイルのWI-24セクション参照。
 >
-> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)+検索CRLF(WI-22)+Grep固定オーバーヘッド(WI-23)+検索ダイアログ化(WI-24)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
+> **🎉 WI-25(自動整形/reindent機能の新設)完結(2026-09-04)。** WI-24完結後、ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」との指示があり、一般探索エージェントへ完成度監査を委任した結果、要件定義書§6明記の「自動整形」がmaster_roadmap.mdの60機能マトリクスにすら登場せず計画から完全に見落とされていたと判明、これを新規WI-25として実装した。汎用ブレース深度APIが存在しないこのコードベースで、既存`syntax::parse()`のトークン分類(`Punctuation`/`String`/`Comment`)を再利用し文字列/コメント内のブレースを正しく除外する設計とした。新規`app::supportsReindent()`(12言語の明示的許可リスト)+`app::computeReindentEdits()`(`DepthTracker`/`SkipRangeTracker`/`ScopeTracker`の3ヘルパークラスで認知的複雑度を抑制)を新設、`edit.reindent`としてコマンドパレットへ配線(既存`edit.convertTabsToSpaces`と同じパレット専用の足跡)。実機ドッグフーディングでC++ファイルの再インデント・Undo一括巻き戻し・非対応言語でのサイレントno-opを確認。副次的に「縦編集」の用語がmaster_roadmap.md内で無断再定義されていたドキュメント不整合も発見・同日解決した([`master_roadmap_vertical_edit_terminology_drift.md`](../issues/master_roadmap_vertical_edit_terminology_drift.md))。Debug/Release/ubsan全1589/1589件green、clang-tidy新規指摘0件。詳細は本ファイルのWI-25セクション参照。
+>
+> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)+検索CRLF(WI-22)+Grep固定オーバーヘッド(WI-23)+検索ダイアログ化(WI-24)+自動整形(WI-25)は全て対応完了。次にどれへ着手するかはユーザーへ確認すること):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - ~~[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1)~~ — 🟡 **2026-09-01部分対応 → 2026-09-04残項目対応(WI-23)。** 単一ファイル側は実測で真因がRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドも対応済み(WI-23参照)、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ
 > - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
@@ -2662,6 +2664,48 @@ Debug/Release/ubsan全1576/1576件green(3構成とも実行、Release/ubsanは�
 `docs/issues/overlay_focus_blocks_file_lifecycle_keys.md`(P2、既存issue)の「対象」リストを更新し、調査で判明した副次的発見(`FindReplaceDialog`も同一のCtrl+S/O/N非到達ギャップを実は既に持っていた——`GetAncestor(..., GA_ROOT)`が`WS_CHILD`親チェーンしか辿らずowner関係を辿らないため)を記録した(本WIでは修正しない)。
 
 コミット済み(`7a40a39`)、pushはユーザーの明示指示待ち。
+
+---
+
+## WI-25 — 自動整形(reindent)機能の新設(`edit.reindent`)
+
+### 目的
+
+WI-24完結後、ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」との指示があった。CLAUDE.mdが定める3つの正典ソースから次の候補を選ぶため一般探索エージェントへ完成度監査を委任した結果、**要件定義書§6「編集」に明記されている「自動整形」が、master_roadmap.mdの60機能マトリクスにも一度も登場せず、WI-01〜WI-24のどのWork Itemにも触れられておらず、`docs/issues/`にも起票されていない**ことが判明した——計画作成時に純粋に見落とされていたケース。既存の「自動インデント」(WI-12、Enterキーで前行のインデントを継承)とは別の機能で、既存テキストをブレースの深さに基づき再インデントする(Hidemaru/Sakura/VSCodeの「整形」「reindent」相当)。
+
+副次的に「縦編集」の用語がmaster_roadmap.md内で無断に再定義されていた不整合も発見し、同日中に別issue([`master_roadmap_vertical_edit_terminology_drift.md`](../issues/master_roadmap_vertical_edit_terminology_drift.md))として解決した(ドキュメント修正のみ、本WIのコードには影響なし)。
+
+続けてExplore agent・Plan agentへ設計を委任し、EnterPlanMode/ExitPlanModeで正式なPlan承認を得て実装した。
+
+### 設計
+
+汎用的な「ブレース深度」構造化APIはこのコードベースに一切存在しない(`syntax::`は意図的にtree-sitterを内部実装として隠蔽)が、既存の`syntax::parse(text, language)`(tree-sitterベースのトークナイザ)が返す`TokenKind::Punctuation`/`String`/`Comment`分類を再利用すれば、文字列リテラルやコメント内のブレースを正しく除外した精度の高いブレース深度計算を、生のtree-sitter APIに触れずに実現できると判明した。
+
+**スコープ: 選択範囲対応。** 深さ計算は文書の先頭から対象行まで全トークンを辿る必要があり(選択範囲の有無に関わらず不可避)、選択範囲対応は同じ走査に「対象行集合に含まれる行だけ編集を出力する」フィルタを1つ追加するだけで実現できた。
+
+**対応言語: 明示的な許可リスト。** `Python`(辞書/セットリテラルが`{}`を使うが主要ブロック構造はコロン+インデント)や`Shell`(関数本体は`{}`だが`if/fi`等の主要制御構文はキーワード対)は、ブレース文字が存在しても「自然にno-op」にはならず誤った再インデントを行うリスクがあるため、`app::supportsReindent(syntax::Language)`という明示的な許可リストを新設した——対応: `Cpp, C, JavaScript, Java, Go, Rust, TypeScript, Tsx, Php, Json, Css, PowerShell`(12言語)。言語未検出または非対応言語の場合はサイレントno-op(`dispatchGitRefreshDiffCommand()`の「静かにスコープを絞る」前例に倣う、能力の範囲外であり失敗ではないため)。
+
+### 実装
+
+新規`src/app/include/neomifes/app/reindent.h` + `src/app/reindent.cpp`。`supportsReindent()`(許可リスト判定)、`reindentSelectedLineRanges()`(カーソル選択→マージ済み行範囲、空=文書全体)、`computeReindentEdits()`(コア算法)を実装。1行に複数の`}`があっても表示上のディーデントは1段まで、というHidemaru/VSCode流の慣習(`} else {`が自分自身は1段ディーデントして表示されつつ、次の行は正しく元の深さへ戻る)を実装した。複数行コメント/文字列の内部行は完全に触れない設計。
+
+**`computeReindentEdits()`の認知的複雑度がclang-tidyの閾値(25)を超過(49)したため、`DepthTracker`/`SkipRangeTracker`/`ScopeTracker`という3つの小さなヘルパークラスへ分解した。** 各クラスが「ブレースイベントを順に追ってdepthを追跡」「文字列/コメントの継続行判定」「選択範囲行判定」という単一の責務を持ち、メインループの分岐がフラットになった。
+
+`editor_input.h`/`.cpp`へ`applyReindent()`を追加(既存`applyIndentationConversion()`と同じ「computeして空なら中断、カーソルスナップショット、`ReplaceAllCommand`ディスパッチ」の型)。`normal_mode_wiring.cpp`の`buildCommandRegistry()`へ`edit.reindent`(`CommandId::None`、パレット専用、既存`edit.convertTabsToSpaces`と同じ足跡)を登録。**ディスパッチロジックを`dispatchReindentCommand()`という独立関数へ切り出した。** ロジックをlambda内へ直接書くと`buildCommandRegistry()`自体の認知的複雑度が25→29へ超過することが判明したため(この巨大関数の複雑度予算が既にほぼ上限だったところへ2つのif分岐を追加したのが原因)、既存の`dispatchJsonFormatCommand()`と同じ「名前付き関数へ切り出しlambda本体を1行にする」パターンを踏襲して解消した。
+
+### テスト作成
+
+新規`tests/unit/app_reindent_test.cpp`(13件)。手計算で期待値を事前検証してから記述——特に「フラッシュレフトの入力では閉じブレース行が既に深さ0で正しいためno-op edit」という、当初の手計算では見落としていた挙動を、実際にテストを走らせて3件のテスト失敗から発見・修正した(実装ではなくテストの期待値側の誤りだった。既存`computeIndentationConversionEdits()`の「変更が無ければスキップ」慣習を正しく踏襲していることの再確認になった)。ネストしたブレース・`} else {`のディーデント/深度復帰・文字列内ブレースの除外・コメント内ブレースの除外・複数行コメントの内部行不変・tabs/spaces設定の反映・選択範囲なし=全文書/選択範囲あり=その行のみ・既に正しい入力=編集0件・空行不変・許可リストの網羅・行範囲マージ/境界規則、を検証。
+
+### 実機ドッグフーディング
+
+PowerShell + Win32 P/Invoke(WI-24で確立した「`keybd_event`でモディファイア状態のみ設定+`PostMessage`で対象コントロールへ直接キー配送」の確実な手法を踏襲)で以下を確認した: 意図的に崩したインデントを持つC++ファイルをコマンドパレット経由(Ctrl+Shift+P→"reindent"→Enter)で整形し、ネストしたブレース・文字列リテラル内のブレース(`"a { brace } inside a string"`)・`} else {`の深度復帰を含む全ての行が正しく再インデントされることをスクリーンショットで確認。Ctrl+Zで全変更が1回のUndoステップとして正しく巻き戻ることを確認。非対応言語(Python)のファイルで同じ操作を試み、タイトルバーの未保存マーカーが一切表示されない(内容変更なし)ことを確認しサイレントno-op動作を実証した。
+
+### 最終ゲート
+
+Debug/Release/ubsan全1589/1589件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1589/1589件green(76.5秒)、ASanビルド`AddressSanitizer: ENABLED`確認+ctest 1589/1589件green(308.6秒、ログ全文grepでサニタイザ診断0件))。clang-tidy(新規・変更4ファイル個別実行)新規指摘0件——`std::sort`→`std::ranges::sort`(`modernize-use-ranges`)と認知的複雑度超過2件(`computeReindentEdits()`/`buildCommandRegistry()`)を実装中に発見・修正済み。
+
+コミット: `<pending>`(コミット後にハッシュを反映)。
 
 ---
 

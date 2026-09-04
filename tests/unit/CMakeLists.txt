@@ -105,6 +105,7 @@ add_executable(neomifes_unit_tests
     git_repository_test.cpp
     app_git_diff_bridge_test.cpp
     app_git_diff_view_bridge_test.cpp
+    app_reindent_test.cpp
 )
 
 target_link_libraries(neomifes_unit_tests

@@ -37,6 +37,7 @@ enum class IndentationConversionTarget;
 
 namespace neomifes::syntax {
 struct OutlineNode;
+enum class Language;
 }  // namespace neomifes::syntax
 
 namespace neomifes::app {
@@ -197,6 +198,19 @@ bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int 
 bool applyIndentationConversion(core::IndentationConversionTarget target, document::Document& document,
                                 core::CommandDispatcher& dispatcher, const core::SelectionModel& selectionModel,
                                 std::uint32_t tabWidth);
+
+// "自動整形" (WI-25) command-palette action: re-indents the active
+// selection's lines (or the whole document, if no selection - see
+// reindent.h's reindentSelectedLineRanges()) to their brace-nesting-implied
+// indentation. `language` must satisfy app::supportsReindent() - the caller
+// is expected to have already checked (same contract as
+// extractCurrentOutline() below has for language resolution). Reuses
+// core::ReplaceAllCommand exactly like applyIndentationConversion() above -
+// same "N independent line-scoped edits, cursor never moves" shape. Returns
+// false (no-op, no dispatch) if no line needs reindenting.
+bool applyReindent(document::Document& document, core::CommandDispatcher& dispatcher,
+                   const core::SelectionModel& selectionModel, syntax::Language language,
+                   std::uint32_t tabWidth, bool insertSpacesForTab);
 
 // Parses the currently open document into an OutlineNode tree (empty if no
 // language detected - an untitled session, or an unrecognized extension).

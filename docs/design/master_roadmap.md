@@ -109,7 +109,7 @@ v1.0 の 17 機能を精査し、実際に三大エディタが備える「拾�
 |---|---|---|---|---|
 | 複数カーソル | ✕ | △ | ✕ | 4b (完了、既に凌駕) |
 | 矩形選択 | ○ | ○ | ◎ | 4b8 |
-| 縦編集 (縦書き入力) | ○ | ○ | ◎ | **未計画** — v2.0 は「4b8 (研究)」としたが研究も実装も行われていない。Phase 12 前に要否を判断 (U#21) |
+| 縦編集 (列編集、MIFES由来 - 「縦書き入力」ではない、`docs/issues/master_roadmap_vertical_edit_terminology_drift.md`参照) | ○ | ○ | ◎ | **未計画** — 矩形選択自体はPhase 4b8a/4b8gで実装済み(`SelectionModel::setRectangularSelection()`)。残るのは専用コマンド4種(`ColumnInsert/Delete/Overwrite/Append`、`detailed_design.md` §5.1.1)、特に「MIFESの縦編集の主用途」である`ColumnAppendCommand` |
 | フリーカーソル (虚数位置) | ✕ | ◎ | ○ | 4b8 (拡張) |
 | タブ⇔スペース変換 | ○ | ○ | ◎ | 4b8 (完了) |
 | 自動インデント | ○ | ○ | ○ | **Phase 8.6e** — v2.0 は「4b8」としたが**実装されないまま 4b8 が「保留項目なし」で完了宣言された** (`gap_analysis.md` §6.3) |
@@ -3311,7 +3311,7 @@ neomifes.showToast("Inserted!")
 | **U#18** (v2.0 新規) | **テレメトリの送信内容項目確定** | Phase 12 前 | プライバシーレビュー |
 | **U#19** (v2.0 新規) | **マーケットプレース運営体制** | Phase 12 出荷後 | 事業計画 |
 | **U#20** (v2.0 新規) | **ライセンス確定** (本体 Apache 2.0 vs MIT vs GPL) | Phase 12 前 | 弁護士確認 |
-| **U#21** (v2.1 新規) | **縦編集 (縦書き入力) の要否** — v2.0 は「4b8 (研究)」としたが研究も実装も行われなかった。DirectWrite の縦書きレイアウト対応が必要で実装コストが大きい | Phase 12 前 | 対象市場・ユーザー要望 |
+| **U#21** (v2.1 新規、2026-09-04訂正) | **縦編集(列編集、MIFES由来)専用コマンド4種の実装要否** — 「縦書き入力」は誤った再定義だったと判明(`docs/issues/master_roadmap_vertical_edit_terminology_drift.md`)。Phase 0時点でユーザー確認済みの原義は「列単位の追記/削除」(MIFES由来)であり、DirectWrite縦書きレイアウトとは無関係。矩形選択自体はPhase 4b8a/4b8gで実装済み、残作業は`ColumnInsert/Delete/Overwrite/Append`の4専用コマンドのみで、想定より遥かに小規模 | 次フェーズ候補として随時 | 実装コストは小〜中(要件定義書§6の必須機能) |
 | **U#22** (v2.1 新規) | **保存後の Piece Table 再構築と Undo 履歴の整合性** — 保存で Add Buffer 断片を Original 単一ピースへ畳んだ後、既存 `UndoStack` の `TextRange` と `BufferSnapshot` の `shared_ptr` 参照が有効か | Phase 8.5a | 実機検証 (probe) |
 | **U#23** (v2.1 新規) | **保存失敗時の一時ファイル処理** — `ReplaceFileW` が他プロセスのロックで失敗した場合、一時ファイルを残すか消すか。データ保全とゴミファイルのトレードオフ | Phase 8.5a | 実機検証 |
 | **U#24** (v2.1 新規) | **`SyntaxWorker` をタブごとに持つか共有するか** — 共有時はタブ切替で `resetIncrementalState=true` が必要。メモリ量とレスポンスのトレードオフ | Phase 8.5d | 計測 |

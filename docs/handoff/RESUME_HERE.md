@@ -414,6 +414,28 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-04) — WI-25完了: 自動整形(reindent)機能の新設(`edit.reindent`)
+
+> **WI-24完結後、ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」との指示があった。** CLAUDE.mdが定める3つの正典ソース(要件定義書の未達項目/master_roadmap.md §12.3出荷判定チェックリストの未達項目/gap_analysis.mdのP0/P1)から次の候補を選ぶため一般探索エージェントへ完成度監査を委任した結果、**要件定義書§6「編集」に明記されている「自動整形」が、master_roadmap.mdの60機能マトリクスにも一度も登場せず、WI-01〜WI-24のどのWork Itemにも触れられておらず、`docs/issues/`にも起票されていない**ことが判明した——計画から純粋に見落とされていたケース。既存の「自動インデント」(WI-12、Enterキーで前行のインデントを継承)とは別の機能で、既存テキストをブレースの深さに基づき再インデントする(Hidemaru/Sakura/VSCodeの「整形」相当)。
+
+> **副次的発見: 「縦編集」の用語がmaster_roadmap.md内で無断再定義されていた。** Phase 0時点でユーザー確認済みの原義「列編集(MIFES由来)」を、後発のmaster_roadmap.mdが無断で「縦書き入力」(DirectWrite縦組み)へ再定義していたドキュメント不整合を発見、新規issue([`master_roadmap_vertical_edit_terminology_drift.md`](../issues/master_roadmap_vertical_edit_terminology_drift.md))として同日中に解決した(ドキュメント修正のみ)。実コード確認の結果、矩形選択自体は既にPhase 4b8a/4b8gで実装済みで、残作業は列編集専用コマンド4種(`ColumnInsert/Delete/Overwrite/Append`)のみと判明、想定よりはるかに小規模——**次フェーズ候補として有力。**
+
+> **設計:** 汎用的な「ブレース深度」構造化APIはこのコードベースに一切存在しないが、既存の`syntax::parse(text, language)`が返す`TokenKind::Punctuation`/`String`/`Comment`分類を再利用すれば、文字列/コメント内のブレースを正しく除外した精度の高いブレース深度計算を実現できると判明した。スコープは選択範囲対応(選択範囲があればその行のみ、無ければ文書全体)、対応言語は明示的な許可リスト(`Cpp, C, JavaScript, Java, Go, Rust, TypeScript, Tsx, Php, Json, Css, PowerShell`の12言語 — Python/Shellは`{}`を持つが主要ブロック構造がブレース以外のため除外)。
+
+> **実装:** 新規`app::supportsReindent()`/`app::reindentSelectedLineRanges()`/`app::computeReindentEdits()`(`src/app/reindent.h`/`.cpp`)。認知的複雑度がclang-tidyの閾値を超過(49 vs 25)したため`DepthTracker`/`SkipRangeTracker`/`ScopeTracker`の3ヘルパークラスへ分解して解消。`edit.reindent`をコマンドパレットへ配線(`CommandId::None`、既存`edit.convertTabsToSpaces`と同じ足跡)、`buildCommandRegistry()`自体の複雑度超過(29 vs 25)を`dispatchReindentCommand()`という独立関数への切り出しで解消(既存`dispatchJsonFormatCommand()`と同じパターン)。
+
+> **テスト:** 新規`tests/unit/app_reindent_test.cpp`(13件)。手計算で期待値を事前検証したが、3件で「フラッシュレフト入力では閉じブレース行が既に深さ0で正しくno-op edit」という見落としがあり、テスト実行結果から発見・修正した(実装ではなくテスト側の誤りだった)。
+
+> **実機ドッグフーディング:** WI-24で確立した「`keybd_event`でモディファイア状態のみ設定+`PostMessage`で対象コントロールへ直接キー配送」の確実な手法で、意図的に崩したC++ファイルの再インデント(ネストしたブレース・文字列内ブレース除外・`} else {`深度復帰を含む)・Ctrl+Zでの一括Undo・非対応言語(Python)でのサイレントno-opを全て確認。
+
+> Debug/Release/ubsan全1589/1589件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1589/1589件green、ASanビルド`AddressSanitizer: ENABLED`確認+ctest 1589/1589件green、ログ全文grepでサニタイザ診断0件)。clang-tidy(新規・変更4ファイル)新規指摘0件。
+
+> **次回セッション最初にやること:** ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が出ているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい(改めてユーザーへ確認する必要は無い)。有力候補は上記の「縦編集」列編集コマンド4種(`docs/issues/master_roadmap_vertical_edit_terminology_drift.md`参照、想定よりはるかに小規模と判明済み)。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+
+> 詳細は`docs/design/build_plan.md`のWI-25セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

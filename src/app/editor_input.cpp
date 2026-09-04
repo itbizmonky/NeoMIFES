@@ -11,6 +11,7 @@
 
 #include <filesystem>
 
+#include "neomifes/app/reindent.h"
 #include "neomifes/app/syntax_language.h"
 #include "neomifes/core/command_dispatcher.h"
 #include "neomifes/core/edit_commands.h"
@@ -486,6 +487,19 @@ bool applyIndentationConversion(core::IndentationConversionTarget target, Docume
                                 CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
                                 std::uint32_t tabWidth) {
     auto edits = core::computeIndentationConversionEdits(target, static_cast<int>(tabWidth), document);
+    if (edits.empty()) {
+        return false;
+    }
+    const std::vector<Cursor> cursorsBefore(selectionModel.cursors().begin(),
+                                            selectionModel.cursors().end());
+    dispatcher.dispatch(std::make_unique<core::ReplaceAllCommand>(std::move(edits), cursorsBefore));
+    return true;
+}
+
+bool applyReindent(Document& document, CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
+                   syntax::Language language, std::uint32_t tabWidth, bool insertSpacesForTab) {
+    auto edits = computeReindentEdits(document, language, static_cast<int>(tabWidth), insertSpacesForTab,
+                                      selectionModel.cursors());
     if (edits.empty()) {
         return false;
     }

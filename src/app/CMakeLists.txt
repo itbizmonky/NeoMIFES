@@ -7,6 +7,7 @@ add_library(neomifes_app_input STATIC
     editor_input.cpp
     document_open.cpp
     editor_session.cpp
+    reindent.cpp
     # key_chord.cpp (WI-10): KeyChord parse/format - Win32 VK_* constants but
     # no HWND, same reasoning as editor_input.cpp's own home here.
     key_chord.cpp
