@@ -4255,4 +4255,16 @@ Debug/Release/ASan全3構成で新規5件含む1594/1594件green(Release/ASanは
 
 **これで要件定義書§6の「縦編集」が(MIFES由来の列編集という原義通りに)実装され、計画漏れが解消された。WI-26完了。** ユーザーの標準委任に基づき、次作業の選定もこちらの判断で継続する。次点候補は本WIで発見した[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)(P2、設計を伴う修正が必要)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。
 
+## 運用上の重大な教訓 — WI-23〜WI-26の「ubsan」検証は実際には全て`asan`(MSVC)で、真のCI構成(`ubsan`=clang-cl)は一度もローカルで通していなかった
+
+WI-26のpush後、ユーザーから「pushせよ、前回失敗していたので調査が必要な場合は対応せよ」との指示があり調査した。`gh run list`で確認したところ、WI-23の直前のpush(コミット`047dd05`)のCIが実際には**失敗**していた(`UBSan (clang-cl)`ジョブの`Build`ステップ)にも関わらず、この事実が見過ごされたままWI-24〜WI-26の3WI分が「Debug/Release/ubsan全green」と(誤って)記録され続けていたと判明した。
+
+**根本原因:** `CMakePresets.json`には`asan`(MSVC + AddressSanitizer)と`ubsan`(**`CMAKE_CXX_COMPILER=clang-cl`** + UndefinedBehaviorSanitizer)という2つの独立したプリセットが存在する。CI第3ジョブは`ubsan`(clang-cl)を使うが、本セッション(WI-23以降)のローカル検証・サブエージェントへの委譲プロンプトは一貫して`asan`(MSVC)だけを実行し、その結果を「ubsan」の名でドキュメントへ記録していた。**この教訓自体は`reference_windows_cpp_ci_gotchas.md`(ユーザーの自動記憶)の項目6・8に既に文書化済みだったが、「ubsan」という言葉を実際の実行プリセットと結びつけて確認する規律が続かず、同じ穴に落ちた。**
+
+**実際の破損箇所:** `tests/bench/grep_service_bench.cpp`(WI-23で新規追加)の`GrepQuery{.roots=..., .query=...}`が`includeGlobs`/`excludeGlobs`フィールドを省略しており、clang-clの`-Wmissing-designated-field-initializers`(`-Werror`扱い)がこれを拒否していた(MSVCはこの診断を持たないため、通常のDebug/Release/asanプリセットでは一切検出されない、`reference_windows_cpp_ci_gotchas.md`項目8と全く同型のバグ)。
+
+**対応:** `.includeGlobs = {}` / `.excludeGlobs = {}`を明示的に追加(2箇所)。ローカルで初めて実際の`ubsan`プリセット(`cmake --preset ubsan && cmake --build --preset ubsan`、`clang-cl`はVS付属LLVM`VC\Tools\Llvm\x64\bin`配下)を通し、ビルドexit 0(83/83ターゲット)+ctest 1594/1594件greenを確認してから修正をpushした。
+
+**再発防止:** 今後「フル3構成(Debug/Release/ubsan)」を謳う際は、必ず実際に`ubsan`プリセット(clang-cl)を実行してから記録する。この教訓はユーザーの自動記憶(`feedback_verification_cadence.md`/`reference_windows_cpp_ci_gotchas.md`項目8)にも追記済み。
+
 <!-- 次セッションはここに追記 -->

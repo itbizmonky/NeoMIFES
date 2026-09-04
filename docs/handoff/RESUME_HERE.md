@@ -456,6 +456,12 @@
 
 > ---
 
+> # 🔴 最重要 (2026-09-04) — 「ubsan」検証がWI-23〜WI-26の4WI分、実際には`asan`(MSVC)しか実行していなかった
+
+> **WI-26のpush後、ユーザーから「pushせよ、前回失敗していたので調査が必要な場合は対応せよ」との指示で発覚した。** `CMakePresets.json`の`asan`(MSVC)と`ubsan`(**`CMAKE_CXX_COMPILER=clang-cl`**)は別プリセットだが、WI-23以降のローカル検証・サブエージェント委譲は一貫して`asan`だけを実行し「ubsan」の名で記録し続けていた。CI第3ジョブ(`ubsan`、clang-cl)は`tests/bench/grep_service_bench.cpp`(WI-23新規)の designated initializer 省略(`GrepQuery`の`includeGlobs`/`excludeGlobs`)を`-Werror`で検出して落ちていたが、この失敗はWI-24〜WI-26の3WI分、誰にも気づかれずに素通りしていた。`.includeGlobs = {}`/`.excludeGlobs = {}`を追加して修正、**実際に`ubsan`プリセット(clang-cl)をローカルで初めて通し**ビルドexit 0+ctest 1594/1594件greenを確認してからpush済み。詳細・教訓は`docs/history/TIMELINE.md`のWI-26セクション末尾「運用上の重大な教訓」参照、ユーザーの自動記憶(`feedback_verification_cadence.md`/`reference_windows_cpp_ci_gotchas.md`項目8)にも追記済み。**次回セッションで「フル3構成」を検証する際は、必ず実際に`cmake --preset ubsan`系コマンドを実行してから「ubsan」と記録すること——`asan`の結果を「ubsan」と呼ばない。**
+
+> ---
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**

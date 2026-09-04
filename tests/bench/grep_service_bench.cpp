@@ -83,8 +83,10 @@ struct ScratchDir {
 static void BM_GrepService_FindAll_LiteralSparseMatch(benchmark::State& state) {
     const ScratchDir scratch;
     const GrepQuery query{
-        .roots = {scratch.root},
-        .query = Query{.pattern = u"ERROR", .caseSensitive = true},
+        .roots        = {scratch.root},
+        .includeGlobs = {},
+        .excludeGlobs = {},
+        .query        = Query{.pattern = u"ERROR", .caseSensitive = true},
     };
 
     for (auto _ : state) {
@@ -97,8 +99,10 @@ BENCHMARK(BM_GrepService_FindAll_LiteralSparseMatch)->Unit(benchmark::kMilliseco
 static void BM_GrepService_FindAll_NoMatch(benchmark::State& state) {
     const ScratchDir scratch;
     const GrepQuery query{
-        .roots = {scratch.root},
-        .query = Query{.pattern = u"this pattern never appears anywhere", .caseSensitive = true},
+        .roots        = {scratch.root},
+        .includeGlobs = {},
+        .excludeGlobs = {},
+        .query        = Query{.pattern = u"this pattern never appears anywhere", .caseSensitive = true},
     };
 
     for (auto _ : state) {
