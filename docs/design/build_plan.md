@@ -2750,7 +2750,7 @@ WI-24/WI-25で確立した「`keybd_event`でモディファイア状態のみ�
 
 Debug/Release/ASan全3構成で新規5件含む1594/1594件green(Release/ASanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1594/1594件green(86.9秒)、ASanビルド exit 0/実コード警告0件+ctest 1594/1594件green(330.6秒、ログ全文grepでサニタイザ診断0件))。clang-tidy(変更2ファイル、プロジェクト標準の`--extra-arg=-Wno-unused-command-line-argument`付きで実行)新規指摘0件——検出された唯一の指摘(`app_editor_input_test.cpp:140`の`misc-const-correctness`)は本WIと無関係な既存コード(WI-26より前からある別テスト)であることを確認済み。
 
-コミット: `<pending>`(コミット後にハッシュを反映)。
+コミット: `6c0be58`。
 
 ---
 
