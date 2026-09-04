@@ -14,6 +14,7 @@ namespace {
 using neomifes::app::applyMouseWheelScroll;
 using neomifes::app::applyOverwriteChar;
 using neomifes::app::deleteAllSelections;
+using neomifes::app::dispatchMouseDown;
 using neomifes::app::handleAltClick;
 using neomifes::app::handleChar;
 using neomifes::app::handleDoubleClick;
@@ -28,6 +29,7 @@ using neomifes::core::FoldRegion;
 using neomifes::core::SelectionModel;
 using neomifes::core::Viewport;
 using neomifes::document::Document;
+using neomifes::document::TextPos;
 
 // Bundles the four objects every handler under test needs, so each TEST body
 // only has to declare one fixture-like value instead of four.
@@ -562,6 +564,52 @@ TEST(EditorInputTest, HandleAltClickAddsNewCursorWithoutDisturbingThePrimary) {
     ASSERT_EQ(env.selection.cursors().size(), 2U);
     EXPECT_EQ(env.selection.cursors()[0].position, 0U);  // untouched primary
     EXPECT_EQ(env.selection.cursors()[1].position, 6U);  // new cursor at the click
+}
+
+// WI-27 (rectangular_anchor_stale_across_keyboard_only_reuse.md): dispatchMouseDown()
+// itself already resets rectangularAnchor/altCursorAnchor correctly on the mouse
+// side (editor_input.cpp:447,455-456) but had zero test coverage before this WI -
+// these lock in that existing behavior as a safety net for half of the invariant
+// the WI-27 keyboard-side fix (normal_mode_wiring.cpp, not unit-testable) depends on.
+TEST(EditorInputTest, DispatchMouseDownPlainClickResetsBothAnchors) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    std::optional<TextPos> altCursorAnchor    = 3U;
+    std::optional<TextPos> rectangularAnchor = 5U;
+
+    const bool changed = dispatchMouseDown(0, /*shiftDown=*/false, /*altDown=*/false, /*clickCount=*/1,
+                                           env.selection, env.viewport, env.doc, altCursorAnchor,
+                                           rectangularAnchor);
+    EXPECT_TRUE(changed);
+    EXPECT_FALSE(altCursorAnchor.has_value());
+    EXPECT_FALSE(rectangularAnchor.has_value());
+}
+
+TEST(EditorInputTest, DispatchMouseDownPlainAltClickResetsRectangularAnchorButSetsAltCursorAnchor) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    std::optional<TextPos> altCursorAnchor    = std::nullopt;
+    std::optional<TextPos> rectangularAnchor = 5U;
+
+    const bool changed = dispatchMouseDown(6, /*shiftDown=*/false, /*altDown=*/true, /*clickCount=*/1,
+                                           env.selection, env.viewport, env.doc, altCursorAnchor,
+                                           rectangularAnchor);
+    EXPECT_TRUE(changed);
+    EXPECT_FALSE(rectangularAnchor.has_value());
+    ASSERT_TRUE(altCursorAnchor.has_value());
+    EXPECT_EQ(*altCursorAnchor, 6U);
+}
+
+TEST(EditorInputTest, DispatchMouseDownShiftAltClickSetsRectangularAnchor) {
+    Env env;
+    env.doc.insertText(0, u"hello world");
+    std::optional<TextPos> altCursorAnchor    = std::nullopt;
+    std::optional<TextPos> rectangularAnchor = std::nullopt;
+
+    dispatchMouseDown(6, /*shiftDown=*/true, /*altDown=*/true, /*clickCount=*/1, env.selection, env.viewport,
+                      env.doc, altCursorAnchor, rectangularAnchor);
+    ASSERT_TRUE(rectangularAnchor.has_value());
+    EXPECT_EQ(*rectangularAnchor, 6U);
 }
 
 TEST(EditorInputTest, HandleCharWithMultipleCursorsInsertsAtEachCursor) {

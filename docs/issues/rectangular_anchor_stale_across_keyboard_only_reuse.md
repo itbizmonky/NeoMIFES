@@ -1,7 +1,8 @@
-# Issue: `rectangularAnchor` がキーボード操作のみでは決してリセットされず、無関係な矩形選択を再開すると古い基点が再利用される (P2 — 未修正)
+# Issue: `rectangularAnchor` がキーボード操作のみでは決してリセットされず、無関係な矩形選択を再開すると古い基点が再利用される (P2 — 解決済み)
 
 - **起票日:** 2026-09-04 (WI-26の実機ドッグフーディング中に発見)
-- **対象:** `src/app/editor_input.cpp`(`dispatchMouseDown()`, `rectangularAnchor`のリセット箇所)、`src/app/normal_mode_wiring.cpp`(`handleSysKeyDownEvent()`, Shift+Alt+矢印による矩形選択拡張)
+- **解決日:** 2026-09-04 (WI-27)
+- **対象:** `src/app/editor_input.cpp`(`dispatchMouseDown()`, `rectangularAnchor`のリセット箇所)、`src/app/normal_mode_wiring.cpp`(`handleKeyDownEvent()`/`handleSysKeyDownEvent()`)
 - **優先度:** P2(実害はキーボードのみで矩形選択を複数回行うワークフローに限定されるが、無言で意図しない範囲を選択・編集してしまうため気づきにくい)
 
 ## 事実
@@ -40,14 +41,22 @@ WI-26は`column.append`の実装のみを新規コードとして追加し、矩
 
 キーボードのみで矩形選択を繰り返し使うワークフロー(マウス操作を挟まない)でのみ顕在化するため、影響範囲は限定的だが、MIFES/秀丸ライクな操作を志向する本プロジェクトの性質上、キーボード中心のユーザーほど踏みやすい。
 
-## 対応案(未実施、次回着手時の参考)
+## 対応 (WI-27で実施)
 
-`handleSysKeyDownEvent()`側でリセット判断をするのではなく、「矩形選択と無関係な操作(通常の移動・編集・Undo/Redo)が割り込んだら`rectangularAnchor`を破棄する」という設計が必要。ただし「矩形選択と無関係な操作」の境界線をどこに引くか(例えば同じ列を保ったままの垂直移動はどう扱うか)は要検討で、この境界を誤ると「マウスで始めた矩形選択をキーボードで継続する」という当初の設計意図(`normal_mode_wiring.cpp:2013-2021`)を壊しかねない。安易な修正よりも設計を伴う判断が必要なため、CLAUDE.md絶対ルール3(推測実装をしない)に従い今回は起票のみとした。
+`handleKeyDownEvent()`(WM_KEYDOWN)の冒頭で`rectangularAnchor`/`altCursorAnchor`を無条件にリセットする一手を追加した——WM_KEYDOWNはShift+Alt組み合わせを一切運ばない(それはWM_SYSKEYDOWNとしてOSレベルで別メッセージに分類される)ため、この関数に到達するキー入力は原理的に「矩形選択/Alt+クリック伸長を継続するジェスチャではない」と機械的に確定できる。加えて`handleSysKeyDownEvent()`側にも、プレーンAlt+↑/↓(行移動)分岐とShift+Alt+I(`convertToLineEndCursors()`)分岐の2箇所に同様のリセットを追加、矩形拡張分岐には`handleMouseDragEvent()`の既存の前例(1334行目)に倣い`altCursorAnchor`のリセットを追加した。
+
+**実装中、Plan agentによる設計レビューで2件の見落としを事前に発見・修正**(`handleFreeCursorRightArrow()`の早期returnがリセットをスキップしてしまう配置ミス、`altCursorAnchor`もrectangularAnchorと対称にリセットすべき箇所の見落とし)。
+
+**さらに実機ドッグフーディングで、設計レビューでも見逃されていた重大な設計不備を1件発見・修正した:** `VK_SHIFT`のプレーンな押下(Altより先にShiftを押す、変調キーを離した状態から新しいShift+Alt+矢印を開始する際の自然な順序)は、それ自体が(Shift+Altの組み合わせではなく)通常のWM_KEYDOWN(VK_SHIFT)として先に発火する。当初の実装はこれを「矩形選択と無関係なキー」として無条件にリセット対象にしてしまい、**まさに継続しようとしているその一連のキー入力自身によって、直前のWM_SYSKEYDOWN(矢印)が届く前に基点を破壊してしまう**という自己矛盾したバグを生んでいた(ステータスバーの選択文字数が意図と食い違うことで発覚、`8 selected`のはずが`1 selected`になっていた)。`vkCode == VK_SHIFT`(および念のため`VK_MENU`)をリセット対象から除外することで解消した。**この教訓: 「無関係なキー入力」の定義は、単に「Shift+Alt組み合わせを運ばないメッセージ種別」というメッセージレベルの区別だけでは不十分で、これから来る組み合わせキーの前触れとなるベアな修飾キー単体の押下は除外する必要がある。**
+
+`tests/unit/app_editor_input_test.cpp`へ`dispatchMouseDown()`(既存のマウス側リセット処理、これまで無テストだった)の結合テスト3件を安全網として追加。`normal_mode_wiring.cpp`側の修正自体(WM_KEYDOWN/WM_SYSKEYDOWNハンドラ)はアーキテクチャ上単体テスト不可能なため、実機ドッグフーディングで4シナリオ(バグ再現手順そのものの解消確認・複数回連続拡張の継続動作確認・Shift+Alt+I後の新規基点確認・Alt+クリック→矩形選択でのaltCursorAnchor整合性確認)を確認した。
+
+副次的発見(`handleSysKeyDownEvent()`に`isDiffViewActive()`ガードが無い件)は別issue([`handle_sys_key_down_missing_diff_view_guard.md`](handle_sys_key_down_missing_diff_view_guard.md))として起票した。
 
 ## 完了条件
 
-- [ ] `rectangularAnchor`のリセット条件を設計し直し、キーボードのみの操作で矩形選択を再開する際に無関係な古い基点が再利用されないようにする
-- [ ] 上記「再現手順」を単体テスト(`tests/unit/app_normal_mode_wiring_test.cpp`相当、または既存のシステムキー処理テスト)として追加し、回帰を防ぐ
+- [x] `rectangularAnchor`のリセット条件を設計し直し、キーボードのみの操作で矩形選択を再開する際に無関係な古い基点が再利用されないようにする
+- [x] 上記「再現手順」を実機ドッグフーディングで検証し回帰が無いことを確認(`normal_mode_wiring.cpp`はアーキテクチャ上単体テスト不可能、`dispatchMouseDown()`側の安全網テストは追加済み)
 
 ## 再検証コマンド
 

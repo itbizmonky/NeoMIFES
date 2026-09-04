@@ -1858,6 +1858,32 @@ void handleKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, bool ctrlDown, W
         return;
     }
     EditorSession& session = workspace.active();
+    // WM_KEYDOWN never carries a genuine Shift+Alt COMBINATION (that arrives
+    // as WM_SYSKEYDOWN once Alt is also down - see handleSysKeyDownEvent()),
+    // so most keys reaching this function are, by construction, never
+    // themselves a "continue the pending rectangular selection / Alt+click
+    // cursor extension" gesture, and any such cross-event anchor left over
+    // from an earlier gesture is stale and must be discarded here - the
+    // "無関係な操作で破棄" rule the freeCursorVirtualColumns reset below
+    // already claims (in its own comment) to share with these two, but
+    // never actually implemented (rectangular_anchor_stale_across_keyboard_
+    // only_reuse.md). EXCEPT vkCode==VK_SHIFT itself: pressing Shift BEFORE
+    // Alt (the normal order when starting a fresh Shift+Alt+arrow chord
+    // from a released-modifiers state - e.g. resuming a continuation after
+    // a pause) fires as a bare WM_KEYDOWN(VK_SHIFT) here, one message before
+    // the real WM_SYSKEYDOWN(arrow) - resetting on it would destroy the very
+    // anchor that keystroke is about to extend, discovered via dogfooding
+    // this exact scenario. VK_MENU is excluded too, defensively, though
+    // Alt's own keydown is normally WM_SYSKEYDOWN already so should never
+    // reach here in practice. Placed before handleFreeCursorRightArrow()
+    // specifically (not folded into the freeCursorVirtualColumns block
+    // after it) since that call's own early return would otherwise skip
+    // this reset for its handled keystrokes. Neither anchor has a visible
+    // rendering of its own, so no repaint is needed here.
+    if (vkCode != VK_SHIFT && vkCode != VK_MENU) {
+        session.rectangularAnchor().reset();
+        session.altCursorAnchor().reset();
+    }
     if (handleFreeCursorRightArrow(hwnd, vkCode, shiftDown, ctrlDown, freeCursorModeEnabled, session,
                                    renderPipeline)) {
         return;
@@ -2038,6 +2064,11 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession
     // fully consumed, matching how a boundary Backspace/Delete press is
     // handled elsewhere in this codebase.
     if (!shiftDown && (vkCode == VK_UP || vkCode == VK_DOWN)) {
+        // Not a rectangle/Alt-cursor continuation gesture - discard both
+        // stale anchors before moving the line(s)
+        // (rectangular_anchor_stale_across_keyboard_only_reuse.md).
+        session.rectangularAnchor().reset();
+        session.altCursorAnchor().reset();
         dispatchMoveLineCommand(vkCode == VK_DOWN, hwnd, renderPipeline, session);
         return true;
     }
@@ -2046,6 +2077,11 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession
     }
     const Document& document = session.document();
     if (vkCode == 'I') {
+        // Converts the current selection AWAY from being a rectangle, so any
+        // pending anchor is stale from here on (same reasoning as the
+        // Alt+Up/Down branch above).
+        session.rectangularAnchor().reset();
+        session.altCursorAnchor().reset();
         session.selection().convertToLineEndCursors(document);
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
         return true;
@@ -2062,6 +2098,10 @@ bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession
     if (!rectangularAnchor) {
         rectangularAnchor = session.selection().primaryCursor().position;
     }
+    // A rectangle forming here supersedes any earlier Alt+click cursor - the
+    // mouse-drag equivalent of this operation (handleMouseDragEvent()) already
+    // does the same reset for the same reason.
+    session.altCursorAnchor().reset();
     const auto newActive = moveTextPos(kind, document, session.selection().primaryCursor().position);
     session.selection().setRectangularSelection(*rectangularAnchor, newActive, document);
     session.viewport().ensureVisible(newActive, document);

@@ -94,7 +94,11 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-26(縦編集/列編集機能の完成、`column.append`)完結(2026-09-04)。** WI-25完結時に有力候補としていた「縦編集」に着手。Explore agentへの調査委任の結果、当初想定(`ColumnInsert/Delete/Overwrite/Append`の4専用コマンドが丸ごと未実装)は誤りで、矩形選択(`SelectionModel::setRectangularSelection()`)への通常のタイプ入力・Delete/Backspace・貼り付けは既存の汎用マルチカーソル編集機構(`MultiCursorEditCommand`)が新規コード無しで既に正しく処理していると、コード読解で確認した。ユーザーへ調査結果を提示しAskUserQuestionで方針確認、「最小実装」(行末一括追記のコマンドパレット化のみ新規実装、他3つは既存機構をそのまま使う)を選択。新規`column.append`パレットコマンド(実体はShift+Alt+Iハンドラと同一の2行)を追加、`tests/unit/app_editor_input_test.cpp`へ矩形選択×実編集ハンドラの結合テスト5件を新規追加(この組み合わせは本WI以前は未検証だった)。実機ドッグフーディングで矩形選択の対話的作成(過去複数セッションで未確認のまま残っていた積み残し)を含め全機能を確認、副次的に`rectangularAnchor`がキーボードのみの操作ではリセットされない既存(Phase 4b8g)のバグを発見・起票([`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md))。Debug/Release/ASan全1594/1594件green、clang-tidy新規指摘0件。詳細は本ファイルのWI-26セクション参照。
 >
-> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)+検索CRLF(WI-22)+Grep固定オーバーヘッド(WI-23)+検索ダイアログ化(WI-24)+自動整形(WI-25)+縦編集(WI-26)は全て対応完了。次にどれへ着手するかはユーザーの標準委任のもとこちらの判断で選定する):**
+> **🔴 WI-26 push後、ユーザーから「pushせよ、前回失敗していたので調査が必要な場合は対応せよ」との指示を受け調査した結果、WI-23のpush(`047dd05`)以来CIの`UBSan (clang-cl)`ジョブが実際には失敗し続けており、これがWI-24〜WI-26の3WI分、誰にも気づかれず素通りしていたと判明した(2026-09-04)。** 根本原因はコードではなく運用面: `asan`(MSVC)プリセットと`ubsan`(**clang-cl**)プリセットは別物なのに、WI-23以降のローカル検証・サブエージェント委譲は一貫して`asan`だけを実行し「ubsan」の名で記録し続けていた。実際の破損箇所は`tests/bench/grep_service_bench.cpp`(WI-23新規)の designated initializer 省略(`GrepQuery`の`includeGlobs`/`excludeGlobs`)——clang-clの`-Wmissing-designated-field-initializers`(`-Werror`)がこれを拒否していた。`.includeGlobs = {}`/`.excludeGlobs = {}`を追加して修正、今回**初めて実際の`ubsan`プリセット(clang-cl)をローカルで通し**(ビルドexit 0+ctest 1594/1594件green)確認してからpush(`9a101e6`)、CI全4ジョブgreenを確認した。教訓はユーザーの自動記憶(`feedback_verification_cadence.md`/`reference_windows_cpp_ci_gotchas.md`)へ記録済み。
+>
+> **🎉 WI-27(`rectangularAnchor`/`altCursorAnchor`のキーボード操作時リセット漏れ修正)完結(2026-09-04)。** WI-26で発見した同issueに、ユーザーから「次に着手せよ」との指示で着手。Explore agentへの調査で`altCursorAnchor`にも同型のバグがあると判明、Plan agentへの設計検証で2件の見落とし(`handleFreeCursorRightArrow()`の早期returnによる配置ミス、altCursorAnchorの対称性欠如)を事前に発見・修正した上で実装。**実機ドッグフーディングで、実装自体に含まれていた新たな自己矛盾バグを発見した**——`VK_SHIFT`のプレーンな押下(Shift+Alt+矢印を開始する自然な順序の一部)がWM_KEYDOWNとして先に単独発火し、追加したばかりの無条件リセットが「継続しようとしているそのキー入力シーケンス自身」によって基点を破壊してしまっていた(`VK_SHIFT`/`VK_MENU`をリセット対象から除外して解消)。Plan agentによる静的な設計レビューでは検出できなかった、実機ドッグフーディングでしか発見できない性質のバグだった。`dispatchMouseDown()`(既存のマウス側リセット、無テストだった)への安全網テスト3件を追加。副次的発見(`handleSysKeyDownEvent()`のDiffビューガード欠如)は別issueとして起票。詳細は本ファイルのWI-27セクション参照。
+>
+> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)+検索CRLF(WI-22)+Grep固定オーバーヘッド(WI-23)+検索ダイアログ化(WI-24)+自動整形(WI-25)+縦編集(WI-26)+rectangularAnchorリセット漏れ(WI-27)は全て対応完了。次にどれへ着手するかはユーザーの標準委任のもとこちらの判断で選定する):**
 > - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
 > - ~~[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1)~~ — 🟡 **2026-09-01部分対応 → 2026-09-04残項目対応(WI-23)。** 単一ファイル側は実測で真因がRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドも対応済み(WI-23参照)、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ
 > - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
@@ -2751,6 +2755,42 @@ WI-24/WI-25で確立した「`keybd_event`でモディファイア状態のみ�
 Debug/Release/ASan全3構成で新規5件含む1594/1594件green(Release/ASanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1594/1594件green(86.9秒)、ASanビルド exit 0/実コード警告0件+ctest 1594/1594件green(330.6秒、ログ全文grepでサニタイザ診断0件))。clang-tidy(変更2ファイル、プロジェクト標準の`--extra-arg=-Wno-unused-command-line-argument`付きで実行)新規指摘0件——検出された唯一の指摘(`app_editor_input_test.cpp:140`の`misc-const-correctness`)は本WIと無関係な既存コード(WI-26より前からある別テスト)であることを確認済み。
 
 コミット: `6c0be58`。
+
+---
+
+## WI-27 — `rectangularAnchor`/`altCursorAnchor` のキーボード操作時リセット漏れ修正
+
+### 目的
+
+WI-26のドッグフーディングで発見した[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)(P2)に、ユーザーから「次に着手せよ」との指示を受けて着手した。矩形選択の基点`rectangularAnchor`が、プレーンなマウスクリック(`dispatchMouseDown()`)でのみリセットされ、キーボードのみの操作(矢印キー・Undo/Redo等)では一切リセットされないため、無関係な過去の矩形選択の基点が新しい矩形選択に無言で混入するバグ。
+
+Explore agentへの調査委任で、**`EditorSession::altCursorAnchor()`(Alt+クリックのカーソル伸長状態)にも全く同型のバグがある**と判明(同一の投資で両方直せる)。また`handleKeyDownEvent()`(WM_KEYDOWNハンドラ)には既に別の類似状態(`freeCursorVirtualColumns`)への「無関係な操作で破棄」リセットが実装済みで、そのコメントは「altCursorAnchor/rectangularAnchorと同じ慣習」と主張していたが実装されていなかった、という形でバグが存在していたことも判明した。
+
+### 設計
+
+Plan agentへ設計検証を委任し、2件の見落とし(`handleFreeCursorRightArrow()`の早期returnによる配置ミス、altCursorAnchorの対称性欠如)を事前に発見・修正した上で、`handleKeyDownEvent()`冒頭と`handleSysKeyDownEvent()`の3箇所(プレーンAlt+↑/↓分岐・Shift+Alt+I分岐・矩形拡張分岐)へリセットを追加する設計とした。
+
+### 実装
+
+コード自体は`normal_mode_wiring.cpp`への数行の追加のみ。`tests/unit/app_editor_input_test.cpp`へ`dispatchMouseDown()`(既存のマウス側リセット処理、これまで無テストだった)の安全網テスト3件を追加した——`normal_mode_wiring.cpp`側の修正自体はアーキテクチャ上(`NeoMIFES.exe`ターゲットへ直接コンパイルされ`neomifes_app_input`静的ライブラリの対象外)単体テスト不可能なため。
+
+### 実機ドッグフーディングで発見した重大な設計不備(実装中に修正)
+
+Plan agentのレビューを経た設計を実装しビルド・単体テストは通ったが、**実機ドッグフーディングで再現手順そのものを試したところ、修正後も期待通りに動作しなかった**(期待8文字選択のところ実際は1文字)。PostMessage非同期説・タイミング競合説を同期SendMessage+長い待機時間で切り分け、**タイミングとは無関係な再現性のある論理バグ**と特定した。
+
+原因: `VK_SHIFT`のプレーンな押下(Altより先にShiftを押す、修飾キーを離した状態からShift+Alt+矢印を新しく始める際のごく自然な順序)は、それ自体が通常のWM_KEYDOWN(VK_SHIFT)としてWM_SYSKEYDOWN(矢印)より先に単独で発火する。`handleKeyDownEvent()`冒頭に追加した無条件リセットはこれを「矩形選択と無関係なキー」と誤判定し、**まさに継続しようとしているそのキー入力シーケンス自身によって、本来の矢印キーが届く前に基点を破壊してしまう**という自己矛盾したバグになっていた。`vkCode == VK_SHIFT`(念のため`VK_MENU`も)をリセット対象から除外して解消し、再度ドッグフーディングで確認した。
+
+**教訓:** 「無関係なキー入力」の判定を、WM_KEYDOWN/WM_SYSKEYDOWNというメッセージ種別の区別だけに頼ると、これから来る組み合わせキーの前触れとなる修飾キー単体の押下を誤って「無関係」に分類してしまう。Plan agentによる静的な設計レビューはコードパスの追跡には有効だったが、この種の「メッセージの物理的な発生順序」に起因するバグは、実際にキーを押して確認するまで発覚しなかった——CLAUDE.md §11の「プロセスが生存していたは機能確認ではない」という既存の教訓の、また別の側面の実例。
+
+修正後、4シナリオ(バグ再現手順そのものの解消・複数回連続拡張の継続動作・Shift+Alt+I後の新規基点開始・Alt+クリック→矩形選択でのaltCursorAnchor整合性)を全てスクリーンショットで確認した。
+
+副次的発見(`handleSysKeyDownEvent()`に`isDiffViewActive()`ガードが無い件)は本WIのスコープ外と判断し、[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)として別途起票した。
+
+### 最終ゲート
+
+Release/ASan/UBSan(**実際にclang-clの`ubsan`プリセットを実行**——直前に本セッション自身が発見した「asanをubsanと誤記録していた」教訓を適用)の3構成それぞれで新規3件含む1597/1597件green(サブエージェントへ委譲、各構成を個別のconfigure+build+testサイクルとして実行、混同無し)。Releaseビルド exit 0(D9025の情報メッセージのみ、実警告0件)、ASanビルド exit 0(警告0件)、UBSan(clang-cl、`Warn=Error: ON`)ビルド exit 0(designated initializer等のclang-cl固有警告も含め0件)。UBSan ctestの全文をサニタイザ診断キーワードでgrepし、実診断0件を確認。
+
+コミット: `<pending>`(コミット後にハッシュを反映)。
 
 ---
 

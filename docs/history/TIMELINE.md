@@ -4267,4 +4267,36 @@ WI-26のpush後、ユーザーから「pushせよ、前回失敗していたの�
 
 **再発防止:** 今後「フル3構成(Debug/Release/ubsan)」を謳う際は、必ず実際に`ubsan`プリセット(clang-cl)を実行してから記録する。この教訓はユーザーの自動記憶(`feedback_verification_cadence.md`/`reference_windows_cpp_ci_gotchas.md`項目8)にも追記済み。
 
+## セッション: WI-27 — `rectangularAnchor`/`altCursorAnchor` のキーボード操作時リセット漏れ修正
+
+CI修正のpush後、ユーザーから「次に着手せよ」との指示があり、WI-26で発見した[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)(P2)に着手した。
+
+### 調査・設計
+
+Explore agentへ`rectangularAnchor`/`altCursorAnchor`の全読み書き箇所の調査を委任した結果、**`EditorSession::altCursorAnchor()`(Alt+クリックで追加したカーソルを次のAlt+Shift+クリックで伸長するための状態)にも全く同型のバグがある**と判明した——キーボードのみの操作では一切リセットされない。`handleKeyDownEvent()`(WM_KEYDOWNハンドラ)には既に別の類似状態(`freeCursorVirtualColumns`)に対する「無関係な操作で破棄」リセットが実装済みで、そのコメントは「altCursorAnchor/rectangularAnchorと同じ慣習」と主張していたが、実際にはこの2つには実装されていなかった——コメントが主張する不変条件をコード自体が満たしていない、という形でバグが存在していた。
+
+続けてPlan agentへ設計検証を委任し、2件の見落としを実装前に発見・修正した: (1) `handleFreeCursorRightArrow()`の早期returnがリセット追加位置より前にあり、Free Cursor Mode中の単純右矢印ではリセットがスキップされてしまう配置ミス、(2) 当初案では`rectangularAnchor`のみのリセットだった2箇所(プレーンAlt+↑/↓・Shift+Alt+I)に`altCursorAnchor`も対称に加えるべきという指摘(`SelectionModel::moveCursorMatching()`が該当カーソル無しでも黙ってno-opする実装のため、リセット漏れは同型の「クラッシュしないが無言で動かない」不具合を生む)。アーキテクチャ制約として、`normal_mode_wiring.cpp`は`neomifes_app_input`(テスト対象静的ライブラリ)ではなく`NeoMIFES.exe`へ直接コンパイルされ単体テスト不可能(既存46関数と同じ)なため、`dispatchMouseDown()`(`editor_input.cpp`、テスト対象ライブラリ側にあるが無テストだった既存の正しいマウス側リセット処理)へ安全網テストを追加する方針とした。
+
+### 実装
+
+`handleKeyDownEvent()`冒頭・`handleSysKeyDownEvent()`の3箇所へリセットを追加。`tests/unit/app_editor_input_test.cpp`へ`dispatchMouseDown()`の結合テスト3件を追加。Debug ビルド+ctest 1597/1597件green、clang-tidy新規指摘0件までは順調に進んだ。
+
+### 実機ドッグフーディングで発見した自己矛盾バグ
+
+**再現手順(矩形選択A→無関係なキーボード操作→矩形選択B)をそのまま試したところ、修正後も期待通りに動作しなかった**(意図8文字選択のところ実際1文字)。PostMessage非同期説(メッセージキューの処理順序が非決定的)を疑い、`SendMessage`(同期、即時処理)+400ms待機へ切り替えて再現性を確認したところ、**タイミングとは無関係に再現する論理バグ**と判明した。
+
+原因を特定: `VK_SHIFT`のプレーンな押下(Altより先にShiftを押す、修飾キーを離した状態からShift+Alt+矢印を新しく始める自然な順序)は、それ自体が通常のWM_KEYDOWN(VK_SHIFT)として、Shift+Alt+矢印の本体であるWM_SYSKEYDOWN(矢印)より**先に単独で発火する**。`handleKeyDownEvent()`冒頭に追加した無条件リセットはこれを「矩形選択と無関係なキー」と誤判定し、**まさに継続しようとしているそのキー入力シーケンス自身によって、本来の矢印キーが届く前に基点を破壊してしまう**という自己矛盾したバグになっていた。`vkCode == VK_SHIFT`(念のため`VK_MENU`も、Alt自身の単独押下は通常WM_SYSKEYDOWNとして別経路のため実際には到達しないはずだが防御的に)をリセット対象から除外して解消した。
+
+修正後、再度同じ再現手順を試し「8 selected」を確認(視覚的にも4行にわたるハイライトを確認)。続けて3シナリオを追加確認: Shift+Alt+Iで行末カーソルへ変換後、新しい矩形選択が正しく新規基点から始まること(status bar `3:4`、意図通り)。Alt+クリックでカーソル追加後にキーボードで矩形選択を形成すると、以前のAlt+クリックのカーソルが引き継がれず(タイプした文字が矩形の行数分のみに現れ、Alt+クリック行には現れない)altCursorAnchorが正しくリセットされていることを確認。
+
+**教訓:** 「無関係なキー入力」の判定を、WM_KEYDOWN/WM_SYSKEYDOWNというメッセージ種別の区別だけに頼ると、これから来る組み合わせキーの前触れとなる修飾キー単体の押下を誤って「無関係」に分類してしまう。Plan agentによる静的な設計レビューはコードパスの追跡には有効で実際に2件の見落としを事前に防いだが、この種の「メッセージの物理的な発生順序」に起因するバグは、実際にキーを押して確認するまで発覚しなかった——CLAUDE.md §11の「プロセスが生存していたは機能確認ではない」という既存の教訓の、また別の側面の実例。
+
+副次的発見(`handleSysKeyDownEvent()`に`isDiffViewActive()`ガードが無い件、Plan agentのレビュー中に発見)は本WIのスコープ外と判断し、[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)として別途起票した。
+
+### 最終ゲート
+
+Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それぞれで新規3件含む1597/1597件green(サブエージェントへ委譲、各構成を個別のconfigure+build+testサイクルとして実行)。Releaseビルドexit 0(情報メッセージのみ)、ASanビルドexit 0(警告0件)、UBSan(clang-cl、`Warn=Error: ON`)ビルドexit 0(designated initializer等のclang-cl固有警告も含め0件——今日の教訓を適用し、正しいプリセットで確実に検証した)。UBSan ctest全文をサニタイザ診断キーワードでgrepし実診断0件を確認。
+
+**これで`rectangular_anchor_stale_across_keyboard_only_reuse.md`が解決済みとなった。WI-27完了。** ユーザーの標準委任に基づき、次作業の選定もこちらの判断で継続する。次点候補は本WIで発見した[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。
+
 <!-- 次セッションはここに追記 -->

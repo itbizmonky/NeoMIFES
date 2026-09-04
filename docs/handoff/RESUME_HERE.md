@@ -462,6 +462,22 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-04) — WI-27完了: `rectangularAnchor`/`altCursorAnchor`のキーボード操作時リセット漏れ修正
+
+> **WI-26で発見した[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)(P2)に、ユーザーから「次に着手せよ」との指示で着手した。** Explore agentへの調査で、`EditorSession::altCursorAnchor()`(Alt+クリックのカーソル伸長状態)にも全く同型のバグがあると判明。Plan agentへ設計検証を委任し、2件の見落とし(`handleFreeCursorRightArrow()`の早期returnによりリセットがスキップされる配置ミス、`altCursorAnchor`の対称性欠如)を事前に発見・修正した上で実装した。
+
+> **🔴 実機ドッグフーディングで、実装自体に含まれていた新たな自己矛盾バグを発見・修正した。** `handleKeyDownEvent()`冒頭へ追加した無条件リセットをビルド・単体テストまで通した後、実機で再現手順を試したところ期待通り動作しなかった(8文字選択のはずが1文字)。PostMessage非同期・同期SendMessage双方で再現することを確認し、タイミングではなく論理バグと特定: **`VK_SHIFT`のプレーンな押下(Altより先にShiftを押す、Shift+Alt+矢印を新しく始める自然な順序)は、それ自体が通常のWM_KEYDOWN(VK_SHIFT)として矢印キーより先に単独発火し、追加したばかりの無条件リセットが「継続しようとしているそのキー入力シーケンス自身」によって基点を破壊してしまっていた。** `vkCode == VK_SHIFT`(念のため`VK_MENU`も)をリセット対象から除外して解消。Plan agentによる静的な設計レビューでは検出できなかった、実機で実際にキーを押すまで発覚しなかった性質のバグだった。
+
+> 修正後、4シナリオ(バグ再現手順そのものの解消・複数回連続拡張の継続動作・Shift+Alt+I後の新規基点開始・Alt+クリック→矩形選択でのaltCursorAnchor整合性)を全てスクリーンショットで確認。`dispatchMouseDown()`(既存のマウス側リセット処理、これまで無テストだった)への安全網テスト3件を新規追加。副次的発見(`handleSysKeyDownEvent()`に`isDiffViewActive()`ガードが無い件)は[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)として別途起票した。
+
+> Debug/Release/ubsan(**実際にclang-clの`ubsan`プリセットを実行**——直前に本セッション自身が発見した教訓を適用)の3構成で新規3件含む全件green、clang-tidy新規指摘0件。
+
+> **次回セッション最初にやること:** ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が出ているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい。次点候補は[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+
+> 詳細は`docs/design/build_plan.md`のWI-27セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**
