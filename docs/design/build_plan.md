@@ -2790,7 +2790,7 @@ Plan agentのレビューを経た設計を実装しビルド・単体テスト�
 
 Release/ASan/UBSan(**実際にclang-clの`ubsan`プリセットを実行**——直前に本セッション自身が発見した「asanをubsanと誤記録していた」教訓を適用)の3構成それぞれで新規3件含む1597/1597件green(サブエージェントへ委譲、各構成を個別のconfigure+build+testサイクルとして実行、混同無し)。Releaseビルド exit 0(D9025の情報メッセージのみ、実警告0件)、ASanビルド exit 0(警告0件)、UBSan(clang-cl、`Warn=Error: ON`)ビルド exit 0(designated initializer等のclang-cl固有警告も含め0件)。UBSan ctestの全文をサニタイザ診断キーワードでgrepし、実診断0件を確認。
 
-コミット: `<pending>`(コミット後にハッシュを反映)。
+コミット: `19b35dd`。
 
 ---
 
