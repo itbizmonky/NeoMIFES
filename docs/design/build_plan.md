@@ -2705,7 +2705,7 @@ PowerShell + Win32 P/Invoke(WI-24で確立した「`keybd_event`でモディフ�
 
 Debug/Release/ubsan全1589/1589件green(3構成とも実行、Release/ubsanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1589/1589件green(76.5秒)、ASanビルド`AddressSanitizer: ENABLED`確認+ctest 1589/1589件green(308.6秒、ログ全文grepでサニタイザ診断0件))。clang-tidy(新規・変更4ファイル個別実行)新規指摘0件——`std::sort`→`std::ranges::sort`(`modernize-use-ranges`)と認知的複雑度超過2件(`computeReindentEdits()`/`buildCommandRegistry()`)を実装中に発見・修正済み。
 
-コミット: `<pending>`(コミット後にハッシュを反映)。
+コミット: `4fdb98c`。
 
 ---
 
