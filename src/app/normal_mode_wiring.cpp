@@ -2667,6 +2667,27 @@ std::vector<CommandDescriptor> buildCommandRegistry(
         .action = [hwnd, &workspace, &renderPipeline, &settings]() {
             dispatchReindentCommand(hwnd, renderPipeline, workspace.active(), settings);
         }});
+    // WI-26 (縦編集/列編集, 要件定義書 sec.6): a WI-26 code-reading audit found
+    // that typing/Delete/Backspace/paste on a rectangular selection
+    // (SelectionModel::setRectangularSelection(), Shift+Alt+drag or
+    // Shift+Alt+arrow) already work correctly through the existing generic
+    // multi-cursor path (handleChar/applyDeleteKey/handlePaste -> the same
+    // MultiCursorEditCommand every ordinary multi-cursor edit uses) - no new
+    // ICommand was needed for column insert/delete/overwrite. Only "append at
+    // each row's real line end" (MIFES's primary 縦編集 use case) is
+    // genuinely new behavior relative to typing directly into the
+    // selection, and that position computation already exists verbatim as
+    // SelectionModel::convertToLineEndCursors() (Shift+Alt+I, see
+    // handleSysKeyDownEvent() above) - this entry just gives it a palette
+    // name/discoverability, reusing the identical two-line body.
+    commands.push_back(CommandDescriptor{
+        .id = u"column.append", .title = u"Column Append (Line End)", .keybindingLabel = u"Shift+Alt+I",
+        .commandId = CommandId::None,
+        .action = [hwnd, &workspace, &renderPipeline]() {
+            EditorSession& session = workspace.active();
+            session.selection().convertToLineEndCursors(session.document());
+            syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+        }});
     // WI-12: Ctrl+A/Ctrl+D/Alt+Up/Alt+Down/Ctrl+Shift+K - CommandId::None
     // (same "palette-only, no keybindingLabelFor() lookup" pattern as
     // edit.convertTabsToSpaces/convertSpacesToTabs above), deliberately

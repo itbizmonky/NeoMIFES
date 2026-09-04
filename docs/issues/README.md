@@ -1,6 +1,6 @@
 # Issue 索引
 
-**最終更新:** 2026-09-04 (WI-25着手前調査で`master_roadmap_vertical_edit_terminology_drift.md`〔新規〕を発見・即日解決: master_roadmap.mdが「縦編集」をPhase 0確定済みの原義〔列編集〕から無断で「縦書き入力」へ再定義していたドキュメント不整合を修正。先行してWI-24: Ctrl+F検索を`ui::FindDialog`新設で独立ダイアログ化(旧`ui::FindBar`は完全削除)。`overlay_focus_blocks_file_lifecycle_keys.md`〔P2〕の対象を更新、独立ダイアログ化した`FindDialog`/`FindReplaceDialog`も別機構で同じ症状を持つと判明し対象6件へ拡張。先行してWI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。さらに先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正)
+**最終更新:** 2026-09-04 (WI-26のドッグフーディングで`rectangular_anchor_stale_across_keyboard_only_reuse.md`〔新規、P2〕を発見・起票: 矩形選択の基点`rectangularAnchor`がキーボードのみの操作(矢印キー/Undo等)では一切リセットされず、無関係な過去の矩形選択の基点が再利用される潜在バグ。矩形選択の対話的作成が本プロジェクトで実機確認されたのはこれが初めてで、その初回確認で発見された。先行してWI-25着手前調査で`master_roadmap_vertical_edit_terminology_drift.md`〔新規〕を発見・即日解決: master_roadmap.mdが「縦編集」をPhase 0確定済みの原義〔列編集〕から無断で「縦書き入力」へ再定義していたドキュメント不整合を修正。先行してWI-24: Ctrl+F検索を`ui::FindDialog`新設で独立ダイアログ化(旧`ui::FindBar`は完全削除)。`overlay_focus_blocks_file_lifecycle_keys.md`〔P2〕の対象を更新、独立ダイアログ化した`FindDialog`/`FindReplaceDialog`も別機構で同じ症状を持つと判明し対象6件へ拡張。先行してWI-23: `search_grep_multi_gb_performance_gap.md`〔P1〕を完全解決、解決済みへ移動。GrepServiceのファイルあたり固定オーバーヘッド項目(当初仮説〔`scanUtf8()`が支配的コスト〕は実測で誤りと判明、真因の`detectLineEndingBounded()`冗長デコードを除去)+恒久ベンチマーク`tests/bench/grep_service_bench.cpp`追加の両方に対応、完了条件3件全て達成。さらに先行して`search_crlf_line_ending.md`〔P1〕解決済み: 検索正規表現の`$`/`^`がCRLFの`\r`を行内容として扱う問題を修正)
 
 `docs/issues/` は「実装しなかったこと・先送りしたこと・未解決の技術的負債」を記録する。ADR (`docs/decisions/`) が**行った判断**を記録するのに対し、本ディレクトリは**行わなかった判断とその理由**を記録する。
 
@@ -27,6 +27,7 @@
 | Issue | 概要 | 状態 |
 |---|---|---|
 | [オーバーレイにフォーカスがある間 Ctrl+S/O/N が届かない](overlay_focus_blocks_file_lifecycle_keys.md) | GrepBar/CommandPalette/GotoLineBar/OutlinePaneのサブクラスプロシージャが未知のキーを親HWNDへ転送しない。2026-09-04: 独立ダイアログ化したFindDialog/FindReplaceDialogも別機構で同じ症状を持つと判明、対象6件に更新 | 待機 (6ウィジェット全てへの対策が必要になった時点で再評価) |
+| [`rectangularAnchor`がキーボード操作のみでは決してリセットされない](rectangular_anchor_stale_across_keyboard_only_reuse.md) | Shift+Alt+矢印による矩形選択の基点は、プレーンなマウスクリックでのみリセットされ、矢印キー/Undo等のキーボードのみの操作では前回の基点が残り続ける。WI-26のドッグフーディング(矩形選択の対話的作成が本プロジェクト初の実機確認)で発見 | 待機 (リセット条件の再設計が必要、安易な修正は既存の「マウス開始→キーボード継続」設計意図を壊しうる) |
 | [メニューバーのキーバインド表示が実行時リマップに追従しない](menu_bar_keybinding_label_stale.md) | `\tCtrl+X` 等の表示は起動時固定、`keybindings.reload`/`.preset.*` 後も再起動まで古いまま (実際のキー入力自体は正しく機能する) | 待機 (メニュー再構築機構が必要になった時点で再評価) |
 | [`ts_parser_parse()` の文書サイズ比例コスト](tree_sitter_incremental_parse_cost.md) | 50万行で 155.95ms、DoD ≤50ms 未達。4 フェーズ挑戦し tree-sitter の構造的限界と結論 | 🧊 **凍結** (Phase 12 直前に「達成」か「DoD 改訂」かを判断) |
 | [`UndoStack` のメモリ無制限成長](undo_stack_unbounded_memory.md) | 圧縮/ディスクスワップ未実装。2026-09-01追記: ヘッドレスプローブで1pushあたり約4.06バイトと実測(AddBufferのappend-only設計に起因、線形増加で加速無し)、100万件規模でも約4MB程度と推定され256MB予算を大きく下回る見込み | 待機 (実UIを通した100万件規模の実測はまだ無い) |

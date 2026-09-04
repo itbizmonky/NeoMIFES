@@ -47,6 +47,8 @@ design doc は `InsertTextCommand::tryMerge()` をキーストロークの連続
 
 矩形選択のハイライト描画(Rendering Engine側)がまだ存在せず、機能を実装しても視覚的に確認・テストできない。`RenderPipeline` は現状テキスト描画のみで選択範囲/キャレットの描画パスを持たない。
 
+> **2026-09-04 追記(WI-26で解決):** 下記「将来の再評価タイミング」の発火条件(選択範囲ハイライト描画の実装)はPhase 4b8aで既に満たされていた(`RenderPipeline::drawSelectionsOnLine()`が「1行1カーソル」を透過的に描画するため矩形選択専用の描画コードは元々不要だったと判明、`detailed_design.md` §5.1.1参照)。WI-26でのコード監査の結果、`ColumnInsert/Delete/Overwrite`の3コマンドは既存の汎用マルチカーソル編集機構が新規コード無しで処理していると判明し実装不要と判断、`ColumnAppend`のみ`column.append`として実装した。詳細は`docs/design/build_plan.md` WI-26セクション。
+
 ### キーボード/マウス入力の `MainWindow` 配線・キャレット描画を延期する理由
 
 `MainWindow::wndProc` は現状 `WM_PAINT`/`WM_SIZE`/`WM_DPICHANGED`/内部初期化メッセージ/`WM_ERASEBKGND`/`WM_CLOSE`/`WM_DESTROY` のみを処理し、`WM_KEYDOWN`/`WM_CHAR`/`WM_LBUTTONDOWN`/`WM_MOUSEWHEEL` は一切未実装。DoD「100万Undo達成」はベンチマークで実測できるため、この配線を待たずに証明可能。Phase 4a はヘッドレスなベンチマークで DoD を満たし、Phase 4b で実際に使えるインタラクティブエディタに仕上げる。
@@ -78,7 +80,7 @@ design doc は `InsertTextCommand::tryMerge()` をキーストロークの連続
 
 - **UndoStack 圧縮/ディスクスワップ:** `docs/issues/undo_stack_unbounded_memory.md` の完了条件(Phase 4b の対話的編集セッションでの実メモリ計測)を満たした時点
 - **`tryMerge`:** Phase 4b でキーボード入力配線が実現し、実際の入力頻度が観測できるようになった時点
-- **矩形選択・縦編集:** Rendering Engine に選択範囲ハイライト描画が実装された時点
+- **矩形選択・縦編集:** ~~Rendering Engine に選択範囲ハイライト描画が実装された時点~~ → **発火済み(Phase 4b8a)、WI-26(2026-09-04)で解決済み。上記2026-09-04追記参照。**
 - **`MovementUnit`:** 単語境界判定の仕様(Unicode UAX #29 準拠か、簡易ASCII判定か等)がユーザーと合意された時点
 
 ## 参考

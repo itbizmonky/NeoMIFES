@@ -4210,4 +4210,49 @@ Debug全1589/1589件green(新規13件含む)。clang-tidy(新規・変更4ファ
 
 **これで要件定義書§6の「自動整形」が実装され、計画漏れが解消された。WI-25完了。** ユーザーの標準委任(「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」)に基づき、次作業の選定もこちらの判断で継続する。有力候補は本セッションで発見した「縦編集」列編集コマンド4種(`docs/issues/master_roadmap_vertical_edit_terminology_drift.md`参照、想定よりはるかに小規模と判明済み)。
 
+## セッション: WI-26 — 縦編集(列編集)機能の完成(`column.append`)
+
+### 調査 — スコープが想定よりはるかに小さいと判明
+
+WI-25完結時の候補通り「縦編集」に着手した。Explore agentへ2段階(①既存基盤調査、②AskUserQuestion前の追加検証)で調査を委任した結果、**当初の想定(`ColumnInsertCommand`/`ColumnDeleteCommand`/`ColumnOverwriteCommand`/`ColumnAppendCommand`の4専用コマンドが丸ごと未実装)が誤りだったと判明した**。
+
+矩形選択(`SelectionModel::setRectangularSelection()`)は特別な型ではなく、行ごとに1個の通常`Cursor`の集合として表現されている(各行の列は独立にクランプ、パディング無し)。描画も`RenderPipeline::drawSelectionsOnLine()`が「1行1カーソル」を透過的に描画するため専用コードは元々不要だった(Phase 4b8a時点で確認済み)。**2回目のExplore agentが`handleChar()`/`applyDeleteKey()`/`handlePaste()`の実装を直接読解し、いずれも既存の汎用マルチカーソル編集機構(`core::MultiCursorEditCommand`)がカーソルごとの`hasSelection()`を個別に見て選択範囲の置換/削除/挿入を正しく処理していることを確認した**——`insertPerCursorTexts()`(`editor_input.cpp:54-69`)は選択の有無に関わらずカーソル数分の`PerCursorEdit`をループで構築するだけの汎用実装で、プライマリカーソルだけを特別扱いする分岐は存在しない。したがって`ColumnInsert/Delete/Overwrite`の3コマンドは、既に正しく動く経路への意味の無いラッパーになると判断した。
+
+唯一「MIFESの縦編集の主用途」である行末への一括追記だけは、矩形選択自身の列位置とは無関係に「各行の実際の行末」への挿入が必要で、これは既存の`SelectionModel::convertToLineEndCursors()`(Phase 4b8g、Shift+Alt+Iとして実装・配線済み)がその位置計算(`moveTextPos(MovementKind::LineEnd, ...)`)をそのまま提供する。
+
+### ユーザーへの方針確認
+
+この調査結果(4コマンド構想のうち3つは新規コード不要、1つ〔行末追記〕のみ新規実装の価値がある)をAskUserQuestionで提示し、実装方針を確認した。選択肢は①最小実装(`column.append`のみ新規、他3つは既存機構+結合テストで保証)②対称実装(4コマンド全て明示的にパレット追加、3つは薄いラッパー)③実装追加なし(テスト・文書化のみ)。**ユーザーは①「最小実装」を選択。**
+
+### 実装
+
+新規`ICommand`サブクラスも新規`app::`ヘルパー関数も作らず、`normal_mode_wiring.cpp`の`buildCommandRegistry()`へ`column.append`パレットコマンド1つを追加した。実体はShift+Alt+Iハンドラ(`handleSysKeyDownEvent()`)と全く同じ2行(`session.selection().convertToLineEndCursors(session.document())` + `syncRenderStateAndInvalidate()`)——既存キーへパレット名と発見しやすさを与えるだけの、意図的に最小の追加。`keybindingLabel`は他のCommandId::Noneコマンド(通常は空文字列)と異なり、既存の固定ショートカット`Shift+Alt+I`を案内するため明示的に`u"Shift+Alt+I"`を設定した。
+
+### テスト作成
+
+`tests/unit/app_editor_input_test.cpp`へ5件の結合テストを追加(列挿入/列削除/列上書き/短い行のクランプ確認/行末一括追記)。`setRectangularSelection()`自身は`core_selection_model_test.cpp`で単体テスト済みだったが、実際の編集ハンドラ(`handleChar`/`handleKeyDown`)に通した結合シナリオは本WI以前は一切存在しなかった——「動くはず」ではなく実際に実行して確認することが本WIの核心の成果物。**1件で手計算ミスが発生した**(`setRectangularSelection(2, 5+7, doc)`のように、`active`引数の行開始オフセットを行1の値(誤り)で計算していたが、意図していたのは行2の値だった)。テスト実行結果(期待した2列幅の削除ではなく、意図しない位置への単純挿入になっていた)から誤りを発見し、正しいオフセット(行2の開始位置+列5)へ修正して5件全てgreen化した(WI-25と同種の教訓の再確認: 手計算エラーはテスト失敗という形で正しく検出される)。
+
+### 実機ドッグフーディング — 矩形選択の対話的作成を本プロジェクトで初めて実機確認
+
+WI-24/WI-25で確立した「`keybd_event`でモディファイア状態のみ設定+`PostMessage`で対象コントロールへ直接キー配送」の手法(PowerShell + Win32 P/Invoke)で、4行のテキスト("apple"/"banana"/"cherry"/"date")を開き以下を確認した:
+
+- `Shift+Alt+↓`(キーボードのみ)で矩形選択を対話的に作成し、そのままタイプ入力すると4行全てへ独立に文字が挿入されることを確認(列挿入)。ステータスバーの選択情報表示は逐次スクリーンショットで確認した。
+- `Shift+Alt+→`で選択幅を拡張後、`Delete`で各行の選択範囲のみが削除される(列削除)・タイプ入力で各行の選択範囲が置換される(列上書き)ことを確認。
+- コマンドパレット(Ctrl+Shift+P)で"column append"と絞り込むと「Column Append (Line End)」が`Shift+Alt+I`のラベル付きで正しく表示されることを確認した上でEnterで実行、続けてタイプ入力すると矩形選択の列位置(列2)や各行の長さ(5/6/6/4文字)に関わらず各行の実際の行末に正しく追記される("apple!"/"banana!"/"cherry!"/"date!")ことを確認(行末一括追記)。
+- 全4シナリオともCtrl+Zで1操作として正しく巻き戻ることを確認。
+
+**過去複数セッションにわたり`TIMELINE.md`自身に「矩形選択の対話的作成は実機で一度も目視確認されていない」という積み残しが記録され続けていたが、本WIのドッグフーディングがこれを初めて解消した。**
+
+### 副次的発見: `rectangularAnchor`のキーボード操作時リセット漏れバグ
+
+列削除シナリオの検証中、直前の列挿入シナリオで設定された矩形選択の基点(列0)が、間に挟んだ`Ctrl+Home`・矢印キー移動・`Ctrl+Z`のいずれでもリセットされず、新しい矩形選択(列1開始のつもり)に無言で混入し、意図(2列分)より1列分広い(3列分、ステータスバーの「12 selected」で発覚)範囲が選択される事象を発見した。`grep -rn rectangularAnchor src/app`でコードを確認したところ、`rectangularAnchor`は`dispatchMouseDown()`内のプレーンなマウスクリック(Alt無し、またはShift無しのAlt+クリック)でのみリセットされ、キーボードのみの操作(移動・編集・Undo/Redo)では一切リセットされないと判明した——`document_open.cpp`(ドキュメントを開いたとき)を除けば唯一のリセット経路がマウスクリックのみだった。
+
+これはPhase 4b8g(本WIより前に導入済み)の潜在バグであり、矩形選択の対話的作成自体が今回初めて実機確認された結果として初めて発見された(単体テストは`SelectionModel::setRectangularSelection()`単体の幾何学的振る舞いしか見ておらず、この種の「セッションを跨いだ状態の汚染」は検出できない性質のバグだった)。安易な修正は「マウスで開始した矩形選択をキーボードで継続できる」という既存の設計意図(`normal_mode_wiring.cpp:2013-2021`のコメント参照)を壊しうるため、CLAUDE.md絶対ルール3(推測実装をしない)に従い本WIでは修正せず、[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)として起票のみ行った(以後のシナリオはプレーンなマウスクリックを挟んでリセットする回避策で正しい選択範囲を作り、検証を継続した)。
+
+### 最終ゲート
+
+Debug/Release/ASan全3構成で新規5件含む1594/1594件green(Release/ASanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1594/1594件green(86.9秒)、ASanビルド exit 0/実コード警告0件+ctest 1594/1594件green(330.6秒、ログ全文grepでサニタイザ診断0件))。clang-tidy(変更2ファイル、プロジェクト標準の`--extra-arg=-Wno-unused-command-line-argument`付きで実行、CI設定`.github/workflows/ci.yml`から確認)新規指摘0件——検出された唯一の指摘(`app_editor_input_test.cpp:140`の`misc-const-correctness`)は本WIと無関係な既存コード(別テストの`FoldingModel folding;`宣言)であることをコード確認済み。
+
+**これで要件定義書§6の「縦編集」が(MIFES由来の列編集という原義通りに)実装され、計画漏れが解消された。WI-26完了。** ユーザーの標準委任に基づき、次作業の選定もこちらの判断で継続する。次点候補は本WIで発見した[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)(P2、設計を伴う修正が必要)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。
+
 <!-- 次セッションはここに追記 -->

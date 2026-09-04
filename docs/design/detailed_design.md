@@ -633,33 +633,21 @@ public:
 
 **Phase 4b8g (2026-07-20) でキーボードによる矩形選択拡張を追加。** `moveOne()`は`moveTextPos()`という公開自由関数へ格上げされ(シグネチャ・ロジックは不変)、`main.cpp`の`Shift+Alt+矢印`ハンドラ(`MainWindow::onSysKeyDown`経由)が`rectangularAnchor`を再利用して`setRectangularSelection()`を呼ぶ。新規`SelectionModel::convertToLineEndCursors()`が`Shift+Alt+I`(選択範囲→各行末尾の1カーソルへ変換)を実装。詳細は§5.3のPhase 4b8b〜4b8g追記を参照。
 
-**依然未実装の専用コマンド構想 (将来の縦編集フェーズ向け):**
+**WI-26 (2026-09-04) で最終決着: 上記4コマンド構想のうち3つは実装不要と判明、`column.append` 1つのみ実装した。** コード監査(`handleChar`/`applyDeleteKey`/`handlePaste`を実際に読解)の結果、矩形選択への通常のタイプ入力・Delete/Backspace・Ctrl+V貼り付けは、いずれも既存の`MultiCursorEditCommand`ベースの汎用マルチカーソル編集パス(カーソルごとの`hasSelection()`を個別に見て選択範囲の置換/削除/挿入を判断する)がそのまま正しく処理することを確認した(`tests/unit/app_editor_input_test.cpp`の`RectangularSelection*`テスト群で結合レベルの検証を追加)。したがって`ColumnInsertCommand`/`ColumnDeleteCommand`/`ColumnOverwriteCommand`は、既に動作している経路に対する意味の無いラッパーにしかならないため実装しなかった。
+
+唯一「MIFESの縦編集の主用途」である行末への一括追記だけは、矩形選択自身の列位置とは無関係に「各行の実際の行末」への挿入が必要で、これは既存の`SelectionModel::convertToLineEndCursors()`(Phase 4b8g、Shift+Alt+I)が提供する位置計算をそのまま利用できる。新規`ICommand`サブクラスも新設せず、`column.append`というコマンドパレット専用エントリ(`CommandId::None`)が`convertToLineEndCursors()`呼び出し+再描画の2行に委譲するだけで実現した(`normal_mode_wiring.cpp`の`buildCommandRegistry()`)。
 
 ```cpp
-namespace neomifes::application {
-
-// 矩形範囲の各行 column に対して text を挿入
-class ColumnInsertCommand final : public ICommand {
-public:
-    ColumnInsertCommand(std::vector<TextPos> perLinePositions, std::u16string text);
-    // execute: 位置の降順に挿入 (先行挿入で後続オフセットがズレるのを防ぐ)
-    // undo:    位置の昇順に削除
-};
-
-// 矩形範囲の各行 [colStart, colEnd) を削除
-class ColumnDeleteCommand final : public ICommand { ... };
-
-// 矩形範囲を text で上書き (行末より短い行はパディングしない=行末で停止)
-class ColumnOverwriteCommand final : public ICommand { ... };
-
-// 矩形範囲の各行末尾に text を追記 (MIFES の縦編集の主用途)
-class ColumnAppendCommand final : public ICommand { ... };
-
-} // namespace
+// 実装 (WI-26, src/app/normal_mode_wiring.cpp buildCommandRegistry() 内、
+// 新規 ICommand は無い):
+commands.push_back(CommandDescriptor{
+    .id = u"column.append", .title = u"Column Append (Line End)",
+    .keybindingLabel = u"Shift+Alt+I", .commandId = CommandId::None,
+    .action = [/* ... */]() {
+        session.selection().convertToLineEndCursors(session.document());
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    }});
 ```
-
-- 全行に一意な `TextPos` を持たせて `SelectionModel::setRectangularSelection` の展開結果と同期する。
-- 位置計算は Piece Table のスナップショット下で一括計算し、apply は 1 トランザクションでまとめて Document へ適用。
 
 ### 5.2 Viewport
 

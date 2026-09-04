@@ -787,4 +787,84 @@ TEST(EditorInputTest, DeleteAllSelectionsReturnsFalseWithNoSelectionsAtAll) {
     EXPECT_EQ(env.doc.toU16String(), u"ab");
 }
 
+// WI-26 (縦編集/列編集): setRectangularSelection() itself is only unit-tested
+// in isolation (core_selection_model_test.cpp) - these four exercise it
+// through the actual editing handlers above, the combination a WI-26 code
+// audit found was never covered end-to-end despite the underlying machinery
+// (MultiCursorEditCommand with real per-cursor selections) being generic and
+// correct. "aaa\nbbb\nccc": a(0)a(1)a(2)\n(3)b(4)b(5)b(6)\n(7)c(8)c(9)c(10).
+TEST(EditorInputTest, RectangularSelectionColumnInsertTypesIndependentlyOnEachRow) {
+    Env env;
+    env.doc.insertText(0, u"aaa\nbbb\nccc");
+    env.selection.setRectangularSelection(1, 5, env.doc);  // col 1, rows 0-1, zero-width
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    ASSERT_FALSE(env.selection.cursors()[0].hasSelection());
+    ASSERT_FALSE(env.selection.cursors()[1].hasSelection());
+
+    const bool changed = handleChar(u'X', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"aXaa\nbXbb\nccc");  // row 2 untouched
+}
+
+// "abcd\nefgh\nijkl": a(0)b(1)c(2)d(3)\n(4)e(5)f(6)g(7)h(8)\n(9)i(10)j(11)k(12)l(13).
+TEST(EditorInputTest, RectangularSelectionColumnDeleteRemovesOnlyEachRowsOwnSpan) {
+    Env env;
+    env.doc.insertText(0, u"abcd\nefgh\nijkl");
+    env.selection.setRectangularSelection(1, 8, env.doc);  // cols [1,3), rows 0-1: "bc"/"fg"
+    ASSERT_EQ(env.selection.cursors().size(), 2U);
+    ASSERT_TRUE(env.selection.cursors()[0].hasSelection());
+    ASSERT_TRUE(env.selection.cursors()[1].hasSelection());
+
+    const bool changed =
+        handleKeyDown(VK_DELETE, false, false, env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"ad\neh\nijkl");  // row 2 untouched
+}
+
+TEST(EditorInputTest, RectangularSelectionColumnOverwriteReplacesEachRowsSpanWithTypedChar) {
+    Env env;
+    env.doc.insertText(0, u"abcd\nefgh\nijkl");
+    env.selection.setRectangularSelection(1, 8, env.doc);  // cols [1,3), rows 0-1: "bc"/"fg"
+
+    const bool changed = handleChar(u'Z', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"aZd\neZh\nijkl");  // row 2 untouched
+}
+
+// A row shorter than the rectangle's right edge gets its column clamped to
+// that row's own length by setRectangularSelection() itself (no padding) -
+// "xy" (row 1, length 2) clamps cols [2,5) down to an empty, collapsed
+// selection sitting exactly at its own end, rather than crashing or being
+// padded out to width 5. "abcdef\nxy\nghijkl":
+// a(0)b(1)c(2)d(3)e(4)f(5)\n(6)x(7)y(8)\n(9)g(10)h(11)i(12)j(13)k(14)l(15).
+TEST(EditorInputTest, RectangularSelectionClampsShortRowToCollapsedCursorNoPadding) {
+    Env env;
+    env.doc.insertText(0, u"abcdef\nxy\nghijkl");
+    env.selection.setRectangularSelection(2, 10 + 5, env.doc);  // cols [2,5), rows 0-2 (row 2 starts at 10)
+    ASSERT_EQ(env.selection.cursors().size(), 3U);
+    EXPECT_FALSE(env.selection.cursors()[1].hasSelection());  // "xy" row: clamped, collapsed
+
+    const bool changed = handleChar(u'Z', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"abZf\nxyZ\nghZl");
+}
+
+// column.append's whole reason for existing: unlike the three tests above,
+// append must land at each row's REAL end, decoupled from the rectangle's
+// own column - verified here with three very differently-sized rows (2, 6,
+// 1 chars) so a bug that used the rectangle's column instead of the row's
+// real end would visibly insert text in the wrong place on at least one row.
+// "ab\nabcdef\na": a(0)b(1)\n(2)a(3)b(4)c(5)d(6)e(7)f(8)\n(9)a(10).
+TEST(EditorInputTest, RectangularSelectionThenConvertToLineEndCursorsAppendsAtEachRowsRealEnd) {
+    Env env;
+    env.doc.insertText(0, u"ab\nabcdef\na");
+    env.selection.setRectangularSelection(1, 11, env.doc);  // col 1, rows 0-2
+    ASSERT_EQ(env.selection.cursors().size(), 3U);
+
+    env.selection.convertToLineEndCursors(env.doc);
+    const bool changed = handleChar(u'Z', env.dispatcher, env.selection, env.viewport, env.doc);
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(env.doc.toU16String(), u"abZ\nabcdefZ\naZ");
+}
+
 }  // namespace

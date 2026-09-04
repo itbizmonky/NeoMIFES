@@ -436,6 +436,26 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-04) — WI-26完了: 縦編集(列編集)機能の完成(`column.append`)
+
+> **WI-25完結時に有力候補としていた「縦編集」に着手した。** Explore agentへの調査委任の結果、**当初の想定(`ColumnInsert/Delete/Overwrite/Append`の4専用コマンドが丸ごと未実装)は誤りだった。** 矩形選択(`SelectionModel::setRectangularSelection()`、Phase 4b8a/4b8gで実装済み)への通常のタイプ入力・Delete/Backspace・貼り付けは、既存の汎用マルチカーソル編集機構(`MultiCursorEditCommand`)がカーソルごとの選択状態を個別処理しており、コード読解で新規ロジック不要と確認した。唯一「MIFESの縦編集の主用途」である行末への一括追記だけは、既存の`SelectionModel::convertToLineEndCursors()`(Shift+Alt+I)がそのまま提供する。
+
+> **ユーザーへ調査結果を提示しAskUserQuestionで方針確認、「最小実装」を選択。** 新規コードは行末一括追記のコマンドパレット化(`column.append`、実体はShift+Alt+Iハンドラと全く同じ2行)のみとし、Insert/Delete/Overwriteは既存機構をそのまま使う。新規`ICommand`も新規ヘルパー関数も作らなかった。
+
+> **テスト:** `tests/unit/app_editor_input_test.cpp`へ矩形選択×実編集ハンドラの結合テスト5件を新規追加(この組み合わせは本WI以前は一切未検証だった)。1件で手計算ミスによるテスト失敗が発生、テスト側の誤りと確認して修正(WI-25と同種の教訓)。
+
+> **実機ドッグフーディングで矩形選択の対話的作成(Shift+Alt+ドラッグ/矢印)を本プロジェクトで初めて実機確認した**(過去複数セッションで未確認のまま残っていた積み残し)。列挿入・列削除・列上書き・`column.append`による行末一括追記(列位置や行の長さに関わらず各行の実際の行末に正しく追記)を全てスクリーンショットで確認、Ctrl+Zでの1操作巻き戻りも確認。
+
+> **🔴 副次的発見: `rectangularAnchor`(矩形選択の基点)がキーボードのみの操作では一切リセットされないバグを発見・起票した。** 直前の矩形選択の基点が、矢印キー移動やUndo/Redoを挟んでも残り続け、新しい矩形選択に無言で混入する。プレーンなマウスクリックでのみリセットされる既存(Phase 4b8g、本WI以前)の実装だった。安易な修正は「マウスで開始した矩形選択をキーボードで継続する」という既存の設計意図を壊しうるため、本WIでは修正せず[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)として起票のみ行った。
+
+> Debug/Release/ASan全3構成で新規5件含む1594/1594件green(Release/ASanはサブエージェントへ委譲——Releaseビルド exit 0/実コード警告0件+ctest 1594/1594件green、ASanビルド exit 0/実コード警告0件+ctest 1594/1594件green、ログ全文grepでサニタイザ診断0件)。clang-tidy(変更2ファイル)新規指摘0件。
+
+> **次回セッション最初にやること:** ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が出ているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい。次点候補は[`rectangular_anchor_stale_across_keyboard_only_reuse.md`](../issues/rectangular_anchor_stale_across_keyboard_only_reuse.md)(P2、設計を伴う修正が必要)、またはCLAUDE.md §11が定める3つの正典ソース(要件定義書の未達項目/master_roadmap.md §12.3出荷判定チェックリストの未達項目/gap_analysis.mdのP0/P1)からの再選定。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+
+> 詳細は`docs/design/build_plan.md`のWI-26セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**
