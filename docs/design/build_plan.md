@@ -2949,7 +2949,7 @@ Debug全1602/1602件green、clang-tidy新規指摘0件。Release/ASan/UBSan(clan
 
 **残課題:** メッセージキューに滞留が無い通常速度のタイピングでも1キー入力ごとに最低1vblankの同期Present待ちが発生するという、より根本的な制約(調査①)は未解決のまま`docs/issues/keystroke_burst_render_backlog.md`へ記録。解消にはSyncInterval=0への変更や描画スレッド分離等、ADR-011を覆すレベルの大規模変更を要するため本WIのスコープ外とした。
 
-コミット: `(検証完了後に反映)`。
+コミット: `f9b5be3`。
 
 ---
 
