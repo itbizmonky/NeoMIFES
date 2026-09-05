@@ -188,6 +188,42 @@ bool hasQueuedKeyboardInput(HWND hwnd) noexcept {
     return ::PeekMessageW(&msg, hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE) != 0;
 }
 
+// WI-32: used by syncRenderStateAndInvalidate() below - a keystroke's OWN
+// repaint request should fire immediately whenever nothing is already
+// queued behind it, so typing gets prompt feedback; the queue check only
+// ever defers it during a genuine backlog.
+void requestPaintUnlessBusy(HWND hwnd, RenderPipeline& renderPipeline) noexcept {
+    if (shouldPaintNow(hasQueuedKeyboardInput(hwnd), renderPipeline.paintOverdue(kMaxPaintDeferral))) {
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        renderPipeline.markPaintRequested();
+    }
+}
+
+// WI-33: for handleAppMessage()'s kMsgSyntaxTokensReady branch - deliberately
+// does NOT check hasQueuedKeyboardInput() the way requestPaintUnlessBusy()
+// above does. A background-worker completion is purely cosmetic (updated
+// syntax colors); the tokens are already applied to RenderPipeline's state
+// regardless of whether this call actually repaints, so it's always safe to
+// let the NEXT real repaint (the user's next keystroke, or - if typing has
+// stopped - this function's own paintOverdue() check) show them instead.
+// Checking the keyboard queue here would not have helped: SyntaxWorker
+// reparses the WHOLE document on every edit (syntax_worker.cpp), and for a
+// short document (a new file's first few lines) that reparse finishes only
+// a few ms after the edit's own paint - well before the NEXT keystroke, at
+// typical (non-backlogged) typing speed, so the queue is empty at this
+// check too, and requestPaintUnlessBusy()'s logic would just paint again
+// immediately, still costing two full vsync-locked Present1 cycles per
+// keystroke instead of one (confirmed by measurement: see
+// docs/issues/keystroke_burst_render_backlog.md's WI-33 addendum). Only
+// paintOverdue() genuinely captures "nothing else is going to paint this
+// soon" here.
+void requestPaintForBackgroundUpdate(HWND hwnd, RenderPipeline& renderPipeline) noexcept {
+    if (renderPipeline.paintOverdue(kMaxPaintDeferral)) {
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        renderPipeline.markPaintRequested();
+    }
+}
+
 // Bridges core::Viewport/SelectionModel state into RenderPipeline and
 // requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel/
 // onMouseDown below (Phase 4b1/4b2). RenderPipeline stays core-agnostic
@@ -229,10 +265,7 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
     // microseconds, so this frame's InvalidateRect can wait instead of
     // forcing a >=1-vblank Present1 for every single keystroke of a fast
     // burst. See docs/issues/keystroke_burst_render_backlog.md.
-    if (shouldPaintNow(hasQueuedKeyboardInput(hwnd), renderPipeline.paintOverdue(kMaxPaintDeferral))) {
-        ::InvalidateRect(hwnd, nullptr, FALSE);
-        renderPipeline.markPaintRequested();
-    }
+    requestPaintUnlessBusy(hwnd, renderPipeline);
 }
 
 // WI-03: keeps the window's standard horizontal scrollbar (WS_HSCROLL) in
@@ -4750,7 +4783,10 @@ void handleAppMessage(RenderPipeline& renderPipeline, Workspace& workspace, Json
         const std::unique_ptr<std::vector<neomifes::syntax::Token>> tokens(
             reinterpret_cast<std::vector<neomifes::syntax::Token>*>(lParam));
         renderPipeline.applyAsyncSyntaxTokens(std::move(*tokens));
-        ::InvalidateRect(hwnd, nullptr, FALSE);
+        // WI-33: was a raw InvalidateRect() - see
+        // requestPaintForBackgroundUpdate()'s own comment for why this
+        // needs different gating than a keystroke's own repaint request.
+        requestPaintForBackgroundUpdate(hwnd, renderPipeline);
         return;
     }
     if (msg == neomifes::logmode::kMsgLogIndexReady) {
