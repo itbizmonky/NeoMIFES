@@ -478,6 +478,26 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-05) — WI-28/29/30完了: ステータスバーのチラつき修正・半角/日本語混在行のベースラインずれ修正・現在行ハイライト追加
+
+> **ユーザーから直接3件のUI/UX改修依頼があり、Plan Modeで調査・設計してから3件のWIとして対応した。**
+
+> **WI-28: ステータスバーのチラつき修正。** `ui::StatusBar::setParts()`がキー入力のたびに発生するWM_PAINTごとに、実際には変化していないパートも含め6パート全てへ無条件に`SB_SETTEXTW`を送信していたことが原因(WI-07 step4時点で明示的にスコープカットされていた積み残し)。前回送信した`StatusBarParts`をキャッシュし、変化したパートのみ送信するよう修正。
+
+> **WI-29: 半角英字+日本語混在行のベースラインずれ修正。** `RenderPipeline::ensureTextFormat()`の行高さプローブが半角ラテン文字のみ(`"Ag"`)だったため、DirectWriteの暗黙のフォントフォールバックが充てる和文フォントのascent/descentが未反映のまま、行ごとにベースラインが再計算されていた(`basic_design.md`§3.4で意図されていたが未実装のまま一度もissue化されていなかった欠落)。プローブを`"Agあ"`へ拡張し`SetLineSpacing(UNIFORM)`を追加、全行へ固定のベースラインを適用するよう修正。
+
+> **WI-30: 現在行ハイライト表示の追加。** 既存のインデントガイド用`isActiveLine`判定を再利用し、カーソルがある行を背景色でハイライトする機能を新設。複数カーソル時は全カーソルの行を個別にハイライト。Dark/Light/HighContrastの3テーマそれぞれに選択ハイライトの青と混同しない専用色を設定(HighContrastは黄)。
+
+> **副次的発見: `FrameMeasureTest.ProducesValidProfile`が`ubsan`(clang-cl)ビルドでのみ非決定的にハングする既存の潜在バグを発見した。** WI-29とは無関係と`git stash`での切り分けにより確認した上で[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)として起票(原因未調査)。
+
+> 3件とも実機ドッグフーディングで確認済み(WI-29+WI-30の統合ドッグフーディングも実施)。WI-29とWI-30は同一ファイル(`render_pipeline.cpp`)内の隣接する非オーバーラップ変更のためgit上は1コミットにまとめた。Release/ASan/UBSan(clang-cl)全1598/1598件green、clang-tidy新規指摘0件。
+
+> **次回セッション最初にやること:** ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が出ているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい。次点候補は[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)・[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)(P2)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+
+> 詳細は`docs/design/build_plan.md`のWI-28/29/30セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🔴 最重要 (2026-08-04 中間レビュー) — 背景を知りたい場合はここを読む
 >
 > **ユーザー指示による中間レビューを実施し、ロードマップの構造的欠陥が判明した。**
