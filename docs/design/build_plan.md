@@ -2893,6 +2893,40 @@ WI-28完了報告直後、ユーザーから新規報告:「まだキー入力�
 
 ---
 
+## WI-32 — タイピング時「ガタつく」の修正(入力キューのドレイン優先)
+
+### 目的
+
+WI-31の実測診断結果をユーザーへ提示し、AskUserQuestionで3候補(①入力キューのドレイン優先/②描画をUIスレッドから分離/③SyncInterval=0)から①を選択、安全弁の閾値も50msで確定した上で着手。
+
+### 設計
+
+Plan agentへ詳細設計を委任し、`syncRenderStateAndInvalidate()`(`normal_mode_wiring.cpp`、約35箇所から呼ばれる共有末尾処理)へ判定を集約する方針を採用(全呼び出し箇所が自動的に恩恵を受ける)。既に`InvalidateRect`を直接呼びこの関数をバイパスしている2箇所(Diffビュー起動時・`ToggleOverwriteMode`)は自動的にスコープ外。1キー入力=1回のInvalidateであること(`handleKeyDownEvent()`のWM_KEYDOWN側は英数字キーに一致するハンドラが無い)、マルチウィンドウでの安全性(`PeekMessageW`を`hwnd`スコープにする必要性)を確認した。
+
+安全弁が必要な具体的理由も特定した: `WM_KEYUP`は`MainWindow::wndProc()`に一切ケースが無く素通りする、`Backspace`を文書先頭で押し続けた場合の境界no-opは`syncRenderStateAndInvalidate()`自体が呼ばれない——いずれも「バースト終了後に必ず最終状態が描画される」保証を素朴な実装だけでは満たせない実例。
+
+### 実装
+
+- 新規`src/app/include/neomifes/app/paint_deferral.h`: 純粋関数`shouldPaintNow(moreKeyboardInputQueued, paintOverdue)`。`normal_mode_wiring.cpp`は`neomifes_app_input`ライブラリでなく`NeoMIFES`実行ファイル本体へ直接コンパイルされる(`src/app/CMakeLists.txt`で確認)ため、そのままでは単体テストからリンクできない——ヘッダオンリーで独立させ`tests/unit/`から直接includeできるようにした。
+- `render_pipeline.h`: `RenderPipeline::markPaintRequested()`/`paintOverdue(std::chrono::milliseconds threshold)`を追加(`platform::PerfClock`で前回の実際の再描画要求時刻を記録)。1ウィンドウにつき1インスタンスの`RenderPipeline`メンバとして持たせ、関数ローカル`static`(マルチウィンドウで誤って共有される)を避けた。
+- `normal_mode_wiring.cpp`: `syncRenderStateAndInvalidate()`の末尾`InvalidateRect`を、新規`hasQueuedKeyboardInput(hwnd)`(`PeekMessageW(hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE)`)と`shouldPaintNow()`で条件化。閾値`kMaxPaintDeferral{50ms}`。
+- 新規`tests/unit/app_paint_deferral_test.cpp`: `shouldPaintNow()`の4通りの真理値表、`tests/unit/CMakeLists.txt`へ登録。
+
+### 検証
+
+Debug全1602/1602件green(新規4件含む)、clang-tidy新規指摘0件(`src/app/normal_mode_wiring.cpp`/`tests/unit/app_paint_deferral_test.cpp`/`src/render/src/render_pipeline.cpp`個別実行)。
+
+**実測ドッグフーディング(WI-31と同一手法、`DOGFOOD-TEMP`計装+診断後完全除去):**
+- 現実的な間隔(130ms/文字)での回帰確認: フレーム間隔は既存同様~136〜152msのまま、変化なし(キューがほぼ常に空のため)。
+- 20ms間隔での注入: `hasQueuedKeyboardInput()`が一度も`true`を返さず(実際にはこの注入方法ではメッセージキューへの真の滞留が生じていなかったと判明、`docs/issues/uniform_interval_typing_frame_cadence_unexplained.md`として副次的に起票)。
+- **遅延なしの真のバースト注入(23文字を間髪入れず投入)**: `hasQueuedKeyboardInput()`が20回連続で`true`を検知し再描画を正しくスキップ、キューが捌けた最後の1回のみ`InvalidateRect`が発行され、実際の`RenderPipeline::render()`呼び出しが**23文字に対しわずか1回**に集約されることを確認(修正前なら最大23回)。スクリーンショットで最終状態(全文字が正しい位置に反映)も確認。
+
+**Release/ASan/UBSan(clang-cl)の3構成検証(サブエージェントへ委任、逐次実行):** 全構成1602/1602件green、AddressSanitizer/UndefinedBehaviorSanitizerの実行時診断0件、コンパイラ警告0件(Releaseの`/Ob2`→`/Ob3`上書き通知のみ、コードと無関係な既存の最適化フラグ由来)。`ubsan`プリセットの既知の非決定的ハング(`frame_measure_hangs_under_ubsan_clang_cl.md`)は本回では再現せず(5.43秒で正常pass)。
+
+コミット: `(このセクション更新後にコミットハッシュを追記)`。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

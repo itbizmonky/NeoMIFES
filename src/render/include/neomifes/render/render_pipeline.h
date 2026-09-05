@@ -23,6 +23,7 @@
 #include <windows.h>
 #include <wrl/client.h>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -33,6 +34,9 @@
 
 #include "neomifes/document/document.h"
 #include "neomifes/document/text_pos.h"
+// WI-32: m_lastPaintRequestTime below needs PerfClock::time_point's complete
+// type - see markPaintRequested()/paintOverdue()'s own comment.
+#include "neomifes/platform/perf_clock.h"
 // WI-14c: m_logLineLevels below needs logmode::LogLevel's complete type
 // (a std::vector member, not a pointer). neomifes::logmode depends only on
 // neomifes::document (a self-contained leaf module, same as neomifes::
@@ -557,6 +561,25 @@ public:
         }
     }
     [[nodiscard]] bool isDiffViewActive() const noexcept { return m_diffViewActive; }
+
+    // WI-32: last time syncRenderStateAndInvalidate() (normal_mode_wiring.cpp)
+    // actually issued an InvalidateRect (nullopt = never yet this window's
+    // lifetime). Feeds paintOverdue() below - the bounded safety valve for
+    // that function's input-queue-drain optimization (paint_deferral.h's
+    // shouldPaintNow(), docs/issues/keystroke_burst_render_backlog.md).
+    // Lives HERE (one RenderPipeline per top-level MainWindow, see
+    // editor_window.h) rather than a function-local `static`, which would
+    // incorrectly share this state across multiple simultaneous windows
+    // (WI-20b - one shared UI-thread message loop, see session_manager.h).
+    void markPaintRequested() noexcept { m_lastPaintRequestTime = platform::PerfClock::now(); }
+    // True if never painted yet, or `threshold` has elapsed since the last
+    // markPaintRequested() call - see that method's own comment.
+    [[nodiscard]] bool paintOverdue(std::chrono::milliseconds threshold) const noexcept {
+        if (!m_lastPaintRequestTime.has_value()) {
+            return true;
+        }
+        return (platform::PerfClock::now() - *m_lastPaintRequestTime) >= threshold;
+    }
 
     // WI-14c: per-document-line log severity, 1:1 with logmode::LogModel::
     // lines() (empty vector = log mode disabled for the attached document,
@@ -1459,6 +1482,8 @@ private:
     std::vector<GitDiffMarker>                        m_gitDiffMarkers;   // empty: no diff data (WI-17c)
     std::vector<DiffViewLineMarker>                   m_diffViewLineMarkers;  // empty: Diff view closed, or open with no changes to highlight (WI-17f)
     bool                                               m_diffViewActive       = false;  // WI-17f: see isDiffViewActive()'s own comment
+    // WI-32: see markPaintRequested()/paintOverdue()'s own comment.
+    std::optional<platform::PerfClock::time_point>    m_lastPaintRequestTime;
     // WI-14c: see setLogLineLevels()'s own comment for why this can be
     // O(document size) and is deliberately excluded from FrameState.
     std::vector<logmode::LogLevel>                    m_logLineLevels;    // empty: log mode disabled

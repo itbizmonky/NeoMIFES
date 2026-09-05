@@ -4343,4 +4343,16 @@ WI-28完了報告直後、ユーザーから新規報告:「まだキー入力�
 
 根本原因はCPUコストではなく「1キー入力ごとに同期的にvsync待ちPresentを行う」というメッセージループ/描画パイプラインのアーキテクチャそのものと判明。WI-28型の修正(無駄な再構築への差分ガード追加)では解決しない、より大きな設計変更が必要なため、[`keystroke_burst_render_backlog.md`](../issues/keystroke_burst_render_backlog.md)(新規、P1)として詳細を記録し、対応方針はCLAUDE.mdルール9(大規模変更は必ずユーザー承認)に従いユーザーへ提示することにした。計装コードは診断後に完全除去(`git diff --stat`が空になることでHEADと完全一致することを確認)——**本WIはコード変更を一切含まない、調査・実測のみのWI。**
 
+### WI-32: タイピング時「ガタつく」の修正(入力キューのドレイン優先)
+
+WI-31の診断結果をユーザーへAskUserQuestionで提示し、3候補(①入力キューのドレイン優先/②描画をUIスレッドから分離/③SyncInterval=0)から①を選択、安全弁の閾値も50msで確定。Plan agentへ詳細設計を委任し、`syncRenderStateAndInvalidate()`(約35箇所から呼ばれる共有末尾処理)へ判定を集約する方針で実際の全呼び出し箇所・メッセージディスパッチ・マルチウィンドウ機構・テスト可能性を検証した上で実装した。
+
+**設計:** `WM_KEYUP`が`MainWindow::wndProc()`に一切ケースを持たず素通りする、文書先頭での`Backspace`押し続けの境界no-opは`syncRenderStateAndInvalidate()`自体を呼ばない、という2つの具体的シナリオから「素朴な実装だとバースト終了後の最終描画が永久に失われうる」ことを特定し、時間ベースの安全弁(50ms)を設計に組み込んだ。
+
+**実装:** 新規`paint_deferral.h`の純粋関数`shouldPaintNow()`(`normal_mode_wiring.cpp`は`NeoMIFES`実行ファイル本体へ直接コンパイルされテスト対象外のため、判定ロジックだけをヘッダオンリーで独立させ単体テスト可能にした)、`RenderPipeline::markPaintRequested()`/`paintOverdue()`(1ウィンドウにつき1インスタンスの安全弁状態、関数ローカル`static`はマルチウィンドウで誤って共有されるため不採用)、`syncRenderStateAndInvalidate()`の末尾`InvalidateRect`を`PeekMessageW(WM_KEYFIRST..WM_KEYLAST, PM_NOREMOVE)`ベースの`hasQueuedKeyboardInput()`で条件化。
+
+**実測ドッグフーディング(WI-31と同一手法で再検証):** 130ms間隔では回帰なし(既存同様~136〜152ms)。20ms間隔での注入では`hasQueuedKeyboardInput()`が一度も`true`を返さず——この注入方法では実際にはメッセージキューへの真の滞留が生じていなかったと判明した(WI-31が観測した30〜32msという間隔自体の完全な原因は本WIのスコープ外、[`uniform_interval_typing_frame_cadence_unexplained.md`](../issues/uniform_interval_typing_frame_cadence_unexplained.md)として副次的に起票、P2実害軽微)。**一方、遅延なしの真のバースト注入(23文字を間髪入れず投入)では、修正が設計通りに機能することを確認した: `hasQueuedKeyboardInput()`が20回連続で滞留を検知し再描画をスキップ、キューが捌けた最後の1回のみ`InvalidateRect`が発行され、実際の`RenderPipeline::render()`呼び出しが23文字に対しわずか1回に集約された(修正前なら最大23回)。** スクリーンショットで最終状態が正しく反映されることも確認。
+
+Debug全1602/1602件green(新規4件含む)、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)の3構成をサブエージェントへ逐次委任、全構成1602/1602件green、サニタイザ診断0件、コンパイラ警告0件を確認(`ubsan`の既知の非決定的ハングも本回では再現せず正常pass)。**
+
 <!-- 次セッションはここに追記 -->

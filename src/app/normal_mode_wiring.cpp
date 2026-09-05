@@ -35,6 +35,7 @@
 #include "neomifes/app/menu_bar.h"
 #include "neomifes/app/message_dialogs.h"
 #include "neomifes/app/outline_bridge.h"
+#include "neomifes/app/paint_deferral.h"
 #include "neomifes/app/reindent.h"
 #include "neomifes/app/status_bar_format.h"
 #include "neomifes/app/syntax_language.h"
@@ -162,6 +163,31 @@ using neomifes::ui::TabBarItem;
 using neomifes::xmltree::kMsgXmlTreeReady;
 using neomifes::xmltree::XmlTreeWorker;
 
+// WI-32: how long a deferred repaint may be withheld before the safety
+// valve (paint_deferral.h's shouldPaintNow()) forces it anyway. WI-31's own
+// worst observed backlog frame-to-frame gap was 30-46ms, so 50ms is
+// comfortably above normal burst-coalescing behavior (won't cut it short)
+// while still being well under the ~100ms threshold generally considered
+// perceptible as "stuck" - see docs/issues/keystroke_burst_render_backlog.md.
+constexpr std::chrono::milliseconds kMaxPaintDeferral{50};
+
+// WI-32: PM_NOREMOVE - a pure peek, never consumes a message DispatchMessage
+// would otherwise deliver next. Scoped to `hwnd` specifically (not NULL) -
+// WI-20b lets more than one top-level MainWindow share this one UI thread's
+// single message queue (SessionManager owns them all), so this MUST filter
+// to the one window whose keystroke triggered this call, or a burst in
+// window A would incorrectly suppress window B's repaint (or vice versa).
+// WM_KEYFIRST..WM_KEYLAST covers WM_KEYDOWN/WM_KEYUP/WM_CHAR/WM_DEADCHAR/
+// WM_SYSKEYDOWN/WM_SYSKEYUP/WM_SYSCHAR/WM_UNICHAR - broad by design; the
+// occasional false positive from a message that never itself triggers
+// another repaint (WM_KEYUP, a boundary no-op) is bounded by
+// RenderPipeline::paintOverdue() above, not filtered out here, to keep this
+// one call simple (see paint_deferral.h's shouldPaintNow() comment).
+bool hasQueuedKeyboardInput(HWND hwnd) noexcept {
+    MSG msg{};
+    return ::PeekMessageW(&msg, hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE) != 0;
+}
+
 // Bridges core::Viewport/SelectionModel state into RenderPipeline and
 // requests a repaint - the shared tail of onKeyDown/onChar/onMouseWheel/
 // onMouseDown below (Phase 4b1/4b2). RenderPipeline stays core-agnostic
@@ -197,7 +223,16 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
         });
     }
     renderPipeline.setCursorVisuals(std::move(visuals));
-    ::InvalidateRect(hwnd, nullptr, FALSE);
+    // WI-32: skip the repaint request if the message loop already has
+    // another keyboard message queued for this window - it drains cheaply
+    // (no Direct2D work) and reaches this same function again within
+    // microseconds, so this frame's InvalidateRect can wait instead of
+    // forcing a >=1-vblank Present1 for every single keystroke of a fast
+    // burst. See docs/issues/keystroke_burst_render_backlog.md.
+    if (shouldPaintNow(hasQueuedKeyboardInput(hwnd), renderPipeline.paintOverdue(kMaxPaintDeferral))) {
+        ::InvalidateRect(hwnd, nullptr, FALSE);
+        renderPipeline.markPaintRequested();
+    }
 }
 
 // WI-03: keeps the window's standard horizontal scrollbar (WS_HSCROLL) in
