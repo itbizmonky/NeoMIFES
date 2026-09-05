@@ -2834,7 +2834,7 @@ Debug全1597/1597件green(既存の`render_text_smoke_test.cpp`含む)、clang-t
 
 単独検証時点ではRelease/ASan全1597/1597件green、実警告0件。UBSan(clang-cl)は1597/1598件——`FrameMeasureTest.ProducesValidProfile`が唯一失敗したが、`git stash`でWI-29の変更を退避しWI-28時点(`93468ad`)でも同一のハングが再現することを確認し、**本WIとは無関係の既存潜在バグ**と切り分けた([`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)として新規起票、非決定的なタイミング依存のハングと推定)。**WI-30実装後の合同再検証(下記WI-30参照)ではこのテストも含め3構成とも全件greenとなった**(`FrameMeasureTest`はこの回では再現せず、issueに記載した「非決定的」という性質と整合)。サニタイザ診断(`runtime error:`等)は全文ログに一致0件。clang-tidy新規指摘0件。
 
-コミット: `<pending>`(WI-30と合同コミット、同一ファイル`render_pipeline.cpp`内の隣接する非オーバーラップ変更のためgit上分割せず、それぞれ独立して設計・実装・検証・ドッグフーディング済み)。
+コミット: `c301a6c`(WI-30と合同コミット、同一ファイル`render_pipeline.cpp`内の隣接する非オーバーラップ変更のためgit上分割せず、それぞれ独立して設計・実装・検証・ドッグフーディング済み)。
 
 ---
 
@@ -2860,7 +2860,7 @@ Explore agentの調査で、インデントガイド用に既に`isActiveLine`(`
 
 **WI-29+WI-30合同でのRelease/ASan/UBSan(clang-cl)最終検証: 3構成とも1598/1598件green、実警告0件、サニタイザ診断0件。** clang-tidy新規指摘0件。
 
-コミット: `<pending>`(WI-29と合同コミット)。
+コミット: `c301a6c`(WI-29と合同コミット)。
 
 ---
 
