@@ -2794,6 +2794,26 @@ Release/ASan/UBSan(**実際にclang-clの`ubsan`プリセットを実行**——
 
 ---
 
+## WI-28 — ステータスバーのチラつき修正
+
+### 目的
+
+ユーザーから「文字を打つ度にWindow下部のバーの表示が更新されてチラつく」との報告。Explore agentへの調査で、`ui::StatusBar::setParts()`(`src/ui/src/status_bar.cpp`)がキー入力のたびに発生するWM_PAINT(`syncRenderStateAndInvalidate()`の`InvalidateRect`経由)ごとに、実際には変化していないパートも含め6パート全てへ無条件に`SB_SETTEXTW`を送信していると判明した。ネイティブ`msctls_statusbar32`コントロールにはダブルバッファ相当が無いため、これがチラつきとして視認される。WI-07 step4時点で「v1スコープでは dirty-check ガード無し」と明示的にスコープカットされていた積み残しであり、実装バグではなかった。
+
+### 実装
+
+`StatusBar`へ前回送信した`StatusBarParts`をキャッシュする`m_lastParts`メンバを追加、`setParts()`を6フィールドそれぞれ前回値と比較し変化したパートのみ`SB_SETTEXTW`を送るよう書き換えた。`operator==`は定義せず(WI-27で学んだclang-cl/`defaulted operator==`差異の教訓を踏まえ)、フィールドごとに手動比較する形にした。
+
+### 検証
+
+`StatusBar`はHWNDを要するネイティブコントロールで単体テスト対象外(既存の設計判断のまま)。実機ドッグフーディングで、同じ行での連続タイプ入力時に位置(行:桁)パートのみ更新され続けること、選択範囲作成時に選択文字数パートが正しく更新されること、Insertキーでのオーバーライトモード切替が正しく反映されることを確認した。
+
+Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それぞれで1597/1597件green(新規テストなし)、実警告0件、サニタイザ診断0件。clang-tidy新規指摘0件。
+
+コミット: `<pending>`(コミット後にハッシュを反映)。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

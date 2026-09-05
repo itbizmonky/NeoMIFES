@@ -4299,4 +4299,14 @@ Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それ�
 
 **これで`rectangular_anchor_stale_across_keyboard_only_reuse.md`が解決済みとなった。WI-27完了。** ユーザーの標準委任に基づき、次作業の選定もこちらの判断で継続する。次点候補は本WIで発見した[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。
 
+## セッション: WI-28/29/30 — ステータスバーのチラつき修正・全角/半角混在行のベースラインずれ修正・現在行ハイライト追加
+
+ユーザーから直接3件の改修依頼(UI/UX関連)があった。3件それぞれExplore agentへ調査を委任し(②はさらにPlan agentによるDirectWrite API検証も実施)、根本原因を特定した上でPlan Mode設計→実装の順で対応した。1PR=1責務の方針通り、WI番号を3つ分けて個別に実装・検証・コミットする。
+
+### WI-28: ステータスバーのチラつき修正
+
+`ui::StatusBar::setParts()`(`src/ui/src/status_bar.cpp`)が、キー入力のたびに発生するWM_PAINT(`syncRenderStateAndInvalidate()`の`InvalidateRect`経由)ごとに、実際には変化していないパートも含め6パート全てへ無条件に`SB_SETTEXTW`を送信していたことが原因と判明(WI-07 step4時点で「v1スコープでは dirty-check ガード無し」と明示的にスコープカットされていた積み残し、実装バグではない)。ネイティブ`msctls_statusbar32`コントロールにはダブルバッファ相当が無いため、これがチラつきとして視認されていた。
+
+`StatusBar`へ前回送信した`StatusBarParts`をキャッシュする`m_lastParts`を追加、`setParts()`をフィールドごとの手動比較(`operator==`は定義しない、WI-27で学んだclang-cl差異の教訓を踏まえる)に書き換えた。実機ドッグフーディングで、位置パートは連続タイプ入力のたびに正しく更新され続け、選択範囲作成時の選択文字数パート・Insertキーでのオーバーライトモード切替も正しく反映されることを確認した(diff-guardが実際の変化を取りこぼしていないことの確認)。Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それぞれで1597/1597件green、実警告0件、サニタイザ診断0件。clang-tidy新規指摘0件。
+
 <!-- 次セッションはここに追記 -->

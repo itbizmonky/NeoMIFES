@@ -43,14 +43,27 @@ void StatusBar::setParts(const StatusBarParts& parts) noexcept {
     if (!m_hwndStatus) {
         return;
     }
-    ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(parts.position.c_str()));
-    ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 1,
-                   reinterpret_cast<LPARAM>(parts.selectionCount.c_str()));
-    ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 2, reinterpret_cast<LPARAM>(parts.encoding.c_str()));
-    ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 3, reinterpret_cast<LPARAM>(parts.lineEnding.c_str()));
-    ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 4,
-                   reinterpret_cast<LPARAM>(parts.overwriteMode.c_str()));
-    ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 5, reinterpret_cast<LPARAM>(parts.language.c_str()));
+    if (parts.position != m_lastParts.position) {
+        ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(parts.position.c_str()));
+    }
+    if (parts.selectionCount != m_lastParts.selectionCount) {
+        ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 1,
+                       reinterpret_cast<LPARAM>(parts.selectionCount.c_str()));
+    }
+    if (parts.encoding != m_lastParts.encoding) {
+        ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 2, reinterpret_cast<LPARAM>(parts.encoding.c_str()));
+    }
+    if (parts.lineEnding != m_lastParts.lineEnding) {
+        ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 3, reinterpret_cast<LPARAM>(parts.lineEnding.c_str()));
+    }
+    if (parts.overwriteMode != m_lastParts.overwriteMode) {
+        ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 4,
+                       reinterpret_cast<LPARAM>(parts.overwriteMode.c_str()));
+    }
+    if (parts.language != m_lastParts.language) {
+        ::SendMessageW(m_hwndStatus.get(), SB_SETTEXTW, 5, reinterpret_cast<LPARAM>(parts.language.c_str()));
+    }
+    m_lastParts = parts;
 }
 
 void StatusBar::onParentResized(std::uint32_t parentWidth, std::uint32_t parentHeight,

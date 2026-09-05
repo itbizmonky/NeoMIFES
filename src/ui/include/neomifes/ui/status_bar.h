@@ -65,10 +65,17 @@ public:
 
     [[nodiscard]] bool create(HWND parent, HINSTANCE hInstance, const StatusBarConfig& config);
 
-    // Rewrites all 6 parts (SB_SETTEXTW). Called from the paint handler
-    // every frame something was invalidated, same "no dirty-check guard at
-    // this DoD's scale" convention TabBar::setTabs() follows. No-op if
-    // create() hasn't succeeded.
+    // Sends SB_SETTEXTW only for parts whose text actually changed since the
+    // last call (diffed field-by-field against m_lastParts below). Called
+    // from the paint handler on every WM_PAINT - which fires on every
+    // keystroke via syncRenderStateAndInvalidate()'s whole-window
+    // InvalidateRect - so re-sending all 6 parts unconditionally (the
+    // original "no dirty-check guard at this DoD's scale" convention
+    // TabBar::setTabs() still follows) visibly flickered the 5 parts that
+    // rarely change (selectionCount/encoding/lineEnding/overwriteMode/
+    // language), since msctls_statusbar32 has no built-in double-buffering
+    // (unlike ListView's LVS_EX_DOUBLEBUFFER, csv_grid_pane.cpp's own fix
+    // for the identical flicker class). No-op if create() hasn't succeeded.
     void setParts(const StatusBarParts& parts) noexcept;
 
     // Docked full-width along the BOTTOM edge - needs both parent
@@ -97,6 +104,11 @@ private:
 
     neomifes::platform::WindowHandle m_hwndStatus;
     StatusBarConfig                  m_config;
+    // Last text actually sent per part (setParts()'s diff baseline) - starts
+    // default-constructed (all empty strings), which is fine: the very
+    // first setParts() call will have at least one non-empty field in
+    // practice, so nothing is silently skipped on the first frame.
+    StatusBarParts m_lastParts;
 };
 
 }  // namespace neomifes::ui
