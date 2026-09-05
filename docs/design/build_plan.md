@@ -2923,7 +2923,7 @@ Debug全1602/1602件green(新規4件含む)、clang-tidy新規指摘0件(`src/ap
 
 **Release/ASan/UBSan(clang-cl)の3構成検証(サブエージェントへ委任、逐次実行):** 全構成1602/1602件green、AddressSanitizer/UndefinedBehaviorSanitizerの実行時診断0件、コンパイラ警告0件(Releaseの`/Ob2`→`/Ob3`上書き通知のみ、コードと無関係な既存の最適化フラグ由来)。`ubsan`プリセットの既知の非決定的ハング(`frame_measure_hangs_under_ubsan_clang_cl.md`)は本回では再現せず(5.43秒で正常pass)。
 
-コミット: `(このセクション更新後にコミットハッシュを追記)`。
+コミット: `1aa03bf`。
 
 ---
 

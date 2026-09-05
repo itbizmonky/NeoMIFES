@@ -478,6 +478,22 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-06) — WI-32完了: タイピング時「ガタつく」を修正(入力キューのドレイン優先)
+
+> **WI-31(実測診断)を受け、ユーザーがAskUserQuestionで3候補中「入力キューのドレイン優先」を選択、安全弁閾値も50msで確定。Plan agentへ詳細設計を委任し実装・検証まで完了した。**
+
+> **実装:** `syncRenderStateAndInvalidate()`(約35箇所から呼ばれる共有末尾処理)の`InvalidateRect`を、`PeekMessageW(hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE)`で「このウィンドウに追加のキー入力が既にキューにあるか」を確認してから発行するよう変更。新規`paint_deferral.h`の純粋関数`shouldPaintNow()`(単体テスト可能)+`RenderPipeline::markPaintRequested()`/`paintOverdue(50ms)`(バースト終了後に必ず最終状態が描画される保証、WM_KEYUPや境界no-opがバースト末尾に来て再描画要求を永久に失うケースへの対策)。
+
+> **実測ドッグフーディングで設計通りの効果を確認:** 遅延なしの真のバースト入力(23文字)が23回→**1回**のrenderOnce()呼び出しへ集約。130ms間隔の通常タイピングでは回帰なし。**副次的発見:** WI-31が使った20ms間隔でのPostMessage注入では、実はメッセージキューへの真の滞留が生じておらず(修正の有無に関わらず同じ30〜32ms間隔が再現)、この特定の注入方法の限界と判明——[`uniform_interval_typing_frame_cadence_unexplained.md`](../issues/uniform_interval_typing_frame_cadence_unexplained.md)(P2、実害軽微)として別途起票。
+
+> Debug/Release/ASan/UBSan(clang-cl)全1602/1602件green、clang-tidy新規指摘0件、サニタイザ診断0件。`keystroke_burst_render_backlog.md`は解決済みへ移動。コミット`1aa03bf`。
+
+> **次回セッション最初にやること:** 特になし(コード上の未完了作業なし)。ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が生きているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい。次点候補は[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)・[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)(P2)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。**WI-28〜32のコミット(`93468ad`/`c301a6c`/`dc3234a`/`d829b48`/`fcc1bc0`/`1aa03bf`)はまだpushされていない**(ユーザーからの明示的なpush許可待ちのまま)。
+
+> 詳細は`docs/design/build_plan.md`のWI-32セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🔴 最重要 (2026-09-05) — WI-31完了: 「タイピング時にガタつく」の原因を実測診断(コード変更なし、ユーザー判断待ち)
 
 > **WI-28完了報告直後、ユーザーから新規報告:「まだキー入力すると全再描写されてウィンドウの描写がガタつく。」** WI-28(ステータスバーのチラつき)とは別の、メインのテキスト描画自体の体感問題。2件のExplore agent調査+`TIMELINE.md`横断調査+一時計装(`platform::PerfClock`、`DOGFOOD-TEMP`タグ、診断後完全除去)によるドッグフーディング実測で原因を特定した。
