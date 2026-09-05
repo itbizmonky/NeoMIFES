@@ -2810,7 +2810,57 @@ Release/ASan/UBSan(**実際にclang-clの`ubsan`プリセットを実行**——
 
 Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それぞれで1597/1597件green(新規テストなし)、実警告0件、サニタイザ診断0件。clang-tidy新規指摘0件。
 
-コミット: `<pending>`(コミット後にハッシュを反映)。
+コミット: `93468ad`。
+
+---
+
+## WI-29 — 半角英字+日本語混在行のベースラインずれ修正
+
+### 目的
+
+ユーザーから「半角英字を打ってから同じ行に日本語文字を打つと半角文字の位置が下にずれる」との報告。Explore agent+Plan agent(DirectWrite API検証)への調査委任で原因を特定した。
+
+### 原因
+
+`RenderPipeline::ensureTextFormat()`(`src/render/src/render_pipeline.cpp`)は行の高さを`"Ag"`という半角ラテン文字のみのプローブから1回だけ測定し、全行をこの1つの固定値で配置する。一方、1行分のテキストは1つの`IDWriteTextLayout`として生成され、日本語文字が含まれるとDirectWriteの暗黙のシステムフォントフォールバック(明示的な`IDWriteFontFallback`は未設定)が和文フォントを充てる。`SetLineSpacing()`が一切呼ばれていない(デフォルトの`DWRITE_LINE_SPACING_METHOD_DEFAULT`)ため、DirectWriteはその行に実際に使われたフォント群からascent/descentの最大値を取って行内のベースラインを再計算し、半角のみの行と混在行とで実際のベースラインが変わる。設計時点(`docs/design/basic_design.md`§3.4「和文欧文混植」)で意図されていたが未実装のまま、一度もissue化されていなかった欠落。
+
+### 対応
+
+`IDWriteTextLayout`が生成元の`IDWriteTextFormat`から行間設定を継承する仕組み(既存の`SetWordWrapping()`/`SetIncrementalTabStop()`が同じ仕組みで機能している実証済みの前例)を利用し、`m_textFormat`へ`SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, height, baseline)`を1回設定するだけで全行レイアウトへ強制適用させた。プローブ文字列を`"Ag"`から末尾にひらがな「あ」を追加した`"Agあ"`へ拡張し(先頭2文字の並びは`m_charWidthDips`測定のため変更せず)、`GetLineMetrics()`が返す`height`/`baseline`に和文フォールバックフォントのascent/descentも最初から反映されるようにした——これによりピン留めした行の高さが、実際に使われるフォールバックフォントのグリフを収めるのに十分な余白を持つ。
+
+### 検証
+
+Debug全1597/1597件green(既存の`render_text_smoke_test.cpp`含む)、clang-tidy新規指摘0件。実機ドッグフーディングで、半角文字のみの行→同じ行に日本語文字(ひらがな・タテ画の多い漢字)を追記、の前後でスクリーンショットを撮り同一y座標にトリミングして比較、半角文字の垂直位置が変化しないこと・漢字がクリッピングされず正しく行内に収まることを確認した。
+
+単独検証時点ではRelease/ASan全1597/1597件green、実警告0件。UBSan(clang-cl)は1597/1598件——`FrameMeasureTest.ProducesValidProfile`が唯一失敗したが、`git stash`でWI-29の変更を退避しWI-28時点(`93468ad`)でも同一のハングが再現することを確認し、**本WIとは無関係の既存潜在バグ**と切り分けた([`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)として新規起票、非決定的なタイミング依存のハングと推定)。**WI-30実装後の合同再検証(下記WI-30参照)ではこのテストも含め3構成とも全件greenとなった**(`FrameMeasureTest`はこの回では再現せず、issueに記載した「非決定的」という性質と整合)。サニタイザ診断(`runtime error:`等)は全文ログに一致0件。clang-tidy新規指摘0件。
+
+コミット: `<pending>`(WI-30と合同コミット、同一ファイル`render_pipeline.cpp`内の隣接する非オーバーラップ変更のためgit上分割せず、それぞれ独立して設計・実装・検証・ドッグフーディング済み)。
+
+---
+
+## WI-30 — 現在行ハイライト表示の追加
+
+### 目的
+
+ユーザーから「選択行がひと目で分かる様にハイライト表示してほしい、見やすくスタイリッシュでUI/UXが洗練されていること」との要望。既存のテキスト選択ハイライトとは別に、カーソルがある行そのものを背景色でハイライトする、VSCode等でおなじみの機能を新設した。
+
+### 設計
+
+Explore agentの調査で、インデントガイド用に既に`isActiveLine`(`std::ranges::any_of(caretDraws, ...)`)という「このカーソルの行か」判定が存在し、`RenderPipeline::drawTextLine()`の描画順序(背景要素→マッチ→選択→インデントガイド→トークン色→`DrawTextLayout`→キャレット)も明確に確立されていると判明した。この2つを組み合わせ、新規のFrameStateフィールドを追加せずに実現した(`m_cursorVisuals`は既にFrameStateの一部で、カーソル移動は既に正しくフレームスキップを無効化する)。
+
+**複数カーソル時は全カーソルの行をハイライトする**(indent-guideの`any_of`方式を流用、breadcrumbのprimary-onlyではなく)。**スコープはテキスト描画エリアのみ**(既存の`PushAxisAlignedClip`の内側、`drawDiffViewLineBackground()`と同じ形状パターン)。Diffビューの色分けより手前(下の層)に描画し、Diff表示中はDiffの色分けが優先される。
+
+### 実装
+
+`theme.h`の`Theme`構造体へ`currentLineHighlight`フィールドを追加、`theme.cpp`の3テーマ(Dark/Light/HighContrast)それぞれへ値を設定した。選択ハイライトの青系統と混同しないよう、Dark/Lightは無彩色の低アルファ値、HighContrastは選択の青とは別の色相(黄、HC慣習の focus/current-item 色)とした。`render_pipeline.h`/`.cpp`へ`ensureCurrentLineHighlightBrush()`(既存の`ensureSelectionBrush()`と同じ形)を追加し、`drawTextLine()`の`isActiveLine`計算を前方(`drawDiffViewLineBackground()`より前)へ移動し、その直後に行全幅の`FillRectangle`を追加した。
+
+### 検証
+
+`tests/unit/render_theme_test.cpp`へ、3テーマ全てで`currentLineHighlight`が`selection`と区別できることを固定する回帰テストを1件追加(既存の同種テストと同じ慣習)。Debug全1598/1598件green、clang-tidy新規指摘0件。実機ドッグフーディングで、Dark/Light/HighContrastの3テーマ全てで現在行ハイライトが正しく表示され(HighContrastは黄色バーで選択の青と明確に区別可能)、Alt+クリックで複数カーソルを作成すると各カーソルの行が個別にハイライトされることを確認した。WI-29(半角/日本語混在行)とWI-30(現在行ハイライト)を組み合わせた統合ドッグフーディングも実施し、両方の修正が同時に正しく機能することを確認した。
+
+**WI-29+WI-30合同でのRelease/ASan/UBSan(clang-cl)最終検証: 3構成とも1598/1598件green、実警告0件、サニタイザ診断0件。** clang-tidy新規指摘0件。
+
+コミット: `<pending>`(WI-29と合同コミット)。
 
 ---
 

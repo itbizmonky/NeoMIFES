@@ -4307,6 +4307,30 @@ Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それ�
 
 `ui::StatusBar::setParts()`(`src/ui/src/status_bar.cpp`)が、キー入力のたびに発生するWM_PAINT(`syncRenderStateAndInvalidate()`の`InvalidateRect`経由)ごとに、実際には変化していないパートも含め6パート全てへ無条件に`SB_SETTEXTW`を送信していたことが原因と判明(WI-07 step4時点で「v1スコープでは dirty-check ガード無し」と明示的にスコープカットされていた積み残し、実装バグではない)。ネイティブ`msctls_statusbar32`コントロールにはダブルバッファ相当が無いため、これがチラつきとして視認されていた。
 
-`StatusBar`へ前回送信した`StatusBarParts`をキャッシュする`m_lastParts`を追加、`setParts()`をフィールドごとの手動比較(`operator==`は定義しない、WI-27で学んだclang-cl差異の教訓を踏まえる)に書き換えた。実機ドッグフーディングで、位置パートは連続タイプ入力のたびに正しく更新され続け、選択範囲作成時の選択文字数パート・Insertキーでのオーバーライトモード切替も正しく反映されることを確認した(diff-guardが実際の変化を取りこぼしていないことの確認)。Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それぞれで1597/1597件green、実警告0件、サニタイザ診断0件。clang-tidy新規指摘0件。
+`StatusBar`へ前回送信した`StatusBarParts`をキャッシュする`m_lastParts`を追加、`setParts()`をフィールドごとの手動比較(`operator==`は定義しない、WI-27で学んだclang-cl差異の教訓を踏まえる)に書き換えた。実機ドッグフーディングで、位置パートは連続タイプ入力のたびに正しく更新され続け、選択範囲作成時の選択文字数パート・Insertキーでのオーバーライトモード切替も正しく反映されることを確認した(diff-guardが実際の変化を取りこぼしていないことの確認)。Release/ASan/UBSan(実際にclang-clの`ubsan`プリセット)の3構成それぞれで1597/1597件green、実警告0件、サニタイザ診断0件。clang-tidy新規指摘0件。コミット`93468ad`。
+
+### WI-29: 半角英字+日本語混在行のベースラインずれ修正
+
+`RenderPipeline::ensureTextFormat()`が行の高さを半角ラテン文字のみのプローブ(`"Ag"`)から1回だけ測定し全行へ固定適用する一方、日本語文字を含む行はDirectWriteの暗黙のフォントフォールバックが和文フォント(Consolasと異なるascent/descent)を充て、`SetLineSpacing()`が一切呼ばれていない(デフォルトの`DWRITE_LINE_SPACING_METHOD_DEFAULT`)ため行ごとにベースラインが再計算される——これが「半角文字が下にずれる」症状の原因と判明。設計書(`basic_design.md`§3.4「和文欧文混植」)で意図されていたが未実装のまま一度もissue化されていなかった欠落。
+
+Plan agentによるDirectWrite API検証(`IDWriteTextLayout`が生成元`IDWriteTextFormat`から行間設定を継承する仕組みの確認、`UNIFORM`と`PROPORTIONAL`の違い、クリッピングリスクの指摘)を経て、`m_textFormat`へ`SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, height, baseline)`を1回設定する対応とした。プローブ文字列を`"Ag"`→`"Agあ"`(末尾にひらがな追加)へ拡張し、`height`/`baseline`が和文フォールバックフォントのascent/descentも最初から反映するようにした(クリッピング回避)。
+
+実機ドッグフーディング: 半角文字のみの行→同じ行に日本語文字(ひらがな「こんにちは」・タテ画の多い漢字「高橋」)を追記、前後のスクリーンショットを同一y座標でトリミングして比較し、半角文字の垂直位置が完全に一致すること・漢字がクリッピングされず正しく収まることを確認した。**ドッグフーディング中、自分のPowerShellテストハーネス側のバグ(`PostMessage`のP/Invoke宣言にCharSet未指定でANSI版`PostMessageA`に解決され、Windowsの自動ANSI→Unicode変換で日本語コードポイントが下位バイトへ切り詰められ文字化けした)を発見・特定し、`CharSet = CharSet.Unicode`明示で解消した——NeoMIFES側のバグではなく検証ツール側の問題だったことを明確に切り分けた一例。**
+
+Debug全1597/1597件green、clang-tidy新規指摘0件。**Release/ASan/UBSan検証を委譲したサブエージェントが、`ubsan`(clang-cl)構成でのみ`FrameMeasureTest.ProducesValidProfile`(`--measure-frame`が30秒以内に終了しない)を発見した。** `git stash`でWI-29の変更を退避し直前のコミット(WI-28、`93468ad`)へ戻して同じ手順を再現したところ同一のハングが再現し、**本WIより前から存在する潜在バグ**と切り分けた(サニタイザ診断はUBSan全文ログに一致0件、単純なハングであってUBSanが検出した未定義動作ではない)。[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)として新規起票。単独検証時点ではRelease/ASan全1597/1597件green、UBSan1597/1598件(上記1件を既知の別issueとして切り離し)、clang-tidy新規指摘0件。
+
+### WI-30: 現在行ハイライト表示の追加
+
+ユーザーから「選択行がひと目で分かる様にハイライト表示してほしい、見やすくスタイリッシュでUI/UXが洗練されていること」との要望。既存のテキスト選択ハイライトとは別に、カーソルがある行そのものを背景色でハイライトする機能を新設した。
+
+Explore agentの調査で、インデントガイド用に既に`isActiveLine`(`std::ranges::any_of(caretDraws, ...)`)という判定が存在すると判明、これと`drawTextLine()`の既存描画順序を組み合わせて実現(新規FrameStateフィールド不要)。複数カーソル時は全カーソルの行をハイライトする方式(indent-guideの`any_of`方式を流用)、スコープはテキスト描画エリアのみ、Diffビューの色分けより下の層に描画。
+
+`theme.h`/`theme.cpp`へ`currentLineHighlight`フィールドを追加(Dark/Lightは無彩色の低アルファ、HighContrastは選択の青と別の色相=黄)、`render_pipeline.h`/`.cpp`へ`ensureCurrentLineHighlightBrush()`と描画呼び出しを追加。`render_theme_test.cpp`へ回帰テスト1件追加。
+
+実機ドッグフーディングで、Dark/Light/HighContrastの3テーマ全てで正しく表示され(HighContrastは黄色バーで選択の青と明確に区別可能)、Alt+クリックでの複数カーソル作成時に各カーソルの行が個別にハイライトされることを確認した。Debug全1598/1598件green、clang-tidy新規指摘0件。
+
+WI-29+WI-30を組み合わせた統合ドッグフーディング(半角+日本語混在のコメントを追記しつつ現在行ハイライトを確認)も実施し、両修正が同時に正しく機能することを確認。**WI-29+WI-30合同でのRelease/ASan/UBSan(clang-cl)最終検証: 3構成とも1598/1598件green(`FrameMeasureTest`もこの回では再現せず、issueに記載した非決定的ハングという性質と整合)、実警告0件、サニタイザ診断0件。**
+
+**WI-29とWI-30は同一ファイル`render_pipeline.cpp`内の隣接する非オーバーラップ変更のため、git上は1コミットにまとめた(それぞれ独立して設計・実装・検証・ドッグフーディング済み)。これでユーザーから依頼された3件(ステータスバーのチラつき/半角・日本語混在行のベースラインずれ/現在行ハイライト)全てに対応した。WI-28/29/30完了。**
 
 <!-- 次セッションはここに追記 -->

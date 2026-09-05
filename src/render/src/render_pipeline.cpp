@@ -204,6 +204,7 @@ RenderExpected<void> RenderPipeline::render() noexcept {
 void RenderPipeline::resetThemeBrushes() noexcept {
     m_textBrush.Reset();
     m_selectionBrush.Reset();
+    m_currentLineHighlightBrush.Reset();
     m_matchBrush.Reset();
     m_currentMatchBrush.Reset();
     m_bookmarkBrush.Reset();
@@ -390,8 +391,17 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
 
     // Probe line height via a throwaway layout: representative string, a
     // generously large layout box so nothing clips/wraps during the probe.
+    // WI-29: the trailing U+3042 (a representative CJK character) is
+    // deliberately APPENDED, not inserted before "Ag" - the HitTestTextPosition
+    // call below still needs index 0/1 to be 'A'/'g' for m_charWidthDips's
+    // existing contract. Its purpose is purely to make GetLineMetrics()
+    // below report height/baseline that already account for whatever
+    // fallback font Windows' implicit font substitution (no explicit
+    // IDWriteFontFallback is configured anywhere in this codebase) picks for
+    // Japanese text with this fontFamily - see the SetLineSpacing() call
+    // below for why this specific probe string matters.
     Microsoft::WRL::ComPtr<IDWriteTextLayout> probeLayout;
-    hr = (*factory)->CreateTextLayout(L"Ag", 2, format.Get(), 4096.0F, 4096.0F,
+    hr = (*factory)->CreateTextLayout(L"Agあ", 3, format.Get(), 4096.0F, 4096.0F,
                                       probeLayout.GetAddressOf());
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
@@ -430,6 +440,27 @@ RenderExpected<void> RenderPipeline::ensureTextFormat() noexcept {
     // column math - a latent inconsistency this call closes.
     format->SetIncrementalTabStop(static_cast<float>(m_tabWidth) * charX);
 
+    // WI-29: without this, DirectWrite's default line-spacing method
+    // (DWRITE_LINE_SPACING_METHOD_DEFAULT) recomputes each line's own
+    // baseline from whatever font(s) actually render on THAT line - a line
+    // that gains a Japanese character (rendered via implicit font fallback,
+    // since m_fontFamily/Consolas has no CJK coverage and no explicit
+    // IDWriteFontFallback is configured) gets a different ascent/baseline
+    // than a pure-Latin line, which is exactly the reported "half-width
+    // characters shift down when Japanese text is added to the same line"
+    // bug. UNIFORM pins height/baseline to fixed values for every layout
+    // created from this format (IDWriteTextLayout inherits paragraph-level
+    // properties - including line spacing - from the IDWriteTextFormat used
+    // to create it, same mechanism SetWordWrapping()/SetIncrementalTabStop()
+    // above already rely on), eliminating the per-line recomputation
+    // entirely. metrics.height/metrics.baseline now come from the
+    // CJK-inclusive probe above, so the pinned box has enough headroom for
+    // the fallback font actually in use, not just Consolas's own metrics.
+    hr = format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, metrics.height, metrics.baseline);
+    if (FAILED(hr)) {
+        return std::unexpected(RenderError{.stage = RenderStage::DWriteFactory, .hr = hr});
+    }
+
     m_textFormat     = std::move(format);
     m_lineHeightDips = metrics.height;
     m_charWidthDips  = charX;
@@ -460,6 +491,19 @@ RenderExpected<void> RenderPipeline::ensureSelectionBrush(ID2D1DeviceContext6& d
     // local hardcoded constexpr before WI-09's Theme system).
     const HRESULT hr =
         dc.CreateSolidColorBrush(themeForKind(m_themeKind).selection, m_selectionBrush.GetAddressOf());
+    if (FAILED(hr)) {
+        return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
+    }
+    return {};
+}
+
+RenderExpected<void> RenderPipeline::ensureCurrentLineHighlightBrush(ID2D1DeviceContext6& dc) noexcept {
+    if (m_currentLineHighlightBrush) {
+        return {};
+    }
+    // WI-30: see theme.h/theme.cpp for this color's value/rationale.
+    const HRESULT hr = dc.CreateSolidColorBrush(themeForKind(m_themeKind).currentLineHighlight,
+                                                m_currentLineHighlightBrush.GetAddressOf());
     if (FAILED(hr)) {
         return std::unexpected(RenderError{.stage = RenderStage::D2DDeviceContext, .hr = hr});
     }
@@ -980,6 +1024,31 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     // are applied to the layout itself (not a background rect), so they
     // must be set before DrawTextLayout - order relative to the two
     // highlight calls above doesn't matter.
+    // WI-30: computed here (moved up from its original spot just above
+    // drawIndentGuidesOnLine() below, Phase 7e) so both the current-line
+    // highlight and the indent-guide brightening below can share one
+    // computation. Every cursor's line qualifies (any_of over all
+    // caretDraws, not just the primary cursor) - matches how multi-cursor
+    // editors conventionally highlight each cursor's own line, and mirrors
+    // the indent-guide precedent this reuses rather than the Breadcrumb's
+    // primary-only one.
+    const bool isActiveLine = std::ranges::any_of(
+        caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
+    // WI-30: the current-line highlight is a whole-line background element
+    // like drawDiffViewLineBackground() below, so it must run before every
+    // other background/highlight call too - drawn FIRST (before, not after,
+    // the diff-view tint) so a Diff view's added/modified/deleted color
+    // coding - more semantically important when present - stays visible on
+    // top rather than being covered by this more general "where am I" cue.
+    if (isActiveLine) {
+        // Same 0.0F-left-edge shape as drawDiffViewLineBackground() below -
+        // the active PushAxisAlignedClip already confines the visible paint
+        // to [gutterWidthDips(), widthDips - m_rightPaneWidthDips), so this
+        // never actually bleeds into the gutter despite the literal rect
+        // starting at column 0.
+        dc.FillRectangle(D2D1::RectF(0.0F, y, widthDips, y + m_lineHeightDips),
+                         m_currentLineHighlightBrush.Get());
+    }
     // WI-17f: a whole-line background element, so it must run before every
     // other background/highlight call below (and well before DrawTextLayout)
     // - see this function's own drawDiffViewLineBackground() declaration
@@ -987,11 +1056,6 @@ void RenderPipeline::drawTextLine(ID2D1DeviceContext6& dc, LineNumber line, floa
     drawDiffViewLineBackground(dc, y, line, widthDips);
     drawMatchesOnLine(dc, **layoutResult, y, lineStart, lineEnd);
     drawSelectionsOnLine(dc, **layoutResult, y, lineStart, lineEnd);
-    // Phase 7e: a background element like the two calls above, so it must
-    // run before DrawTextLayout too - see this method's declaration comment
-    // for the isActiveLine approximation.
-    const bool isActiveLine = std::ranges::any_of(
-        caretDraws, [line](const CaretDraw& caret) { return caret.line == line; });
     drawIndentGuidesOnLine(dc, y, lineSpan, isActiveLine);
     drawTokensOnLine(**layoutResult, lineStart, lineEnd, tokenCursor);
     // WI-14c: runs after drawTokensOnLine() so a log-severity color always
@@ -2047,6 +2111,11 @@ RenderExpected<void> RenderPipeline::renderOnce() noexcept {
     if (!selectionBrushResult) {
         [[maybe_unused]] const auto closeResult = device.endFrame();
         return selectionBrushResult;
+    }
+    auto currentLineHighlightBrushResult = ensureCurrentLineHighlightBrush(*dc);
+    if (!currentLineHighlightBrushResult) {
+        [[maybe_unused]] const auto closeResult = device.endFrame();
+        return currentLineHighlightBrushResult;
     }
     auto matchBrushResult = ensureMatchBrushes(*dc);
     if (!matchBrushResult) {

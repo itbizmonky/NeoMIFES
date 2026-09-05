@@ -12,6 +12,9 @@ constexpr Theme kDarkTheme = {
     // Matches the previous GDI placeholder fill (RGB 30,30,30) so the
     // GDI->D2D handoff (ADR-009) stays visually seamless as a background.
     .background = {30.0F / 255.0F, 30.0F / 255.0F, 30.0F / 255.0F, 1.0F},
+    // WI-30: a barely-there white overlay - lightens the row just enough to
+    // be noticeable without competing with `selection`'s blue below.
+    .currentLineHighlight = {1.0F, 1.0F, 1.0F, 0.06F},
     .text = {220.0F / 255.0F, 220.0F / 255.0F, 220.0F / 255.0F, 1.0F},
     // Windows' conventional selection blue (RGB 0,120,215), translucent so
     // glyphs drawn on top (drawSelectionOnLine() runs BEFORE
@@ -95,6 +98,9 @@ constexpr Theme kLightTheme = {
     // convention render_pipeline.cpp's ensureMatchBrushes() established
     // pre-WI-09 for its own full-intensity channels.
     .background = {1.0F, 1.0F, 1.0F, 1.0F},  // #FFFFFF
+    // WI-30: a barely-there black overlay - the Light counterpart to Dark's
+    // white one, same rationale.
+    .currentLineHighlight = {0.0F, 0.0F, 0.0F, 0.04F},
     .text = {30.0F / 255.0F, 30.0F / 255.0F, 30.0F / 255.0F, 1.0F},           // #1E1E1E
     // Same Windows selection blue hue as Dark, lower alpha - Dark's 0.4
     // would look muddy blended against a white background.
@@ -151,6 +157,12 @@ constexpr Theme kLightTheme = {
 // as Light's comment above).
 constexpr Theme kHighContrastTheme = {
     .background = {0.0F, 0.0F, 0.0F, 1.0F},
+    // WI-30: fully-saturated yellow (RGB 255,255,0), the conventional HC
+    // focus/current-item indicator hue - deliberately NOT selection's blue
+    // (below) so the two stay visually distinct even at this theme's higher
+    // alphas. Moderate alpha (well under selection's 0.85) since white text
+    // must stay legible on top and this row can overlap an actual selection.
+    .currentLineHighlight = {1.0F, 1.0F, 0.0F, 0.2F},
     .text = {1.0F, 1.0F, 1.0F, 1.0F},
     // HC-standard "Highlight" accent - strong enough that white text stays
     // legible on top.

@@ -877,6 +877,9 @@ private:
     [[nodiscard]] RenderExpected<void> ensureTextFormat() noexcept;
     [[nodiscard]] RenderExpected<void> ensureTextBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureSelectionBrush(ID2D1DeviceContext6& dc) noexcept;
+    // WI-30: current-line highlight, same shape as ensureSelectionBrush()
+    // just above (one solid brush from the theme's own color role).
+    [[nodiscard]] RenderExpected<void> ensureCurrentLineHighlightBrush(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureMatchBrushes(ID2D1DeviceContext6& dc) noexcept;
     [[nodiscard]] RenderExpected<void> ensureBookmarkBrush(ID2D1DeviceContext6& dc) noexcept;
     // WI-17c: 3 solid brushes (Added/Modified/Deleted) for the Git diff
@@ -1519,6 +1522,9 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat>     m_textFormat;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_textBrush;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_selectionBrush;
+    // WI-30: current-line highlight, same device-bound reset lifecycle as
+    // m_selectionBrush above.
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush>  m_currentLineHighlightBrush;
     // Phase 5b3a: separate brushes for ordinary vs. "current" (F3-navigated-
     // to) match highlights, same device-bound reset lifecycle as
     // m_selectionBrush above.

@@ -28,6 +28,11 @@ enum class ThemeKind { Dark, Light, HighContrast };
 // already covers it.
 struct Theme {
     D2D1_COLOR_F background;
+    // WI-30: painted behind selection/match/glyphs on the caret's row(s), see
+    // RenderPipeline::drawTextLine()'s ordering comment. Deliberately a
+    // near-neutral tint of `background` (not `selection`'s blue) so a
+    // current-line highlight is never mistaken for an actual text selection.
+    D2D1_COLOR_F currentLineHighlight;
     D2D1_COLOR_F text;
     D2D1_COLOR_F selection;
     D2D1_COLOR_F match;

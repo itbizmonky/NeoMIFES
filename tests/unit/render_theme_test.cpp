@@ -62,6 +62,17 @@ TEST(ThemeTest, EachThemeKeepsSelectionMatchAndCurrentMatchDistinctFromOneAnothe
     }
 }
 
+// WI-30: currentLineHighlight is deliberately a neutral tint of background,
+// not selection's blue - this pins that design intent so a future edit
+// can't accidentally make the two indistinguishable (a user would no longer
+// be able to tell "this is the current line" from "this is selected text").
+TEST(ThemeTest, EachThemeKeepsCurrentLineHighlightDistinctFromSelection) {
+    for (const ThemeKind kind : {ThemeKind::Dark, ThemeKind::Light, ThemeKind::HighContrast}) {
+        const Theme& theme = themeForKind(kind);
+        EXPECT_FALSE(colorsEqual(theme.currentLineHighlight, theme.selection));
+    }
+}
+
 // WI-14c: logError/logWarning must each read as distinct from plain body
 // text and from each other in every theme, or log-mode color-coding would
 // be indistinguishable from unhighlighted lines / from one another.
