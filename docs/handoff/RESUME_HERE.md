@@ -488,11 +488,11 @@
 
 > **副次的発見(スコープ外、起票済み):** [`viewport_visible_line_count_never_set_pageup_pagedown_noop.md`](../issues/viewport_visible_line_count_never_set_pageup_pagedown_noop.md)(新規、P1、実機確認済み)——PageUp/PageDownが実質0行しか移動しない既存バグ。[`hscroll_thumb_drag_16bit_truncation.md`](../issues/hscroll_thumb_drag_16bit_truncation.md)(新規、P2)——既存の横スクロールバーが`WM_HSCROLL`の16bit切り詰めの影響を受ける(新設の縦スクロールバーは設計時から回避済み)。
 
-> Debug全1614/1614件green(新規12件)、clang-tidy新規指摘0件。実機ドッグフーディングでデフォルト表示・ミニマップとのゼロオーバーラップ共存・コマンドパレット経由のトグル(`GetClientRect`幅変化で確認)・実際のスクロール動作(`WM_VSCROLL`/`SB_PAGEDOWN`)・`settings.json`永続化を確認済み。**Release/ASan/UBSan(clang-cl)3構成の最終検証はサブエージェントへ委任し実行中/実行済み——次回セッション最初に結果を確認しコミットすること(まだ未コミット)。**
+> Debug全1614/1614件green(新規12件)、clang-tidy新規指摘0件。実機ドッグフーディングでデフォルト表示・ミニマップとのゼロオーバーラップ共存・コマンドパレット経由のトグル(`GetClientRect`幅変化で確認)・実際のスクロール動作(`WM_VSCROLL`/`SB_PAGEDOWN`)・`settings.json`永続化を確認済み。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、サニタイザ診断0件、警告0件を確認済み。コミット`24be0d0`。**
 
 > **⚠️ 未解決のまま:** ユーザーが最初に報告した「1行目でガタつく」という体感自体の技術的原因はいまだ特定できていない。今回の機能実装(スクロールバー設定化+縦スクロールバー新規実装)がこの体感を実際に解消するかどうかは、ユーザー自身の再テストが必要。解消しない場合は正直にその旨を報告し、別の原因を引き続き調査すること。
 
-> **次回セッション最初にやること:** ①Release/ASan/UBSan検証結果を確認しWI-34をコミットする、②ユーザーへ「1行目のガタつき」が実際に解消したか確認する、③WI-28〜WI-34の蓄積された未pushコミット(pushしてよいか毎回尋ねているが未回答)についてユーザーの意向を改めて確認する。
+> **次回セッション最初にやること:** ①ユーザーへ「1行目のガタつき」が実際に解消したか確認する、②WI-28〜WI-34の蓄積された未pushコミット(pushしてよいか毎回尋ねているが未回答)についてユーザーの意向を改めて確認する。
 
 > 詳細は`docs/design/build_plan.md`のWI-34セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
