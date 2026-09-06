@@ -23,6 +23,7 @@
 #include <windows.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -475,6 +476,20 @@ public:
     // two" tolerance computeDesiredTokenRange() already documents.
     [[nodiscard]] std::uint32_t visibleColumnCount() const noexcept;
 
+    // WI-34: vertical counterpart to visibleColumnCount() - how many
+    // logical lines are actually visible right now (fold/wrap-aware, via
+    // the private visibleLineRange() below). Used as syncVerticalScrollBar()/
+    // handleVScrollEvent()'s page-step source (normal_mode_wiring.cpp) -
+    // core::Viewport::visibleLines()/m_visibleLineCount cannot be used
+    // instead, since nothing in production ever calls
+    // Viewport::setVisibleLineCount() (that value is permanently 0 today;
+    // see docs/issues/ for the resulting PageUp/PageDown bug, tracked
+    // separately from this WI).
+    [[nodiscard]] document::LineNumber visibleLineCount() const noexcept {
+        const auto [startLine, endLineExclusive] = visibleLineRange();
+        return endLineExclusive > startLine ? endLineExclusive - startLine : document::LineNumber{0};
+    }
+
     // The full set of cursors to draw - one caret + (optionally) one
     // selection highlight each (Phase 4b7a, generalizing Phase 4b1's
     // setCaretPosition()/Phase 4b2's setSelectionRange() from a single
@@ -579,6 +594,54 @@ public:
             return true;
         }
         return (platform::PerfClock::now() - *m_lastPaintRequestTime) >= threshold;
+    }
+
+    // Last (nMax, nPage, nPos) actually sent to the native horizontal
+    // scrollbar via SetScrollInfo - lets syncHorizontalScrollBar()
+    // (normal_mode_wiring.cpp) skip the call when nothing changed.
+    // SetScrollInfo's own fRedraw=TRUE unconditionally invalidates/repaints
+    // the native control even when called with identical values, so without
+    // this guard it was firing on every single WM_PAINT (i.e. on every
+    // keystroke) regardless of whether the scroll range/position actually
+    // changed - same "no dirty-check guard" gap WI-28 found and fixed for
+    // StatusBar::setParts().
+    [[nodiscard]] bool horizontalScrollInfoChanged(int nMax, int nPage, int nPos) const noexcept {
+        return !m_lastHorizontalScrollInfo.has_value() ||
+               *m_lastHorizontalScrollInfo != std::array{nMax, nPage, nPos};
+    }
+    void markHorizontalScrollInfoSent(int nMax, int nPage, int nPos) noexcept {
+        m_lastHorizontalScrollInfo = std::array{nMax, nPage, nPos};
+    }
+
+    // WI-34: user-configurable scrollbar visibility (replaces the previous
+    // "horizontal scrollbar hidden only while word wrap is on" auto
+    // control). Unlike setMinimapVisible()/setWordWrap(), these have NO
+    // layout-cache-clear side effect and are deliberately NOT part of
+    // FrameState: syncHorizontalScrollBar()/syncVerticalScrollBar()
+    // (normal_mode_wiring.cpp) read them directly and run unconditionally
+    // on every WM_PAINT, entirely outside render()'s own coarse-frame-skip
+    // draw pass - the OS itself (ShowScrollBar() -> WM_SIZE -> resize(),
+    // already captured by FrameState's width/height) handles the resulting
+    // client-area change.
+    void setHorizontalScrollbarVisible(bool visible) noexcept { m_showHorizontalScrollbar = visible; }
+    [[nodiscard]] bool horizontalScrollbarVisible() const noexcept { return m_showHorizontalScrollbar; }
+    void setVerticalScrollbarVisible(bool visible) noexcept { m_showVerticalScrollbar = visible; }
+    [[nodiscard]] bool verticalScrollbarVisible() const noexcept { return m_showVerticalScrollbar; }
+
+    // Vertical counterpart to horizontalScrollInfoChanged()/markHorizontalScrollInfoSent().
+    [[nodiscard]] bool verticalScrollInfoChanged(int nMax, int nPage, int nPos) const noexcept {
+        return !m_lastVerticalScrollInfo.has_value() ||
+               *m_lastVerticalScrollInfo != std::array{nMax, nPage, nPos};
+    }
+    void markVerticalScrollInfoSent(int nMax, int nPage, int nPos) noexcept {
+        m_lastVerticalScrollInfo = std::array{nMax, nPage, nPos};
+    }
+
+    // Exposes the attached document's line count for syncVerticalScrollBar()'s
+    // SetScrollInfo nMax - Document::lineCount() is an O(1) maintained
+    // counter, not a scan, 0 if unattached.
+    [[nodiscard]] document::LineNumber documentLineCount() const noexcept {
+        return m_document != nullptr ? m_document->lineCount() : 0;
     }
 
     // WI-14c: per-document-line log severity, 1:1 with logmode::LogModel::
@@ -1484,6 +1547,12 @@ private:
     bool                                               m_diffViewActive       = false;  // WI-17f: see isDiffViewActive()'s own comment
     // WI-32: see markPaintRequested()/paintOverdue()'s own comment.
     std::optional<platform::PerfClock::time_point>    m_lastPaintRequestTime;
+    // See horizontalScrollInfoChanged()/markHorizontalScrollInfoSent()'s own comment.
+    std::optional<std::array<int, 3>>                 m_lastHorizontalScrollInfo;
+    // WI-34: see setHorizontalScrollbarVisible()'s own comment.
+    bool                                               m_showHorizontalScrollbar = true;
+    bool                                               m_showVerticalScrollbar   = true;
+    std::optional<std::array<int, 3>>                 m_lastVerticalScrollInfo;
     // WI-14c: see setLogLineLevels()'s own comment for why this can be
     // O(document size) and is deliberately excluded from FrameState.
     std::vector<logmode::LogLevel>                    m_logLineLevels;    // empty: log mode disabled

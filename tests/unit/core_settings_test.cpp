@@ -119,6 +119,8 @@ TEST(SettingsTest, SaveThenLoadRoundTripsAllFields) {
     modified.autoSaveIntervalSeconds = 30;
     modified.createBackupOnSave      = false;
     modified.themeName               = u"ライト";
+    modified.showHorizontalScrollbar = false;
+    modified.showVerticalScrollbar   = false;
 
     auto path = tempJsonPath();
     modified.saveTo(path);

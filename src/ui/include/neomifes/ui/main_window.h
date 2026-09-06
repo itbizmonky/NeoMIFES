@@ -137,6 +137,18 @@ struct MainWindowConfig {
     // see create()'s implementation, same "only opt in when configured"
     // convention onDropFiles's DragAcceptFiles(TRUE) follows.
     std::function<void(HWND, WORD scrollCode, WORD scrollPos)> onHScroll;
+    // WI-34: vertical counterpart to onHScroll above - this window's
+    // first-ever native vertical scrollbar (previously vertical navigation
+    // was 100% minimap+wheel+keyboard). Same decode contract as onHScroll
+    // (LOWORD == scroll code, HIWORD == thumb position - only meaningful,
+    // and TRUNCATED TO 16 BITS by Win32, for SB_THUMBTRACK/SB_THUMBPOSITION;
+    // the caller must resolve the real value via
+    // GetScrollInfo(SIF_TRACKPOS) for those two codes rather than trust
+    // this raw value, since line counts routinely exceed 65535 - see
+    // computeVScrollTargetLine()'s own comment). Only registered
+    // (WS_VSCROLL added to the window style) when this is actually set,
+    // same "only opt in when configured" convention onHScroll follows.
+    std::function<void(HWND, WORD scrollCode, WORD scrollPos)> onVScroll;
     // Optional: invoked from WM_COMMAND (Phase 5b3a). Win32 directs child-
     // control notifications - e.g. EN_CHANGE from the Find bar's WC_EDIT -
     // to the PARENT HWND, never to the child itself, so this is the only
@@ -402,6 +414,7 @@ private:
     void handleMouseMove(LPARAM lParam) noexcept;
     void handleMouseUp() noexcept;
     void handleHScroll(WPARAM wParam) noexcept;
+    void handleVScroll(WPARAM wParam) noexcept;
     void handleCommand(WPARAM wParam, LPARAM lParam) noexcept;
     LRESULT handleNotify(WPARAM wParam, LPARAM lParam) noexcept;
     [[nodiscard]] bool handleClose() noexcept;
@@ -442,6 +455,7 @@ private:
     std::function<void(HWND, std::int32_t, std::int32_t, bool, bool, int)> m_onMouseDown;
     std::function<void(HWND, std::int32_t, std::int32_t)>            m_onMouseDrag;
     std::function<void(HWND, WORD, WORD)>                             m_onHScroll;
+    std::function<void(HWND, WORD, WORD)>                             m_onVScroll;
     std::function<void(HWND, WPARAM, LPARAM)>                         m_onCommand;
     std::function<void(HWND, UINT, WPARAM, LPARAM)>                   m_onAppMessage;
     std::function<LRESULT(HWND, WPARAM, LPARAM)>                      m_onNotify;

@@ -103,6 +103,8 @@ inline constexpr std::array<CommandId, 37> kAllRemappableCommandIds{
         case CommandId::WordWrapToggle:
         case CommandId::LineNumbersToggle:
         case CommandId::ThemeCycle:
+        case CommandId::HorizontalScrollbarToggle:
+        case CommandId::VerticalScrollbarToggle:
         case CommandId::None:
             return u"";
     }

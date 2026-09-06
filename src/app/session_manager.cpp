@@ -188,6 +188,10 @@ bool SessionManager::wireAndShow(EditorWindow& w) {
     // Viewport picks this up via handlePaintEvent()'s per-frame sync (see
     // that call site's own comment) - no separate viewport push needed here.
     w.renderPipeline.setWordWrap(m_settings.wordWrap);
+    // WI-34: same "new window picks up the current settings" treatment as
+    // the setters above.
+    w.renderPipeline.setHorizontalScrollbarVisible(m_settings.showHorizontalScrollbar);
+    w.renderPipeline.setVerticalScrollbarVisible(m_settings.showVerticalScrollbar);
 
     w.menuHandles = buildMenuBar(m_recentFiles);
 

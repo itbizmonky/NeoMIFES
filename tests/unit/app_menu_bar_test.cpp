@@ -89,7 +89,7 @@ TEST(MenuBarTest, SearchMenuCoversFindReplaceAndGrep) {
 }
 
 TEST(MenuBarTest, ViewMenuTogglesOutlineJsonTreeAndCsvGrid) {
-    ASSERT_EQ(kViewMenuItems.size(), 6U);
+    ASSERT_EQ(kViewMenuItems.size(), 8U);
     EXPECT_EQ(kViewMenuItems[0].commandId, CommandId::OutlineToggle);
     EXPECT_EQ(kViewMenuItems[1].commandId, CommandId::JsonTreeToggle);
     EXPECT_EQ(kViewMenuItems[2].commandId, CommandId::CsvGridToggle);
@@ -99,6 +99,9 @@ TEST(MenuBarTest, ViewMenuTogglesOutlineJsonTreeAndCsvGrid) {
     EXPECT_EQ(kViewMenuItems[3].commandId, CommandId::WordWrapToggle);
     EXPECT_EQ(kViewMenuItems[4].commandId, CommandId::LineNumbersToggle);
     EXPECT_EQ(kViewMenuItems[5].commandId, CommandId::ThemeCycle);
+    // WI-34: horizontal/vertical scrollbar visibility toggles.
+    EXPECT_EQ(kViewMenuItems[6].commandId, CommandId::HorizontalScrollbarToggle);
+    EXPECT_EQ(kViewMenuItems[7].commandId, CommandId::VerticalScrollbarToggle);
 }
 
 TEST(MenuBarTest, ToolsMenuShowsCommandPalette) {

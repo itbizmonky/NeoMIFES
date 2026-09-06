@@ -13,6 +13,8 @@ namespace {
 
 using neomifes::app::applyMouseWheelScroll;
 using neomifes::app::applyOverwriteChar;
+using neomifes::app::computeHScrollTargetColumn;
+using neomifes::app::computeVScrollTargetLine;
 using neomifes::app::deleteAllSelections;
 using neomifes::app::dispatchMouseDown;
 using neomifes::app::handleAltClick;
@@ -476,6 +478,66 @@ TEST(EditorInputTest, ApplyMouseWheelScrollDownClampsToLastLineNearEof) {
 
 TEST(EditorInputTest, ApplyMouseWheelScrollDownWithZeroTotalLinesClampsToZero) {
     EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 0, 0), 0U);
+}
+
+TEST(EditorInputTest, ComputeHScrollTargetColumnLineLeftDecreasesByOneClampedToZero) {
+    EXPECT_EQ(computeHScrollTargetColumn(SB_LINELEFT, 0, 5, 10), 4U);
+    EXPECT_EQ(computeHScrollTargetColumn(SB_LINELEFT, 0, 0, 10), 0U);
+}
+
+TEST(EditorInputTest, ComputeHScrollTargetColumnLineRightHasNoUpperClamp) {
+    EXPECT_EQ(computeHScrollTargetColumn(SB_LINERIGHT, 0, 5, 10), 6U);
+}
+
+TEST(EditorInputTest, ComputeHScrollTargetColumnPageLeftSubtractsPageStepClampedToZero) {
+    EXPECT_EQ(computeHScrollTargetColumn(SB_PAGELEFT, 0, 15, 10), 5U);
+    EXPECT_EQ(computeHScrollTargetColumn(SB_PAGELEFT, 0, 5, 10), 0U);
+}
+
+TEST(EditorInputTest, ComputeHScrollTargetColumnPageRightHasNoUpperClamp) {
+    EXPECT_EQ(computeHScrollTargetColumn(SB_PAGERIGHT, 0, 5, 10), 15U);
+}
+
+TEST(EditorInputTest, ComputeHScrollTargetColumnThumbTrackAndThumbPositionUseScrollPosDirectly) {
+    EXPECT_EQ(computeHScrollTargetColumn(SB_THUMBTRACK, 12345, 0, 10), 12345U);
+    EXPECT_EQ(computeHScrollTargetColumn(SB_THUMBPOSITION, 42, 0, 10), 42U);
+}
+
+TEST(EditorInputTest, ComputeHScrollTargetColumnEndScrollAndUnrecognizedCodesReturnNullopt) {
+    EXPECT_EQ(computeHScrollTargetColumn(SB_ENDSCROLL, 0, 5, 10), std::nullopt);
+    EXPECT_EQ(computeHScrollTargetColumn(999, 0, 5, 10), std::nullopt);
+}
+
+TEST(EditorInputTest, ComputeVScrollTargetLineLineUpDecreasesByOneClampedToZero) {
+    EXPECT_EQ(computeVScrollTargetLine(SB_LINEUP, 0, 5, 10), 4U);
+    EXPECT_EQ(computeVScrollTargetLine(SB_LINEUP, 0, 0, 10), 0U);
+}
+
+TEST(EditorInputTest, ComputeVScrollTargetLineLineDownHasNoUpperClamp) {
+    EXPECT_EQ(computeVScrollTargetLine(SB_LINEDOWN, 0, 5, 10), 6U);
+}
+
+TEST(EditorInputTest, ComputeVScrollTargetLinePageUpSubtractsPageStepClampedToZero) {
+    EXPECT_EQ(computeVScrollTargetLine(SB_PAGEUP, 0, 15, 10), 5U);
+    EXPECT_EQ(computeVScrollTargetLine(SB_PAGEUP, 0, 5, 10), 0U);
+}
+
+TEST(EditorInputTest, ComputeVScrollTargetLinePageDownHasNoUpperClamp) {
+    EXPECT_EQ(computeVScrollTargetLine(SB_PAGEDOWN, 0, 5, 10), 15U);
+}
+
+TEST(EditorInputTest, ComputeVScrollTargetLineThumbTrackAndThumbPositionUseScrollPosDirectly) {
+    EXPECT_EQ(computeVScrollTargetLine(SB_THUMBTRACK, 12345, 0, 10), 12345U);
+    // Exercises a value the raw WM_VSCROLL wParam HIWORD could never carry
+    // (>65535) - the caller is expected to have already resolved this via
+    // GetScrollInfo(SIF_TRACKPOS), which this pure function has no way to
+    // verify itself; it just trusts scrollPos verbatim.
+    EXPECT_EQ(computeVScrollTargetLine(SB_THUMBPOSITION, 999999, 0, 10), 999999U);
+}
+
+TEST(EditorInputTest, ComputeVScrollTargetLineEndScrollAndUnrecognizedCodesReturnNullopt) {
+    EXPECT_EQ(computeVScrollTargetLine(SB_ENDSCROLL, 0, 5, 10), std::nullopt);
+    EXPECT_EQ(computeVScrollTargetLine(999, 0, 5, 10), std::nullopt);
 }
 
 TEST(EditorInputTest, HandleMouseDownPlacesCursorAndClearsSelection) {

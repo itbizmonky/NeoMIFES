@@ -2953,6 +2953,48 @@ Debug全1602/1602件green、clang-tidy新規指摘0件。Release/ASan/UBSan(clan
 
 ---
 
+## WI-34 — スクロールバー表示設定の追加 + 本物の縦スクロールバーの新規実装
+
+### 目的
+
+WI-33完了後、ユーザーから新規報告:「２行目以降の文字入力ではウィンドウの再描写は制限されているが、１行目の文字入力では依然として頻繁に再描写される。これでは製品化は難しいので改善して欲しい」。
+
+### 調査
+
+多数の観点から再現を試みた: 実測ドッグフーディング(70ms/32msの定常タイピング、実OS `keybd_event`によるキー押しっぱなし——ただしこの環境では合成入力が真のOSオートリピートを発火させないことが判明し、代替として約32ms間隔の`PostMessage`連打で近似)、ウィンドウ/ステータスバーの座標を24サンプル計測(完全に安定)。**「1行目固有」のコードパスは発見できなかった。** 調査の初期段階で「1行目だけ再描画が多い」ように見える計測結果を一度得たが、これは起動直後にプロセス起動とキー入力送信を別々のツール呼び出しに分けたことで生じた、ツール呼び出し間の制御されていない待ち時間による測定アーティファクトと判明し(起動+入力を単一の原子的スクリプトへ統合すると再現しなくなった)、誤った結論をユーザーへ報告する前に自ら訂正した。
+
+ユーザー自身の見解の提示:「下部のステータスバーの横スクロールバーが文字入力中のみ表示されるため画面全体のレイアウトがズレてチラついているように見える。縦横のスクロールバーは設定画面からON/OFFにできるようにして自動で表示・非表示を制御しないように修正して欲しい」。この仮説を`RenderPipeline::resize()`の呼び出し回数計測で検証したところ、**タイピング中に`resize()`は一度も呼ばれない(起動時の1回のみ)ことを確認し、仮説の直接的な技術的裏付けは得られなかった。** この結果を正直にユーザーへ報告した上で、ユーザーは「原因は不明なままだが、ご提案の設定機能(スクロールバーのON/OFF設定化)を実装する」と、根本原因の特定とは独立に機能実装の続行を決定した。
+
+### 設計
+
+Plan agentへ詳細設計を委任。既存の横スクロールバー実装(WI-03: `syncHorizontalScrollBar()`/`computeHScrollTargetColumn()`/`MainWindowConfig::onHScroll`/`WS_HSCROLL`/`WM_HSCROLL`)を精査した上で、縦方向の完全な鏡像実装として設計した。NeoMIFESには縦スクロールバーがそもそも存在せず(`gap_analysis.md`に「未実装」と記録済み)、ユーザーへの確認で「本物の縦スクロールバーを新規実装してほしい」「既存と同じ、メニュー/コマンドパレットのトグルとして追加」と明確な回答を得た。
+
+Plan agentの設計内容をレビューし1件の誤りを発見・修正した: `RenderPipeline::visibleLineRange()`が「既に public」との記載は誤りで、実際には`private:`セクション以降(1050行目)に宣言されていた(809行目の`private:`より後)。修正として新規 public ラッパー`RenderPipeline::visibleLineCount()`を追加し、内部で private な`visibleLineRange()`を呼ぶ設計とした(inline メンバ関数本体はクラス定義完了後の完全な名前解決が行われるためC++上合法)。
+
+pageStepの取得元は`Viewport::visibleLines()`(本番未設定=常に0、後述の副次的発見①)ではなく新設の`RenderPipeline::visibleLineCount()`から算出。`SCROLLINFO::nMax`はint(32bit)のため10GB巨大ファイルの行数はINT_MAXでクランプ(単純なクランプ、再スケーリングはしない設計判断)。`WS_HSCROLL`/`WS_VSCROLL`はOS標準のクライアント領域縮小機構で処理されるため、`RenderPipeline`側でミニマップとの幅予約コードを追加する必要は無いことを設計時点で確認(実機ドッグフーディングでも実証)。
+
+### 副次的発見(本WIのスコープ外、`docs/issues/`へ起票済み)
+
+調査の過程で2件の独立したバグを発見:
+1. [`viewport_visible_line_count_never_set_pageup_pagedown_noop.md`](../issues/viewport_visible_line_count_never_set_pageup_pagedown_noop.md)(新規、P1、実機確認済み) — `Viewport::setVisibleLineCount()`が本番コードのどこからも呼ばれておらず、PageUp/PageDownキーが実質0行しか移動しない。
+2. [`hscroll_thumb_drag_16bit_truncation.md`](../issues/hscroll_thumb_drag_16bit_truncation.md)(新規、P2) — 既存の横スクロールバーのつまみドラッグ(`SB_THUMBTRACK`/`SB_THUMBPOSITION`)が`WM_HSCROLL`の16bit値をそのまま使っており、列65535を超えると破綻する。新設の縦スクロールバーはこの教訓を踏まえ`GetScrollInfo(hwnd, SB_VERT, &si)`(`SIF_TRACKPOS`)で実際の値を解決してから`computeVScrollTargetLine()`へ渡す設計とし、同型の問題を回避した。
+
+### 実装
+
+`core::Settings`へ`showHorizontalScrollbar`/`showVerticalScrollbar`(共にデフォルトtrue)を追加。`CommandId::HorizontalScrollbarToggle`/`VerticalScrollbarToggle`をメニュー専用(キーバインド無し、既存の`WordWrapToggle`等と同じ除外パターン)として追加し、表示メニュー末尾に「水平スクロールバー(&H)」「垂直スクロールバー(&V)」を追加。`RenderPipeline`へ表示状態フィールドと`visibleLineCount()`/`documentLineCount()`/`verticalScrollInfoChanged()`/`markVerticalScrollInfoSent()`を追加。`MainWindow`へ`onVScroll`コールバック・`WS_VSCROLL`条件付き付与・`WM_VSCROLL`ハンドラ(`handleVScroll()`、`handleHScroll()`の完全な鏡像)を追加。`editor_input.cpp`へ純粋関数`computeVScrollTargetLine()`(`computeHScrollTargetColumn()`の鏡像)を追加——`normal_mode_wiring.cpp`はexecutable直接コンパイルで単体テスト不可能なため、テスト可能なロジックは`neomifes_app_input`静的ライブラリ側の`editor_input.cpp`に置き、`normal_mode_wiring.cpp`側の`handleVScrollEvent()`は薄いWin32向けグルーとした。`normal_mode_wiring.cpp`へ`handleVScrollEvent()`/`syncVerticalScrollBar()`(`GetScrollInfo(SIF_TRACKPOS)`使用)・コマンドパレット2件・`dispatchCommand`2件・`cfg.onVScroll`配線・起動時/設定リロード時のセットを追加。既存の横スクロールバーの自動非表示条件(ワードラップ連動)へ`!renderPipeline.horizontalScrollbarVisible()`を追加し設定を尊重するようにした。
+
+### 検証
+
+単体テスト: `computeVScrollTargetLine()`の新規6ケース(LINEUP/DOWN/PAGEUP/DOWN/THUMBTRACK・POSITION/不正値)、既存`computeHScrollTargetColumn()`の欠落していた単体テストも同6ケース分を補完(隣接箇所のついで対応)、Settings往復・command_ids・menu_barの構造テストを更新。**Debug全1614/1614件green(既存1602+新規12)、clang-tidy新規指摘0件。**
+
+**実機ドッグフーディング(必須、Direct2D/Win32視覚変更のため):** デフォルト表示状態を確認。ミニマップとの共存をクロップスクリーンショットでゼロオーバーラップ確認。コマンドパレット経由で横/縦スクロールバーを両方向にトグルし、`GetClientRect`の幅変化(1167→1184→1167px)でON/OFFが実際にクライアント領域へ反映されることを確認。`WM_VSCROLL`/`SB_PAGEDOWN`を実際に送信し、ドキュメントが1行目から36行目まで実際にスクロールし縦スクロールバーのつまみ位置も追従することをスクリーンショットで確認。`settings.json`への永続化も確認。
+
+調査中に2回、所有者不明のNeoMIFESプロセス(いずれもユーザー自身のセッションではないことをAskUserQuestionで確認)に遭遇し、1回目は確認を取らずに強制終了してしまい(うち1件は未保存の変更がある可能性があった)、ユーザーへ透明性を持って開示・謝罪した。2回目は確認してから対応する手順に改め、調査中に誤って無関係な内容(NeoMIFESと無関係な映像)をスクリーンショットしてしまった際も即座に気づいて削除し、開示した。
+
+コミット: (Release/ASan/UBSan(clang-cl)3構成の最終検証完了後に記録)。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

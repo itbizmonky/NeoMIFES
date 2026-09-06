@@ -181,6 +181,22 @@ bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int 
 [[nodiscard]] std::optional<std::uint32_t> computeHScrollTargetColumn(
     WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept;
 
+// WI-34: vertical counterpart to computeHScrollTargetColumn() - nullopt for
+// SB_ENDSCROLL/unrecognized (a no-op). `scrollPos` is NOT the raw
+// WM_VSCROLL wParam HIWORD forwarded as-is: Win32 truncates
+// SB_THUMBTRACK/SB_THUMBPOSITION's position to 16 bits, an easily-reached
+// ceiling for a document's LINE count (unlike column position) - the
+// caller (handleVScrollEvent(), normal_mode_wiring.cpp) MUST resolve the
+// real value via ::GetScrollInfo(hwnd, SB_VERT, &si) with SIF_TRACKPOS for
+// those two codes before calling this. No upper clamp against the
+// document's actual line count here either - same "render-time clamp is
+// the single source of truth" philosophy computeHScrollTargetColumn()
+// already follows (SB_LINERIGHT/SB_PAGERIGHT add unconditionally with no
+// upper bound there either).
+[[nodiscard]] std::optional<document::LineNumber> computeVScrollTargetLine(
+    WORD scrollCode, std::uint32_t scrollPos, document::LineNumber currentTopLine,
+    std::uint32_t pageStep) noexcept;
+
 // Convert Tabs to Spaces / Convert Spaces to Tabs command-palette actions
 // (Phase 4b8d). Applies to the whole document. Reuses core::ReplaceAllCommand
 // (Phase 5b2) rather than a bespoke command class - see

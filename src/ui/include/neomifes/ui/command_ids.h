@@ -70,6 +70,12 @@ enum class CommandId : std::uint16_t {
     WordWrapToggle,
     LineNumbersToggle,
     ThemeCycle,
+    // WI-34: same "View menu/palette-only" treatment as the 3 above -
+    // mirrors Settings::showHorizontalScrollbar/showVerticalScrollbar 1:1
+    // (gap_analysis.md's long-standing "スクロールバー: 未実装" note for
+    // the vertical one is closed by this same WI).
+    HorizontalScrollbarToggle,
+    VerticalScrollbarToggle,
     GotoLineShow,
     BookmarkToggle,
     BookmarkNext,

@@ -72,6 +72,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onMouseDown    = config.onMouseDown;
     m_onMouseDrag    = config.onMouseDrag;
     m_onHScroll      = config.onHScroll;
+    m_onVScroll      = config.onVScroll;
     m_onCommand      = config.onCommand;
     m_onAppMessage   = config.onAppMessage;
     m_onNotify       = config.onNotify;
@@ -105,7 +106,8 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     // iteration later. Cheapest untested hypothesis for the P0 invisible-
     // widget bug; testing in isolation before touching anything else.
     const DWORD windowStyle =
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | (config.onHScroll ? WS_HSCROLL : 0);
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | (config.onHScroll ? WS_HSCROLL : 0) |
+        (config.onVScroll ? WS_VSCROLL : 0);
 
     // CreateWindowExW blocks briefly for WM_CREATE. Startup profiling markers
     // that need to happen "before window creation" must run beforehand.
@@ -216,6 +218,9 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_HSCROLL:
             handleHScroll(wParam);
+            return 0;
+        case WM_VSCROLL:
+            handleVScroll(wParam);
             return 0;
         case WM_COMMAND:
             handleCommand(wParam, lParam);
@@ -455,6 +460,12 @@ void MainWindow::handleMouseUp() noexcept {
 void MainWindow::handleHScroll(WPARAM wParam) noexcept {
     if (m_onHScroll) {
         m_onHScroll(m_hwnd, LOWORD(wParam), HIWORD(wParam));
+    }
+}
+
+void MainWindow::handleVScroll(WPARAM wParam) noexcept {
+    if (m_onVScroll) {
+        m_onVScroll(m_hwnd, LOWORD(wParam), HIWORD(wParam));
     }
 }
 

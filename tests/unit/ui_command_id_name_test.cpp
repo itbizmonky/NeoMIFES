@@ -38,6 +38,8 @@ TEST(CommandIdNameTest, ViewToggleCommandsAreExcluded) {
     EXPECT_TRUE(commandIdToString(CommandId::WordWrapToggle).empty());
     EXPECT_TRUE(commandIdToString(CommandId::LineNumbersToggle).empty());
     EXPECT_TRUE(commandIdToString(CommandId::ThemeCycle).empty());
+    EXPECT_TRUE(commandIdToString(CommandId::HorizontalScrollbarToggle).empty());
+    EXPECT_TRUE(commandIdToString(CommandId::VerticalScrollbarToggle).empty());
 }
 
 TEST(CommandIdNameTest, RoundTripsForEveryRemappableCommandId) {

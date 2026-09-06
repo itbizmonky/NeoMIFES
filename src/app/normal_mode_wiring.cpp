@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -280,26 +281,80 @@ void syncRenderStateAndInvalidate(HWND hwnd, RenderPipeline& renderPipeline,
 // WI-04: only ever needs Viewport (1 EditorSession member) - left as an
 // individual parameter rather than EditorSession&, unlike
 // syncRenderStateAndInvalidate() above.
-void syncHorizontalScrollBar(HWND hwnd, const RenderPipeline& renderPipeline,
+void syncHorizontalScrollBar(HWND hwnd, RenderPipeline& renderPipeline,
                              const Viewport& viewport) noexcept {
     // WI-21e: a wrapped line never needs horizontal scrolling (every column
     // is already visible on some row) - hiding the bar rather than merely
     // leaving it at a stale range/position also matches Viewport::
     // setWordWrapEnabled()'s own reasoning for why the underlying leftColumn
     // clamp is skipped while wrap is on, not just visually suppressed here.
-    if (renderPipeline.wordWrapEnabled()) {
+    // WI-34: also hidden when the user's own showHorizontalScrollbar
+    // setting is off (replaces the previous "word wrap is the only reason
+    // to ever hide this" assumption).
+    if (renderPipeline.wordWrapEnabled() || !renderPipeline.horizontalScrollbarVisible()) {
         ::ShowScrollBar(hwnd, SB_HORZ, FALSE);
         return;
     }
     ::ShowScrollBar(hwnd, SB_HORZ, TRUE);
+    const int nMax  = static_cast<int>(renderPipeline.maxVisibleLineLength());
+    const int nPage = static_cast<int>(renderPipeline.visibleColumnCount());
+    const int nPos  = static_cast<int>(viewport.leftColumn());
+    // SetScrollInfo's fRedraw=TRUE below unconditionally invalidates/repaints
+    // the native scrollbar control even when called with identical values -
+    // see RenderPipeline::horizontalScrollInfoChanged()'s own comment.
+    if (!renderPipeline.horizontalScrollInfoChanged(nMax, nPage, nPos)) {
+        return;
+    }
     SCROLLINFO si{};
     si.cbSize = sizeof(si);
     si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
     si.nMin   = 0;
-    si.nMax   = static_cast<int>(renderPipeline.maxVisibleLineLength());
-    si.nPage  = static_cast<UINT>(renderPipeline.visibleColumnCount());
-    si.nPos   = static_cast<int>(viewport.leftColumn());
+    si.nMax   = nMax;
+    si.nPage  = static_cast<UINT>(nPage);
+    si.nPos   = nPos;
     ::SetScrollInfo(hwnd, SB_HORZ, &si, TRUE);
+    renderPipeline.markHorizontalScrollInfoSent(nMax, nPage, nPos);
+}
+
+// WI-34: vertical counterpart to syncHorizontalScrollBar(). Unlike the
+// horizontal one, visibility is NOT tied to word wrap (a document always
+// has lines regardless of wrap mode) - only to the user's own
+// showVerticalScrollbar setting. nMax uses RenderPipeline::
+// documentLineCount() (the real total - unlike maxVisibleLineLength()'s
+// deliberate visible-window approximation, a vertical range fundamentally
+// needs the whole count, and it's an O(1) maintained counter, not a scan).
+// nMax/nPage/nPos are INT_MAX-clamped (SCROLLINFO's fields are 32-bit int) -
+// a document with more lines than that is an accepted, non-rescaled
+// degenerate case, same "no precedent for a fancier scheme" reasoning
+// maxVisibleLineLength()'s own uint32_t cast already carries for a single
+// very-long line.
+void syncVerticalScrollBar(HWND hwnd, RenderPipeline& renderPipeline, const Viewport& viewport) noexcept {
+    if (!renderPipeline.verticalScrollbarVisible()) {
+        ::ShowScrollBar(hwnd, SB_VERT, FALSE);
+        return;
+    }
+    ::ShowScrollBar(hwnd, SB_VERT, TRUE);
+    constexpr neomifes::document::LineNumber kIntMax =
+        static_cast<neomifes::document::LineNumber>(INT_MAX);
+    const int nMax  = static_cast<int>(std::min(renderPipeline.documentLineCount(), kIntMax));
+    const int nPage = static_cast<int>(
+        std::min(std::max<neomifes::document::LineNumber>(renderPipeline.visibleLineCount(), 1), kIntMax));
+    const int nPos  = static_cast<int>(std::min(viewport.topLine(), kIntMax));
+    // SetScrollInfo's fRedraw=TRUE below unconditionally invalidates/repaints
+    // the native scrollbar control even when called with identical values -
+    // see RenderPipeline::verticalScrollInfoChanged()'s own comment.
+    if (!renderPipeline.verticalScrollInfoChanged(nMax, nPage, nPos)) {
+        return;
+    }
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin   = 0;
+    si.nMax   = nMax;
+    si.nPage  = static_cast<UINT>(nPage);
+    si.nPos   = nPos;
+    ::SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
+    renderPipeline.markVerticalScrollInfoSent(nMax, nPage, nPos);
 }
 
 // Pushes FoldingModel's current region list into RenderPipeline as
@@ -1001,6 +1056,7 @@ void syncViewForActiveSession(HWND hwnd, RenderPipeline& renderPipeline, EditorS
                           session.findReplaceState().currentMatches.size());
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     syncHorizontalScrollBar(hwnd, renderPipeline, session.viewport());
+    syncVerticalScrollBar(hwnd, renderPipeline, session.viewport());
     csvGridPane.hide();
     csvGridPanePendingSessionToken = nullptr;
     ::SetFocus(hwnd);
@@ -2103,6 +2159,35 @@ void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSessio
     syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
+// WI-34: handles WM_VSCROLL - vertical counterpart to handleHScrollEvent().
+// Page step comes from RenderPipeline::visibleLineCount() (fold/wrap-aware,
+// unlike Viewport::visibleLines()'s m_visibleLineCount, which nothing in
+// production ever populates - see that method's own header comment). For
+// SB_THUMBTRACK/SB_THUMBPOSITION, resolves the real (untruncated) position
+// via GetScrollInfo(SIF_TRACKPOS) rather than trusting the raw 16-bit
+// scrollPos MainWindow forwards - see computeVScrollTargetLine()'s comment
+// for why this matters for line counts.
+void handleVScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSession& session,
+                        RenderPipeline& renderPipeline) {
+    const auto pageStep = std::max<neomifes::document::LineNumber>(renderPipeline.visibleLineCount(), 1);
+    std::uint32_t resolvedScrollPos = scrollPos;
+    if (scrollCode == SB_THUMBTRACK || scrollCode == SB_THUMBPOSITION) {
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask  = SIF_TRACKPOS;
+        if (::GetScrollInfo(hwnd, SB_VERT, &si)) {
+            resolvedScrollPos = static_cast<std::uint32_t>(si.nTrackPos);
+        }
+    }
+    const auto newTopLine = neomifes::app::computeVScrollTargetLine(
+        scrollCode, resolvedScrollPos, session.viewport().topLine(), static_cast<std::uint32_t>(pageStep));
+    if (!newTopLine) {
+        return;  // SB_ENDSCROLL etc - nothing to do
+    }
+    session.viewport().scrollTo(*newTopLine);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+}
+
 // Handles WM_SYSKEYDOWN (Phase 4b8g): Shift+Alt+arrows extends/starts a
 // keyboard-driven rectangular selection, reusing `rectangularAnchor` - the
 // same session state Shift+Alt+drag already established in Phase 4b8a (see
@@ -2643,6 +2728,32 @@ void appendViewToggleCommands(std::vector<CommandDescriptor>& commands, HWND hwn
             }
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
+    // WI-34: "view.horizontalScrollbar.toggle"/"view.verticalScrollbar.toggle" -
+    // palette counterparts to CommandId::HorizontalScrollbarToggle/
+    // VerticalScrollbarToggle's dispatchWidgetShowCommand() cases, same
+    // small-duplicated-toggle-body precedent as the 3 toggles above.
+    commands.push_back(CommandDescriptor{
+        .id = u"view.horizontalScrollbar.toggle", .title = u"View: Toggle Horizontal Scrollbar",
+        .keybindingLabel = u"", .commandId = CommandId::HorizontalScrollbarToggle,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            settings.showHorizontalScrollbar = !settings.showHorizontalScrollbar;
+            renderPipeline.setHorizontalScrollbarVisible(settings.showHorizontalScrollbar);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
+    commands.push_back(CommandDescriptor{
+        .id = u"view.verticalScrollbar.toggle", .title = u"View: Toggle Vertical Scrollbar",
+        .keybindingLabel = u"", .commandId = CommandId::VerticalScrollbarToggle,
+        .action = [hwnd, &renderPipeline, &settings, settingsPath]() {
+            settings.showVerticalScrollbar = !settings.showVerticalScrollbar;
+            renderPipeline.setVerticalScrollbarVisible(settings.showVerticalScrollbar);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+        }});
 }
 
 std::vector<CommandDescriptor> buildCommandRegistry(
@@ -2940,6 +3051,9 @@ std::vector<CommandDescriptor> buildCommandRegistry(
             // (see that call site's own comment), so nothing further is
             // needed here.
             renderPipeline.setWordWrap(settings.wordWrap);
+            // WI-34: 7th/8th live-wired setters.
+            renderPipeline.setHorizontalScrollbarVisible(settings.showHorizontalScrollbar);
+            renderPipeline.setVerticalScrollbarVisible(settings.showVerticalScrollbar);
             ::InvalidateRect(hwnd, nullptr, FALSE);
         }});
     // WI-09: 3 flat palette-only commands rather than a single
@@ -4476,6 +4590,28 @@ bool dispatchWidgetShowCommand(CommandId id, HWND hwnd, Workspace& workspace, Re
             ::InvalidateRect(hwnd, nullptr, FALSE);
             return true;
         }
+        // WI-34: menu/WM_COMMAND counterparts to "view.horizontalScrollbar.
+        // toggle"/"view.verticalScrollbar.toggle"'s command-palette bodies
+        // above - same duplicated-toggle-body precedent as WordWrapToggle/
+        // LineNumbersToggle/ThemeCycle just above.
+        case CommandId::HorizontalScrollbarToggle: {
+            settings.showHorizontalScrollbar = !settings.showHorizontalScrollbar;
+            renderPipeline.setHorizontalScrollbarVisible(settings.showHorizontalScrollbar);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+        case CommandId::VerticalScrollbarToggle: {
+            settings.showVerticalScrollbar = !settings.showVerticalScrollbar;
+            renderPipeline.setVerticalScrollbarVisible(settings.showVerticalScrollbar);
+            if (settingsPath) {
+                settings.saveTo(*settingsPath);
+            }
+            ::InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
         case CommandId::About: {
             std::wstring message = L"NeoMIFES ";
             for (const char c : neomifes::util::versionString()) {
@@ -4851,6 +4987,7 @@ void handlePaintEvent(HWND paintHwnd, MainWindow& window, RenderPipeline& render
     // session-creation/tab-switch call site to push it individually.
     session.viewport().setWordWrapEnabled(renderPipeline.wordWrapEnabled());
     syncHorizontalScrollBar(paintHwnd, renderPipeline, session.viewport());
+    syncVerticalScrollBar(paintHwnd, renderPipeline, session.viewport());
     // WI-05 step 3: rebuilt from Workspace's actual session list every
     // frame (not just on tab-count changes) - the simplest way to keep
     // the ● unsaved-changes marker and each tab's label in sync with
@@ -5440,6 +5577,9 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
     // handleHScrollEvent() (not inline here) - see that function's comment.
     cfg.onHScroll = [&workspace, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
         handleHScrollEvent(hwnd, scrollCode, scrollPos, workspace.active(), renderPipeline);
+    };
+    cfg.onVScroll = [&workspace, &renderPipeline](HWND hwnd, WORD scrollCode, WORD scrollPos) {
+        handleVScrollEvent(hwnd, scrollCode, scrollPos, workspace.active(), renderPipeline);
     };
     cfg.onMouseDown = [&workspace, &renderPipeline, &isDraggingMinimap](HWND hwnd, std::int32_t x,
                                                                         std::int32_t y, bool shiftDown,

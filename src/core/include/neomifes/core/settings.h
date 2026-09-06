@@ -67,6 +67,14 @@ public:
     // the pre-save content (document::saveFile()'s keepBackup parameter).
     bool           createBackupOnSave    = true;
     std::u16string themeName             = u"dark"; // consumed by WI-09 (theme), live
+    // WI-34: genuine native scrollbars (render::RenderPipeline::
+    // setHorizontalScrollbarVisible()/setVerticalScrollbarVisible()) -
+    // both default true to match the pre-existing always-on horizontal
+    // behavior and the newly-added vertical one. Replaces the previous
+    // "horizontal scrollbar hidden only while word wrap is on" auto
+    // control with an explicit, user-controlled toggle.
+    bool           showHorizontalScrollbar = true;
+    bool           showVerticalScrollbar   = true;
 
     friend bool operator==(const Settings&, const Settings&) = default;
 };

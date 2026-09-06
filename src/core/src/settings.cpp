@@ -71,6 +71,12 @@ void applyFields(const nlohmann::json& parsed, Settings& out) {
             out.themeName = std::move(*text);
         }
     }
+    if (const auto it = parsed.find("showHorizontalScrollbar"); it != parsed.end() && it->is_boolean()) {
+        out.showHorizontalScrollbar = it->get<bool>();
+    }
+    if (const auto it = parsed.find("showVerticalScrollbar"); it != parsed.end() && it->is_boolean()) {
+        out.showVerticalScrollbar = it->get<bool>();
+    }
 }
 
 }  // namespace
@@ -111,6 +117,8 @@ void Settings::saveTo(const std::filesystem::path& path) const {
     j["autoSaveIntervalSeconds"]  = autoSaveIntervalSeconds;
     j["createBackupOnSave"]       = createBackupOnSave;
     j["themeName"]                = toUtf8(themeName);
+    j["showHorizontalScrollbar"]  = showHorizontalScrollbar;
+    j["showVerticalScrollbar"]    = showVerticalScrollbar;
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {

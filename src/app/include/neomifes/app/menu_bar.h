@@ -97,7 +97,7 @@ inline constexpr std::array<MenuItemSpec, 6> kSearchMenuItems = {{
 // テーマは3値(Dark/Light/HighContrast)を固定順で巡回する単一のCycleコマンド
 // (command_ids.h::ThemeCycleの宣言コメント参照 - 既存のview.theme.*3コマンド
 // を廃止・変更せず併存させる設計)。
-inline constexpr std::array<MenuItemSpec, 6> kViewMenuItems = {{
+inline constexpr std::array<MenuItemSpec, 8> kViewMenuItems = {{
     {ui::CommandId::OutlineToggle, L"アウトライン(&O)\tCtrl+Shift+O"},
     // WI-15h: label genericized from "JSON構造ツリー" - the same toggle now
     // auto-detects JSON vs XML documents (see normal_mode_wiring.cpp's
@@ -108,6 +108,9 @@ inline constexpr std::array<MenuItemSpec, 6> kViewMenuItems = {{
     {ui::CommandId::WordWrapToggle, L"折り返し(&W)"},
     {ui::CommandId::LineNumbersToggle, L"行番号(&L)"},
     {ui::CommandId::ThemeCycle, L"テーマ切替(&T)"},
+    // WI-34: Settings::showHorizontalScrollbar/showVerticalScrollbar 1:1.
+    {ui::CommandId::HorizontalScrollbarToggle, L"水平スクロールバー(&H)"},
+    {ui::CommandId::VerticalScrollbarToggle, L"垂直スクロールバー(&V)"},
 }};
 
 inline constexpr std::array<MenuItemSpec, 1> kToolsMenuItems = {{

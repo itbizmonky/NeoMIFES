@@ -483,6 +483,26 @@ std::optional<std::uint32_t> computeHScrollTargetColumn(WORD scrollCode, WORD sc
     }
 }
 
+std::optional<document::LineNumber> computeVScrollTargetLine(WORD scrollCode, std::uint32_t scrollPos,
+                                                              document::LineNumber currentTopLine,
+                                                              std::uint32_t pageStep) noexcept {
+    switch (scrollCode) {
+        case SB_LINEUP:
+            return currentTopLine > 0 ? currentTopLine - 1 : document::LineNumber{0};
+        case SB_LINEDOWN:
+            return currentTopLine + 1;
+        case SB_PAGEUP:
+            return currentTopLine > pageStep ? currentTopLine - pageStep : document::LineNumber{0};
+        case SB_PAGEDOWN:
+            return currentTopLine + pageStep;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION:
+            return static_cast<document::LineNumber>(scrollPos);
+        default:
+            return std::nullopt;
+    }
+}
+
 bool applyIndentationConversion(core::IndentationConversionTarget target, Document& document,
                                 CommandDispatcher& dispatcher, const SelectionModel& selectionModel,
                                 std::uint32_t tabWidth) {
