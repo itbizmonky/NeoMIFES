@@ -31,6 +31,18 @@ constexpr int kFormatVersion = 1;
     return fontSizeDips <= 0.0F ? 14.0F : fontSizeDips;
 }
 
+// Shared by every plain boolean field below - factored out so applyFields()
+// itself stays a flat sequence of one-liners for these fields instead of
+// repeating the same find/type-check/assign branch per field, which is what
+// pushed applyFields() over clang-tidy's cognitive-complexity threshold once
+// WI-34 added the 2 scrollbar-visibility fields (readability-function-
+// cognitive-complexity, src/ threshold 25).
+void applyBoolField(const nlohmann::json& parsed, const char* key, bool& out) {
+    if (const auto it = parsed.find(key); it != parsed.end() && it->is_boolean()) {
+        out = it->get<bool>();
+    }
+}
+
 // Split out of loadFrom() purely to keep clang-tidy's cognitive-complexity
 // check happy (the file-open/parse/version checks plus all nine field reads
 // inline pushed loadFrom past the src/ threshold of 25) - loadFrom() keeps
@@ -48,35 +60,21 @@ void applyFields(const nlohmann::json& parsed, Settings& out) {
     if (const auto it = parsed.find("tabWidth"); it != parsed.end() && it->is_number_unsigned()) {
         out.tabWidth = clampTabWidth(it->get<std::uint32_t>());
     }
-    if (const auto it = parsed.find("insertSpacesForTab"); it != parsed.end() && it->is_boolean()) {
-        out.insertSpacesForTab = it->get<bool>();
-    }
-    if (const auto it = parsed.find("showLineNumbers"); it != parsed.end() && it->is_boolean()) {
-        out.showLineNumbers = it->get<bool>();
-    }
-    if (const auto it = parsed.find("showMinimap"); it != parsed.end() && it->is_boolean()) {
-        out.showMinimap = it->get<bool>();
-    }
-    if (const auto it = parsed.find("wordWrap"); it != parsed.end() && it->is_boolean()) {
-        out.wordWrap = it->get<bool>();
-    }
+    applyBoolField(parsed, "insertSpacesForTab", out.insertSpacesForTab);
+    applyBoolField(parsed, "showLineNumbers", out.showLineNumbers);
+    applyBoolField(parsed, "showMinimap", out.showMinimap);
+    applyBoolField(parsed, "wordWrap", out.wordWrap);
     if (const auto it = parsed.find("autoSaveIntervalSeconds"); it != parsed.end() && it->is_number_unsigned()) {
         out.autoSaveIntervalSeconds = it->get<std::uint32_t>();
     }
-    if (const auto it = parsed.find("createBackupOnSave"); it != parsed.end() && it->is_boolean()) {
-        out.createBackupOnSave = it->get<bool>();
-    }
+    applyBoolField(parsed, "createBackupOnSave", out.createBackupOnSave);
     if (const auto it = parsed.find("themeName"); it != parsed.end() && it->is_string()) {
         if (auto text = fromUtf8(it->get<std::string>())) {
             out.themeName = std::move(*text);
         }
     }
-    if (const auto it = parsed.find("showHorizontalScrollbar"); it != parsed.end() && it->is_boolean()) {
-        out.showHorizontalScrollbar = it->get<bool>();
-    }
-    if (const auto it = parsed.find("showVerticalScrollbar"); it != parsed.end() && it->is_boolean()) {
-        out.showVerticalScrollbar = it->get<bool>();
-    }
+    applyBoolField(parsed, "showHorizontalScrollbar", out.showHorizontalScrollbar);
+    applyBoolField(parsed, "showVerticalScrollbar", out.showVerticalScrollbar);
 }
 
 }  // namespace
