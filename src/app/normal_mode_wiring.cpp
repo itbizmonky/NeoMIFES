@@ -307,7 +307,18 @@ void syncHorizontalScrollBar(HWND hwnd, RenderPipeline& renderPipeline,
     }
     SCROLLINFO si{};
     si.cbSize = sizeof(si);
-    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+    // WI-35: SIF_DISABLENOSCROLL keeps the bar visible (merely disabled) when
+    // nMax fits within nPage, instead of Win32's default of silently calling
+    // the ShowScrollBar(..., FALSE) equivalent itself. Without this flag, the
+    // bar flickered in and out on every keystroke whenever a line's length
+    // hovered near the viewport width (overwhelmingly line 1 of a fresh
+    // document), each toggle resizing the client rect - this was the real
+    // cause of docs/issues/keystroke_burst_render_backlog.md's "line 1 only"
+    // jitter, confirmed by the user disabling the bar entirely and the
+    // symptom disappearing. This toggle never went through RenderPipeline::
+    // resize() (WI-34's instrumentation measured 0 calls during typing)
+    // because it's Win32's own internal scrollbar bookkeeping, not ours.
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
     si.nMin   = 0;
     si.nMax   = nMax;
     si.nPage  = static_cast<UINT>(nPage);
@@ -334,8 +345,7 @@ void syncVerticalScrollBar(HWND hwnd, RenderPipeline& renderPipeline, const View
         return;
     }
     ::ShowScrollBar(hwnd, SB_VERT, TRUE);
-    constexpr neomifes::document::LineNumber kIntMax =
-        static_cast<neomifes::document::LineNumber>(INT_MAX);
+    constexpr auto kIntMax = static_cast<neomifes::document::LineNumber>(INT_MAX);
     const int nMax  = static_cast<int>(std::min(renderPipeline.documentLineCount(), kIntMax));
     const int nPage = static_cast<int>(
         std::min(std::max<neomifes::document::LineNumber>(renderPipeline.visibleLineCount(), 1), kIntMax));
@@ -348,7 +358,11 @@ void syncVerticalScrollBar(HWND hwnd, RenderPipeline& renderPipeline, const View
     }
     SCROLLINFO si{};
     si.cbSize = sizeof(si);
-    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+    // WI-35: SIF_DISABLENOSCROLL - see syncHorizontalScrollBar()'s comment on
+    // the same flag. Applied here too even though the user's own repro was
+    // horizontal-only, since a short document (fits in one page) would hit
+    // the identical auto-hide/show flicker as line count crosses nPage.
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
     si.nMin   = 0;
     si.nMax   = nMax;
     si.nPage  = static_cast<UINT>(nPage);
