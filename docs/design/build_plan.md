@@ -98,14 +98,17 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-27(`rectangularAnchor`/`altCursorAnchor`のキーボード操作時リセット漏れ修正)完結(2026-09-04)。** WI-26で発見した同issueに、ユーザーから「次に着手せよ」との指示で着手。Explore agentへの調査で`altCursorAnchor`にも同型のバグがあると判明、Plan agentへの設計検証で2件の見落とし(`handleFreeCursorRightArrow()`の早期returnによる配置ミス、altCursorAnchorの対称性欠如)を事前に発見・修正した上で実装。**実機ドッグフーディングで、実装自体に含まれていた新たな自己矛盾バグを発見した**——`VK_SHIFT`のプレーンな押下(Shift+Alt+矢印を開始する自然な順序の一部)がWM_KEYDOWNとして先に単独発火し、追加したばかりの無条件リセットが「継続しようとしているそのキー入力シーケンス自身」によって基点を破壊してしまっていた(`VK_SHIFT`/`VK_MENU`をリセット対象から除外して解消)。Plan agentによる静的な設計レビューでは検出できなかった、実機ドッグフーディングでしか発見できない性質のバグだった。`dispatchMouseDown()`(既存のマウス側リセット、無テストだった)への安全網テスト3件を追加。副次的発見(`handleSysKeyDownEvent()`のDiffビューガード欠如)は別issueとして起票。詳細は本ファイルのWI-27セクション参照。
 >
-> **次フェーズ候補 (M5達成後に発見された5件+複数ウィンドウ非対応(WI-20)+表示メニュー/折り返し(WI-21)+検索CRLF(WI-22)+Grep固定オーバーヘッド(WI-23)+検索ダイアログ化(WI-24)+自動整形(WI-25)+縦編集(WI-26)+rectangularAnchorリセット漏れ(WI-27)は全て対応完了。次にどれへ着手するかはユーザーの標準委任のもとこちらの判断で選定する):**
-> - ~~[`json_tree_ui_population_hang.md`](../issues/json_tree_ui_population_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 実装優先度①として着手、実際の原因は`WC_TREEVIEW`への大量`TVM_INSERTITEMW`呼び出し(推定原因`WC_LISTVIEW`は誤りと標準プローブで判明)。しきい値ベースの遅延ロード+階層キャップで解消、145万要素で実測トグル9ms・展開303ms、Debug/Release/ubsan全1554件green
-> - ~~[`search_grep_multi_gb_performance_gap.md`](../issues/search_grep_multi_gb_performance_gap.md) (P1)~~ — 🟡 **2026-09-01部分対応 → 2026-09-04残項目対応(WI-23)。** 単一ファイル側は実測で真因がRE2ではなくUTF-8変換処理(`toUtf8WithOffsets()`)と判明、ASCII高速パス追加で3GB単一ファイルが約28%削減(合計約17〜18秒)。`GrepService`の多ファイル固定オーバーヘッドも対応済み(WI-23参照)、残る未達項目は`tests/bench/`への専用ベンチマーク追加のみ
-> - ~~[`text_surface_no_screen_reader_exposure.md`](../issues/text_surface_no_screen_reader_exposure.md) (P1)~~ — 🟢 **2026-09-02解決済み(簡易アナウンス実装)。** `ui::TextSurfaceAccessible`(自前`IAccessible`)+`WM_GETOBJECT`+カーソル行変化時の`NotifyWinEvent(EVENT_OBJECT_LIVEREGIONCHANGED, ...)`で実装。実機検証で`IDispatch::Invoke()`の単純委譲が独自実装を迂回する見落としを発見・修正、`AccessibleObjectFromWindow`+`accName`直接呼び出しで正確・即時な反映を確認。フルTextPattern実装(列単位キャレット・範囲選択読み上げ)は引き続きスコープ外、Debug/Release/ubsan全1554件green
-> - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) (P1) — 🟡 **2026-09-01部分対応。** `CsvCell`を24→16バイト/セルへ圧縮(662MBで実測WorkingSet約1.97GB、旧参照8.3GBから大幅改善)。10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定、10GB規模でのリスクは軽減されつつも残存
-> - ~~[`json_syntax_highlight_large_file_open_hang.md`](../issues/json_syntax_highlight_large_file_open_hang.md) (P1)~~ — 🟢 **2026-09-01解決済み。** 真因は`extractOutline()`がシンボルテーブルが空(JSON含む19言語)でも無条件にフルパースしていたこと。早期リターンで解消、47秒→約1秒(約47倍改善)、Debug/Release/ubsan全1554件green
-> - ~~[`undo_redo_active_usage_soak_not_performed.md`](../issues/undo_redo_active_usage_soak_not_performed.md) (P2)~~ — 🟢 **2026-09-01解決済み。** ヘッドレスプローブで`core::UndoStack`を直接駆動し5分間・約14億操作の能動的ソークを実施、`UndoStack`自体はリークしないことを確認。観測された線形増加(非加速)は`AddBuffer`の既知append-only設計に起因、`undo_stack_unbounded_memory.md`で引き続き追跡中
-> - [`authenticode_certificate_not_acquired.md`](../issues/authenticode_certificate_not_acquired.md) (P1、外部要因待ち) — 本物のAuthenticode証明書取得(ユーザー判断)
+> **次フェーズ候補 (2026-09-09更新):** WI-20〜WI-37(複数ウィンドウ・表示メニュー/折り返し・検索CRLF・Grep固定オーバーヘッド・検索ダイアログ化・自動整形・縦編集・rectangularAnchorリセット漏れ・ステータスバー/ベースライン/現在行ハイライト・タイピング時ガタつき診断+修正・非同期シンタックス二重描画・スクロールバー設定化+縦スクロールバー新規実装・スクロールバー常時表示化・PageUp/PageDown 0行移動バグ・横スクロール16bit切り詰め)は全て対応完了、push・CI green確認済み。次にどれへ着手するかはユーザーの標準委任のもとこちらの判断で選定する。
+>
+> **残るP1(いずれも次WIの候補にはならない、`docs/issues/README.md`参照):**
+> - [`authenticode_certificate_not_acquired.md`](../issues/authenticode_certificate_not_acquired.md) — 本物のAuthenticode証明書取得はユーザー自身の判断・購入待ち、エージェント側で進められる作業なし
+> - [`csv_per_cell_index_memory_scaling.md`](../issues/csv_per_cell_index_memory_scaling.md) — 🟡 部分対応済み(2026-09-01)。10GB規模の根本解消(遅延インデックス化)はユーザー承認のもと対象外確定済み
+>
+> **P2候補(優先度が明確な順):**
+> - [`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md) — 索引に「次点候補」と明記されたまま最も長く待機中(WI-27発見)。Diffビュー表示中にShift+Alt+矢印/Iが不可視の実文書へ適用されてしまう、スコープの絞り込まれた単発バグで着手しやすい
+> - [`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md) — `--measure-frame`が`ubsan`ビルドでのみ非決定的にハング。原因未調査、開発者向けフラグのため製品機能への影響なし
+> - [`overlay_focus_blocks_file_lifecycle_keys.md`](../issues/overlay_focus_blocks_file_lifecycle_keys.md) — 6ウィジェット全てへの対策が必要な中規模改修、待機中
+> - 残りのP2(`menu_bar_keybinding_label_stale.md`/`undo_stack_unbounded_memory.md`/`text_layout_cache_unbounded_growth.md`等)はいずれも「再評価条件が未成立」「実害が軽微」等の理由で意図的に待機中——詳細は`docs/issues/README.md`のP2表参照
 >
 > 詳細な理由と各案の比較は [`docs/history/TIMELINE.md`](../history/TIMELINE.md) の該当セッション記録、および `master_roadmap.md` の各フェーズ見出しに付けた🧊凍結注記を参照。
 
