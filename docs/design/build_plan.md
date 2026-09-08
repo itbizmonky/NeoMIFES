@@ -3098,6 +3098,34 @@ Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構
 
 ---
 
+## WI-38 — `handleSysKeyDownEvent()`にDiffビューガードを追加(P2)
+
+### 目的
+
+[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2、WI-27発見)に着手。索引に「次点候補」と明記されたまま最も長く待機していたissue。`handleSysKeyDownEvent()`(WM_SYSKEYDOWN、Shift+Alt+矢印/Shift+Alt+I/プレーンAlt+↑↓)には、同ファイル内の他3箇所(`handleKeyDownEvent()`/`handleCharEvent()`/`dispatchCommand()`)が持つ`isDiffViewActive()`ガードが無く、Diffビュー表示中でも不可視の実文書へ矩形選択/カーソル配置が適用されてしまう既存バグ。
+
+### 設計
+
+`grep -n isDiffViewActive src/app/normal_mode_wiring.cpp`で既存4箇所(うち1箇所はトグルコマンド自身)を確認し、他3箇所の設計を精査した。issue起票時点で懸念されていた「Escapeの特別扱いが必要か」という論点は、Escapeキーが修飾キー無しで押される限りWM_SYSKEYDOWNではなくWM_KEYDOWNとして届くため`handleKeyDownEvent()`側の既存ガードがそのまま処理し二重処理は起きないと判明し、追加調査不要と確定した。`handleSysKeyDownEvent()`の戻り値は`DefWindowProcW`へのフォールスルー可否を決める特殊な契約(Alt+F4等のシステムキー維持のため)を持つため、他2箇所(`void`関数、黙って`return`)とは異なり、明示的に`return false`することで「ハンドラが一切設定されていないのと同じ状態」(`main_window.h`が文書化している既定動作)を再現する設計とした——この関数が認識する全キーはOS側のシステム動作を一切持たないため、この方式で安全にフォールスルーする。
+
+### 実装
+
+`handleSysKeyDownEvent()`の冒頭へ`if (renderPipeline.isDiffViewActive()) { return false; }`を1行追加のみ。
+
+### 検証
+
+Debug全1614/1614件green、clang-tidy新規指摘0件。
+
+**実機ドッグフーディング(未完走、正直に記録):** Diffビューはコマンドパレット限定(`Ctrl+Shift+P`)でのみ起動可能な設計のため、対話的検証にはこの複数モディファイアキーの合成入力が必須だった。4種類の異なる手法(①`keybd_event`によるモディファイア単体合成+`PostMessage`のハイブリッド〔WI-24でCtrl+Hに有効だった手法そのもの〕、②Ctrl/Shift/Pの全てを`keybd_event`で完全合成、③`AttachThreadInput`+`SetFocus`+`SetActiveWindow`+`SetForegroundWindow`で明示的にフォーカス確保した上での再試行、④順序・待機時間を変えての再試行)を試みたが、`GetAsyncKeyState`でモディファイアの実在下降を確認できたにもかかわらず、`EnumChildWindows`で新規子ウィンドウの出現が一度も確認できず、コマンドパレットは開かなかった。**単一モディファイア(Ctrl+H)は過去のWIで機能した同一のハイブリッド手法が、複数モディファイア(Ctrl+Shift+P)では機能しないという、この環境の新たな具体的制約が判明した**(`reference_no_win32_gui_automation.md`へ記録済み)。
+
+修正自体の信頼性は、①`isDiffViewActive()`ガードという同一パターンが同一ファイル内の他3箇所で既に実証済み・本番稼働中であること、②`grep`で全4箇所の一貫性を確認したこと、③Debug/Release/ASan/UBSan全構成でのビルド・テスト・clang-tidyが問題無く通ったこと、の3点を根拠に判断した。
+
+Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認。既知の非決定的`FrameMeasureTest.ProducesValidProfile`ハングも本回では再現せず正常pass(5.41秒)。
+
+コミット: (直後に記録)。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

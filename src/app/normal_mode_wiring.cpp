@@ -2235,6 +2235,27 @@ void handleVScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSessio
 // document/rectangularAnchor - 4 members).
 bool handleSysKeyDownEvent(HWND hwnd, UINT vkCode, bool shiftDown, EditorSession& session,
                            RenderPipeline& renderPipeline) {
+    // WI-38: same reasoning as handleKeyDownEvent()'s/handleCharEvent()'s
+    // own Diff-view guards (docs/issues/
+    // handle_sys_key_down_missing_diff_view_guard.md) - every gesture below
+    // (rectangular selection extend, plain Alt+Up/Down line move, Shift+
+    // Alt+I) mutates session/document state and must not reach the
+    // (currently invisible) real document while the Diff view shows a
+    // synthesized, read-only one. Unlike those two void-returning guards,
+    // this function's return value gates DefWindowProcW fallthrough (Alt+F4
+    // etc - see this function's own header comment), so `false` is the
+    // correct response here rather than a swallowing `true`: it makes this
+    // handler behave exactly as if it weren't wired up at all while the
+    // Diff view is open (main_window.h's own documented "no handler
+    // configured" default), which is harmless for every key this function
+    // recognizes (none of Shift+Alt+arrows/Shift+Alt+I/plain Alt+Up/Down
+    // carry OS-level System behavior DefWindowProcW would otherwise
+    // provide). Escape (which closes the Diff view) arrives as plain
+    // WM_KEYDOWN, not WM_SYSKEYDOWN, so it's already handled by
+    // handleKeyDownEvent()'s own guard and never reaches here.
+    if (renderPipeline.isDiffViewActive()) {
+        return false;
+    }
     // WI-12: plain Alt+Up/Alt+Down (no Shift) move the current line(s) -
     // checked before the Shift+Alt-only rectangular-selection logic below
     // (which early-returns on !shiftDown), since this is the one case in

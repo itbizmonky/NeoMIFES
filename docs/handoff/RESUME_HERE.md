@@ -478,6 +478,22 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-09) — WI-38完了: `handleSysKeyDownEvent()`にDiffビューガードを追加(P2)
+
+> **ユーザーから「P2を1から3の順番で着手せよ」との指示。①`handle_sys_key_down_missing_diff_view_guard.md`(WI-27発見、索引に「次点候補」と明記されたまま最も長く待機)から着手。** `handleSysKeyDownEvent()`(Shift+Alt+矢印/Shift+Alt+I/プレーンAlt+↑↓)には、同ファイル内の他3箇所(`handleKeyDownEvent()`/`handleCharEvent()`/`dispatchCommand()`)が持つ`isDiffViewActive()`ガードが無く、Diffビュー表示中でも不可視の実文書へ矩形選択/カーソル配置が適用されてしまう既存バグを修正した。
+
+> **設計:** issue起票時点の懸念(Escapeの特別扱いの要否)は、Escapeが修飾キー無しならWM_KEYDOWNとして届き`handleKeyDownEvent()`の既存ガードで処理済みと判明し不要と確定。`handleSysKeyDownEvent()`の戻り値はDefWindowProcWフォールスルー可否を決める特殊契約(Alt+F4維持)を持つため、他2箇所のように黙って`return`せず明示的に`return false`する設計とした。`if (renderPipeline.isDiffViewActive()) { return false; }`を冒頭へ1行追加。
+
+> **実機ドッグフーディング(未完走、正直に記録):** Diffビューはコマンドパレット限定(`Ctrl+Shift+P`)起動のため対話的検証に複数モディファイアの合成入力が必須だったが、4種類の手法(WI-24でCtrl+Hに有効だったハイブリッド手法・完全`keybd_event`合成・`AttachThreadInput`等での明示的フォーカス確保・順序変更)を尽くしても`GetAsyncKeyState`での実在確認とは裏腹にコマンドパレットが一度も開かなかった。**単一モディファイアは機能するが複数モディファイアの組み合わせはこの環境で機能しないという新たな具体的制約が判明し、`reference_no_win32_gui_automation.md`メモリへ記録した。** 修正の信頼性は、同一パターンが他3箇所で既に本番稼働中であること・`grep`で全4箇所の一貫性を確認したこと・全構成のビルド/テスト/clang-tidyが問題無いことの3点で判断した。
+
+> Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認済み。**
+
+> **次回セッション最初にやること:** ユーザー指示の続き(P2候補②`frame_measure_hangs_under_ubsan_clang_cl.md`、③`overlay_focus_blocks_file_lifecycle_keys.md`)へ順番に着手する。
+
+> 詳細は`docs/design/build_plan.md`のWI-38セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🎉 最重要 (2026-09-08) — WI-37完了: 横スクロールバーのつまみドラッグの16bit切り詰めを解消(P2)
 
 > **WI-36完了後、次点候補issue[`hscroll_thumb_drag_16bit_truncation.md`](../issues/hscroll_thumb_drag_16bit_truncation.md)(P2、WI-34発見)に着手。** 横スクロールバーのつまみドラッグが`WM_HSCROLL`の`wParam` `HIWORD`(16bit切り詰め、最大65535)をそのまま使っており列65535超の長い1行で破綻する既存バグ。WI-34の縦スクロールバー(`handleVScrollEvent()`)は`GetScrollInfo(SIF_TRACKPOS)`で実値解決する設計にしており既にこの問題を回避済みだったが、横スクロールバー(WI-03原型)は未修正のまま残っていた。
@@ -488,7 +504,7 @@
 
 > Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認済み。**
 
-> **次回セッション最初にやること:** ①ユーザーへWI-35〜WI-37の一連の修正(スクロールバー常時表示化/PageUp・PageDown修正/横スクロール16bit切り詰め解消)について実機での最終確認を依頼、②他に新規タスクの指示が無ければ次点候補issue(`handle_sys_key_down_missing_diff_view_guard.md`/`frame_measure_hangs_under_ubsan_clang_cl.md`、いずれもP2)から選定する。
+> **(2026-09-09追記) 本コールアウトの「次回やること」はユーザーからのP2着手指示(WI-38)により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-37セクション、`docs/history/TIMELINE.md`最新セッション参照。
 

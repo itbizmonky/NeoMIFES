@@ -4419,4 +4419,14 @@ issue自身に対応案が記録済みだったが、実装中に**issueの対�
 
 Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSanはサブエージェントへ検証委任。
 
+### WI-38: `handleSysKeyDownEvent()`にDiffビューガードを追加(P2)
+
+WI-37完了後、ユーザーから「P2を1から3の順番で着手せよ」との指示を受け、①`handle_sys_key_down_missing_diff_view_guard.md`(WI-27発見、索引に「次点候補」と明記されたまま最も長く待機していたissue)から着手。`handleSysKeyDownEvent()`には同ファイル内の他3箇所(`handleKeyDownEvent()`/`handleCharEvent()`/`dispatchCommand()`)が持つ`isDiffViewActive()`ガードが無く、Diffビュー表示中でも不可視の実文書へ矩形選択/カーソル配置が適用されてしまう既存バグを修正した。
+
+issue起票時点の懸念(「Escapeの特別扱いが必要か」)は、Escapeが修飾キー無しならWM_KEYDOWNとして届くため`handleKeyDownEvent()`の既存ガードで処理済みと判明し不要と確定。`handleSysKeyDownEvent()`の戻り値がDefWindowProcWフォールスルー可否を決める特殊契約(Alt+F4維持)を持つため、他2箇所のように黙って`return`するのではなく明示的に`return false`する設計とし、`if (renderPipeline.isDiffViewActive()) { return false; }`を冒頭へ1行追加した。
+
+**実機ドッグフーディングは未完走のまま正直に記録した:** Diffビューがコマンドパレット限定(`Ctrl+Shift+P`)起動のため、対話的検証には複数モディファイアキーの合成入力が必須だったが、4種類の手法(WI-24で単一モディファイアのCtrl+Hに有効だったハイブリッド手法の再適用・完全`keybd_event`合成・`AttachThreadInput`+`SetFocus`等での明示的フォーカス確保・順序変更)を尽くしても`GetAsyncKeyState`でのモディファイア実在確認とは裏腹にコマンドパレットが一度も開かなかった。**単一モディファイアは機能するが複数モディファイアの組み合わせはこの環境で機能しないという、新たな具体的な自動化環境の制約が判明し、`reference_no_win32_gui_automation.md`メモリへ記録した。** 修正の信頼性は、同一パターンが同一ファイル内の他3箇所で既に本番稼働中であること・全4箇所の一貫性を`grep`で確認したこと・全構成のビルド/テスト/clang-tidyが問題無いことの3点で判断した。
+
+Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSanはサブエージェントへ検証委任。
+
 <!-- 次セッションはここに追記 -->
