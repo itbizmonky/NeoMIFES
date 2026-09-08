@@ -4992,6 +4992,18 @@ void handlePaintEvent(HWND paintHwnd, MainWindow& window, RenderPipeline& render
     // manually resized the window. See syncHorizontalScrollBar()'s
     // comment for why the scrollbar sync itself belongs here too.
     session.viewport().setVisibleColumnCount(renderPipeline.visibleColumnCount());
+    // WI-36: vertical counterpart to setVisibleColumnCount() immediately
+    // above, same rationale - Viewport::m_visibleLineCount defaulted to 0
+    // and was NEVER wired up to any real source (docs/issues/
+    // viewport_visible_line_count_never_set_pageup_pagedown_noop.md), which
+    // made PageUp/PageDown silently move 0 lines: applyMovementKey()'s
+    // pageSize comes from viewport.visibleLines(), whose range width is
+    // exactly this count. RenderPipeline::visibleLineCount() is a uint64_t
+    // (document::LineNumber) but a SCREEN's worth of visible rows can never
+    // approach uint32_t's range, so a plain narrowing cast is safe here
+    // (unlike documentLineCount(), which is the whole file's line count and
+    // does get INT_MAX-clamped elsewhere for exactly that reason).
+    session.viewport().setVisibleLineCount(static_cast<std::uint32_t>(renderPipeline.visibleLineCount()));
     // WI-21e: kept fresh every frame, same rationale as
     // setVisibleColumnCount() immediately above - renderPipeline's word-wrap
     // flag is a single global toggle, but core::Viewport is one-per-

@@ -4399,6 +4399,14 @@ push直後、ユーザーから「CI失敗している」との報告。`gh run 
 
 完全に同一構造だったboolean型フィールド処理7箇所(`insertSpacesForTab`/`showLineNumbers`/`showMinimap`/`wordWrap`/`createBackupOnSave`/`showHorizontalScrollbar`/`showVerticalScrollbar`)を共通ヘルパー`applyBoolField()`へ抽出し解消。単に閾値を回避するための場当たり的な分割ではなく、真の重複を1箇所へ集約する自然なリファクタリングとなった。
 
-**CIのフェイルファスト仕様(最初の失敗ファイルで`throw`して停止)により、settings.cpp以降のファイルが検証されないまま残っていた可能性を懸念し、CIと全く同じ手順(全253ファイルへの個別`clang-tidy -p build/debug --quiet`実行)を自分で直接実行(サブエージェントに委任せず、`run_in_background`のBashで自ら実行・完了通知を待機)して全件検証した。** 結果は253/253ファイルとも`exit=0`、失敗0件——settings.cppの修正で問題は完全に解消しており他に隠れた失敗ファイルは無いことを確認した。Debug全1614/1614件green。コミット`5149f78`。
+**CIのフェイルファスト仕様(最初の失敗ファイルで`throw`して停止)により、settings.cpp以降のファイルが検証されないまま残っていた可能性を懸念し、CIと全く同じ手順(全253ファイルへの個別`clang-tidy -p build/debug --quiet`実行)を自分で直接実行(サブエージェントに委任せず、`run_in_background`のBashで自ら実行・完了通知を待機)して全件検証した。** 結果は253/253ファイルとも`exit=0`、失敗0件——settings.cppの修正で問題は完全に解消しており他に隠れた失敗ファイルは無いことを確認した。Debug全1614/1614件green。コミット`5149f78`。push後の新規CIラン(`34166657879`)でBuild&Test(debug/release)/clang-tidy/UBSan全ジョブgreenを確認。
+
+### WI-36: `Viewport::setVisibleLineCount()`の配線漏れを解消(PageUp/PageDown 0行移動バグ、P1)
+
+WI-34で発見・起票していた`viewport_visible_line_count_never_set_pageup_pagedown_noop.md`(P1、実機確認済み)に着手。issue自身に既にWI-03の水平方向配線と同型の対応案が記録済みだったため追加のPlan agent委任は不要と判断、`normal_mode_wiring.cpp`の`handlePaintEvent()`(既存`setVisibleColumnCount()`呼び出しの直後)へ`session.viewport().setVisibleLineCount(static_cast<std::uint32_t>(renderPipeline.visibleLineCount()));`を1行追加するのみで修正完了。`document::LineNumber`(`uint64_t`)から`uint32_t`への縮小変換は、可視行数が画面の物理制約上その範囲へ到達し得ないため単純な`static_cast`で安全と判断した(文書全体の行数を扱う`documentLineCount()`とは異なりクランプ不要)。
+
+既存の`PageDownAndPageUpJumpByViewportVisibleLineCount`単体テストは`viewport.setVisibleLineCount(3)`を手動で事前設定した上で`applyMovementKey()`のロジック自体は正しくテストしていたが、実際に本番コードがこの値を設定する配線(`normal_mode_wiring.cpp`側、`NeoMIFES`実行ファイルへ直接コンパイルされユニットテスト不可能)は検証範囲外だった——これがバグが長期間見過ごされた理由と判明した。
+
+**実機ドッグフーディング:** 200行のファイルを開き`WM_KEYDOWN`/`WM_KEYUP`で`VK_NEXT`(PageDown)×2→`VK_PRIOR`(PageUp)×1を送信、ステータスバーのカーソル行が**1:1→35:1→69:1→35:1**と正確に往復することをスクリーンショットで確認した(修正前はカーソルが1:1のまま一切動かなかったはず)。Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSanはサブエージェントへ検証委任。
 
 <!-- 次セッションはここに追記 -->

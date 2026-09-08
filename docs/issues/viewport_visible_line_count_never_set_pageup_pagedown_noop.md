@@ -1,6 +1,7 @@
-# Issue: `Viewport::setVisibleLineCount()`が本番コードから一度も呼ばれず、PageUp/PageDownキーが実質0行しか移動しない(P1 — 実機確認済み、未修正)
+# Issue: `Viewport::setVisibleLineCount()`が本番コードから一度も呼ばれず、PageUp/PageDownキーが実質0行しか移動しない(P1 — 🟢 WI-36で解決済み)
 
 - **起票日:** 2026-09-06(WI-34、縦スクロールバー新規実装のためのpageStep調査中に発見)
+- **解決日:** 2026-09-08(WI-36)
 - **対象:** `src/core/include/neomifes/core/viewport.h`(`Viewport::m_visibleLineCount`/`setVisibleLineCount()`/`visibleLines()`)、`src/app/editor_input.cpp`の`handleKeyDown()`(`viewport.visibleLines()`をpageSizeとして使用)
 - **優先度:** P1(実機で再現確認済みのキー操作バグ、水平方向のみ対応していたWI-03の縦方向版が長らく欠落していた)
 
@@ -20,12 +21,12 @@ changed = applyMovementKey(vkCode, shiftDown, ctrlDown, selection, document,
 
 `Viewport`の水平方向カウンターパート`setVisibleColumnCount()`は`RenderPipeline::visibleColumnCount()`から`handleCharEvent()`等で毎フレーム同期されている(WI-03)が、縦方向の同期処理が一度も実装されなかった。`RenderPipeline`側には`visibleLineRange()`(fold/wrap考慮済み、private)という同等の情報源が既に存在するにも関わらず、`Viewport::setVisibleLineCount()`へ橋渡しする配線が欠落したまま放置されていたと見られる。
 
-## 対応案(未実施)
+## 対応案(実施済み)
 
-WI-03の水平方向の配線(`RenderPipeline::visibleColumnCount()`→`Viewport::setVisibleColumnCount()`、`handleCharEvent()`等での毎フレーム同期)と同型で、`RenderPipeline::visibleLineCount()`(WI-34で新設済み、`visibleLineRange()`の公開ラッパー)→`Viewport::setVisibleLineCount()`の毎フレーム同期を追加する。
+WI-03の水平方向の配線(`RenderPipeline::visibleColumnCount()`→`Viewport::setVisibleColumnCount()`、`handlePaintEvent()`での毎フレーム同期)と同型で、`RenderPipeline::visibleLineCount()`(WI-34で新設済み、`visibleLineRange()`の公開ラッパー)→`Viewport::setVisibleLineCount()`の毎フレーム同期を`normal_mode_wiring.cpp`の`handlePaintEvent()`(既存の`setVisibleColumnCount()`呼び出しの直後)へ追加した。`visibleLineCount()`の戻り値型`document::LineNumber`(`uint64_t`)から`setVisibleLineCount(std::uint32_t)`への縮小変換は、可視行数が画面の物理制約上`uint32_t`の範囲へ到達し得ないため単純な`static_cast`で安全(文書全体の行数を扱う`documentLineCount()`とは異なり`INT_MAX`クランプは不要)。
 
 ## 完了条件
 
-- [ ] `Viewport::setVisibleLineCount()`を毎フレーム(または関連イベント発生時)呼ぶ配線を追加する
-- [ ] PageUp/PageDownキーが実際にカーソルを移動させることを実機で確認する
-- [ ] 既存のPageUp/PageDown関連の単体テスト(もしあれば)がこの配線漏れを検出できていなかった理由を確認し、必要ならテストを追加する
+- [x] `Viewport::setVisibleLineCount()`を毎フレーム(または関連イベント発生時)呼ぶ配線を追加する — `handlePaintEvent()`へ1行追加(WI-36、2026-09-08)
+- [x] PageUp/PageDownキーが実際にカーソルを移動させることを実機で確認する — 200行ファイルで実機ドッグフーディング、PageDown×2→PageUp×1でカーソルが1:1→35:1→69:1→35:1と正確に往復することを確認済み
+- [x] 既存のPageUp/PageDown関連の単体テスト(もしあれば)がこの配線漏れを検出できていなかった理由を確認し、必要ならテストを追加する — `tests/unit/app_editor_input_test.cpp`の`PageDownAndPageUpJumpByViewportVisibleLineCount`は`env.viewport.setVisibleLineCount(3)`を手動で事前設定した上で`applyMovementKey()`のロジック自体は正しくテストしていたが、実際に本番コードがこの値を設定する配線(`normal_mode_wiring.cpp`側、`neomifes_app_input`静的ライブラリの対象外でユニットテスト不可能)は検証範囲外だった——これがバグが長期間見過ごされた理由。新規ユニットテストは追加せず(配線自体が構造的にテスト不可能なため)、実機ドッグフーディングで代替検証した

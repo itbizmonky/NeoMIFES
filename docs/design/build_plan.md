@@ -3027,6 +3027,46 @@ Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSan(clan
 
 ---
 
+## WI-35b — push後のCI障害を発見即日修正: `settings.cpp`の`applyFields()`認知的複雑度超過
+
+WI-35のpush後、ユーザーから「CI失敗している」との報告。`gh run view`で切り分けたところ`clang-tidy`ジョブのみ失敗——WI-34で`Settings`へ2フィールド(`showHorizontalScrollbar`/`showVerticalScrollbar`)追加した際、既存の`applyFields()`(元々「これ以上複雑度を上げると閾値を超える」という注釈付きで`loadFrom()`から分離された関数)の認知的複雑度が28(閾値25)へ達していた。ローカルでの事前検証(WI-34時)ではこの回帰を見落としていた。
+
+完全に同一構造だったboolean型フィールド処理7箇所(`insertSpacesForTab`/`showLineNumbers`/`showMinimap`/`wordWrap`/`createBackupOnSave`/`showHorizontalScrollbar`/`showVerticalScrollbar`)を共通ヘルパー`applyBoolField()`へ抽出し解消。単に閾値を回避するための場当たり的な分割ではなく、真の重複を1箇所へ集約する自然なリファクタリングとなった。
+
+**CIのフェイルファスト仕様(最初の失敗ファイルで`throw`して停止)により、settings.cpp以降のファイルが検証されないまま残っていた可能性を懸念し、CIと全く同じ手順(全253ファイルへの個別`clang-tidy -p build/debug --quiet`実行)を自分で直接実行(サブエージェントに委任せず、`run_in_background`のBashで自ら実行・完了通知を待機)して全件検証した。** 結果は253/253ファイルとも`exit=0`、失敗0件——settings.cppの修正で問題は完全に解消しており他に隠れた失敗ファイルは無いことを確認した。
+
+Debug全1614/1614件green。コミット`5149f78`。push後の新規CIラン(`34166657879`)でBuild&Test(debug/release)/clang-tidy/UBSan全ジョブgreenを確認済み。
+
+---
+
+## WI-36 — `Viewport::setVisibleLineCount()`の配線漏れを解消(PageUp/PageDown 0行移動バグ、P1)
+
+### 目的
+
+WI-34で発見・起票していた[`viewport_visible_line_count_never_set_pageup_pagedown_noop.md`](../issues/viewport_visible_line_count_never_set_pageup_pagedown_noop.md)(P1、実機確認済み)に着手。`Viewport::m_visibleLineCount`が本番コードのどこからも設定されず常に0のまま、PageUp/PageDownキーが実質何もしない(0行移動)という既存バグ。
+
+### 設計
+
+issue自身に既に対応案が記録済み(WI-03の水平方向配線`RenderPipeline::visibleColumnCount()`→`Viewport::setVisibleColumnCount()`と同型)だったため、追加のPlan agent委任は不要と判断。`handlePaintEvent()`の既存`setVisibleColumnCount()`呼び出しの直後へ`setVisibleLineCount()`を追加するのみ。`RenderPipeline::visibleLineCount()`(WI-34で新設済み)の戻り値型`document::LineNumber`(`uint64_t`)から`setVisibleLineCount(std::uint32_t)`への縮小変換は、可視行数が画面の物理制約上`uint32_t`の範囲へ到達し得ないため単純な`static_cast`で安全と判断(文書全体の行数を扱う`documentLineCount()`とは異なり`INT_MAX`クランプ不要)。
+
+### 実装
+
+`normal_mode_wiring.cpp`の`handlePaintEvent()`へ1行追加のみ。
+
+### 既存テストがこの配線漏れを検出できなかった理由
+
+`tests/unit/app_editor_input_test.cpp`の`PageDownAndPageUpJumpByViewportVisibleLineCount`は`env.viewport.setVisibleLineCount(3)`を手動で事前設定した上で`applyMovementKey()`のロジック自体は正しくテストしていた——しかし実際に本番コードがこの値を設定する配線(`normal_mode_wiring.cpp`側、`NeoMIFES`実行ファイルへ直接コンパイルされ`neomifes_app_input`静的ライブラリの対象外でユニットテスト不可能)は検証範囲外だった。これがバグが長期間見過ごされた理由。新規ユニットテストは追加せず(配線自体が構造的にテスト不可能なため)、実機ドッグフーディングで代替検証した。
+
+### 検証
+
+Debug全1614/1614件green、clang-tidy新規指摘0件。**実機ドッグフーディング:** 200行のファイルを開き、`WM_KEYDOWN`/`WM_KEYUP`で`VK_NEXT`(PageDown)×2→`VK_PRIOR`(PageUp)×1を送信、ステータスバーのカーソル行が**1:1→35:1→69:1→35:1**と正確に往復することをスクリーンショットで確認(修正前は0行移動、カーソルは1:1のまま動かなかったはず)。
+
+Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任(3構成を順次実行、並列実行によるリソース競合を回避)、全構成1614/1614件green、警告0件(release限定のD9025コマンドラインメッセージとlibgit2のCMake非推奨警告は既存・無害)、サニタイザ診断0件を確認。既知の非決定的`FrameMeasureTest.ProducesValidProfile`ハングも本回では再現せず正常pass(release 5.30秒/asan 5.61秒/ubsan 5.44秒)。
+
+コミット: (直後に記録)。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

@@ -478,13 +478,27 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-08) — WI-36完了: PageUp/PageDown 0行移動バグ(P1)を解消
+
+> **WI-34で発見・起票していた[`viewport_visible_line_count_never_set_pageup_pagedown_noop.md`](../issues/viewport_visible_line_count_never_set_pageup_pagedown_noop.md)(P1、実機確認済み)に着手。** `Viewport::m_visibleLineCount`が本番コードのどこからも設定されず常に0のまま、PageUp/PageDownキーが実質何もしない(0行移動)という既存バグ。issue自身に既にWI-03の水平方向配線(`RenderPipeline::visibleColumnCount()`→`Viewport::setVisibleColumnCount()`)と同型の対応案が記録済みだったため、`normal_mode_wiring.cpp`の`handlePaintEvent()`(既存の`setVisibleColumnCount()`呼び出しの直後)へ`setVisibleLineCount()`を1行追加するのみで修正完了。
+
+> **既存テストが検出できなかった理由:** `PageDownAndPageUpJumpByViewportVisibleLineCount`単体テストは`viewport.setVisibleLineCount(3)`を手動で事前設定した上で`applyMovementKey()`のロジック自体は正しくテストしていたが、本番コードがこの値を設定する配線(`normal_mode_wiring.cpp`側、ユニットテスト不可能な`NeoMIFES`実行ファイル直接コンパイル部分)は検証範囲外だった。
+
+> **実機ドッグフーディング:** 200行ファイルで`WM_KEYDOWN`/`WM_KEYUP`により`VK_NEXT`(PageDown)×2→`VK_PRIOR`(PageUp)×1を送信、ステータスバーのカーソル行が**1:1→35:1→69:1→35:1**と正確に往復することを確認(修正前はカーソルが1:1のまま動かなかったはず)。Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、警告0件、サニタイザ診断0件を確認済み。**
+
+> **次回セッション最初にやること:** ①ユーザーへWI-35の「1行目のガタつき」解消とWI-36のPageUp/PageDown修正、両方について実機での最終確認を依頼、②他に新規タスクの指示が無ければ次点候補issue(`handle_sys_key_down_missing_diff_view_guard.md`/`frame_measure_hangs_under_ubsan_clang_cl.md`/`hscroll_thumb_drag_16bit_truncation.md`、いずれもP2)から選定する。
+
+> 詳細は`docs/design/build_plan.md`のWI-36セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🎉 最重要 (2026-09-07〜08) — WI-35完了・push実施・CI障害を発見即日修正(現在CI全green)
 
 > **WI-35(下記コールアウト参照)完了後、ユーザーからpush許可を得てWI-28〜WI-35累積14コミットをpush(`ff4b8e4..97db8d9`)。直後にユーザーから「CI失敗している」との報告。** `gh run view`で切り分けたところ`clang-tidy`ジョブのみ失敗——WI-34で`Settings`へ2フィールド追加した際、既存の`applyFields()`(元々「これ以上複雑度を上げると閾値を超える」と注釈付きで分離されていた関数)の認知的複雑度が28(閾値25)に達していた回帰で、ローカル検証時に見落としていた。
 
 > **修正:** 完全に同一構造だったboolean型フィールド処理7箇所を共通ヘルパー`applyBoolField()`へ抽出し解消(単なる閾値回避ではなく真の重複除去)。**CIがフェイルファスト(最初の失敗ファイルで停止)のため、settings.cpp以降の未検証ファイルに他の問題が隠れていないか懸念し、CIと全く同じ手順(全253ファイルへの個別`clang-tidy`実行)を自分で直接`run_in_background`実行して確認した(サブエージェントに委任せず、完了通知を待機)——253/253ファイル全てexit=0、失敗0件を確認。** コミット`5149f78`+`be8be44`(TIMELINE記録)、push後の新規CIラン(`34166657879`)で**Build&Test(debug/release)/clang-tidy/UBSan全ジョブgreenを確認済み。**
 
-> **次回セッション最初にやること:** ユーザーへ「1行目のガタつき」が実際に解消したか改めて確認する(WI-35の実測裏付けから高い確度で解消しているはずだが最終確認はユーザーに委ねる)。他に新規タスクの指示が無ければ次点候補issue(`handle_sys_key_down_missing_diff_view_guard.md`等、`docs/issues/README.md`のP2一覧参照)から選定する。
+> **(2026-09-08追記) 本コールアウトの「次回やること」はWI-36着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > ---
 
