@@ -3122,7 +3122,7 @@ Debug全1614/1614件green、clang-tidy新規指摘0件。
 
 Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認。既知の非決定的`FrameMeasureTest.ProducesValidProfile`ハングも本回では再現せず正常pass(5.41秒)。
 
-コミット: (直後に記録)。
+コミット: `4a30446`。
 
 ---
 
