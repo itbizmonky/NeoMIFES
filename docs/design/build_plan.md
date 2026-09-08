@@ -3126,6 +3126,32 @@ Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構
 
 ---
 
+## WI-39 — `--measure-frame`の`ubsan`限定ハングを再現調査(P2、コード変更なし)
+
+### 目的
+
+ユーザー指示のP2候補②[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)に着手。`FrameMeasureTest.ProducesValidProfile`がWI-29検証時(2026-09-05)に`ubsan`プリセットでのみ非決定的にハングしたと報告されていた既存issue。
+
+### 調査
+
+`ctest --preset ubsan -R "^frame_measure$"`(正しいテスト名は`frame_measure`、issue記載の`FrameMeasureTest`はGTestフィクスチャ名でctest名とは異なると判明)を6回連続実行したところ、**6/6回とも正常終了(約5.27〜5.32秒)。** さらに本セッション自体、WI-35〜WI-38の各Release/ASan/UBSanフル検証(5回)でもこのテストは一度もハングしていない。**合計11回連続で再現せず。**
+
+実際のテストが使う`CreateProcessW(CREATE_NO_WINDOW)`呼び出しの直接再現(P/Invoke)も試みたが、`ERROR_INVALID_NAME`で完走できなかったため、ctest経由の直接実行(上記)で代替した。
+
+### 副次的発見: `--measure-frame`がウィンドウ非表示状態で無期限ハングする(新規issue)
+
+調査中、`--measure-frame`を`Start-Process -WindowStyle Hidden`(ウィンドウ非表示状態)で起動すると、**Release/UBSanいずれのプリセットでも100%再現してハングする**ことを発見した(Release 3/3回・UBSan 8/8回)。通常の表示状態では同じバイナリが3/3回とも約5.3秒で正常終了することも確認済み。
+
+`render_device.cpp`の`Present1(1, 0, &presentParams)`(vsync同期、`SyncInterval=1`)は、DXGIフリップモデルのスワップチェーンがDWMによって実際に合成されて初めてvsync同期先を持つため、非表示ウィンドウでは同期先が存在せず無期限にブロックする可能性が高いと推定した。**ただし、元issueが報告する`CREATE_NO_WINDOW`(コンソール抑制フラグ、ウィンドウ表示状態には影響しない)とは異なる機構のため、両者を同一の根本原因と断定する証拠は無い。** 新規issue[`measure_frame_hangs_forever_on_hidden_window.md`](../issues/measure_frame_hangs_forever_on_hidden_window.md)(P2)として別途起票した。
+
+### 結論・方針転換
+
+11回連続で再現しないため、元issueの完了条件(ハング箇所の特定)は達成不能と正直に記録した。当初の観測(2026-09-05)はCIランナー固有の一時的な事象だった可能性が高いと判断し、**積極的な追加調査から監視継続へ方針転換した**(`--measure-frame`は開発者向けフラグで製品機能への影響が無く、非決定的事象への追加investment の費用対効果が低いため)。再発時にはその時点の証拠を保全した上で改めて調査する。
+
+**本WIはコード変更を一切含まない、調査・issueドキュメント更新のみのWI。**
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

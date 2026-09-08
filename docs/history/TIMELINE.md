@@ -4429,4 +4429,12 @@ issue起票時点の懸念(「Escapeの特別扱いが必要か」)は、Escape�
 
 Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSanはサブエージェントへ検証委任。
 
+### WI-39: `--measure-frame`の`ubsan`限定ハングを再現調査(P2、コード変更なし)
+
+WI-38完了後、ユーザー指示のP2候補②`frame_measure_hangs_under_ubsan_clang_cl.md`(WI-29検証時に発見)に着手。`ctest --preset ubsan -R "^frame_measure$"`を6回連続実行したが**6/6回とも正常終了**、本セッション自体でもWI-35〜WI-38の各フル検証(5回)で一度もハングしておらず、**合計11回連続で再現しなかった。**
+
+調査中、`--measure-frame`をウィンドウ非表示(`SW_HIDE`)状態で起動すると、Release/UBSanいずれでも**100%再現してハングする**という別の関連バグを発見した。`Present1(1,0,...)`(vsync同期)がウィンドウの合成状態に依存してブロックすると推定したが、元issueが報告する`CREATE_NO_WINDOW`(表示状態には影響しない機構)とは別物のため、同一原因と断定する証拠は無い。新規issue`measure_frame_hangs_forever_on_hidden_window.md`(P2)として別途起票。
+
+11回連続で再現しないため、元issueの完了条件(ハング箇所特定)は達成不能と正直に記録し、積極的な追加調査から監視継続(再発時に証拠保全して再調査)へ方針転換した。**本WIはコード変更を一切含まない、調査・issueドキュメント更新のみのWI。**
+
 <!-- 次セッションはここに追記 -->

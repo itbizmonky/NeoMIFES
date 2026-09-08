@@ -478,6 +478,20 @@
 
 > ---
 
+> # 🟡 最重要 (2026-09-09) — WI-39完了: `--measure-frame`の`ubsan`限定ハングを再現調査(P2、コード変更なし、監視継続へ方針転換)
+
+> **P2候補②`frame_measure_hangs_under_ubsan_clang_cl.md`(WI-29発見)に着手。** `ctest --preset ubsan -R "^frame_measure$"`を6回連続実行したが**6/6回とも正常終了**、本セッション自体でもWI-35〜WI-38の各フル検証(5回)で一度もハングしておらず、**合計11回連続で再現しなかった。**
+
+> **副次的発見(新規issue):** `--measure-frame`をウィンドウ非表示(`SW_HIDE`)状態で起動すると、Release/UBSanいずれでも**100%再現してハングする**別のバグを発見した。`Present1(1,0,...)`(vsync同期)がウィンドウの合成状態に依存してブロックすると推定(`render_device.cpp`)。ただし元issueが使う`CREATE_NO_WINDOW`(表示状態には影響しない機構)とは別物のため、同一原因と断定する証拠は無い。新規issue[`measure_frame_hangs_forever_on_hidden_window.md`](../issues/measure_frame_hangs_forever_on_hidden_window.md)(P2)として別途起票した。
+
+> **方針転換:** 11回連続で再現しないため、元issueの完了条件(ハング箇所特定)は達成不能と正直に記録。2026-09-05の当初観測はCIランナー固有の一時的事象だった可能性が高いと判断し、積極的な追加調査から監視継続(再発時に証拠保全して再調査)へ切り替えた。**本WIはコード変更を一切含まない調査のみのWIのため、コミット対象はドキュメントのみ。**
+
+> **次回セッション最初にやること:** ①WI-39のドキュメント変更をコミット・push、②ユーザー指示の続き(P2候補③`overlay_focus_blocks_file_lifecycle_keys.md`)へ着手する。
+
+> 詳細は`docs/design/build_plan.md`のWI-39セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🎉 最重要 (2026-09-09) — WI-38完了: `handleSysKeyDownEvent()`にDiffビューガードを追加(P2)
 
 > **ユーザーから「P2を1から3の順番で着手せよ」との指示。①`handle_sys_key_down_missing_diff_view_guard.md`(WI-27発見、索引に「次点候補」と明記されたまま最も長く待機)から着手。** `handleSysKeyDownEvent()`(Shift+Alt+矢印/Shift+Alt+I/プレーンAlt+↑↓)には、同ファイル内の他3箇所(`handleKeyDownEvent()`/`handleCharEvent()`/`dispatchCommand()`)が持つ`isDiffViewActive()`ガードが無く、Diffビュー表示中でも不可視の実文書へ矩形選択/カーソル配置が適用されてしまう既存バグを修正した。
@@ -488,7 +502,7 @@
 
 > Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認済み。**
 
-> **次回セッション最初にやること:** ユーザー指示の続き(P2候補②`frame_measure_hangs_under_ubsan_clang_cl.md`、③`overlay_focus_blocks_file_lifecycle_keys.md`)へ順番に着手する。
+> **(2026-09-09追記) 本コールアウトの「次回やること」はWI-39着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-38セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
