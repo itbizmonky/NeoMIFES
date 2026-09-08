@@ -478,6 +478,22 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-08) — WI-37完了: 横スクロールバーのつまみドラッグの16bit切り詰めを解消(P2)
+
+> **WI-36完了後、次点候補issue[`hscroll_thumb_drag_16bit_truncation.md`](../issues/hscroll_thumb_drag_16bit_truncation.md)(P2、WI-34発見)に着手。** 横スクロールバーのつまみドラッグが`WM_HSCROLL`の`wParam` `HIWORD`(16bit切り詰め、最大65535)をそのまま使っており列65535超の長い1行で破綻する既存バグ。WI-34の縦スクロールバー(`handleVScrollEvent()`)は`GetScrollInfo(SIF_TRACKPOS)`で実値解決する設計にしており既にこの問題を回避済みだったが、横スクロールバー(WI-03原型)は未修正のまま残っていた。
+
+> **issueの対応案に無かった追加の必須変更:** `computeHScrollTargetColumn()`自体の`scrollPos`引数が`WORD`(16bit)型のままだったため、`handleHScrollEvent()`側で`GetScrollInfo()`により実値を解決しても`WORD`型引数へ渡す時点で再び16bitへ切り詰められ修正が無効化される問題に実装中に気づいた。`computeVScrollTargetLine()`は最初から`std::uint32_t scrollPos`で設計されていた(WI-34)のに対し水平方向は`WORD`のまま(WI-03原型)という非対称性が根本原因。型変更(`WORD`→`std::uint32_t`)も修正の一部として実施した。
+
+> **実機ドッグフーディング(部分的検証、正直に記録):** 90000文字の1行ファイルで実際のマウスドラッグによるつまみ操作を試み、`GetScrollInfo(SIF_TRACKPOS)`がドラッグ中に動的な実値を返すこと自体は確認できたが、**スクリーンショット座標からトラック上のピクセル位置を算出する自作の幾何計算では、列65535という閾値を厳密に跨ぐ再現を安定して得られなかった**(このスケールでは1ピクセルが数百〜千数百列に相当し合成マウス操作の座標精度では困難)。通常スケールでのつまみ・トラッククリック操作は正常に機能し回帰が無いことは確認済み。修正自体はWI-34で本番投入済みの`handleVScrollEvent()`と設計・コードとも完全に同型であり、単体テスト(65535超の999999が`computeHScrollTargetColumn()`をそのまま通ることを確認)が論理層の正しさを直接証明しているため、実機での巨大レンジ再現が得られなかったことは修正の信頼性を損なわないと判断した。
+
+> Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認済み。**
+
+> **次回セッション最初にやること:** ①ユーザーへWI-35〜WI-37の一連の修正(スクロールバー常時表示化/PageUp・PageDown修正/横スクロール16bit切り詰め解消)について実機での最終確認を依頼、②他に新規タスクの指示が無ければ次点候補issue(`handle_sys_key_down_missing_diff_view_guard.md`/`frame_measure_hangs_under_ubsan_clang_cl.md`、いずれもP2)から選定する。
+
+> 詳細は`docs/design/build_plan.md`のWI-37セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🎉 最重要 (2026-09-08) — WI-36完了: PageUp/PageDown 0行移動バグ(P1)を解消
 
 > **WI-34で発見・起票していた[`viewport_visible_line_count_never_set_pageup_pagedown_noop.md`](../issues/viewport_visible_line_count_never_set_pageup_pagedown_noop.md)(P1、実機確認済み)に着手。** `Viewport::m_visibleLineCount`が本番コードのどこからも設定されず常に0のまま、PageUp/PageDownキーが実質何もしない(0行移動)という既存バグ。issue自身に既にWI-03の水平方向配線(`RenderPipeline::visibleColumnCount()`→`Viewport::setVisibleColumnCount()`)と同型の対応案が記録済みだったため、`normal_mode_wiring.cpp`の`handlePaintEvent()`(既存の`setVisibleColumnCount()`呼び出しの直後)へ`setVisibleLineCount()`を1行追加するのみで修正完了。
@@ -486,7 +502,7 @@
 
 > **実機ドッグフーディング:** 200行ファイルで`WM_KEYDOWN`/`WM_KEYUP`により`VK_NEXT`(PageDown)×2→`VK_PRIOR`(PageUp)×1を送信、ステータスバーのカーソル行が**1:1→35:1→69:1→35:1**と正確に往復することを確認(修正前はカーソルが1:1のまま動かなかったはず)。Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、警告0件、サニタイザ診断0件を確認済み。**
 
-> **次回セッション最初にやること:** ①ユーザーへWI-35の「1行目のガタつき」解消とWI-36のPageUp/PageDown修正、両方について実機での最終確認を依頼、②他に新規タスクの指示が無ければ次点候補issue(`handle_sys_key_down_missing_diff_view_guard.md`/`frame_measure_hangs_under_ubsan_clang_cl.md`/`hscroll_thumb_drag_16bit_truncation.md`、いずれもP2)から選定する。
+> **(2026-09-08追記) 本コールアウトの「次回やること」はWI-37着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-36セクション、`docs/history/TIMELINE.md`最新セッション参照。
 

@@ -463,7 +463,7 @@ bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int 
     return handleMouseDown(hit, shiftDown, selectionModel, viewport, document);
 }
 
-std::optional<std::uint32_t> computeHScrollTargetColumn(WORD scrollCode, WORD scrollPos,
+std::optional<std::uint32_t> computeHScrollTargetColumn(WORD scrollCode, std::uint32_t scrollPos,
                                                          std::uint32_t currentColumn,
                                                          std::uint32_t pageStep) noexcept {
     switch (scrollCode) {

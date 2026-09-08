@@ -501,6 +501,13 @@ TEST(EditorInputTest, ComputeHScrollTargetColumnPageRightHasNoUpperClamp) {
 TEST(EditorInputTest, ComputeHScrollTargetColumnThumbTrackAndThumbPositionUseScrollPosDirectly) {
     EXPECT_EQ(computeHScrollTargetColumn(SB_THUMBTRACK, 12345, 0, 10), 12345U);
     EXPECT_EQ(computeHScrollTargetColumn(SB_THUMBPOSITION, 42, 0, 10), 42U);
+    // Exercises a value the raw WM_HSCROLL wParam HIWORD could never carry
+    // (>65535) - the caller is expected to have already resolved this via
+    // GetScrollInfo(SIF_TRACKPOS) (WI-37, docs/issues/
+    // hscroll_thumb_drag_16bit_truncation.md), which this pure function has
+    // no way to verify itself; it just trusts scrollPos verbatim, same as
+    // computeVScrollTargetLine()'s identical test.
+    EXPECT_EQ(computeHScrollTargetColumn(SB_THUMBPOSITION, 999999, 0, 10), 999999U);
 }
 
 TEST(EditorInputTest, ComputeHScrollTargetColumnEndScrollAndUnrecognizedCodesReturnNullopt) {

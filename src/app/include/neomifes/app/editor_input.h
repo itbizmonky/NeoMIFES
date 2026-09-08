@@ -178,8 +178,16 @@ bool dispatchMouseDown(document::TextPos hit, bool shiftDown, bool altDown, int 
 // WI-03: standard Win32 scroll-code decode for WM_HSCROLL - nullopt for
 // SB_ENDSCROLL and anything else unrecognized (a no-op). WI-04: moved here
 // from main.cpp unchanged (pure function).
+// WI-37: `scrollPos` widened from WORD to uint32_t (docs/issues/
+// hscroll_thumb_drag_16bit_truncation.md) - same reasoning as
+// computeVScrollTargetLine()'s own scrollPos below: the caller
+// (handleHScrollEvent(), normal_mode_wiring.cpp) MUST resolve the real,
+// untruncated position via ::GetScrollInfo(hwnd, SB_HORZ, &si) with
+// SIF_TRACKPOS for SB_THUMBTRACK/SB_THUMBPOSITION before calling this - a
+// WORD parameter here would silently re-truncate whatever the caller
+// resolved, defeating the fix.
 [[nodiscard]] std::optional<std::uint32_t> computeHScrollTargetColumn(
-    WORD scrollCode, WORD scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept;
+    WORD scrollCode, std::uint32_t scrollPos, std::uint32_t currentColumn, std::uint32_t pageStep) noexcept;
 
 // WI-34: vertical counterpart to computeHScrollTargetColumn() - nullopt for
 // SB_ENDSCROLL/unrecognized (a no-op). `scrollPos` is NOT the raw

@@ -3067,6 +3067,34 @@ Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任(3構成�
 
 ---
 
+## WI-37 — 横スクロールバーのつまみドラッグの16bit切り詰めを解消(P2)
+
+### 目的
+
+[`hscroll_thumb_drag_16bit_truncation.md`](../issues/hscroll_thumb_drag_16bit_truncation.md)(P2、WI-34発見)に着手。横スクロールバーのつまみドラッグ(`SB_THUMBTRACK`/`SB_THUMBPOSITION`)が`WM_HSCROLL`の`wParam`の`HIWORD`(16bitに切り詰められる、最大65535)をそのまま使っており、列65535を超える長い1行を持つファイルでつまみドラッグが破綻するという既存バグ。WI-34で新設した縦スクロールバー(`handleVScrollEvent()`)は`GetScrollInfo(SIF_TRACKPOS)`で実値を解決する設計にしており既にこの問題を回避済みだったが、既存の横スクロールバー(WI-03)は未修正のまま残っていた。
+
+### 設計
+
+issue自身に対応案が記録済み(`handleVScrollEvent()`と同型に修正)だったため追加のPlan agent委任は不要と判断。実装中に、issueの対応案には無かった追加の必須変更に気づいた: `computeHScrollTargetColumn()`自体の`scrollPos`引数が`WORD`(16bit)型のままだったため、`handleHScrollEvent()`側で`GetScrollInfo()`により実値(32bit)を解決しても、`WORD`型の引数へ渡す時点で再び16bitへ切り詰められてしまい、修正が無効化されることが判明した。`computeVScrollTargetLine()`は最初から`std::uint32_t scrollPos`で設計されていた(WI-34)のに対し、水平方向の`computeHScrollTargetColumn()`は`WORD`のまま(WI-03からの原型)だったという非対称性が原因。この型変更も修正の一部として実施した。
+
+### 実装
+
+`editor_input.h`/`editor_input.cpp`: `computeHScrollTargetColumn()`の`scrollPos`引数を`WORD`→`std::uint32_t`へ変更。`normal_mode_wiring.cpp`: `handleHScrollEvent()`へ`handleVScrollEvent()`と同型の`GetScrollInfo(hwnd, SB_HORZ, &si)`(`SIF_TRACKPOS`)解決ロジックを追加。`tests/unit/app_editor_input_test.cpp`: 既存の`ComputeHScrollTargetColumnThumbTrackAndThumbPositionUseScrollPosDirectly`テストへ65535を超える値(999999)のケースを追加し、`computeVScrollTargetLine()`側の既存の同種テストと対応させた。
+
+### 検証
+
+Debug全1614/1614件green(既存テストへの追加assertionのみで新規TEST無し)、clang-tidy新規指摘0件。
+
+**実機ドッグフーディング(部分的検証):** 90000文字の1行ファイルを開き、実際のマウスドラッグ(`SetCursorPos`+`mouse_event`によるLEFTDOWN→複数回のMOVE→LEFTUP)でスクロールバーのつまみを掴んで動かす実験を行った。ドラッグ中に`GetScrollInfo(SIF_TRACKPOS)`が動的に変化する実値を返すこと自体は確認でき、この修正が依拠するWin32機構(ライブドラッグ中のみ有効な`nTrackPos`)が本環境で実際に機能することの裏付けが取れた。**しかし、スクリーンショット座標からトラック上のピクセル位置を算出する自作の幾何計算では、列65535という閾値を厳密に跨ぐ再現を安定して得ることはできなかった**(このスケールの範囲〔nMax=90000〕では1ピクセルの移動が数百〜千数百列に相当し、合成マウス操作の座標精度では狙った列番号へ正確に着地させることが難しかった)。通常スケール(800文字の行)でのつまみ・トラッククリック操作は正常に機能することを確認し、回帰が無いことは確認済み。
+
+修正自体はWI-34で実装・本番投入済みの`handleVScrollEvent()`と設計・コードともに完全に同型であり(同一のWin32 API・同一の解決ロジック)、単体テストが論理層(`computeHScrollTargetColumn()`が大きな値をそのまま通すこと)の正しさを直接証明しているため、**実機での巨大レンジ再現が得られなかったことは修正の信頼性を損なわないと判断し、正直に記録した上で完了とした。**
+
+Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構成1614/1614件green、実警告0件(release限定のD9025コマンドラインメッセージは既存・無害)、サニタイザ診断0件を確認。
+
+コミット: (直後に記録)。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

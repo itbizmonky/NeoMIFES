@@ -2164,8 +2164,21 @@ void handleCharEvent(HWND hwnd, wchar_t ch, EditorSession& session, RenderPipeli
 void handleHScrollEvent(HWND hwnd, WORD scrollCode, WORD scrollPos, EditorSession& session,
                         RenderPipeline& renderPipeline) {
     const std::uint32_t pageStep = std::max<std::uint32_t>(renderPipeline.visibleColumnCount(), 1);
+    // WI-37: resolve the real (untruncated) thumb position via
+    // GetScrollInfo(SIF_TRACKPOS) rather than trusting the raw 16-bit
+    // scrollPos MainWindow forwards - see handleVScrollEvent()'s identical
+    // pattern and docs/issues/hscroll_thumb_drag_16bit_truncation.md.
+    std::uint32_t resolvedScrollPos = scrollPos;
+    if (scrollCode == SB_THUMBTRACK || scrollCode == SB_THUMBPOSITION) {
+        SCROLLINFO si{};
+        si.cbSize = sizeof(si);
+        si.fMask  = SIF_TRACKPOS;
+        if (::GetScrollInfo(hwnd, SB_HORZ, &si)) {
+            resolvedScrollPos = static_cast<std::uint32_t>(si.nTrackPos);
+        }
+    }
     const auto newColumn = neomifes::app::computeHScrollTargetColumn(
-        scrollCode, scrollPos, session.viewport().leftColumn(), pageStep);
+        scrollCode, resolvedScrollPos, session.viewport().leftColumn(), pageStep);
     if (!newColumn) {
         return;  // SB_ENDSCROLL etc - nothing to do
     }
