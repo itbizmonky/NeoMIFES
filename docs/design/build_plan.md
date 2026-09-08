@@ -3063,7 +3063,7 @@ Debug全1614/1614件green、clang-tidy新規指摘0件。**実機ドッグフー
 
 Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任(3構成を順次実行、並列実行によるリソース競合を回避)、全構成1614/1614件green、警告0件(release限定のD9025コマンドラインメッセージとlibgit2のCMake非推奨警告は既存・無害)、サニタイザ診断0件を確認。既知の非決定的`FrameMeasureTest.ProducesValidProfile`ハングも本回では再現せず正常pass(release 5.30秒/asan 5.61秒/ubsan 5.44秒)。
 
-コミット: (直後に記録)。
+コミット: `d95dc4b`。
 
 ---
 
