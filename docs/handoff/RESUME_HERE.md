@@ -478,6 +478,24 @@
 
 > ---
 
+> # 🎉 最重要 (2026-09-09) — WI-40完了: オーバーレイフォーカス中のCtrl+S/O/N未達を解消(P2、`GA_ROOT`→`GA_ROOTOWNER`)
+
+> **ユーザー指示のP2候補③`overlay_focus_blocks_file_lifecycle_keys.md`(WI-02発見)に着手。スコープが想定より大きいと判明したためPlan Modeで設計を固めてから実装した。**
+
+> **調査でissueの前提自体が一部古くなっていたと判明:** WI-07 step2の時点でSave/Open/New等17コマンドは`TranslateAcceleratorW`が`DispatchMessageW`より前に捕捉する設計へ既に変わっており、埋め込み型オーバーレイ8件(1段階WS_CHILD、MainWindow直接の子)は既に動作していた。真に壊れていたのはFindDialog/FindReplaceDialog(独立トップレベルウィンドウ、MainWindowに所有〔owner〕されるがWS_CHILDではない)の2件のみで、`GA_ROOT`が所有者チェーンを辿らないWin32の仕様上、これらにフォーカスがある間`TranslateAcceleratorW`の結果がダイアログ自身のHWNDへ送られ無言で握りつぶされていた。
+
+> **修正:** `main.cpp`の`runMessageLoop()`の`GetAncestor(msg.hwnd, GA_ROOT)`を`GA_ROOTOWNER`(所有者チェーンも辿るWin32標準API)へ変更する1行修正。Plan agentが実コードで、埋め込み型8件への影響が完全に無い(no-op)こと・他のWS_POPUPウィンドウが存在しないこと・複数ウィンドウ環境でも正しく解決されることを検証済み。issue本文が提案していた個別転送ロジックより遥かに小さいスコープで解決できた。
+
+> **実機ドッグフーディング:** Ctrl+FでFindDialogを開き検索欄にフォーカスがある状態でCtrl+Sを送信、タイトルバーの未保存マーカーが消えディスク上のファイル内容も実際に更新されることを確認(修正前は無反応のはず)。Ctrl+HでFindReplaceDialogでも同様に確認。GotoLineBar(埋め込み型の代表)では修正前後で変化が無く回帰していないことも確認。
+
+> Debug全1614/1614件green、clang-tidy新規指摘0件。**Release/ASan/UBSan(clang-cl)3構成もサブエージェントへ委任し全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認済み。**
+
+> **次回セッション最初にやること:** ①ユーザーへWI-38〜WI-40の一連の修正について実機での最終確認を依頼、②現時点でP2/P1候補の優先度指定分(1〜3)は全て完了したため、他に新規タスクの指示が無ければユーザーへ次の方針を確認する。
+
+> 詳細は`docs/design/build_plan.md`のWI-40セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
 > # 🟡 最重要 (2026-09-09) — WI-39完了: `--measure-frame`の`ubsan`限定ハングを再現調査(P2、コード変更なし、監視継続へ方針転換)
 
 > **P2候補②`frame_measure_hangs_under_ubsan_clang_cl.md`(WI-29発見)に着手。** `ctest --preset ubsan -R "^frame_measure$"`を6回連続実行したが**6/6回とも正常終了**、本セッション自体でもWI-35〜WI-38の各フル検証(5回)で一度もハングしておらず、**合計11回連続で再現しなかった。**
@@ -486,7 +504,7 @@
 
 > **方針転換:** 11回連続で再現しないため、元issueの完了条件(ハング箇所特定)は達成不能と正直に記録。2026-09-05の当初観測はCIランナー固有の一時的事象だった可能性が高いと判断し、積極的な追加調査から監視継続(再発時に証拠保全して再調査)へ切り替えた。**本WIはコード変更を一切含まない調査のみのWIのため、コミット対象はドキュメントのみ。**
 
-> **次回セッション最初にやること:** ①WI-39のドキュメント変更をコミット・push、②ユーザー指示の続き(P2候補③`overlay_focus_blocks_file_lifecycle_keys.md`)へ着手する。
+> **(2026-09-09追記) 本コールアウトの「次回やること」はWI-40着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-39セクション、`docs/history/TIMELINE.md`最新セッション参照。
 

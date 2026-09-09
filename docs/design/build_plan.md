@@ -3152,6 +3152,43 @@ Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構
 
 ---
 
+## WI-40 — オーバーレイフォーカス中のCtrl+S/O/N未達を解消(P2、`GA_ROOT`→`GA_ROOTOWNER`)
+
+### 目的
+
+ユーザー指示のP2候補③[`overlay_focus_blocks_file_lifecycle_keys.md`](../issues/overlay_focus_blocks_file_lifecycle_keys.md)に着手。WI-02(2026-08-04)起票、オーバーレイパネル(検索/コマンドパレット等)にフォーカスがある間Ctrl+S/O/N等が届かないという既知の制約。
+
+### 調査(スコープの大幅な絞り込み)
+
+Explore agentとの調査で、issueの前提自体が一部古くなっていたと判明した。WI-07 step2の時点で、Save/SaveAs/Open/New/NewWindow/TabClose/TabNext/TabPrevious/TabSwitch1-9(計17コマンド、`kAcceleratorEligibleCommands`)は`cfg.onKeyDown`経由ではなく、`main.cpp`の`runMessageLoop()`が`TranslateAcceleratorW`で`DispatchMessageW`より前に捕捉する設計へ既に変わっていた。
+
+- 埋め込み型オーバーレイ8件(command_palette/csv_grid_pane/git_pane/goto_line_bar/grep_bar/json_path_bar/json_tree_pane/outline_pane、issue起票時の4件から後続WIで4件追加され計8件——issue自体は6件のまま古くなっていた)は全てMainWindow自身の直接の子(1段階のWS_CHILD)のため、`GetAncestor(msg.hwnd, GA_ROOT)`は既に正しくMainWindowへ解決されており、これら17コマンドはWI-07 step2以降既に動作していたと判明。
+- 真に壊れていたのはFindDialog/FindReplaceDialogの2件のみ。両者は独立トップレベルウィンドウ(`WS_POPUP`、MainWindowに所有〔owner〕されるが`WS_CHILD`ではない)であり、`GA_ROOT`は所有者チェーンを辿らないWin32の仕様上、これらの子コントロールにフォーカスがある間は`GA_ROOT`がダイアログ自身のHWNDに解決されていた。`TranslateAcceleratorW`はそれでもキーにマッチする(判定はメッセージの発生元と無関係)が、結果のWM_COMMANDをダイアログ自身のHWNDへ送ってしまい、各ダイアログの`wndProc`は自身のコントロールIDしか認識せず`default: return;`で無言で握りつぶしていた。
+
+### 設計(Plan agentによる検証済み)
+
+`runMessageLoop()`の`GetAncestor(msg.hwnd, GA_ROOT)`を`GetAncestor(msg.hwnd, GA_ROOTOWNER)`へ変更する1行修正。`GA_ROOTOWNER`は`GetParent()`が返す親・所有者チェーンの両方を辿るWin32標準API(`GA_ROOT`はWS_CHILD親チェーンのみ)——FindDialogの検索欄から辿ると`GetParent(編集欄)=FindDialog`→`GetParent(FindDialog)=MainWindow`(所有者)→`GetParent(MainWindow)=NULL`で停止し、正しくMainWindowへ解決される。
+
+Plan agentが実コードで以下を検証済み: ①埋め込み型8件は全て1段階WS_CHILDのため`GA_ROOT`と`GA_ROOTOWNER`は同一の結果を返し、この変更は無影響(no-op)。②`WS_POPUP`を使う箇所はFindDialog/FindReplaceDialogの2件のみ、確認/クラッシュ復旧ダイアログは全て`TaskDialogIndirect`で独自のモーダルループを持ち無関係。③WI-20(複数ウィンドウ)の各MainWindowインスタンスは互いに所有関係を持たず、各FindDialog/FindReplaceDialogは自身を開いた特定のMainWindowインスタンスへのみ正しく解決される。④過去のgit履歴確認済み、`GA_ROOT`はWI-20a(複数ウィンドウ対応)で別目的のために導入されたもので、所有者チェーン非対応を意図した選択だった形跡は無い。
+
+issue本文が提案していた「6ウィジェット個別への転送ロジック追加」という当初想定より遥かに小さいスコープ(1行)で解決できた。
+
+### 実装
+
+`main.cpp`の`runMessageLoop()`へ1行の変更(`GA_ROOT`→`GA_ROOTOWNER`)+既存のWI-20aコメントブロックへ今回の変更理由を追記。
+
+### 検証
+
+Debug全1614/1614件green、clang-tidy新規指摘0件。`runMessageLoop()`自体はexecutableへ直接コンパイルされ内部リンケージのためテスト不可能(WI-36等と同じ構造的制約)、実機ドッグフーディングのみで検証。
+
+**実機ドッグフーディング:** Ctrl+F(単一モディファイア)でFindDialogを開き検索欄にフォーカスがある状態でCtrl+Sを送信、タイトルバーの未保存マーカー(`*`)が消え、ディスク上のファイル内容も実際に更新されることを確認(修正前は無反応のはず)。Ctrl+HでFindReplaceDialogでも同様に確認。GotoLineBar(埋め込み型の代表、Ctrl+G)では修正前後で変化が無く回帰していないことも確認。
+
+Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認。既知の非決定的`FrameMeasureTest.ProducesValidProfile`ハングも本回では再現せず正常pass(5.44秒、12回連続で再現なし)。
+
+コミット: (直後に記録)。
+
+---
+
 # 6. MVP 出荷判定チェックリスト (WI-13)
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)

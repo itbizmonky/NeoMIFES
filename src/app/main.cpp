@@ -122,7 +122,7 @@ using neomifes::ui::MainWindowConfig;
 // effect on the very next keystroke, no restart needed.
 //
 // WI-20a: no longer takes a fixed HWND - resolves the correct top-level
-// owner PER MESSAGE via GetAncestor(msg.hwnd, GA_ROOT) instead. A fixed
+// owner PER MESSAGE via GetAncestor(msg.hwnd, GA_ROOTOWNER) instead. A fixed
 // HWND was correct when exactly one window could ever exist; with
 // SessionManager able to hold several, a message destined for the SECOND
 // (or later) window's own hwnd (or one of its child controls) would
@@ -132,6 +132,27 @@ using neomifes::ui::MainWindowConfig;
 // callers (measurement modes) are unaffected: GetAncestor on a lone
 // top-level window's own hwnd (or its only child controls) returns that
 // same hwnd, identical to the old fixed-hwnd behavior.
+//
+// WI-40: GA_ROOTOWNER (not GA_ROOT) specifically because of FindDialog/
+// FindReplaceDialog (find_dialog.cpp/find_replace_dialog.cpp) - both are
+// WS_POPUP windows OWNED by MainWindow (not WS_CHILD-parented), per
+// docs/issues/overlay_focus_blocks_file_lifecycle_keys.md. GA_ROOT only
+// walks the WS_CHILD parent chain, so it stopped at FindDialog's own hwnd
+// (a WS_POPUP has no WS_CHILD parent) whenever a keystroke originated in
+// its find-text edit - TranslateAcceleratorW still matched the keystroke
+// (it does not consult which window sent the message), but delivered the
+// resulting WM_COMMAND to FindDialog's own wndProc, which recognizes only
+// its own control ids and silently dropped it, never reaching
+// dispatchCommand(). GA_ROOTOWNER also walks the owner chain (GetParent()
+// returns the owner for a WS_POPUP window - see find_dialog.cpp's own
+// create() comment), correctly resolving to MainWindow instead. Every
+// other overlay (CommandPalette/GotoLineBar/GrepBar/OutlinePane/
+// JsonTreePane/CsvGridPane/GitPane/JsonPathBar) is a WS_CHILD of MainWindow
+// directly, so this change is a no-op for them - GA_ROOT and GA_ROOTOWNER
+// already agreed. Also a no-op for MainWindow itself in every
+// SessionManager window (main_window.cpp's CreateWindowExW always passes
+// owner=nullptr, so GetParent(MainWindow)==NULL and the owner-chain walk
+// never proceeds past it).
 int runMessageLoop(const neomifes::platform::AcceleratorTableHandle& accelTable) noexcept {
     MSG msg{};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -140,7 +161,7 @@ int runMessageLoop(const neomifes::platform::AcceleratorTableHandle& accelTable)
         // to (misc-misplaced-const); harmless either way since this local
         // is never reassigned, but clang-tidy flags it as a warning-turned-
         // error under this project's build config.
-        HWND root = ::GetAncestor(msg.hwnd, GA_ROOT);
+        HWND root = ::GetAncestor(msg.hwnd, GA_ROOTOWNER);
         if (auto* const haccel = accelTable.get();
             haccel != nullptr && root != nullptr && ::TranslateAcceleratorW(root, haccel, &msg) != 0) {
             continue;

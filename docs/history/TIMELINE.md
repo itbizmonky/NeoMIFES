@@ -4437,4 +4437,16 @@ WI-38完了後、ユーザー指示のP2候補②`frame_measure_hangs_under_ubsa
 
 11回連続で再現しないため、元issueの完了条件(ハング箇所特定)は達成不能と正直に記録し、積極的な追加調査から監視継続(再発時に証拠保全して再調査)へ方針転換した。**本WIはコード変更を一切含まない、調査・issueドキュメント更新のみのWI。**
 
+### WI-40: オーバーレイフォーカス中のCtrl+S/O/N未達を解消(P2、`GA_ROOT`→`GA_ROOTOWNER`)
+
+WI-39完了後、ユーザー指示のP2候補③`overlay_focus_blocks_file_lifecycle_keys.md`(WI-02発見)に着手。スコープが当初の想定(6ウィジェットへの転送ロジック個別追加)より大きくなっていることが判明したため、Plan Modeで設計を固めてから実装した。
+
+Explore agentとの調査で、issueの前提自体が一部古くなっていたと判明: WI-07 step2の時点でSave/Open/New等17コマンドは`TranslateAcceleratorW`が`DispatchMessageW`より前に捕捉する設計へ既に変わっており、埋め込み型オーバーレイ8件(1段階WS_CHILD)は既に動作していたと分かった。真に壊れていたのはFindDialog/FindReplaceDialog(独立トップレベルウィンドウ、MainWindowに所有〔owner〕されるがWS_CHILDではない)の2件のみで、`GA_ROOT`が所有者チェーンを辿らないWin32の仕様上、これらにフォーカスがある間`TranslateAcceleratorW`の結果がダイアログ自身のHWNDへ送られ、`wndProc`が自身のコントロールIDしか認識せず無言で握りつぶしていた。
+
+Plan agentへ設計検証を委任し、`main.cpp`の`runMessageLoop()`の`GetAncestor(msg.hwnd, GA_ROOT)`を`GA_ROOTOWNER`(所有者チェーンも辿るWin32標準API)へ変更する1行修正で解決できると確認した。埋め込み型8件への影響が完全に無い(no-op)こと、他のWS_POPUPウィンドウが存在しないこと、複数ウィンドウ環境でも各ダイアログが正しく自分の所有者のみへ解決されることを実コードで検証済み。issue本文が提案していた個別転送ロジックより遥かに小さいスコープで解決できた。
+
+**実機ドッグフーディング:** Ctrl+FでFindDialogを開き検索欄にフォーカスがある状態でCtrl+Sを送信、タイトルバーの未保存マーカーが消えディスク上のファイル内容も実際に更新されることを確認(修正前は無反応のはず)。Ctrl+HでFindReplaceDialogでも同様に確認。GotoLineBar(埋め込み型の代表)では修正前後で変化が無く回帰していないことも確認。
+
+`runMessageLoop()`自体はexecutableへ直接コンパイルされ内部リンケージのためテスト不可能、実機ドッグフーディングのみで検証。Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSanはサブエージェントへ検証委任。
+
 <!-- 次セッションはここに追記 -->
