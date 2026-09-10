@@ -4459,4 +4459,20 @@ WI-40完了後、次点候補`measure_frame_hangs_forever_on_hidden_window.md`(W
 
 対応案(①起動完了待ちガード追加、②タイムアウト機構追加、③見送り)はユーザー判断が必要と判断し、issueへ詳細を記録した上でユーザーへ判断を委ねることにした。**本WIはコード変更を一切含まない、調査・issueドキュメント更新のみのWI。**
 
+### WI-42: `measure_frame_hangs_forever_on_hidden_window.md`を解消(P2、真因の再確定込み)
+
+「今後の製造計画を表示せよ」との指示を受けた際、WI-41で保留していた対応方針の決定をAskUserQuestionでユーザーへ確認した。ユーザーは「初回ペイント待ちガード追加」(選択肢1)を選択した。
+
+実装前にコードを再確認したところ、`onDeferredInit`(計測ループの実行場所)は**既に**最初の`WM_PAINT`完了後にしか発火しない設計だった(`main_window.cpp`の`handlePaint()`、`m_firstPaintFired`ゲート)——選択肢1をそのまま実装しても効果が無いと気づき、この前提の食い違いをユーザーへ正直に報告した。
+
+`onDeferredInit`内で`IsWindowVisible()`をチェックする形でいったん実装・ビルドし、新規追加した回帰テストで検証したところ、**15秒タイムアウトで強制終了され、修正が効いていないことが実測で判明した。** 一時的なマーカーファイル診断コード(`onDeferredInit`呼び出し直後に一時ファイルを書き出す)を追加し、`Start-Process -WindowStyle Hidden`で実機再現したところ、**5秒待ってもマーカーファイルが作成されない=`onDeferredInit`自体が一切発火しない**ことを実証した。
+
+**真因の再確定:** 一度も表示されない(`WS_VISIBLE`が立たない)ウィンドウはそもそも`WM_PAINT`を一切受け取らない。`WM_PAINT`が配送されなければ`onFirstPaint`も`onDeferredInit`も永久に発火せず、計測ロジック(`Present1()`を含む)は一度も実行されないまま、`runMessageLoop()`の`GetMessageW()`が処理すべきメッセージを一切受け取れず無期限にブロックする——**WI-41が疑ったPresent1のvsync待ちではなく、より単純な「メッセージキューが空のまま誰も`requestClose()`を呼ばない」というハングだった。** この発見を再度ユーザーへ報告し、非表示検知後の挙動(エラー即終了/強制可視化)を確認、ユーザーは「エラーで即座に終了」を選択した。
+
+一時診断コードを削除し`wireMeasureFrameMode()`を元の形へ復元、代わりに`wWinMain()`の`window.create()`が返った直後(`MeasureFrame`限定)へ`IsWindowVisible(window.hwnd())`のチェックを追加した。`create()`内の`ShowWindow()`/`UpdateWindow()`は同期呼び出しのため、`create()`が返った時点で`WS_VISIBLE`は確定しており、「まだペイントされていない」と「今後も一切ペイントされない」を区別できる最も早いタイミングだった。非表示検知時は終了コード3で即座に終了する(プロファイルJSONは書かない)。スコープはユーザー承認のもと`--measure-frame`のみに限定し、`MeasureStartup`/`MeasureMemory`の同型の脆弱性の可能性は未検証のまま推測実装を避け対象外とした。
+
+新規回帰テスト`FrameMeasureTest.HiddenWindowFailsFastInsteadOfHanging`(`tests/integration/frame_measure_test.cpp`)を追加、`spawnAndWait()`ヘルパーへ`hiddenWindow`引数を追加して`STARTF_USESHOWWINDOW`+`SW_HIDE`での実起動を再現。修正前は15秒タイムアウトで強制終了することを実際に確認した上で修正、修正後は約40msで完了することを実測した。
+
+Debug全1614/1614件green(既存回帰無し)。Release/ASan/UBSanはサブエージェントへ検証委任。**本セッションの教訓: 前セッション(WI-41)が「真因を確定」と記録していた内容も、実装フェーズで再検証したところ誤りと判明した。issueの過去記録を鵜呑みにせず、実装前に前提を再確認する重要性を再認識した実例。**
+
 <!-- 次セッションはここに追記 -->

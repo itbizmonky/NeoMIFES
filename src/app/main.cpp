@@ -23,6 +23,9 @@
 //                                 FrameProfile (Phase 3c, ADR-011). Uses
 //                                 --open's document if given, otherwise
 //                                 synthesizes a large one (launch_setup.cpp).
+//                                 Exit code 3 (no output file written) if the
+//                                 window never became visible - see WI-42 /
+//                                 measure_frame_hangs_forever_on_hidden_window.md.
 //
 // Command-line options (real launches only):
 //   --open <path>  Load a UTF-8 file into the Document at startup so its
@@ -392,6 +395,27 @@ int WINAPI wWinMain(HINSTANCE hInstance,
 
     if (!window.create(hInstance, cfg)) {
         return 1;
+    }
+
+    // WI-42: guards docs/issues/measure_frame_hangs_forever_on_hidden_window.md.
+    // Investigation first suspected Present1's vsync wait (render_device.cpp)
+    // blocking because a hidden window is never composited by DWM, and tried
+    // gating on onDeferredInit/IsWindowVisible() from inside it - but a
+    // marker-file probe proved onDeferredInit never fires at all in this
+    // case: it is only posted from inside handlePaint() (main_window.cpp),
+    // and a window that never becomes visible never receives WM_PAINT
+    // either, so runMessageLoop() below would just block in GetMessageW()
+    // forever with nothing to dispatch - a plain empty-queue hang, not a
+    // vsync one. window.create() already ran ShowWindow()/UpdateWindow()
+    // synchronously, so WS_VISIBLE is final by the time it returns; checking
+    // here, before ever entering the message loop, is the earliest point
+    // that can distinguish "will never paint" from "hasn't painted yet".
+    // Scoped to MeasureFrame only, per the confirmed repro - MeasureStartup/
+    // MeasureMemory rely on the same paint-gated onFirstPaint and are
+    // presumably equally vulnerable in principle, but that is unverified and
+    // deliberately left alone here to avoid speculative implementation.
+    if (args.mode == LaunchMode::MeasureFrame && ::IsWindowVisible(window.hwnd()) == FALSE) {
+        return 3;
     }
 
     const int rc = runMessageLoop(accelTable);

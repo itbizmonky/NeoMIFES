@@ -1,8 +1,9 @@
-# Issue: `--measure-frame`(および`RenderPipeline::render()`のvsync同期`Present1`全般)がウィンドウが一度も表示されない(非合成)状態だと無期限にハングする (P2 — 🟡 WI-41で原因確定・対応方針はユーザー判断待ち)
+# Issue: `--measure-frame`がウィンドウが一度も表示されない(非表示)状態だと無期限にハングする (P2 — 🟢 WI-42で解消)
 
 - **起票日:** 2026-09-09(WI-39、`frame_measure_hangs_under_ubsan_clang_cl.md`の調査中に副次的に発見)
-- **調査日:** 2026-09-10(WI-41)、真因を確定(Win32の`STARTF_USESHOWWINDOW`仕様)。影響範囲が当初想定より広い可能性を発見、対応方針はユーザー判断待ちのため保留
-- **対象:** `src/render/src/render_device.cpp`の`Present1(1, 0, &presentParams)`呼び出し、`src/app/main.cpp`の`wireMeasureFrameMode()`/`runFrameMeasurement()`
+- **調査日:** 2026-09-10(WI-41)、真因を確定(Win32の`STARTF_USESHOWWINDOW`仕様) — **ただし後にWI-42で診断が誤りと判明、後述**
+- **解決日:** 2026-09-11(WI-42)。真の原因を再確定した上で`main.cpp`に防御的ガードを追加し解消
+- **対象:** `src/app/main.cpp`の`wWinMain()`/`wireMeasureFrameMode()`、`src/ui/src/main_window.cpp`の`handlePaint()`
 - **優先度:** P2(`--measure-frame`は開発者向けコマンドラインフラグでエンドユーザー機能への直接影響は無いが、CI/自動化スクリプトから非表示ウィンドウで起動されるシナリオがあれば無期限ハングしうる)
 
 ## 事実
@@ -16,35 +17,38 @@
 一方、通常の表示状態(`Start-Process`のデフォルト、ウィンドウ表示あり)では:
 - `build\ubsan\src\app\NeoMIFES.exe`: 3/3回、約5.3秒で正常終了
 
-## 原因(WI-41で確定、実コード確認済み)
+## WI-41時点の診断(誤り、記録として保持)
 
-`render_device.cpp`の`Present1(1, 0, &presentParams)`は`SyncInterval=1`(次のvblankまで同期待ち)の標準的な呼び出し。DXGIのフリップモデルスワップチェーンは、ウィンドウが実際にDWMによって合成されて初めてvsync同期先(モニタの垂直帰線タイミング)を持つ——**ウィンドウが一度も表示されない(`SW_HIDE`)場合、この同期先が存在せず、`Present1`が無期限にブロックする可能性が高い。** コード自体は`DXGI_STATUS_OCCLUDED`を許容エラーとして扱っているが、これはレガシー(BitBlt)モデルのスワップチェーンや`DXGI_PRESENT_TEST`使用時のみ返る値で、フリップモデルでは通常返らないため、非表示ウィンドウのケースを実質的に想定していないと考えられる。
+WI-41では、`Present1(1, 0, &presentParams)`(`render_device.cpp`、`SyncInterval=1`のvsync同期Present)がウィンドウ非表示だとDWMに一度も合成されず同期先を持てないためブロックする、と診断した。`STARTF_USESHOWWINDOW`仕様(起動元プロセスのSTARTUPINFOがアプリ自身の最初の`ShowWindow()`呼び出しを暗黙に上書きする)により`Start-Process -WindowStyle Hidden`が`MainWindow::create()`の`ShowWindow(SW_SHOWNORMAL)`を上書きする、という部分の理解自体は正しかった。
 
-`runFrameMeasurement()`(`main.cpp`)は`onDeferredInit`コールバック内で300回の`pipeline.render()`を完全に同期的に呼び出す設計であり、この中の1回でも`Present1`がハングすればプロセス全体が応答不能になる。
+**しかし「`onDeferredInit`(計測ループが実際に走る場所)で`IsWindowVisible()`をチェックして待てばよい」という対応案(選択肢1として採用)は、WI-42の実装検証で誤りと判明した。**
 
-**WI-41追記: NeoMIFESのコード自体はウィンドウを常に表示しようとする設計であることを確認した。** `MainWindow::create()`(`main_window.cpp:139-141`)は`config.showOnCreate`(既定`true`、`main.cpp`のどのモードも上書きしていない)が真なら無条件で`ShowWindow(m_hwnd, SW_SHOWNORMAL)`+`UpdateWindow(m_hwnd)`(同期WM_PAINT強制)を呼ぶ。`wWinMain`自身の`nCmdShow`引数は明示的に無視されている(`main.cpp:275`、コメントアウト済みパラメータ名)。
+## WI-42で確定した真因
 
-**しかし、これは無関係ではない。** Win32の文書化された仕様により、プロセスを起動した`STARTUPINFO`に`STARTF_USESHOWWINDOW`フラグが設定されていた場合、アプリ自身がどんな値を`ShowWindow()`に渡そうとも、**トップレベルウィンドウへの最初の`ShowWindow()`呼び出しは`STARTUPINFO.wShowWindow`の値で暗黙的に上書きされる。** `Start-Process -WindowStyle Hidden`はまさにこのフラグ(`SW_HIDE`)を設定する——実測でこの100%再現ハングを引き起こしたのはこの仕組みであり、NeoMIFES側のコードに「非表示で起動する」ロジックは一切無い。
+`main_window.cpp`の`handlePaint()`を確認すると、`onDeferredInit`は**WM_PAINTが実際に発火した後にしか**`PostMessageW(kMsgDeferredInit)`されない設計になっている(`m_firstPaintFired`ゲート)。つまり「ペイント完了を待ってから計測を始める」という発想はこの時点で既に実装済みだった。
 
-**この発見により、影響範囲は当初の想定(`--measure-frame`限定)より広い可能性がある。** `MainWindow::create()`の`ShowWindow`/`UpdateWindow`呼び出しはモード共通(通常起動時も同一)のため、**理論上はいかなる起動モードであっても、`STARTF_USESHOWWINDOW`+`SW_HIDE`/`SW_MINIMIZE`を設定する外部ランチャー(例: 非表示実行を設定したタスクスケジューラのタスク、一部の自動化フレームワーク)から起動された場合、通常モードの初回`UpdateWindow()`が強制する同期WM_PAINTの中で同じ`Present1`ハングが起こりうる。** ただし、これは未検証の理論的な拡張であり(実機で通常モードのSW_HIDE起動を試してはいない)、Explorerダブルクリック・タスクバー・スタートメニューショートカット等、通常のWindows起動経路はいずれもこのフラグを設定しないため、実際の発生頻度は極めて低いと推測される。
+WI-42でマーカーファイル方式のプローブ(`onDeferredInit`の呼び出し直後に一時ファイルを書き出す診断ビルド)を実施した結果、**非表示ウィンドウでは`onDeferredInit`自体が一切発火しない**ことを実証した(5秒待機してもマーカーファイルが作成されない)。
 
-## 影響
+**真因: 一度も表示されない(`WS_VISIBLE`が立たない)ウィンドウはそもそも`WM_PAINT`を一切受け取らない。** `handlePaint()`は`WM_PAINT`メッセージのハンドラであり、`WM_PAINT`が配送されなければ`m_onFirstPaint`も`m_onDeferredInit`も永久に発火しない。結果、`wireMeasureFrameMode()`の計測ロジック(`RenderPipeline::attach()`/`Present1()`を含む)は**一度も実行されないまま**、`runMessageLoop()`の`GetMessageW()`が処理すべきメッセージを一切受け取れず無期限にブロックする——**Present1のvsync待ちではなく、単純な「メッセージキューが空のまま誰も`window.requestClose()`を呼ばない」という、より単純な種類のハングだった。**
 
-- `--measure-frame`を非表示ウィンドウ(`STARTF_USESHOWWINDOW`+`SW_HIDE`)から起動する自動化シナリオが存在すれば無期限にハングする。
-- **(WI-41追記)理論上は通常起動モードも同様に影響を受けうるが、実際にこのフラグを設定する現実的な起動経路は限定的(タスクスケジューラの「非表示で実行」設定等)と推測され、未確認。**
-- 現在の`tests/integration/frame_measure_test.cpp`は`CREATE_NO_WINDOW`(コンソール抑制フラグ、GUIアプリのウィンドウ表示状態には影響しない)を使っており、`SW_HIDE`とは異なる機構のため、**この既存テスト自体はこの問題の影響を受けない**(実測で確認済み、後述の`frame_measure_hangs_under_ubsan_clang_cl.md`参照)。
+## 対応(WI-42で実装)
 
-## `frame_measure_hangs_under_ubsan_clang_cl.md`との関係(未確証)
+`wWinMain()`内、`window.create(hInstance, cfg)`が返った直後(`MeasureFrame`モード限定)に`IsWindowVisible(window.hwnd())`を直接チェックするガードを追加した。`create()`内の`ShowWindow()`/`UpdateWindow()`は同期呼び出しのため、`create()`が返った時点で`WS_VISIBLE`状態は確定している——これが「まだペイントされていない」と「今後も一切ペイントされない」を区別できる最も早いタイミングだった。
 
-本issueの発見は、上記issueが報告する「CIの`ubsan`ジョブでのみ`FrameMeasureTest.ProducesValidProfile`が非決定的にハングする」という現象の調査中に得られた。**メカニズム(vsync同期`Present1`が窓の合成状態に依存してブロックしうる)には類似性があるが、両者を同一の根本原因と断定する証拠は無い**——実際、上記issueが使う`CREATE_NO_WINDOW`はウィンドウを非表示にする機構ではないため、少なくとも本issueで実証した「明示的に非表示にする」ケースとは直接同一ではない。CI環境固有の要因(共有ランナーでのGPU/ディスプレイドライバの一時的な状態、リモートデスクトップセッションでの合成の遅延等)がある種の「ウィンドウが一時的に合成されない」状況を作り出し、同じ`Present1`の脆弱性を別経路から突いた可能性はあるが、推測の域を出ない。
+非表示と判定した場合、メッセージループに一切入らず**終了コード3**で即座に終了する(プロファイルJSONは書き出さない、書き出すと誤って成功したように見えるため)。
 
-## 対応案(未実施)
+**影響範囲はユーザー承認のもと`--measure-frame`のみに限定した。** `MeasureStartup`/`MeasureMemory`モードの`onFirstPaint`も同じくWM_PAINT起点で発火するため、理論上は同じ脆弱性を抱えている可能性が高いが、これは未検証のまま将来の再評価に委ねる(推測実装を避けるため)。
 
-1. `--measure-frame`モードで、ウィンドウが実際に表示され最初のペイントが完了するまで`Present1`を呼ばないようにする防御的なガードを追加する(例: `onFirstPaint`相当のシグナルを待ってから計測ループを開始する)。
-2. あるいは、`Present1`呼び出しにタイムアウト機構(別スレッド+`WaitForSingleObject`によるウォッチドッグ等)を追加し、無期限ブロックを防ぐ。
-3. 最小対応として、`--measure-frame`が非表示ウィンドウでは動作しないことをドキュメント化し、既存のCI/自動化が`SW_HIDE`を使っていないことを確認するだけに留める(実害が現時点で無いため)。
+## 検証(WI-42)
+
+- 新規回帰テスト`FrameMeasureTest.HiddenWindowFailsFastInsteadOfHanging`(`tests/integration/frame_measure_test.cpp`)を追加。`STARTF_USESHOWWINDOW`+`SW_HIDE`で`CreateProcessW`起動し、終了コード3・出力ファイルが空のまま・15秒以内に完了することを確認。修正前はこのテストが15秒タイムアウトで強制終了(`TerminateProcess`)された状態を実際に再現・確認した上で修正、修正後は約40msで完了することを実測した。
+- 既存`FrameMeasureTest.ProducesValidProfile`(通常表示、ハッピーパス)への回帰無し(約5.3秒で成功、変化なし)。
+
+## `frame_measure_hangs_under_ubsan_clang_cl.md`との関係(未確証のまま、WI-41の記述を維持)
+
+本issueの発見は、上記issueが報告する「CIの`ubsan`ジョブでのみ`FrameMeasureTest.ProducesValidProfile`が非決定的にハングする」という現象の調査中に得られた。**メカニズム(非表示ウィンドウでの無期限ハング)には類似性があるが、両者を同一の根本原因と断定する証拠は無い**——本issueの再現条件(`STARTF_USESHOWWINDOW`+`SW_HIDE`)は上記issueの再現条件(`CREATE_NO_WINDOW`、ウィンドウ非表示とは異なる機構)とは異なる。関係は依然として未確証のまま。
 
 ## 完了条件
 
-- [ ] 対応方針(上記1〜3のいずれか、またはユーザー判断による見送り)を決定する
-- [ ] 決定した対応を実施し、非表示ウィンドウでの`--measure-frame`起動が無期限にハングしないことを確認する(または意図的に対象外とする場合はその判断を記録する)
+- [x] 対応方針を決定する(ユーザー選択: 非表示検知時はエラーで即座に終了)
+- [x] 決定した対応を実施し、非表示ウィンドウでの`--measure-frame`起動が無期限にハングしないことを確認する(実機・回帰テスト両方で確認済み)

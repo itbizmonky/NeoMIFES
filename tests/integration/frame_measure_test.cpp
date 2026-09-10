@@ -32,9 +32,19 @@ protected:
         return fs::path{tempFile};
     }
 
-    static DWORD spawnAndWait(const std::wstring& cmdLine, DWORD timeoutMs) {
+    // hiddenWindow reproduces STARTF_USESHOWWINDOW+SW_HIDE - the same
+    // mechanism PowerShell's `Start-Process -WindowStyle Hidden` uses - so
+    // HiddenWindowFailsFastInsteadOfHanging below exercises the real Win32
+    // override path, not just a simulation of it. See
+    // docs/issues/measure_frame_hangs_forever_on_hidden_window.md.
+    static DWORD spawnAndWait(const std::wstring& cmdLine, DWORD timeoutMs,
+                              bool hiddenWindow = false) {
         STARTUPINFOW si{};
         si.cb = sizeof(si);
+        if (hiddenWindow) {
+            si.dwFlags     = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+        }
         PROCESS_INFORMATION pi{};
 
         // CreateProcessW mutates the command line buffer, so use a local writable copy.
@@ -103,6 +113,43 @@ TEST_F(FrameMeasureTest, ProducesValidProfile) {
     // The synthetic scroll visits many distinct lines for the first time -
     // proves the TextLayoutCache was actually exercised, not bypassed.
     EXPECT_GT(cacheMisses, 0);
+
+    std::error_code ec;
+    fs::remove(out, ec);
+}
+
+// WI-42 regression test for
+// docs/issues/measure_frame_hangs_forever_on_hidden_window.md: before the
+// fix, launching --measure-frame under STARTF_USESHOWWINDOW+SW_HIDE hung
+// forever (100% reproducible, see the issue's own measurements). The
+// originally-suspected mechanism (Present1's vsync wait blocking because a
+// hidden window is never composited by DWM) turned out to be wrong - a
+// marker-file probe during WI-42 proved the window never receives WM_PAINT
+// at all when hidden, so onDeferredInit (posted only from inside
+// handlePaint()) never fires and the message loop just blocks in
+// GetMessageW() forever with nothing to dispatch. main.cpp's wWinMain now
+// checks IsWindowVisible() right after window.create() returns (before
+// ever entering the message loop) and exits with code 3 instead. The short
+// timeout is deliberate: this should fail fast, not eat the full 30s budget
+// ProducesValidProfile allows for a real render loop - if this regresses to
+// a hang, the test should time out quickly and fail loudly rather than
+// silently inflating the suite's runtime.
+TEST_F(FrameMeasureTest, HiddenWindowFailsFastInsteadOfHanging) {
+    ASSERT_FALSE(g_neomifesExePath.empty()) << "exe path not provided via argv[1]";
+
+    const fs::path out    = outputPath();
+    const std::wstring cl = L"\"" + g_neomifesExePath + L"\" --measure-frame \""
+                          + out.wstring() + L"\"";
+
+    const DWORD exitCode = spawnAndWait(cl, /*timeoutMs=*/15'000, /*hiddenWindow=*/true);
+    ASSERT_EQ(exitCode, 3u)
+        << "NeoMIFES --measure-frame (hidden window) returned " << exitCode;
+
+    // outputPath() itself creates an empty file via GetTempFileNameW() to
+    // reserve the unique name, so fs::exists() is always true here - the
+    // meaningful check is that NeoMIFES never wrote real content into it.
+    EXPECT_EQ(fs::file_size(out), 0u)
+        << "profile output should stay empty on this failure path";
 
     std::error_code ec;
     fs::remove(out, ec);

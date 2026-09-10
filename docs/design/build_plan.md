@@ -98,7 +98,7 @@ ctest --preset debug --output-on-failure
 >
 > **🎉 WI-27(`rectangularAnchor`/`altCursorAnchor`のキーボード操作時リセット漏れ修正)完結(2026-09-04)。** WI-26で発見した同issueに、ユーザーから「次に着手せよ」との指示で着手。Explore agentへの調査で`altCursorAnchor`にも同型のバグがあると判明、Plan agentへの設計検証で2件の見落とし(`handleFreeCursorRightArrow()`の早期returnによる配置ミス、altCursorAnchorの対称性欠如)を事前に発見・修正した上で実装。**実機ドッグフーディングで、実装自体に含まれていた新たな自己矛盾バグを発見した**——`VK_SHIFT`のプレーンな押下(Shift+Alt+矢印を開始する自然な順序の一部)がWM_KEYDOWNとして先に単独発火し、追加したばかりの無条件リセットが「継続しようとしているそのキー入力シーケンス自身」によって基点を破壊してしまっていた(`VK_SHIFT`/`VK_MENU`をリセット対象から除外して解消)。Plan agentによる静的な設計レビューでは検出できなかった、実機ドッグフーディングでしか発見できない性質のバグだった。`dispatchMouseDown()`(既存のマウス側リセット、無テストだった)への安全網テスト3件を追加。副次的発見(`handleSysKeyDownEvent()`のDiffビューガード欠如)は別issueとして起票。詳細は本ファイルのWI-27セクション参照。
 >
-> **次フェーズ候補 (2026-09-09更新):** WI-20〜WI-37(複数ウィンドウ・表示メニュー/折り返し・検索CRLF・Grep固定オーバーヘッド・検索ダイアログ化・自動整形・縦編集・rectangularAnchorリセット漏れ・ステータスバー/ベースライン/現在行ハイライト・タイピング時ガタつき診断+修正・非同期シンタックス二重描画・スクロールバー設定化+縦スクロールバー新規実装・スクロールバー常時表示化・PageUp/PageDown 0行移動バグ・横スクロール16bit切り詰め)は全て対応完了、push・CI green確認済み。次にどれへ着手するかはユーザーの標準委任のもとこちらの判断で選定する。
+> **次フェーズ候補 (2026-09-11更新):** WI-20〜WI-42(複数ウィンドウ・表示メニュー/折り返し・検索CRLF・Grep固定オーバーヘッド・検索ダイアログ化・自動整形・縦編集・rectangularAnchorリセット漏れ・ステータスバー/ベースライン/現在行ハイライト・タイピング時ガタつき診断+修正・非同期シンタックス二重描画・スクロールバー設定化+縦スクロールバー新規実装・スクロールバー常時表示化・PageUp/PageDown 0行移動バグ・横スクロール16bit切り詰め・Diffビューガード欠如・`measure-frame`非表示ハング調査+解消・オーバーレイフォーカス中のファイルライフサイクルキー未達)は全て対応完了。**ユーザー指定P2候補①②③(WI-38/39/40)完結後、WI-39の副次的発見(WI-41で真因調査、WI-42で実装検証により診断を訂正した上で解消)まで含め、2026-08-23合意スコープ内のP1/P2 issueで「今すぐ着手可能」な項目が尽きた状態。** P1残り2件(`authenticode_certificate_not_acquired.md`はユーザーの証明書購入待ち、`csv_per_cell_index_memory_scaling.md`は10GB規模の根本対応がユーザー承認のもと対象外確定)はこちらから動かせない。P2残りは全て「待機」(トリガー条件待ち・実害軽微・凍結中の再評価待ち)。次にどれへ着手するかは、凍結スコープ(LSP/マクロ/AI/Git高度機能等)の再開も含めユーザーからの新しい方向付けが必要。
 >
 > **残るP1(いずれも次WIの候補にはならない、`docs/issues/README.md`参照):**
 > - [`authenticode_certificate_not_acquired.md`](../issues/authenticode_certificate_not_acquired.md) — 本物のAuthenticode証明書取得はユーザー自身の判断・購入待ち、エージェント側で進められる作業なし
@@ -3186,6 +3186,66 @@ Debug全1614/1614件green、clang-tidy新規指摘0件。`runMessageLoop()`自�
 Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構成1614/1614件green、実警告0件、サニタイザ診断0件を確認。既知の非決定的`FrameMeasureTest.ProducesValidProfile`ハングも本回では再現せず正常pass(5.44秒、12回連続で再現なし)。
 
 コミット: `feba1be`。
+
+---
+
+## WI-41 — `measure_frame_hangs_forever_on_hidden_window.md`の真因調査(P2、コード変更なし)
+
+### 目的
+
+WI-39発見の[`measure_frame_hangs_forever_on_hidden_window.md`](../issues/measure_frame_hangs_forever_on_hidden_window.md)(P2)を調査。「P2を1〜3の順で」指示の完了後、ユーザーの「次に進め」を受け、P2候補中唯一「100%再現する具体的バグ」だったため自律的に選定した。
+
+### 調査
+
+`main_window.cpp`/`main.cpp`の実コードを確認し、`MainWindow::create()`が`config.showOnCreate`(既定`true`、全モード共通)に基づき無条件で`ShowWindow(m_hwnd, SW_SHOWNORMAL)`+`UpdateWindow(m_hwnd)`を呼ぶことを確認。Win32の`STARTF_USESHOWWINDOW`仕様(起動元プロセスのSTARTUPINFOが最初の`ShowWindow()`呼び出しを暗黙に上書きする)により、`Start-Process -WindowStyle Hidden`がこれを上書きしうると判明した。
+
+**この時点での診断(WI-42で一部誤りと判明、後述):** `Present1(1, 0, &presentParams)`(`render_device.cpp`、vsync同期)がDWMに一度も合成されない非表示ウィンドウでは同期先を持てずブロックする、と推定した。影響範囲は`--measure-frame`限定という当初想定より広い可能性(`ShowWindow`/`UpdateWindow`呼び出しはモード共通のため理論上は通常起動モードも対象)があると発見したが、実機未検証のまま正直に記録した。
+
+### 結論
+
+対応方針(1:初回ペイント待ちガード追加/2:タイムアウト機構追加/3:見送り)はユーザー判断が必要な設計判断のため、選択肢を提示するに留め実装は行わなかった。**本WIはコード変更を一切含まない、調査・issueドキュメント更新のみのWI。**
+
+コミット: `745a899`。
+
+---
+
+## WI-42 — `measure_frame_hangs_forever_on_hidden_window.md`を解消(P2、真因の再確定込み)
+
+### 目的
+
+WI-41で提示した3択のうち、ユーザーが「初回ペイント待ちガード追加」(選択肢1)を選択したため着手。
+
+### 調査(WI-41の診断を実装検証で訂正)
+
+`main_window.cpp`の`handlePaint()`を確認したところ、`onDeferredInit`(計測ループの実行場所)は**既に**最初の`WM_PAINT`完了後にしか`PostMessageW(kMsgDeferredInit)`されない設計だった(`m_firstPaintFired`ゲート)——「ペイント完了を待ってから計測を始める」はこの時点で既に実装済みで、選択肢1をそのまま実装しても効果が無いと判明した。
+
+`onDeferredInit`内で`IsWindowVisible()`をチェックする形でいったん実装し、Debugビルド+新規回帰テストで検証したところ、**15秒のタイムアウトで強制終了され、修正が効いていないことが判明した。** マーカーファイル方式の一時的な診断コード(onDeferredInitの呼び出し直後に一時ファイルを書き出す)を追加してPowerShellから`Start-Process -WindowStyle Hidden`で実機再現したところ、**5秒待機してもマーカーファイルが作成されない=`onDeferredInit`自体が一切発火しない**ことを実証した。
+
+**真因の再確定:** 一度も表示されない(`WS_VISIBLE`が立たない)ウィンドウはそもそも`WM_PAINT`を一切受け取らない。`WM_PAINT`が配送されなければ`onFirstPaint`も`onDeferredInit`も永久に発火せず、`wireMeasureFrameMode()`の計測ロジック(`Present1()`を含む)は一度も実行されないまま、`runMessageLoop()`の`GetMessageW()`が処理すべきメッセージを一切受け取れず無期限にブロックする——**WI-41が疑ったPresent1のvsync待ちではなく、より単純な「メッセージキューが空のまま誰も`requestClose()`を呼ばない」というハングだった。**
+
+この発見はユーザーへ正直に報告し、対応方針の第2段階(非表示検知後の挙動: エラー即終了/強制可視化)を改めて確認した。ユーザーは「エラーで即座に終了」を選択。
+
+### 設計
+
+一時診断コードを削除し、`wireMeasureFrameMode()`は元の形へ戻した(`onDeferredInit`内でのチェックは非表示ケースで到達不能なデッドコードのため)。代わりに`wWinMain()`の`window.create(hInstance, cfg)`が返った直後(`MeasureFrame`モード限定)へ`IsWindowVisible(window.hwnd())`のチェックを追加。`create()`内の`ShowWindow()`/`UpdateWindow()`は同期呼び出しのため、`create()`が返った時点で`WS_VISIBLE`状態は確定しており、「まだペイントされていない」と「今後も一切ペイントされない」を区別できる最も早いタイミングだった。非表示と判定した場合はメッセージループに一切入らず終了コード3で即座に終了する(プロファイルJSONは書き出さない——書き出すと誤って成功したように見えるため)。
+
+**スコープ:** ユーザー承認のもと`--measure-frame`のみに限定。`MeasureStartup`/`MeasureMemory`の`onFirstPaint`も同じくWM_PAINT起点のため理論上同じ脆弱性を抱える可能性が高いが、未検証のまま推測実装を避け対象外とした。
+
+### 実装
+
+`src/app/main.cpp`: `wWinMain()`の`window.create()`直後に4行のガード追加(終了コード3)。`wireMeasureFrameMode()`は変更なし(元の形へ復元)。ファイル冒頭のコマンドラインモード説明コメントへ終了コード3の説明を追記。
+
+`tests/integration/frame_measure_test.cpp`: 新規回帰テスト`HiddenWindowFailsFastInsteadOfHanging`を追加。`spawnAndWait()`ヘルパーへ`hiddenWindow`引数(`STARTF_USESHOWWINDOW`+`SW_HIDE`設定)を追加し、`CreateProcessW`で実際に`Start-Process -WindowStyle Hidden`と同じ起動条件を再現。修正前はこのテストが15秒タイムアウトで強制終了することを実際に確認した上で修正、修正後は約40msで完了することを実測。
+
+### 検証
+
+Debug全テストsuite green(既存回帰無し)、`frame_measure`テスト2件(`ProducesValidProfile`約5.3秒/`HiddenWindowFailsFastInsteadOfHanging`約40ms)ともpass。修正がスコープ通り`main.cpp`+テストファイルのみに収まっていることをビルド差分(2ファイルのみ再コンパイル)で確認。
+
+Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構成1614/1614件green、変更2ファイルへのclang-tidy新規指摘0件(`frame_measure_test.cpp`の145/151行目に`3u`/`0u`のリテラルサフィックス小文字化指摘が出たが、同ファイル94行目の既存コードと同型でありこの変更が新たに持ち込んだスタイルではない)、サニタイザ診断0件(ASan/UBSanログをheap/stack overflow・use-after-free・leak・runtime error等で網羅的にgrep)を確認。`frame_measure`テストは3構成いずれも`ProducesValidProfile`/`HiddenWindowFailsFastInsteadOfHanging`ともpass、修正版(スタッシュ退避されていない実際の作業コピー)に対して実行されたことも確認済み。
+
+**検証時の副次的インシデント:** 検証委任したサブエージェントが共有ワーキングツリーで`git stash`(`wi42-verify-baseline`)を実行し、本セッションの未コミット編集(本ファイル含む複数ドキュメント+`main.cpp`/`frame_measure_test.cpp`)を退避させたまま作業を進めていたことが発覚。`git stash pop`で復元しデータ損失は無かったが、以降は「共有ワーキングツリーではgitの破壊的操作を一切行わない」旨を検証委任の指示に明記する運用へ変更した(詳細: [[feedback-verification-cadence]])。
+
+コミット: (直後に記録)。
 
 ---
 
