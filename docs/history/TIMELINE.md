@@ -4449,4 +4449,14 @@ Plan agentへ設計検証を委任し、`main.cpp`の`runMessageLoop()`の`GetAn
 
 `runMessageLoop()`自体はexecutableへ直接コンパイルされ内部リンケージのためテスト不可能、実機ドッグフーディングのみで検証。Debug全1614/1614件green、clang-tidy新規指摘0件。Release/ASan/UBSanはサブエージェントへ検証委任。
 
+### WI-41: `measure_frame_hangs_forever_on_hidden_window.md`の真因を確定(P2、コード変更なし)
+
+WI-40完了後、次点候補`measure_frame_hangs_forever_on_hidden_window.md`(WI-39発見)に着手。`MainWindow::create()`(`main_window.cpp`)が`config.showOnCreate`(既定true、全モード共通)なら無条件で`ShowWindow(SW_SHOWNORMAL)`+`UpdateWindow()`(同期WM_PAINT強制)を呼ぶこと、`wWinMain`が自身の`nCmdShow`引数を明示的に無視していることを確認した。
+
+**真因を確定:** Win32の文書化された仕様上、起動プロセスの`STARTUPINFO`に`STARTF_USESHOWWINDOW`が設定されていた場合、アプリ自身がどんな値を`ShowWindow()`に渡そうとも、トップレベルウィンドウへの最初の`ShowWindow()`呼び出しは`STARTUPINFO.wShowWindow`の値で暗黙的に上書きされる。`Start-Process -WindowStyle Hidden`はまさにこのフラグを設定しており、これが実測した100%再現ハングの真因だった——NeoMIFES側のコードに「非表示で起動する」ロジックは一切無い。
+
+**影響範囲の拡大を発見(未検証):** `ShowWindow`/`UpdateWindow`呼び出しは全モード共通のため、理論上は`--measure-frame`に限らず通常起動モードも同じ条件下(`STARTF_USESHOWWINDOW`+`SW_HIDE`/`SW_MINIMIZE`を設定する外部ランチャー、例: 非表示実行設定のタスクスケジューラタスク)で同じ`Present1`ハングが起こりうると判明した。ただし通常のWindows起動経路(Explorerダブルクリック・タスクバー・スタートメニュー)はいずれもこのフラグを設定しないため実際の発生頻度は極めて低いと推測され、実機での検証は行っていない。
+
+対応案(①起動完了待ちガード追加、②タイムアウト機構追加、③見送り)はユーザー判断が必要と判断し、issueへ詳細を記録した上でユーザーへ判断を委ねることにした。**本WIはコード変更を一切含まない、調査・issueドキュメント更新のみのWI。**
+
 <!-- 次セッションはここに追記 -->

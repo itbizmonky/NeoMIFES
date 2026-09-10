@@ -1,6 +1,7 @@
-# Issue: `--measure-frame`(および`RenderPipeline::render()`のvsync同期`Present1`全般)がウィンドウが一度も表示されない(非合成)状態だと無期限にハングする (P2 — 未修正、実機で100%再現確認済み)
+# Issue: `--measure-frame`(および`RenderPipeline::render()`のvsync同期`Present1`全般)がウィンドウが一度も表示されない(非合成)状態だと無期限にハングする (P2 — 🟡 WI-41で原因確定・対応方針はユーザー判断待ち)
 
 - **起票日:** 2026-09-09(WI-39、`frame_measure_hangs_under_ubsan_clang_cl.md`の調査中に副次的に発見)
+- **調査日:** 2026-09-10(WI-41)、真因を確定(Win32の`STARTF_USESHOWWINDOW`仕様)。影響範囲が当初想定より広い可能性を発見、対応方針はユーザー判断待ちのため保留
 - **対象:** `src/render/src/render_device.cpp`の`Present1(1, 0, &presentParams)`呼び出し、`src/app/main.cpp`の`wireMeasureFrameMode()`/`runFrameMeasurement()`
 - **優先度:** P2(`--measure-frame`は開発者向けコマンドラインフラグでエンドユーザー機能への直接影響は無いが、CI/自動化スクリプトから非表示ウィンドウで起動されるシナリオがあれば無期限ハングしうる)
 
@@ -15,15 +16,22 @@
 一方、通常の表示状態(`Start-Process`のデフォルト、ウィンドウ表示あり)では:
 - `build\ubsan\src\app\NeoMIFES.exe`: 3/3回、約5.3秒で正常終了
 
-## 原因(推定、未確証)
+## 原因(WI-41で確定、実コード確認済み)
 
 `render_device.cpp`の`Present1(1, 0, &presentParams)`は`SyncInterval=1`(次のvblankまで同期待ち)の標準的な呼び出し。DXGIのフリップモデルスワップチェーンは、ウィンドウが実際にDWMによって合成されて初めてvsync同期先(モニタの垂直帰線タイミング)を持つ——**ウィンドウが一度も表示されない(`SW_HIDE`)場合、この同期先が存在せず、`Present1`が無期限にブロックする可能性が高い。** コード自体は`DXGI_STATUS_OCCLUDED`を許容エラーとして扱っているが、これはレガシー(BitBlt)モデルのスワップチェーンや`DXGI_PRESENT_TEST`使用時のみ返る値で、フリップモデルでは通常返らないため、非表示ウィンドウのケースを実質的に想定していないと考えられる。
 
 `runFrameMeasurement()`(`main.cpp`)は`onDeferredInit`コールバック内で300回の`pipeline.render()`を完全に同期的に呼び出す設計であり、この中の1回でも`Present1`がハングすればプロセス全体が応答不能になる。
 
+**WI-41追記: NeoMIFESのコード自体はウィンドウを常に表示しようとする設計であることを確認した。** `MainWindow::create()`(`main_window.cpp:139-141`)は`config.showOnCreate`(既定`true`、`main.cpp`のどのモードも上書きしていない)が真なら無条件で`ShowWindow(m_hwnd, SW_SHOWNORMAL)`+`UpdateWindow(m_hwnd)`(同期WM_PAINT強制)を呼ぶ。`wWinMain`自身の`nCmdShow`引数は明示的に無視されている(`main.cpp:275`、コメントアウト済みパラメータ名)。
+
+**しかし、これは無関係ではない。** Win32の文書化された仕様により、プロセスを起動した`STARTUPINFO`に`STARTF_USESHOWWINDOW`フラグが設定されていた場合、アプリ自身がどんな値を`ShowWindow()`に渡そうとも、**トップレベルウィンドウへの最初の`ShowWindow()`呼び出しは`STARTUPINFO.wShowWindow`の値で暗黙的に上書きされる。** `Start-Process -WindowStyle Hidden`はまさにこのフラグ(`SW_HIDE`)を設定する——実測でこの100%再現ハングを引き起こしたのはこの仕組みであり、NeoMIFES側のコードに「非表示で起動する」ロジックは一切無い。
+
+**この発見により、影響範囲は当初の想定(`--measure-frame`限定)より広い可能性がある。** `MainWindow::create()`の`ShowWindow`/`UpdateWindow`呼び出しはモード共通(通常起動時も同一)のため、**理論上はいかなる起動モードであっても、`STARTF_USESHOWWINDOW`+`SW_HIDE`/`SW_MINIMIZE`を設定する外部ランチャー(例: 非表示実行を設定したタスクスケジューラのタスク、一部の自動化フレームワーク)から起動された場合、通常モードの初回`UpdateWindow()`が強制する同期WM_PAINTの中で同じ`Present1`ハングが起こりうる。** ただし、これは未検証の理論的な拡張であり(実機で通常モードのSW_HIDE起動を試してはいない)、Explorerダブルクリック・タスクバー・スタートメニューショートカット等、通常のWindows起動経路はいずれもこのフラグを設定しないため、実際の発生頻度は極めて低いと推測される。
+
 ## 影響
 
 - `--measure-frame`を非表示ウィンドウ(`STARTF_USESHOWWINDOW`+`SW_HIDE`)から起動する自動化シナリオが存在すれば無期限にハングする。
+- **(WI-41追記)理論上は通常起動モードも同様に影響を受けうるが、実際にこのフラグを設定する現実的な起動経路は限定的(タスクスケジューラの「非表示で実行」設定等)と推測され、未確認。**
 - 現在の`tests/integration/frame_measure_test.cpp`は`CREATE_NO_WINDOW`(コンソール抑制フラグ、GUIアプリのウィンドウ表示状態には影響しない)を使っており、`SW_HIDE`とは異なる機構のため、**この既存テスト自体はこの問題の影響を受けない**(実測で確認済み、後述の`frame_measure_hangs_under_ubsan_clang_cl.md`参照)。
 
 ## `frame_measure_hangs_under_ubsan_clang_cl.md`との関係(未確証)
