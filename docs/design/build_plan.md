@@ -3368,7 +3368,7 @@ Release/ASan/UBSan(clang-cl)3構成+clang-tidyをサブエージェントへ委�
 
 いずれの構成でも新規テスト(`EnsureColumnVisible*`4件、`ApplyMouseWheelScrollColumn*`3件、`VisibleRowCapacityIsNotBoundedByShortDocumentLength`、`MeasureTextColumnWidthCountsFullWidthCharactersAsWiderThanHalfWidth`)がpassすることを個別フィルタ実行で確認済み。
 
-コミット: (直後に記録)。
+コミット: `2d490f9`。
 
 ---
 
