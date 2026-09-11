@@ -670,6 +670,8 @@
 
 > **次回セッション最初にやること:** ①ユーザーへ「1行目のガタつき」が実際に解消したか確認する、②WI-28〜WI-34の蓄積された未pushコミット(pushしてよいか毎回尋ねているが未回答)についてユーザーの意向を改めて確認する。
 
+> **(2026-09-11追記) 本コールアウトの「次回やること」はWI-35着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
+
 > 詳細は`docs/design/build_plan.md`のWI-34セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
 > ---
@@ -688,6 +690,8 @@
 
 > **次回セッション最初にやること:** ユーザーが本WIの修正で体感改善を確認できたか、または残課題(①)への対応を希望するかを確認する。希望する場合は大規模変更(SyncInterval=0/描画スレッド分離)の設計検討から着手し、CLAUDE.mdルール9に従い承認を得ること。
 
+> **(2026-09-11追記) 本コールアウトの「次回やること」はWI-34着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
+
 > 詳細は`docs/design/build_plan.md`のWI-33セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
 > ---
@@ -704,6 +708,8 @@
 
 > **次回セッション最初にやること:** 特になし(コード上の未完了作業なし)。ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が生きているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい。次点候補は[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)・[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)(P2)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。**WI-28〜32のコミット(`93468ad`/`c301a6c`/`dc3234a`/`d829b48`/`fcc1bc0`/`1aa03bf`)はまだpushされていない**(ユーザーからの明示的なpush許可待ちのまま)。
 
+> **(2026-09-11追記) 本コールアウトの「次回やること」はWI-33着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
+
 > 詳細は`docs/design/build_plan.md`のWI-32セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
 > ---
@@ -717,6 +723,8 @@
 > **次回セッション最初にやること: この診断結果と対応方針候補をユーザーへ提示し、CLAUDE.mdルール9(大規模変更は必ずユーザー承認)に従い承認を得てから、WI-32として設計・実装に着手すること。** 候補1(入力キューのドレイン優先——`PeekMessage`でキュー滞留を検知し、バーストが収まるまで再描画を1回にまとめる)が現時点の最有力案だが未承認。まだユーザーへ結果を提示していない場合、それが最初のアクションになる。
 
 > 本WIはコード変更を一切含まない(調査・実測のみ、`render_pipeline.cpp`はWI-30コミット時点と完全一致)。既存のWI-28/29/30コミット(`93468ad`/`c301a6c`/`dc3234a`/`d829b48`)は**まだpushされていない**(ユーザーからの明示的なpush許可待ちのまま)。
+
+> **(2026-09-11追記) 本コールアウトの「次回やること」はWI-32着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-31セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
@@ -737,6 +745,8 @@
 > 3件とも実機ドッグフーディングで確認済み(WI-29+WI-30の統合ドッグフーディングも実施)。WI-29とWI-30は同一ファイル(`render_pipeline.cpp`)内の隣接する非オーバーラップ変更のためgit上は1コミットにまとめた。Release/ASan/UBSan(clang-cl)全1598/1598件green、clang-tidy新規指摘0件。
 
 > **次回セッション最初にやること:** ユーザーから「貴方の判断で次に改修する項目を決めて完成版のゴールを目指して欲しい」という標準委任(2026-09-04)が出ているため、次にどの作業へ着手するかは新セッション側でこちらの判断により選定してよい。次点候補は[`handle_sys_key_down_missing_diff_view_guard.md`](../issues/handle_sys_key_down_missing_diff_view_guard.md)(P2〜P3)・[`frame_measure_hangs_under_ubsan_clang_cl.md`](../issues/frame_measure_hangs_under_ubsan_clang_cl.md)(P2)、またはCLAUDE.md §11が定める3つの正典ソースからの再選定。特定の指示が無い限り、コード上の未完了作業は無い(コミット状況は`git log`/`git status`で確認すること)。
+
+> **(2026-09-11追記) 本コールアウトの「次回やること」はWI-31着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-28/29/30セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
@@ -3728,14 +3738,16 @@ WI-17e完了後、ユーザーの「次のPhaseに進め」への回答として
   - **マスターロードマップ (Plan-of-Record、23章): [`docs/design/master_roadmap.md`](../design/master_roadmap.md)** (**v2.1**、2026-08-04)
   - 🔴 **商用化ギャップ分析 (Plan-of-Record 補遺、必読): [`docs/design/gap_analysis.md`](../design/gap_analysis.md)** (2026-08-04)
   - レビュー: [`docs/design/self_review.md`](../design/self_review.md)
-- 意思決定: [`docs/decisions/README.md`](../decisions/README.md) (ADR 21 本)
-- **Issue 索引 (2026-08-04 新設): [`docs/issues/README.md`](../issues/README.md)** (18 件、P0/P1/凍結/解決済みで分類)
+- 意思決定: [`docs/decisions/README.md`](../decisions/README.md) (ADR **22 本**、2026-09-11時点)
+- **Issue 索引 (2026-08-04 新設): [`docs/issues/README.md`](../issues/README.md)** (**約50件**、2026-08-04時点の18件から大幅増加、P0/P1/凍結/解決済みで分類)
 - フェーズ報告:
   - [Phase 0.5](../phase_reports/phase_0.5_report.md)
   - [Phase 1](../phase_reports/phase_1_report.md)
   - [Phase 2a](../phase_reports/phase_2a_report.md)
   - [Phase 2b (2b1/2b2/2b3 統合)](../phase_reports/phase_2b_report.md)
   - [Phase 3 (3a/3b/3c 統合)](../phase_reports/phase_3_report.md)
+  - **Phase 4 以降は個別のフェーズ報告を発行せず、`docs/history/TIMELINE.md`のセッション記録 + `docs/design/build_plan.md`のWI単位記録 + マイルストーン(M1〜M5)で代替する運用へ移行した(明文化された切替宣言は無いが、Phase 4以降のこの3ドキュメントの実際の運用実態から確認できる)。**
+  - 🧊 **[プロジェクト凍結レポート (2026-09-11、最終到達点の総括)](../phase_reports/project_freeze_2026-09-11.md)**
 
 ---
 

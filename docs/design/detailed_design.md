@@ -4165,22 +4165,28 @@ namespace neomifes::util {
 
 ### 22.3 決定済みの技術選定 (旧未決事項)
 
+> 🔴 **(2026-09-11 訂正) 以下の表は Phase 0 時点のまま長期間更新されておらず、2 行が本ファイル自身の他章 (§2126 付近) やその後の ADR と矛盾していた。CLAUDE.md §11 が繰り返し警告している「ADR 発行後に設計書側のコード例・記述の同期を忘れる」パターンの実例。**
+
 | 項目 | 決定 | 参照 ADR |
 |---|---|---|
-| 内部文字型 | `char16_t` / `std::u16string` | ADR-006 (要作成) |
+| 内部文字型 | `char16_t` / `std::u16string` | 専用 ADR は作成されなかった (要件定義書 §17 + CLAUDE.md §4 のコーディング規約として直接明記された) |
 | HTTP クライアント | **WinHTTP** (依存最小、要件「外部ライブラリ最小限」に合致) | ADR-004 |
 | ビルドシステム | CMake + MSVC v143 + Ninja | ADR-001 |
 | 正規表現 | RE2 | ADR-002 |
-| シンタックス | TextMate 互換 (tree-sitter は将来検討) | ADR-003 |
+| シンタックス | ~~TextMate 互換 (tree-sitter は将来検討)~~ **tree-sitter (ADR-003 は Superseded)** | ADR-014 |
 | 最低 VS | VS 17.13+ | ADR-005 |
-| 設定ファイル | JSON5 | (basic §6.1) |
-| マクロ言語同梱 | Lua + JS(QuickJS) + Python(標準プラグイン) + キー記録 | (§15) |
+| 設定ファイル | ~~JSON5~~ **素の JSON (nlohmann/json)、コメント不可** | (basic §6.1、WI-08) |
+| マクロ言語同梱 | Lua + JS(QuickJS) + Python(標準プラグイン) + キー記録 | (§15、**2026-08-23 合意によりPhase 11.3ごと意図的凍結・未着手**) |
 
 ### 22.4 残る未決事項
 
-- libgit2 のライセンス運用 (GPLv2 with GCC linking exception) → Phase 11 前に法務確認
-- LSP クライアント自作 vs 既存 → Phase 11 で比較評価
-- tree-sitter 導入時期 → Phase 7 完了後に評価
+**(2026-09-11 更新) 下記3件はいずれも Phase 0 時点の未決事項だが、その後の状況は個別に異なる:**
+
+- ~~libgit2 のライセンス運用 (GPLv2 with GCC linking exception) → Phase 11 前に法務確認~~ **解決済み: Phase 11.1 (Git統合) で libgit2 を実際に採用・出荷し ADR-022 として記録済み。ライセンス運用上の問題は生じなかった。**
+- LSP クライアント自作 vs 既存 → **未解決のまま。Phase 11.2 (LSP完全実装) 自体が2026-08-23合意により着手前に凍結されたため、比較評価は一度も行われていない。**
+- ~~tree-sitter 導入時期 → Phase 7 完了後に評価~~ **解決済み: ADR-014 で採用決定、22言語のシンタックスハイライトとして実装済み(上記22.3参照)。**
+
+プロジェクト全体の凍結状況は [`docs/phase_reports/project_freeze_2026-09-11.md`](../phase_reports/project_freeze_2026-09-11.md) を参照。
 
 ---
 

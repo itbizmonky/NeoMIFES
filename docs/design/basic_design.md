@@ -140,7 +140,7 @@
 - 自動判定は 3 段階: (1) BOM / (2) 文字分布統計 / (3) N-gram モデル
 
 ### 3.8 Syntax Engine (L3)
-- **TextMate 互換文法定義** を採用検討 (VSCode 系エコシステム流用)
+- ~~**TextMate 互換文法定義** を採用検討 (VSCode 系エコシステム流用)~~ **(2026-09-11 訂正) 実際には [ADR-014](../decisions/ADR-014-syntax-engine-tree-sitter.md) で tree-sitter を採用し、ADR-003 (TextMate 案) は Superseded。凍結時点で 22 言語文法に対応済み。**
 - ハイライトは非同期増分解析
 - 折り畳み範囲・アウトラインも本エンジンが提供
 
@@ -246,8 +246,8 @@ User → InvokeAI Command
 ## 6. 設定・拡張
 
 ### 6.1 設定ファイル
-- 形式: **JSON5** (コメント可) を第一候補 / TOML を第二候補
-- 場所: `%APPDATA%\NeoMIFES\config.json5`
+- ~~形式: **JSON5** (コメント可) を第一候補 / TOML を第二候補~~ **(2026-09-11 訂正) 実際には WI-08 (`core::Settings`) で素の JSON (nlohmann/json) を採用。コメント可の JSON5/TOML パーサ追加のコストに見合う需要が無いと判断された。**
+- ~~場所: `%APPDATA%\NeoMIFES\config.json5`~~ **実際は `%APPDATA%\NeoMIFES\settings.json`**
 - 変更検知でホットリロード
 
 ### 6.2 プラグイン API
@@ -306,14 +306,16 @@ User → InvokeAI Command
 
 ## 9. 未決事項 (Issue 化対象)
 
-1. ビルドシステム最終選定 (CMake / MSBuild / 独自)
-2. パッケージング形式 (MSIX / インストーラ / Portable Zip)
-3. 正規表現エンジン最終選定 (RE2 vs Hyperscan)
-4. シンタックス定義形式 (TextMate vs tree-sitter)
-5. マクロ言語の同梱範囲 (Lua のみ / +JS)
-6. LSP 初期対応言語の確定
-7. 設定ファイル形式最終決定 (JSON5 vs TOML)
-8. 自動更新機構の有無
+**(2026-09-11 追記) 8件中6件は ADR で解決済み、2件はプロジェクト凍結(2026-09-11)により未着手のまま保留。**
+
+1. ビルドシステム最終選定 (CMake / MSBuild / 独自) — ✅ 解決: CMake + MSVC v143 + Ninja ([ADR-001](../decisions/ADR-001-build-system.md))
+2. パッケージング形式 (MSIX / インストーラ / Portable Zip) — ✅ 解決: Portable Zip (自己署名証明書、v1出荷判定時点)
+3. 正規表現エンジン最終選定 (RE2 vs Hyperscan) — ✅ 解決: RE2 ([ADR-002](../decisions/ADR-002-regex-engine.md))
+4. シンタックス定義形式 (TextMate vs tree-sitter) — ✅ 解決: tree-sitter ([ADR-014](../decisions/ADR-014-syntax-engine-tree-sitter.md)、ADR-003 は Superseded)
+5. マクロ言語の同梱範囲 (Lua のみ / +JS) — 🧊 未解決のまま凍結: Phase 11.3 自体が2026-08-23合意で着手前に凍結
+6. LSP 初期対応言語の確定 — 🧊 未解決のまま凍結: Phase 11.2 自体が2026-08-23合意で着手前に凍結
+7. 設定ファイル形式最終決定 (JSON5 vs TOML) — ✅ 解決: 素の JSON (nlohmann/json)、いずれの候補でもなかった (WI-08、§6.1参照)
+8. 自動更新機構の有無 — 未実装のまま。`master_roadmap.md` §12.3のフル版出荷判定チェックリストに含まれるが、2026-08-23合意によりこのチェックリスト自体がスコープ外
 
 これらは `docs/decisions/` に ADR として記録すること。
 

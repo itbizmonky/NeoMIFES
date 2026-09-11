@@ -18,7 +18,7 @@
 > **`master_roadmap.md` (2,900 行) を最初から読んではいけない。** 必要な章は各作業単位 (WI) が指定する。
 >
 > 🔖 セッション再開時の詳細な現在地は [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md)。
-> 🔴 **2026-08-04 中間レビュー: [`docs/design/gap_analysis.md`](docs/design/gap_analysis.md)。** エンジン層は完成に近い一方、**NeoMIFES は編集内容をファイルに保存できない**。roadmap が「アプリケーションシェル」にフェーズを一度も割り当てていなかった構造的欠陥が判明し、v2.1 で Phase 8.5 / 8.6 / 12' を新設した。**Phase 9 以降の全新機能は WI-13 (MVP 出荷判定) まで凍結。**
+> 🔴 **2026-08-04 中間レビュー: [`docs/design/gap_analysis.md`](docs/design/gap_analysis.md)。** エンジン層は完成に近い一方、**NeoMIFES は編集内容をファイルに保存できない**。roadmap が「アプリケーションシェル」にフェーズを一度も割り当てていなかった構造的欠陥が判明し、v2.1 で Phase 8.5 / 8.6 / 12' を新設した。~~Phase 9 以降の全新機能は WI-13 (MVP 出荷判定) まで凍結。~~ **(2026-09-11 訂正) この凍結は WI-13 完了 (2026-08-16) で解除されなかった。2026-08-23 の合意でスコープを再確定し Phase 9 (AI)・LSP 完全実装・マクロを改めて凍結、さらに 2026-09-11 にプロジェクト全体を凍結した (本ファイル冒頭の凍結 notice 参照)。「WI-13 まで」という当時の見込みは外れており、現在の凍結状態は本ファイル冒頭の notice が唯一の正。**
 > 🗺️ **未着手フェーズ (Phase 4b8・5b2・5b3・5c・6〜12) の実装詳細は [`docs/design/master_roadmap.md`](docs/design/master_roadmap.md) に一気通貫で規定済み (2026-07-19 v2.0 発行、Google/MS 責任者視点レビュー済、23章)。これらのフェーズについて「何を作るか」を推測・再設計する前に必ずこのファイルの該当章を読むこと。本書は Plan-of-Record であり、要件定義書と同格の拘束力を持つ。矛盾が生じた場合はユーザーに確認する (CLAUDE.md 絶対ルール3)。**
 > 📜 **過去の設計判断・方針転換の経緯は [`docs/history/TIMELINE.md`](docs/history/TIMELINE.md) にセッション単位で時系列集約。「なぜ今この設計か」の一次資料。**
 > 📝 **各セッション終了時、TIMELINE.md の末尾に「そのセッションで決めたこと・作ったもの」を 1 セクション追記すること。**
@@ -175,7 +175,7 @@ NeoMIFES/
 
 - ビルド: **CMake 3.28+ + MSVC v143 (VS 17.13+)**、Ninja ジェネレータ。開発機には Visual Studio Community 2026 (MSVC 19.50/14.50) が実際にインストール済み — ローカルビルド手順は [`docs/handoff/RESUME_HERE.md`](docs/handoff/RESUME_HERE.md) §2 参照
 - C++ 標準: `/std:c++latest` (実質 C++23)
-- 警告: `/W4 /permissive- /Zc:__cplusplus`、現状 `WarningsAsErrors: ''`。Phase 2b は完了済みだが切替は未実施 — **Phase 3 着手時 (Direct2D/DirectWrite 実装コード追加前) に切替を行う**方針に確定 (self_review R4 / `docs/handoff/RESUME_HERE.md` §3.4 参照。「次のフェーズで」を繰り返して先送りし続けないため、着手タイミングを明記した)
+- 警告: `/W4 /permissive- /Zc:__cplusplus`。`src/` は `WarningsAsErrors: '*'` へ切替済み (Session 17、2026-07-16、`src/.clang-tidy` 参照)。`tests/` は着手前から存在した既存警告(276件)が残るため `WarningsAsErrors: ''` のまま — 新規テストコードへの警告混入は各 WI のレビューで個別に防ぐ運用
 - サニタイザ: Debug ビルドで `/fsanitize=address` (`asan` プリセット)
 - 静的解析: clang-tidy (LLVM、VS にバンドル)。MSVC `/analyze` は未導入
 - テスト: **GoogleTest 1.15.2** / ベンチは **google/benchmark 1.9.1** (共に FetchContent)

@@ -92,7 +92,7 @@ PieceTable
 ### 実装上の変更 (Phase 2b2 で実施)
 
 **新規ファイル:**
-- `src/document/include/neomifes/document/piece_tree_node.h` — Node 定義 (mutable, subtree aggregate 込み)
+- `src/document/include/neomifes/document/piece_tree.h` — Node 定義含む (mutable, subtree aggregate 込み)。**(2026-09-11 訂正) 計画時点では独立ヘッダ `piece_tree_node.h` を想定していたが、実装では `piece_tree.h` へ統合された。独立ファイルは作成されていない。**
 - `src/document/src/piece_tree.cpp` — RB insert / delete / rotate + aggregate 更新 + in-order 走査 + tree-based line queries
 - `tests/unit/document_piece_tree_test.cpp` — RB invariant + aggregate 整合性 + edge cases
 

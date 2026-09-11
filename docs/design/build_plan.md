@@ -57,7 +57,7 @@ ctest --preset debug --output-on-failure
 **NeoMIFES = Windows 向け純粋ネイティブテキストエディタ。** C++23 + Win32 + Direct2D/DirectWrite。秀丸/サクラ/MIFES を超える「最速・最軽量・AI 親和」を掲げる。
 
 - リポジトリ: `D:\IDE\Claude\NeoMIFES` (GitHub `itbizmonky/NeoMIFES`、main ブランチ)
-- 規模: 約 35,000 行 / 1309 テスト / ADR 21 本
+- 規模 (凍結時点、2026-09-11): 約 45,000 行 / 1621 テスト / ADR 22 本
 - **禁止:** Electron / Qt / WPF / WinUI3 主体 / Avalonia / WebView / Chromium / .NET MAUI
 
 **現在の状態を一行で:**
