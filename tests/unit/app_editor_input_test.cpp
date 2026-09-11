@@ -12,6 +12,7 @@
 namespace {
 
 using neomifes::app::applyMouseWheelScroll;
+using neomifes::app::applyMouseWheelScrollColumn;
 using neomifes::app::applyOverwriteChar;
 using neomifes::app::computeHScrollTargetColumn;
 using neomifes::app::computeVScrollTargetLine;
@@ -478,6 +479,27 @@ TEST(EditorInputTest, ApplyMouseWheelScrollDownClampsToLastLineNearEof) {
 
 TEST(EditorInputTest, ApplyMouseWheelScrollDownWithZeroTotalLinesClampsToZero) {
     EXPECT_EQ(applyMouseWheelScroll(-WHEEL_DELTA, 0, 0), 0U);
+}
+
+// WI-44: applyMouseWheelScrollColumn() - horizontal counterpart above.
+// WM_MOUSEHWHEEL's sign convention is the OPPOSITE of WM_MOUSEWHEEL's (a
+// positive delta tilts/swipes right, revealing later columns), so a
+// positive delta here increases the column instead of decreasing it.
+TEST(EditorInputTest, ApplyMouseWheelScrollColumnRightIncreasesColumn) {
+    EXPECT_EQ(applyMouseWheelScrollColumn(WHEEL_DELTA, 5), 8U);  // scroll right: +3 columns
+}
+
+TEST(EditorInputTest, ApplyMouseWheelScrollColumnLeftDecreasesColumnClampedToZero) {
+    EXPECT_EQ(applyMouseWheelScrollColumn(-WHEEL_DELTA, 5), 2U);  // scroll left: -3 columns
+    EXPECT_EQ(applyMouseWheelScrollColumn(-WHEEL_DELTA, 1), 0U);  // clamped, not negative
+}
+
+TEST(EditorInputTest, ApplyMouseWheelScrollColumnRightHasNoUpperClamp) {
+    // Unlike the vertical version, there is no document-width bound to clamp
+    // against here (render-time clamping is the single source of truth, per
+    // computeHScrollTargetColumn()'s own design) - a large starting column
+    // should pass straight through the addition, not silently saturate.
+    EXPECT_EQ(applyMouseWheelScrollColumn(WHEEL_DELTA, 1'000'000U), 1'000'003U);
 }
 
 TEST(EditorInputTest, ComputeHScrollTargetColumnLineLeftDecreasesByOneClampedToZero) {

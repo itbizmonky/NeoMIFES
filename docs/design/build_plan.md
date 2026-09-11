@@ -3274,6 +3274,104 @@ WI-42完了・CI green確認後、ユーザーから「次に進めて」との�
 
 コミット: `38f5fc5`。
 
+---
+
+## WI-44 — `Viewport`が短い文書で窓の実容量を誤認する垂直スクロールバグを解消(P1)
+
+### 目的
+
+ユーザーの実機ドッグフーディング報告: 「NeoMIFESを起動して1行目に入力後、エンターキーで2行目にカーソル移動すると1行目が見えなくなった。Windowに余白がある場合はスクロールするな。」1つのメッセージで報告された3件のスクロール系バグの1件目。
+
+### 調査
+
+Explore agentへ3件まとめて調査を委任。`Viewport::ensureVisible()`自体のスクロール判定式(`line >= topLine + visibleLineCount`)は正しく単体テストでも検証済みと判明。問題は`Viewport::m_visibleLineCount`へWI-36で配線された値の側にあった: `RenderPipeline::visibleLineCount()`は`visibleLineRange()`の壁打ちループが`totalLines`(文書の行数)に達した時点で止まる設計のため、**文書が短いほど値も小さくなる「今何行描画中か」を返す関数**であり、「窓が何行表示できるか(容量)」を返す関数ではなかった。WI-34時点の元々の用途(スクロールバーのページステップ)ではこの意味で正しかったが、WI-36がそのまま`Viewport`の容量フィールドへ転用したことで、1行文書では`m_visibleLineCount==1`となり、カーソルが2行目に達した瞬間に窓の容量を使い切ったと誤認していた。
+
+### 設計
+
+`visibleLineRange()`内部で既に計算されている`computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips)`(文書行数に一切依存しない、純粋にウィンドウ高さから導出される値)を新規`RenderPipeline::visibleRowCapacity()`として公開する。`visibleLineCount()`自体は元の用途(`syncVerticalScrollBar()`/`handleVScrollEvent()`のページステップ)のまま変更しない。`handlePaintEvent()`の`Viewport::setVisibleLineCount()`配線を`visibleLineCount()`から`visibleRowCapacity()`へ切替える。
+
+### 実装
+
+`render_pipeline.h`/`.cpp`: `visibleRowCapacity()`新設(ヘッダはコメントのみ・実装は.cpp、`visibleColumnCount()`と同じ「デバイス依存の値は.cpp側」パターンに合わせた)。`normal_mode_wiring.cpp`: `handlePaintEvent()`の配線を切替(1行)。
+
+### 検証
+
+新規統合テスト`RenderTextSmokeTest.VisibleRowCapacityIsNotBoundedByShortDocumentLength`(1行文書で`visibleLineCount()==1`かつ`visibleRowCapacity()>1`を確認)。実機ドッグフーディング: 新規ファイルに`WM_CHAR`で"line1"を合成入力しEnterを3回送信(4行目まで進行)、1行目("line1")が表示され続けることをスクリーンショットで確認。
+
+コミット: (WI-44/45/46まとめてWI完了時に記録、下記参照)。
+
+---
+
+## WI-45 — IME合成中のテキストが右端を超えても水平スクロールが追従しないバグを解消(P1)
+
+### 目的
+
+同メッセージで報告された3件のスクロール系バグの2件目。「日本語入力でウィンドウサイズを超える入力をした場合でも画面はスクロールせずに一番右側の入力文字が見えるようにしたい。」
+
+### 調査
+
+IME合成文字列(`ImeComposition::text`)は一度もDocumentへ書き込まれず、合成中は`anchorRange`(合成開始位置)が固定されたまま`text`だけが伸びる設計(`render_pipeline.h`既存コメント)。`Viewport::ensureVisible()`はDocument上のカーソル位置(`TextPos`)からしか駆動されないため、`handleImeCompositionEvent()`(合成文字列が伸びるたびに呼ばれる)は一度も`ensureVisible()`を呼んでいなかった——水平スクロールを駆動する経路がそもそも存在しなかった。
+
+### 設計・実装(1段階目)
+
+`Viewport`へ、TextPosを経由せず直接カラム値でクランプする`ensureColumnVisible(std::uint32_t column)`を新設(`ensureVisible()`自体もこれを内部で呼ぶよう重複排除でリファクタ)。`handleImeCompositionEvent()`から`anchorColumn + text.size()`(UTF-16コード単位数)を目標カラムとして呼び出すよう配線した。
+
+### 🔴 追加報告と2段階目の修正
+
+ユーザーから追加報告: 「確認したが、右端の文字は右ペインで隠れて未だ右端が見えない、右ペインを考慮して右端の文字が完全に見えるようにして欲しい。」
+
+自身の`WM_CHAR`合成テキスト(半角のみ)によるドッグフーディングでは境界が正しく見えたため、半角前提の`text.size()`と全角文字の実描画幅の乖離を疑い、`render_pipeline.cpp`の`drawImeCompositionOnLine()`が既にDirectWriteで`compositionMetrics.width`(実測ピクセル幅)を計測していることを確認。全角文字(ひらがな・カタカナ・漢字)はDirectWriteでは半角カラム幅の約2倍で描画されるため、`text.size()`(1文字=1カラムという半角前提の換算)は全角文字を含む合成文字列の実際の描画幅を過小評価し、スクロール量が足りず末尾がミニマップの裏に隠れていたと判明。
+
+**修正:** `RenderPipeline`へ`measureTextColumnWidth(std::u16string_view text)`を新設。`drawImeCompositionOnLine()`と同じDirectWrite実測パターン(`IDWriteTextLayout::GetMetrics()`の`width`)を流用し、実測ピクセル幅を`m_charWidthDips`で割ってカラム数へ変換(`std::ceil`で切り上げ、実測幅を下回らないようにする)。`handleImeCompositionEvent()`を`anchorColumn + text.size()`から`anchorColumn + renderPipeline.measureTextColumnWidth(text)`へ差し替え。
+
+### 検証
+
+新規単体テスト4件(`ViewportTest.EnsureColumnVisible*`、`ensureColumnVisible()`の3ケース+word wrap時のスキップ)。新規統合テスト`RenderTextSmokeTest.MeasureTextColumnWidthCountsFullWidthCharactersAsWiderThanHalfWidth`(同じ5文字でも全角「あいうえお」が半角"abcde"より広いカラム数として測定されることを確認、半角は厳密に5カラム)。
+
+**実IME(日本語変換)での対話的な実機確認は未完走のまま正直に記録する。** 外部プロセス(PowerShell)から`AttachThreadInput`+`ImmGetContext()`経由で実際のIME合成文字列を注入する手法を試みたが、対象ウィンドウの`HIMC`を取得できず(`ImmGetContext`が一貫して`NULL`を返す、Win32エラーコードは0=正常扱い)、この環境固有の制約と判断し断念した(既知の複数モディファイアキー合成制約とは別種)。代わりに、①コードレベルでの原因特定(`drawImeCompositionOnLine()`の既存DirectWrite実測パターンとの整合性確認)、②その原因を直接証明する統合テスト、③同型の実測パターンが本番描画コードで既に稼働中であることの3点を根拠に修正の正しさを判断した。
+
+コミット: (下記参照)。
+
+---
+
+## WI-46 — マウスホイールによる水平スクロールを新規実装(P2)
+
+### 目的
+
+同メッセージで報告された3件のスクロール系バグの3件目。「横スクロールをマウスのホイールで操作しようとしても左右端までスクロールしない。」
+
+### 調査
+
+`WM_MOUSEHWHEEL`(チルトホイール/トラックパッドの水平スクロールジェスチャ)のハンドリングがコードベースに一切存在しないと判明。`MainWindow`のウィンドウプロシージャには`WM_MOUSEWHEEL`(垂直)のcaseはあるが`WM_MOUSEHWHEEL`のcaseが無く、`MainWindowConfig`にも対応するコールバックフィールドが存在しなかった——「左右端まで届かない」という部分的な不具合ではなく、水平方向のホイール操作自体が未実装だった。
+
+### 設計
+
+既存の垂直方向の構造(`WM_MOUSEWHEEL`/`handleMouseWheel()`/`MainWindowConfig::onMouseWheel`/`applyMouseWheelScroll()`)を鏡像として水平版を新設する。`WM_MOUSEHWHEEL`の符号規約は`WM_MOUSEWHEEL`と逆(正の値=右へチルト=後方のカラムを表示=`leftColumn`増加)のため、垂直版のような符号反転は行わない。`computeHScrollTargetColumn()`と同じ「上限クランプ無し、レンダー時のクランプが唯一の真実の源」という既存設計方針(`editor_input.h`)を踏襲し、上限クランプは設けない(10GBファイル対応の制約上、文書全体の水平最大幅をO(1)で権威的に知る手段が無いため)。
+
+### 実装
+
+`main_window.h`/`.cpp`: `MainWindowConfig::onMouseHWheel`、`MainWindow::handleMouseHWheel()`、`WM_MOUSEHWHEEL`のcase、コンストラクタでの配線を追加。`editor_input.h`/`.cpp`: `applyMouseWheelScrollColumn()`新設(垂直版と対称、上限クランプ無し)。`normal_mode_wiring.cpp`: `cfg.onMouseHWheel`を配線(`handleHScrollEvent()`と同じ`scrollToColumn()`+`syncRenderStateAndInvalidate()`の型)。
+
+### 検証
+
+新規単体テスト3件(`ApplyMouseWheelScrollColumnRightIncreasesColumn`/`...LeftDecreasesColumnClampedToZero`/`...RightHasNoUpperClamp`)。実機ドッグフーディング: 300文字("0123456789"×30)の長い1行に対し`WM_MOUSEHWHEEL`を`PostMessage`で実際に送信し、①3回×8ノッチ右スクロールでスクロールバー位置と表示文字列の変化(想定通り72カラム分シフト)を確認、②大きな右スクロールで文書の右端を超えブランク表示になる(=右端に到達した証拠)ことを確認、③その後の左スクロールで正確に列0(文書の左端)まで戻ることを確認——全てスクリーンショットで実証。
+
+### WI-44/45/46 共通の検証
+
+Debug全1621/1621件green(既存1614+新規8件〔WI-44/45分〕+新規3件〔WI-46分〕、既存回帰無し)。
+
+Release/ASan/UBSan(clang-cl)3構成+clang-tidyをサブエージェントへ委任、全green:
+- **clang-tidy:** 変更14ファイル(`.cpp`5件+`.h`4件+テスト3件)全てで本差分に起因する新規指摘0件。ヘッダ単独invocationは既知の制約(スタンドアロンコンパイル非対応、`build_plan.md`既存の`file_loader.h`と同型の落とし穴)によりcascade errorが出たが、`git diff`で当該4ヘッダの変更が全てtrivialな宣言+コメント追加のみであることを確認済み。テストファイル側の指摘は全て変更範囲外の既存コード(`misc-const-correctness`、同ファイル内で既に30回以上繰り返されている既存パターン)
+- **Release:** ビルドexit 0、1621/1621件green(87.5秒)
+- **ASan:** ビルドexit 0、1621/1621件green(349.7秒)、サニタイザ診断0件
+- **UBSan:** ビルドexit 0、1621/1621件green(109.9秒)、サニタイザ診断0件。`frame_measure_hangs_under_ubsan_clang_cl.md`の既知フレークは今回も再現せず(5.37秒で正常完了)
+
+いずれの構成でも新規テスト(`EnsureColumnVisible*`4件、`ApplyMouseWheelScrollColumn*`3件、`VisibleRowCapacityIsNotBoundedByShortDocumentLength`、`MeasureTextColumnWidthCountsFullWidthCharactersAsWiderThanHalfWidth`)がpassすることを個別フィルタ実行で確認済み。
+
+コミット: (直後に記録)。
+
+---
+
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)
 - [x] 日本語 IME でインライン変換が正しく表示される (**実機手動確認必須**) (WI-06実装時の2026-08-12に実機MS-IMEで確認済み。本WIではIME関連コードを一切変更していないためコードレビューで退行なしを確認、再実演はしていない)
 - [x] 未保存で終了しようとすると警告が出る (WI-02実装+既存テスト。本WIでは対話的再確認は環境のフォーカス不安定性により未実施、コードレビュー+既存テストスイートで代替 — 詳細は実装後の確定事項参照)

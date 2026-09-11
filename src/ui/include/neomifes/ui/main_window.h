@@ -104,6 +104,13 @@ struct MainWindowConfig {
     // Optional: invoked from WM_MOUSEWHEEL with the raw wheel delta
     // (positive = away from the user, a multiple of WHEEL_DELTA). Phase 4b1.
     std::function<void(HWND, short wheelDelta)> onMouseWheel;
+    // WI-44: horizontal counterpart, invoked from WM_MOUSEHWHEEL (tilt-wheel
+    // mice / trackpad horizontal swipe) with the raw wheel delta (positive =
+    // tilted/swiped to the right, a multiple of WHEEL_DELTA - the opposite
+    // sign convention from onMouseWheel's vertical delta, per Win32's own
+    // WM_MOUSEHWHEEL documentation). Previously unhandled anywhere in this
+    // codebase (docs/issues/mouse_wheel_horizontal_scroll_unimplemented.md).
+    std::function<void(HWND, short wheelDelta)> onMouseHWheel;
     // Optional: invoked from WM_LBUTTONDOWN with the client-area pixel
     // coordinate, the live Shift modifier state (Phase 4b2, read from the
     // message's own wParam per mouse-message convention, not GetKeyState),
@@ -410,6 +417,7 @@ private:
     [[nodiscard]] bool handleSysKeyDown(WPARAM wParam) noexcept;
     void handleChar(WPARAM wParam) noexcept;
     void handleMouseWheel(WPARAM wParam) noexcept;
+    void handleMouseHWheel(WPARAM wParam) noexcept;
     void handleMouseDown(WPARAM wParam, LPARAM lParam) noexcept;
     void handleMouseMove(LPARAM lParam) noexcept;
     void handleMouseUp() noexcept;
@@ -452,6 +460,7 @@ private:
     std::function<bool(HWND, UINT, bool)>       m_onSysKeyDown;
     std::function<void(HWND, wchar_t)>          m_onChar;
     std::function<void(HWND, short)>            m_onMouseWheel;
+    std::function<void(HWND, short)>            m_onMouseHWheel;
     std::function<void(HWND, std::int32_t, std::int32_t, bool, bool, int)> m_onMouseDown;
     std::function<void(HWND, std::int32_t, std::int32_t)>            m_onMouseDrag;
     std::function<void(HWND, WORD, WORD)>                             m_onHScroll;

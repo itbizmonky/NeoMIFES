@@ -69,6 +69,7 @@ bool MainWindow::create(HINSTANCE hInstance, const MainWindowConfig& config) {
     m_onSysKeyDown   = config.onSysKeyDown;
     m_onChar         = config.onChar;
     m_onMouseWheel   = config.onMouseWheel;
+    m_onMouseHWheel  = config.onMouseHWheel;
     m_onMouseDown    = config.onMouseDown;
     m_onMouseDrag    = config.onMouseDrag;
     m_onHScroll      = config.onHScroll;
@@ -206,6 +207,9 @@ LRESULT MainWindow::wndProc(UINT msg, WPARAM wParam, LPARAM lParam) noexcept {
             return 0;
         case WM_MOUSEWHEEL:
             handleMouseWheel(wParam);
+            return 0;
+        case WM_MOUSEHWHEEL:
+            handleMouseHWheel(wParam);
             return 0;
         case WM_LBUTTONDOWN:
             handleMouseDown(wParam, lParam);
@@ -404,6 +408,12 @@ void MainWindow::handleChar(WPARAM wParam) noexcept {
 void MainWindow::handleMouseWheel(WPARAM wParam) noexcept {
     if (m_onMouseWheel) {
         m_onMouseWheel(m_hwnd, static_cast<short>(HIWORD(wParam)));
+    }
+}
+
+void MainWindow::handleMouseHWheel(WPARAM wParam) noexcept {
+    if (m_onMouseHWheel) {
+        m_onMouseHWheel(m_hwnd, static_cast<short>(HIWORD(wParam)));
     }
 }
 

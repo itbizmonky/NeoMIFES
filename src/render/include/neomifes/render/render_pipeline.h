@@ -476,6 +476,28 @@ public:
     // two" tolerance computeDesiredTokenRange() already documents.
     [[nodiscard]] std::uint32_t visibleColumnCount() const noexcept;
 
+    // WI-44: measures `text`'s REAL DirectWrite-rendered width and returns
+    // it as an equivalent column count (rounded up), for callers that need
+    // to scroll a string into view before it has any real line layout to
+    // hit-test against - specifically IME composition text, which is never
+    // written to Document (see ImeComposition's own header comment below)
+    // and so has no TextPos/line layout of its own for
+    // core::Viewport::ensureVisible()'s normal path. Naively using the
+    // UTF-16 code-unit count as a column count (1 unit = 1 charWidthDips)
+    // under-counts CJK/full-width characters, which DirectWrite renders at
+    // roughly 2x a half-width column's pixel width each while still being a
+    // single UTF-16 code unit - this under-count was the actual cause of
+    // docs/issues/ime_composition_horizontal_scroll_not_followed.md's
+    // "last character still hidden behind the minimap" follow-up report:
+    // the horizontal scroll target landed short of the composition's true
+    // rendered right edge. Rounds UP (not to nearest) so the returned
+    // column count is never smaller than the real pixel width requires -
+    // ensureColumnVisible()'s clamp must scroll AT LEAST that far, never
+    // short. Falls back to text.size() if no device/text format is ready
+    // yet (pre-first-render) - same degrade-gracefully convention as
+    // visibleColumnCount() above.
+    [[nodiscard]] std::uint32_t measureTextColumnWidth(std::u16string_view text) const noexcept;
+
     // WI-34: vertical counterpart to visibleColumnCount() - how many
     // logical lines are actually visible right now (fold/wrap-aware, via
     // the private visibleLineRange() below). Used as syncVerticalScrollBar()/
@@ -489,6 +511,24 @@ public:
         const auto [startLine, endLineExclusive] = visibleLineRange();
         return endLineExclusive > startLine ? endLineExclusive - startLine : document::LineNumber{0};
     }
+
+    // WI-44: the window's true row CAPACITY (how many rows COULD be shown),
+    // independent of document length - distinct from visibleLineCount()
+    // above, which stops early once it reaches the end of a document
+    // shorter than the window. core::Viewport::setVisibleLineCount() needs
+    // capacity (fed here), not "rows occupied right now" (visibleLineCount()
+    // stays as syncVerticalScrollBar()/handleVScrollEvent()'s page-step
+    // source, its original purpose - see that method's own comment for why
+    // page-step legitimately wants "rows occupied"). Feeding
+    // visibleLineCount() to Viewport instead made ensureVisible() think a
+    // window that could show 40 rows could show only 1 whenever the
+    // document had only 1 line, so it scrolled line 1 out of view the
+    // instant the cursor reached line 2 (docs/issues/
+    // viewport_scroll_capacity_bounded_by_document_length.md). Implemented
+    // out-of-line (render_pipeline.cpp) rather than inline here, like
+    // visibleColumnCount() above, so this header doesn't need to pull in
+    // viewport_math.h just for computeVisibleLineCount().
+    [[nodiscard]] std::uint32_t visibleRowCapacity() const noexcept;
 
     // The full set of cursors to draw - one caret + (optionally) one
     // selection highlight each (Phase 4b7a, generalizing Phase 4b1's

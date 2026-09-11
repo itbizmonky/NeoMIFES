@@ -4489,6 +4489,18 @@ WI-42完了・CI green確認後、ユーザーから「次に進めて」との�
 
 併せて`docs/design/build_plan.md` §2.1/§4.3のローカル検証規定を「フル3構成(Debug/Release/UBSan)」から「フル4構成(Debug/Release/ASan/UBSan)」へ改訂した——本セッションを含め実態としては既にASanも含めた4構成での検証が定着していたが、文書記述がそれに追従していなかった既存の乖離も併せて解消した。
 
-本WIはYAML1行+ドキュメント文言の変更のみでC++コード変更を伴わないため、ローカルでは`cmake --preset asan`のconfigure成功のみ確認し、実際のCI上での`asan`ジョブgreen化をもって検証とする方針とした。
+本WIはYAML1行+ドキュメント文言の変更のみでC++コード変更を伴わないため、ローカルでは`cmake --preset asan`のconfigure成功のみ確認し、実際のCI上での`asan`ジョブgreen化をもって検証とする方針とした。WI-43自体のCI(4ジョブ全て)はセッション終盤にgreen確認済み。
+
+### WI-44/45/46: ユーザー報告のスクロール系バグ3件を調査・修正
+
+ユーザーから1メッセージで3件の実機バグ報告があった: 「NeoMIFESを起動して1行目に入力後、エンターキーで2行目にカーソル移動すると1行目が見えなくなった。Windowに余白がある場合はスクロールするな。また日本語入力でウィンドウサイズを超える入力をした場合でも画面はスクロールせずに一番右側の入力文字が見えるようにしたい。また横スクロールをマウスのホイールで操作しようとしても左右端までスクロールしない。」Explore agentへ3件まとめて調査を委任し、それぞれ独立したWIとして順に対応した。
+
+**WI-44(垂直スクロール過剰反応):** `RenderPipeline::visibleLineCount()`(文書行数で頭打ちになる「今何行描画中か」)がWI-36以来`Viewport::setVisibleLineCount()`(窓の「表示容量」であるべき値)へ誤って配線されていたと判明。新規`visibleRowCapacity()`(文書行数に依存しない真の窓容量、`visibleLineRange()`内部で既に計算されていた値を公開)へ配線を切替。実機で"line1"入力後Enter×3(4行目まで進行)しても1行目が表示され続けることを確認。
+
+**WI-45(IME合成中の水平スクロール未追従、2段階):** 1段階目、合成中はDocumentカーソル(`anchorRange`)が固定されたまま`text`だけ伸びる設計のため`Viewport::ensureVisible()`の駆動経路が一切無いと判明、新規`ensureColumnVisible()`(TextPos非経由の直接カラムクランプ、`ensureVisible()`自体もこれを呼ぶようリファクタ)で対応。**ここでユーザーから追加報告:** 「確認したが、右端の文字は右ペインで隠れて未だ右端が見えない、右ペインを考慮して右端の文字が完全に見えるようにして欲しい。」`text.size()`(UTF-16コード単位数、半角前提の1文字=1カラム換算)が全角文字の実描画幅(DirectWriteでは半角の約2倍)を過小評価していたと判明。`drawImeCompositionOnLine()`が既に使っている同じDirectWrite実測パターンを流用した新規`measureTextColumnWidth()`(実測幅をカラム数へ変換、`std::ceil`で切り上げ)へ差し替えて解決。実IME合成での対話的確認は、外部プロセスから対象ウィンドウの`HIMC`を取得できない(`AttachThreadInput`+`ImmGetContext()`を試行、常に`NULL`)という本環境固有の制約により未完走、正直に記録。統合テストで全角文字が半角より広いカラム数として測定されることを確認して代替。
+
+**WI-46(マウスホイール水平スクロール、新規実装):** `WM_MOUSEHWHEEL`のハンドリングがコードベースに一切存在しない未実装機能だったと判明(「左右端まで届かない」ではなく機能自体が無かった)。垂直方向の既存構造(`onMouseWheel`/`handleMouseWheel()`/`applyMouseWheelScroll()`)を鏡像として`onMouseHWheel`/`handleMouseHWheel()`/`applyMouseWheelScrollColumn()`を新設。実機で300文字の長い1行に`WM_MOUSEHWHEEL`を`PostMessage`し、右スクロールでのカラム位置シフト・右端超過時のブランク表示(到達の証明)・左スクロールでの列0への正確な復帰、全てをスクリーンショットで確認。
+
+3件とも新規issueとして起票(`viewport_scroll_capacity_bounded_by_document_length.md`/`ime_composition_horizontal_scroll_not_followed.md`/`mouse_wheel_horizontal_scroll_unimplemented.md`)、同一セッション内で解決済みへ。新規テスト計10件(単体7件+統合3件)追加。Debug全1621/1621件green。Release/ASan/UBSan+clang-tidyはサブエージェントへ検証委任。
 
 <!-- 次セッションはここに追記 -->

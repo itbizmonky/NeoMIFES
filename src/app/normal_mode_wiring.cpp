@@ -4208,19 +4208,47 @@ void handleImeStartComposition(HWND hwnd, EditorSession& session, RenderPipeline
 // anchorRange handleImeStartComposition() already stored - see this
 // function's own comment for why that is the single source of truth
 // instead of a separately threaded variable.
+//
+// WI-44: also keeps the composition's own trailing edge horizontally
+// visible as it grows. anchorRange.start (where composition text is drawn)
+// never moves for the whole composition session - only `text` grows - so
+// Viewport::ensureVisible()'s normal Document-cursor-driven path never
+// fires here; nothing was calling it at all before this WI, so composition
+// text just kept drawing further right, off the edge of the client area,
+// with no horizontal scroll to follow it (docs/issues/
+// ime_composition_horizontal_scroll_not_followed.md). Synthesizes the
+// trailing column (anchor column + composition width) and feeds it to the
+// new Viewport::ensureColumnVisible() instead - text is never committed to
+// Document during composition, so there is no TextPos to pass through
+// ensureVisible()'s normal path.
+//
+// Uses RenderPipeline::measureTextColumnWidth(text) (a REAL
+// DirectWrite-measured width converted to columns), not text.size(). A
+// first cut of this WI used text.size() directly and still reproduced the
+// user's exact follow-up report ("最後の文字が右ペイン[minimap]に隠れて見
+// えない") in real dogfooding: text.size() counts UTF-16 code units, but
+// CJK/full-width characters (the entire point of IME composition) render
+// at roughly 2x a half-width column's pixel width each while still being a
+// single code unit - so the scroll target consistently landed short of the
+// composition's true rendered right edge, once per full-width character in
+// the string.
 void handleImeCompositionEvent(HWND hwnd, std::u16string text,
                                std::optional<std::pair<std::uint32_t, std::uint32_t>> targetClauseRange,
-                               RenderPipeline& renderPipeline) {
+                               EditorSession& session, RenderPipeline& renderPipeline) {
     const auto& current = renderPipeline.imeComposition();
     if (!current) {
         return;
     }
+    const Document&                    doc        = session.document();
+    const neomifes::document::LineNumber anchorLine = doc.offsetToLine(current->anchorRange.start);
+    const auto anchorColumn = static_cast<std::uint32_t>(current->anchorRange.start - doc.lineToOffset(anchorLine));
+    session.viewport().ensureColumnVisible(anchorColumn + renderPipeline.measureTextColumnWidth(text));
     renderPipeline.setImeComposition(ImeComposition{
         .anchorRange       = current->anchorRange,
         .text              = std::move(text),
         .targetClauseRange = targetClauseRange,
     });
-    ::InvalidateRect(hwnd, nullptr, FALSE);
+    syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
 }
 
 // WI-06: cfg.onImeResult body - GCS_RESULTSTR (the IME just committed
@@ -4279,10 +4307,10 @@ void wireImeHooks(MainWindowConfig& cfg, Workspace& workspace, RenderPipeline& r
     cfg.onImeStartComposition = [&workspace, &renderPipeline, &imeComposing](HWND hwnd) {
         handleImeStartComposition(hwnd, workspace.active(), renderPipeline, imeComposing);
     };
-    cfg.onImeComposition = [&renderPipeline](
+    cfg.onImeComposition = [&workspace, &renderPipeline](
                                HWND hwnd, std::u16string text,
                                std::optional<std::pair<std::uint32_t, std::uint32_t>> targetClauseRange) {
-        handleImeCompositionEvent(hwnd, std::move(text), targetClauseRange, renderPipeline);
+        handleImeCompositionEvent(hwnd, std::move(text), targetClauseRange, workspace.active(), renderPipeline);
     };
     cfg.onImeResult = [&workspace, &renderPipeline](HWND hwnd, std::u16string resultText) {
         handleImeResultEvent(hwnd, std::move(resultText), workspace.active(), renderPipeline);
@@ -5032,12 +5060,21 @@ void handlePaintEvent(HWND paintHwnd, MainWindow& window, RenderPipeline& render
     // viewport_visible_line_count_never_set_pageup_pagedown_noop.md), which
     // made PageUp/PageDown silently move 0 lines: applyMovementKey()'s
     // pageSize comes from viewport.visibleLines(), whose range width is
-    // exactly this count. RenderPipeline::visibleLineCount() is a uint64_t
-    // (document::LineNumber) but a SCREEN's worth of visible rows can never
-    // approach uint32_t's range, so a plain narrowing cast is safe here
-    // (unlike documentLineCount(), which is the whole file's line count and
-    // does get INT_MAX-clamped elsewhere for exactly that reason).
-    session.viewport().setVisibleLineCount(static_cast<std::uint32_t>(renderPipeline.visibleLineCount()));
+    // exactly this count.
+    // WI-44: switched from RenderPipeline::visibleLineCount() to
+    // visibleRowCapacity() - the former stops early at the document's own
+    // end, so on a document shorter than the window it under-reported the
+    // window's true capacity (as low as 1 for a 1-line document). Since
+    // Viewport::ensureVisible() also reads m_visibleLineCount to decide
+    // when to scroll, that under-reporting made it think the window could
+    // show only as many rows as the document currently has, scrolling
+    // line 1 out of view the instant the cursor reached line 2 even with
+    // dozens of empty rows still available below (docs/issues/
+    // viewport_scroll_capacity_bounded_by_document_length.md).
+    // visibleRowCapacity() is already uint32_t (unlike visibleLineCount(),
+    // a uint64_t document::LineNumber), so no narrowing cast is needed here
+    // anymore either.
+    session.viewport().setVisibleLineCount(renderPipeline.visibleRowCapacity());
     // WI-21e: kept fresh every frame, same rationale as
     // setVisibleColumnCount() immediately above - renderPipeline's word-wrap
     // flag is a single global toggle, but core::Viewport is one-per-
@@ -5629,6 +5666,18 @@ void wireNormalMode(MainWindowConfig& cfg, MainWindow& window, RenderPipeline& r
         EditorSession& session = workspace.active();
         session.viewport().scrollTo(neomifes::app::applyMouseWheelScroll(
             wheelDelta, session.viewport().topLine(), session.document().lineCount()));
+        syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
+    };
+    // WI-44: horizontal counterpart to onMouseWheel above - previously
+    // unwired entirely (docs/issues/
+    // mouse_wheel_horizontal_scroll_unimplemented.md). Mirrors
+    // handleHScrollEvent()'s tail (scrollToColumn() + sync) rather than
+    // going through computeHScrollTargetColumn(), since that function
+    // switches on WM_HSCROLL's SB_* codes, which a wheel event doesn't have.
+    cfg.onMouseHWheel = [&workspace, &renderPipeline](HWND hwnd, short wheelDelta) {
+        EditorSession& session = workspace.active();
+        session.viewport().scrollToColumn(
+            neomifes::app::applyMouseWheelScrollColumn(wheelDelta, session.viewport().leftColumn()));
         syncRenderStateAndInvalidate(hwnd, renderPipeline, session);
     };
     // WI-03: this window's first-ever scrollbar (WS_HSCROLL, added by

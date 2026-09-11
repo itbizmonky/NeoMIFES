@@ -324,6 +324,22 @@ document::LineNumber applyMouseWheelScroll(short wheelDelta, document::LineNumbe
     return (currentTopLine >= scrollUp) ? currentTopLine - scrollUp : 0;
 }
 
+std::uint32_t applyMouseWheelScrollColumn(short wheelDelta, std::uint32_t currentLeftColumn) noexcept {
+    constexpr std::int64_t kColumnsPerNotch = 3;
+    const std::int64_t     notches          = wheelDelta / WHEEL_DELTA;
+    // WM_MOUSEHWHEEL convention (unlike WM_MOUSEWHEEL above): a positive
+    // delta means the wheel was tilted/swiped to the RIGHT, which reveals
+    // LATER columns - leftColumn should increase, so (unlike
+    // applyMouseWheelScroll()'s negation) no sign flip is needed here; this
+    // matches computeHScrollTargetColumn()'s SB_LINERIGHT direction.
+    const std::int64_t columnsToScroll = notches * kColumnsPerNotch;
+    if (columnsToScroll >= 0) {
+        return currentLeftColumn + static_cast<std::uint32_t>(columnsToScroll);
+    }
+    const auto scrollLeft = static_cast<std::uint32_t>(-columnsToScroll);
+    return (currentLeftColumn >= scrollLeft) ? currentLeftColumn - scrollLeft : 0;
+}
+
 bool handleMouseDown(document::TextPos pos, bool shiftDown, SelectionModel& selection,
                      Viewport& viewport, const Document& document) {
     selection.moveAllTo(pos, shiftDown);

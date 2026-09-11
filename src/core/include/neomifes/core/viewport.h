@@ -50,6 +50,18 @@ public:
     // (`cv.position - m_document->lineToOffset(cursorLine)`).
     void ensureVisible(document::TextPos pos, const document::Document& doc);
 
+    // WI-44: horizontal-only counterpart to ensureVisible(), for callers
+    // that need to scroll a column into view without a backing Document
+    // TextPos - namely IME composition text, which grows past the anchor
+    // cursor's position without ever being written to the Document (see
+    // ImeComposition's own header comment in render_pipeline.h), so there
+    // is no TextPos for the composition's own trailing edge to pass
+    // through ensureVisible()'s normal Document-lookup path. `column` uses
+    // the same UTF-16-code-units-from-line-start convention ensureVisible()
+    // itself derives internally. ensureVisible() is implemented in terms of
+    // this method (see viewport.cpp) rather than duplicating the clamp.
+    void ensureColumnVisible(std::uint32_t column) noexcept;
+
     void setVisibleLineCount(std::uint32_t count) noexcept { m_visibleLineCount = count; }
 
     // WI-03: horizontal counterpart to setVisibleLineCount().

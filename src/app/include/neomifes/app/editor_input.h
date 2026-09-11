@@ -103,6 +103,17 @@ bool applyOverwriteChar(wchar_t ch, core::CommandDispatcher& dispatcher, core::S
                                                           document::LineNumber currentTopLine,
                                                           document::LineNumber totalLines);
 
+// WI-44: horizontal counterpart to applyMouseWheelScroll() above, for
+// WM_MOUSEHWHEEL (tilt-wheel/trackpad horizontal scroll - previously
+// unhandled anywhere in this codebase, see docs/issues/
+// mouse_wheel_horizontal_scroll_unimplemented.md). No upper bound, unlike
+// the vertical version's totalLines clamp - same "render-time clamp is the
+// single source of truth" design computeHScrollTargetColumn() below
+// already documents; there is no O(1) authoritative "document width" to
+// clamp against without an O(document-size) scan (10GB-file guarantee).
+[[nodiscard]] std::uint32_t applyMouseWheelScrollColumn(short wheelDelta,
+                                                         std::uint32_t currentLeftColumn) noexcept;
+
 // Places the cursor at `pos` (collapsing any selection), or extends the
 // selection to `pos` if shiftDown. `pos` is already hit-tested by the
 // caller (RenderPipeline::hitTest(), Phase 4b2) - this module stays

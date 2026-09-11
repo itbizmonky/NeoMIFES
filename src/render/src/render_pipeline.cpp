@@ -1,6 +1,7 @@
 #include "neomifes/render/render_pipeline.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <string_view>
 #include <utility>
@@ -809,6 +810,16 @@ RenderExpected<void> RenderPipeline::ensureImeCompositionBrushes(ID2D1DeviceCont
         }
     }
     return {};
+}
+
+std::uint32_t RenderPipeline::visibleRowCapacity() const noexcept {
+    if (m_lineHeightDips <= 0.0F) {
+        return 0;
+    }
+    const auto reservedPx = static_cast<std::uint32_t>(
+        (reservedTopHeightDips() + reservedBottomHeightDips()) * m_dpiScale);
+    const std::uint32_t effectiveHeightPx = m_height > reservedPx ? m_height - reservedPx : 0;
+    return computeVisibleLineCount(effectiveHeightPx, m_dpiScale, m_lineHeightDips);
 }
 
 std::pair<LineNumber, LineNumber> RenderPipeline::visibleLineRange() const noexcept {
@@ -1646,6 +1657,28 @@ std::uint32_t RenderPipeline::visibleColumnCount() const noexcept {
     const float availableWidthDips = (static_cast<float>(m_width) / m_dpiScale) - gutterWidthDips() -
                                      minimapWidthDips() - m_rightPaneWidthDips;
     return computeVisibleColumnCount(availableWidthDips, m_charWidthDips);
+}
+
+std::uint32_t RenderPipeline::measureTextColumnWidth(std::u16string_view text) const noexcept {
+    if (text.empty()) {
+        return 0;
+    }
+    if (!m_dwriteFactory || !m_textFormat || m_charWidthDips <= 0.0F) {
+        return static_cast<std::uint32_t>(text.size());
+    }
+    const std::wstring_view wText = util::toWstringView(text);
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    const HRESULT hr = m_dwriteFactory->CreateTextLayout(
+        wText.data(), static_cast<UINT32>(wText.size()), m_textFormat.Get(), kMaxLayoutWidthDips,
+        kMaxLayoutHeightDips, layout.GetAddressOf());
+    if (FAILED(hr) || !layout) {
+        return static_cast<std::uint32_t>(text.size());
+    }
+    DWRITE_TEXT_METRICS metrics{};
+    if (FAILED(layout->GetMetrics(&metrics))) {
+        return static_cast<std::uint32_t>(text.size());
+    }
+    return static_cast<std::uint32_t>(std::ceil(metrics.width / m_charWidthDips));
 }
 
 float RenderPipeline::wrapWidthDips() const noexcept {

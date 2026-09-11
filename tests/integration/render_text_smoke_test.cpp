@@ -1942,6 +1942,93 @@ TEST(RenderTextSmokeTest, SetLineNumbersVisibleFalseWidensVisibleColumnCount) {
         << "hiding line numbers did not shrink the gutter";
 }
 
+// WI-44 regression test for docs/issues/
+// viewport_scroll_capacity_bounded_by_document_length.md: visibleLineCount()
+// stops early once it reaches the document's own end, so on a document
+// shorter than the window it under-reports the window's true row capacity
+// (as low as 1 for a 1-line document). visibleRowCapacity() must report the
+// window's real capacity regardless of how few lines the document has -
+// this is what feeds core::Viewport::setVisibleLineCount(), and the bug
+// this proves against made Viewport::ensureVisible() think a multi-line-
+// tall window could show only 1 row, scrolling line 1 out of view the
+// instant the cursor reached line 2.
+TEST(RenderTextSmokeTest, VisibleRowCapacityIsNotBoundedByShortDocumentLength) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    // A single line, no trailing newline - lineCount() == 1, so the window
+    // (200x100 px, comfortably more than one line tall at any normal DPI/
+    // font size) has far more row capacity than the document has lines.
+    Document doc;
+    doc.insertText(0, u"only line");
+    pipeline.setDocument(&doc);
+
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    EXPECT_EQ(pipeline.visibleLineCount(), 1U)
+        << "sanity check: visibleLineCount() is still bounded by document length, as intended for "
+           "its own callers (syncVerticalScrollBar()'s page-step)";
+    EXPECT_GT(pipeline.visibleRowCapacity(), 1U)
+        << "visibleRowCapacity() must reflect the window's true row capacity, not the document's "
+           "current line count";
+}
+
+// WI-44 follow-up regression test for docs/issues/
+// ime_composition_horizontal_scroll_not_followed.md: real dogfooding of the
+// first cut of this WI's IME fix (which used text.size(), i.e. UTF-16
+// code-unit count, as the scroll target's column width) still reproduced
+// the user's report of the last composed character being hidden behind the
+// minimap. measureTextColumnWidth() must report a wider column count for
+// CJK/full-width text than its UTF-16 length, since DirectWrite renders
+// those glyphs at roughly 2x a half-width column's pixel width each.
+TEST(RenderTextSmokeTest, MeasureTextColumnWidthCountsFullWidthCharactersAsWiderThanHalfWidth) {
+    HiddenWindow window;
+    ASSERT_NE(window.get(), nullptr) << "CreateWindowExW failed: " << ::GetLastError();
+
+    RenderPipeline pipeline;
+    auto attached = pipeline.attach(window.get());
+    if (!attached.has_value()) {
+        GTEST_SKIP() << "RenderPipeline::attach() failed in this environment: "
+                     << neomifes::render::describe(attached.error());
+    }
+
+    // render() once first so m_charWidthDips is actually measured (WI-03's
+    // "not measured until the first render() call completes" precondition,
+    // same as visibleColumnCount()'s own doc comment) - otherwise
+    // measureTextColumnWidth() would take its <=0 charWidthDips fallback
+    // path (text.size()) and this test would trivially pass either way.
+    Document doc;
+    doc.insertText(0, u"x");
+    pipeline.setDocument(&doc);
+    const auto rendered = pipeline.render();
+    ASSERT_TRUE(rendered.has_value())
+        << "render() failed: " << neomifes::render::describe(rendered.error());
+
+    // 5 hiragana characters: 5 UTF-16 code units, but should measure as
+    // MORE than 5 columns (full-width), unlike an equal-length half-width
+    // ASCII string (exactly 5 columns, the pre-WI-44 assumption).
+    constexpr std::u16string_view kFullWidth = u"あいうえお";
+    constexpr std::u16string_view kHalfWidth = u"abcde";
+    ASSERT_EQ(kFullWidth.size(), kHalfWidth.size()) << "test setup: both must be 5 UTF-16 code units";
+
+    const std::uint32_t fullWidthColumns = pipeline.measureTextColumnWidth(kFullWidth);
+    const std::uint32_t halfWidthColumns = pipeline.measureTextColumnWidth(kHalfWidth);
+
+    EXPECT_EQ(halfWidthColumns, 5U) << "half-width ASCII should measure at exactly 1 column/character";
+    EXPECT_GT(fullWidthColumns, halfWidthColumns)
+        << "full-width CJK characters must measure as wider than the same count of half-width ones - "
+           "under-counting this is what let composition text scroll short of its true right edge";
+}
+
 // WI-08: setMinimapVisible(false) reclaims the minimap's reserved width -
 // directly assertable via visibleColumnCount() (public) without needing
 // pixel inspection.

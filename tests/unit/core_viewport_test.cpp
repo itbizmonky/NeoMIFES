@@ -109,6 +109,51 @@ TEST(ViewportTest, EnsureVisibleScrollsRightWhenColumnPastWindow) {
 // must be skipped entirely (not just parked at some value) while word wrap
 // is on. See viewport.h's own setWordWrapEnabled() comment for why.
 
+// WI-44: ensureColumnVisible() - the standalone horizontal-only clamp
+// ensureVisible() is now implemented in terms of (see viewport.cpp). Same
+// three cases as the ensureVisible() column tests above, but driven
+// directly by a column rather than a Document TextPos - this is what lets
+// IME composition (never written to Document - see ImeComposition's own
+// header comment in render_pipeline.h) keep its own growing trailing edge
+// horizontally visible.
+TEST(ViewportTest, EnsureColumnVisibleDoesNothingWhenAlreadyInWindow) {
+    Viewport viewport;
+    viewport.scrollToColumn(10);
+    viewport.setVisibleColumnCount(5);  // window = [10, 15)
+
+    viewport.ensureColumnVisible(12);
+    EXPECT_EQ(viewport.leftColumn(), 10U);
+}
+
+TEST(ViewportTest, EnsureColumnVisibleScrollsLeftWhenColumnBeforeWindow) {
+    Viewport viewport;
+    viewport.scrollToColumn(10);
+    viewport.setVisibleColumnCount(5);  // window = [10, 15)
+
+    viewport.ensureColumnVisible(2);  // column 2, left of window
+    EXPECT_EQ(viewport.leftColumn(), 2U);
+}
+
+TEST(ViewportTest, EnsureColumnVisibleScrollsRightWhenColumnPastWindow) {
+    Viewport viewport;
+    viewport.scrollToColumn(0);
+    viewport.setVisibleColumnCount(5);  // window = [0, 5)
+
+    viewport.ensureColumnVisible(18);  // column 18, past window
+    EXPECT_EQ(viewport.leftColumn(), 14U);  // window becomes [14, 19)
+}
+
+TEST(ViewportTest, EnsureColumnVisibleSkipsClampWhileWordWrapIsEnabled) {
+    Viewport viewport;
+    viewport.setWordWrapEnabled(true);
+    viewport.scrollToColumn(0);
+    viewport.setVisibleColumnCount(5);  // window = [0, 5), same as the past-window test above
+
+    viewport.ensureColumnVisible(18);  // would scroll right to 14 with wrap off
+    EXPECT_EQ(viewport.leftColumn(), 0U)
+        << "leftColumn must not drift away from 0 while word wrap is on";
+}
+
 TEST(ViewportTest, EnsureVisibleSkipsHorizontalClampWhileWordWrapIsEnabled) {
     Document doc;
     doc.insertText(0, u"0123456789ABCDEFGHIJ");
