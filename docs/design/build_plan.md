@@ -119,7 +119,7 @@ ctest --preset debug --output-on-failure
 ### 2.1 やること
 
 1. **推測で実装しない。** 分からないことは実コードを `grep` するか、使い捨て probe プログラムで実測してから書く (CLAUDE.md 絶対ルール 3)
-2. **push 前に必ずローカル検証する。** Debug / Release / ubsan の 3 プリセットで `ctest` が全 green、変更ファイルへの clang-tidy が新規警告 0。**WI を複数ステップに分けた場合、フル3構成の検証は「WI完了時(最終コミット直前)」に1回で足りる。各中間ステップでは Debug 構成のみで素早く確認する**(詳細は §4.3)。性能・Undefined Behavior のリスクが高いと判断した中間ステップ(生ポインタ操作・並行処理・ベンチマーク対象コード等)は、そのステップ単独で ubsan を追加してよい
+2. **push 前に必ずローカル検証する。** Debug / Release / ASan / UBSan の 4 プリセットで `ctest` が全 green、変更ファイルへの clang-tidy が新規警告 0(WI-43でASanをCIへ常設化するまでは「フル3構成」と呼んでいたが、以後は本4構成を指す)。**WI を複数ステップに分けた場合、フル検証は「WI完了時(最終コミット直前)」に1回で足りる。各中間ステップでは Debug 構成のみで素早く確認する**(詳細は §4.3)。性能・Undefined Behavior のリスクが高いと判断した中間ステップ(生ポインタ操作・並行処理・ベンチマーク対象コード等)は、そのステップ単独で ASan/UBSan を追加してよい
 3. **1 コミット = 1 責務。** WI 1 件 = 1 コミットを基本とする
 4. **push はユーザーの明示指示を待つ。** エージェントは自発的に push しない
 5. **完了時にドキュメントを同期する** (§4.5 の手順)
@@ -250,7 +250,7 @@ roadmap §10.1 (ログ解析モード) を WI-14a〜d の4サブ WI へ切り直
 
 ### 4.3 検証 (必須・省略不可)
 
-**検証の粒度 (2026-08-12改訂):** WI を複数ステップに分けている場合、**中間ステップは Debug 構成の build+ctest のみ**でよい (下記コマンドの1行目だけを実行)。**Debug/Release/ubsan のフル3構成は、WI 完了時 (最終コミット直前) に1回まとめて実行する。** これは検証を省略するのではなく、同じ検証を何度も繰り返さないための順序変更である — コミット前には必ずフル3構成が green であることを確認する。単一ステップの WI (分割しない場合) は、これまで通りそのままフル3構成を実行する。性能・Undefined Behavior のリスクが高いステップ (生ポインタ操作・並行処理・ベンチマーク対象コード等) は、そのステップ単独で ubsan を追加してよい。
+**検証の粒度 (2026-08-12改訂、2026-09-11のWI-43でASan常設化に伴い4構成へ改訂):** WI を複数ステップに分けている場合、**中間ステップは Debug 構成の build+ctest のみ**でよい (下記コマンドの1行目だけを実行)。**Debug/Release/ASan/UBSan のフル4構成は、WI 完了時 (最終コミット直前) に1回まとめて実行する。** これは検証を省略するのではなく、同じ検証を何度も繰り返さないための順序変更である — コミット前には必ずフル4構成が green であることを確認する。単一ステップの WI (分割しない場合) は、これまで通りそのままフル4構成を実行する。性能・Undefined Behavior のリスクが高いステップ (生ポインタ操作・並行処理・ベンチマーク対象コード等) は、そのステップ単独で ASan/UBSan を追加してよい。
 
 ```powershell
 $vsPath = "C:\Program Files\Microsoft Visual Studio\18\Community"
@@ -259,6 +259,7 @@ Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments 
 Set-Location "D:\IDE\Claude\NeoMIFES"
 cmake --build --preset debug   ; ctest --preset debug   --output-on-failure
 cmake --build --preset release ; ctest --preset release --output-on-failure
+cmake --build --preset asan    ; ctest --preset asan    --output-on-failure
 cmake --build --preset ubsan   ; ctest --preset ubsan   --output-on-failure
 ```
 
@@ -3249,7 +3250,29 @@ Release/ASan/UBSan(clang-cl)3構成をサブエージェントへ委任、全構
 
 ---
 
-# 6. MVP 出荷判定チェックリスト (WI-13)
+## WI-43 — `asan`プリセットのCI常設化(P2、`.github/workflows/ci.yml`)
+
+### 目的
+
+WI-42完了・CI green確認後、ユーザーから「次に進めて」との指示を受け、次に着手する項目を自律選定した。[`asan_preset_not_in_ci.md`](../issues/asan_preset_not_in_ci.md)(P2、WI-13起票)は、`CMakePresets.json`に`asan`(MSVC AddressSanitizer)プリセットが定義されているのにCIでは一度も実行されておらず、以後のWIでヒープ破損・use-after-free等がCIをすり抜けるリスクを指摘していた issue。他のP1/P2候補が軒並み「待機(トリガー条件待ち)」である中、本issueは「CI実行時間増加とのトレードオフ検討」という具体的な判断待ちで止まっているだけの、即座に着手可能な項目だった。
+
+### 調査・設計
+
+`.github/workflows/ci.yml`を確認し、`build-and-test`ジョブが`debug`/`release`を`matrix.preset`で**並列実行**していること、`ubsan`/`static-analysis`(clang-tidy)は`needs: build-and-test`で別ジョブとして定義されている(build-and-test完了後に開始、両者は互いに並列)ことを確認した。`gh repo view`でリポジトリがpublicと確認——**GitHub-hosted runnerのActions実行時間はpublicリポジトリでは無料・無制限**のため、issueが懸念していた「実行時間増加とのトレードオフ」の課金面のコストは実質ゼロ。さらに`asan`を`build-and-test`のmatrixへ追加すれば`debug`/`release`と並列実行されるため、CI全体のwall-clock時間への影響もほぼ無い(新規ジョブを直列追加するのではなく、既存の並列matrixへ1要素追加するだけ)。issueの3択(①CI常設化/②週次スケジュール/③手動運用の明文化)のうち、①のコストがほぼ消滅したと判断し、他の選択肢を検討する必要なく①を選定した。
+
+`CMakePresets.json`の`binaryDir`が`${sourceDir}/build/${presetName}`(全プリセット共通)のため、`asan`追加時に`build/asan`が自動的に既存の`build/${{ matrix.preset }}`パス規約と整合することも確認済み。「Startup PoC」「Frame PoC」「Upload compile_commands.json」の3ステップは`if: matrix.preset == 'release'`/`'debug'`で明示的にガードされているため、`asan`追加はこれらに影響しない(意図通り、ASan計装済みバイナリで性能計測やcompile_commands.json再アップロードをする必要はない)。
+
+### 実装
+
+`.github/workflows/ci.yml`: `build-and-test`ジョブの`matrix.preset`を`[debug, release]`→`[debug, release, asan]`へ1行変更。
+
+`docs/design/build_plan.md` §2.1/§4.3: ローカルpush前検証の規定を「Debug/Release/ubsanのフル3構成」から「Debug/Release/ASan/UBSanのフル4構成」へ改訂(本セッションを含め、実態としては既にASanも含めた4構成で検証する運用が定着していたが、文書側の記述が追従していなかった既存の乖離を本WIで解消)。§4.3のコマンド例へ`cmake --build --preset asan ; ctest --preset asan --output-on-failure`を追加。
+
+### 検証
+
+ローカルで`cmake --preset asan`が正常にconfigureされ`build/asan`が生成されることを確認(ASan: ON、Warn=Error: ONの出力を確認)。本WI自体はYAML1行+ドキュメント文言の変更のみでC++コード変更を伴わないため、Debug/Release/ASan/UBSanのフル4構成再検証は対象外——実際にCIへpushし、新設された`asan`ジョブ自体がgreenになることをもって検証とする。
+
+コミット: (直後に記録)。
 
 - [x] ファイルを 開く / 編集 / 保存 / 別名保存 が全て動作する (WI-01/WI-02実装、実機で`--open`→編集→`Ctrl+S`保存→ファイル内容の変化を確認済み)
 - [x] 日本語 IME でインライン変換が正しく表示される (**実機手動確認必須**) (WI-06実装時の2026-08-12に実機MS-IMEで確認済み。本WIではIME関連コードを一切変更していないためコードレビューで退行なしを確認、再実演はしていない)

@@ -4475,4 +4475,20 @@ WI-40完了後、次点候補`measure_frame_hangs_forever_on_hidden_window.md`(W
 
 Debug全1614/1614件green(既存回帰無し)。Release/ASan/UBSanはサブエージェントへ検証委任。**本セッションの教訓: 前セッション(WI-41)が「真因を確定」と記録していた内容も、実装フェーズで再検証したところ誤りと判明した。issueの過去記録を鵜呑みにせず、実装前に前提を再確認する重要性を再認識した実例。**
 
+**検証委任の副次的インシデント:** 検証を委任したサブエージェントが共有ワーキングツリーで`git stash`(`wi42-verify-baseline`)を無断実行し、本セッションの未コミット編集(ドキュメント複数+`main.cpp`/`frame_measure_test.cpp`)を退避させたまま作業を進めていたことが発覚。`git stash pop`で復元しデータ損失は無かったが、以降は検証委任の指示へ「共有ワーキングツリーではgitの破壊的操作を一切行わない」旨を明記する運用へ変更した。加えて、同じ検証タスクに対し誤って複数のサブエージェントを重複起動してしまい(1体は`git stash`実行後に停止、もう1体は新規指示で正しく完走)、共有ビルドディレクトリでの競合リスクが生じたため気づき次第重複分を停止した——エージェント継続の仕組み(SendMessageツール)がこのセッションでは未ロード状態だったことが誤操作の一因、教訓として記録した。
+
+Release/ASan/UBSan(clang-cl)3構成は全1614/1614件green、clang-tidy新規指摘0件、サニタイザ診断0件を確認。コミット`7efb748`+ドキュメント同期コミット`c8d6359`をpush、CI(release/debug/ubsan/clang-tidyの4ジョブ)全green確認。
+
+### WI-43: `asan`プリセットのCI常設化(P2、`.github/workflows/ci.yml`)
+
+WI-42完了・CI green確認後、ユーザーから「次に進めて」との指示を受け、次の作業項目を自律選定した。他のP1/P2候補が軒並み「待機(トリガー条件待ち)」である中、`asan_preset_not_in_ci.md`(P2、WI-13起票)は「CI実行時間とのトレードオフ検討」という具体的な判断待ちで止まっているだけの、即座に着手可能な項目だった。
+
+調査の結果、issueが懸念していたコストの大部分が実質的に存在しないと判明した: `gh repo view`でリポジトリがpublicと確認(GitHub-hosted runnerのActions実行時間はpublicリポジトリでは無料・無制限)、かつ`.github/workflows/ci.yml`の`build-and-test`ジョブは既に`debug`/`release`を`matrix.preset`で並列実行している設計だった。`asan`を同じmatrixへ追加すれば並列実行されるため、課金コストもwall-clock時間への影響もほぼ無いと判断し、issueの3択(①CI常設追加/②週次スケジュール/③手動運用明文化)のうち他と比較検討するまでもなく①を選定した。
+
+`matrix.preset`を`[debug, release]`→`[debug, release, asan]`へ1行変更。`CMakePresets.json`の`binaryDir`が全プリセット共通の`${sourceDir}/build/${presetName}`のため既存パス規約と自動整合すること、「Startup PoC」「Frame PoC」「Upload compile_commands.json」の3ステップが`matrix.preset`の値で明示的にガードされ影響を受けないことを確認済み。
+
+併せて`docs/design/build_plan.md` §2.1/§4.3のローカル検証規定を「フル3構成(Debug/Release/UBSan)」から「フル4構成(Debug/Release/ASan/UBSan)」へ改訂した——本セッションを含め実態としては既にASanも含めた4構成での検証が定着していたが、文書記述がそれに追従していなかった既存の乖離も併せて解消した。
+
+本WIはYAML1行+ドキュメント文言の変更のみでC++コード変更を伴わないため、ローカルでは`cmake --preset asan`のconfigure成功のみ確認し、実際のCI上での`asan`ジョブgreen化をもって検証とする方針とした。
+
 <!-- 次セッションはここに追記 -->

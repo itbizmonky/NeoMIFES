@@ -478,7 +478,23 @@
 
 > ---
 
-> # 🎉 最重要 (2026-09-11) — WI-42完了: `measure_frame_hangs_forever_on_hidden_window.md`を解消、WI-41の診断を実装検証で訂正
+> # 🎉 最重要 (2026-09-11) — WI-43完了: `asan`プリセットのCI常設化
+
+> **WI-42完了・CI green確認後、ユーザーから「次に進めて」との指示を受け、次の作業項目を自律選定した。** 他のP1/P2候補が軒並み「待機(トリガー条件待ち)」の中、[`asan_preset_not_in_ci.md`](../issues/asan_preset_not_in_ci.md)(P2、WI-13起票)は「CI実行時間とのトレードオフ検討」という具体的な判断待ちで止まっているだけの、即座に着手可能な項目だった。
+
+> **調査でコストの大部分が実質的に存在しないと判明した:** `gh repo view`でリポジトリがpublicと確認(GitHub-hosted runnerのActions実行時間はpublicリポジトリでは無料・無制限)、かつ`.github/workflows/ci.yml`の`build-and-test`ジョブは既に`debug`/`release`を`matrix.preset`で並列実行している設計だった。`asan`を同じmatrixへ追加すれば並列実行され、課金コストもwall-clock時間への影響もほぼ無いと判断、issueの3択(①CI常設追加/②週次スケジュール/③手動運用明文化)のうち比較検討するまでもなく①を選定した。
+
+> **修正:** `matrix.preset`を`[debug, release]`→`[debug, release, asan]`へ1行変更。`CMakePresets.json`の`binaryDir`が全プリセット共通のため既存パス規約と自動整合すること、他の`matrix.preset`条件付きステップ(Startup/Frame PoC・compile_commands.jsonアップロード)は影響を受けないことを確認済み。併せて`docs/design/build_plan.md` §2.1/§4.3のローカル検証規定を「フル3構成(Debug/Release/UBSan)」→「フル4構成(Debug/Release/ASan/UBSan)」へ改訂(実態は既に4構成が定着していたが文書記述が追従していなかった乖離を解消)。
+
+> ローカルは`cmake --preset asan`のconfigure成功のみ確認(YAML+文言変更のみでC++コード変更を伴わないため)、実際のCI上での新設`asan`ジョブgreen化をもって検証とする方針。
+
+> **次回セッション最初にやること:** 2026-08-23合意スコープ内で「今すぐ着手可能」なP1/P2 issueが尽きた状態(P1残り2件はユーザー側アクション待ち、P2残りは全て「待機」)。次にどれへ着手するかは、凍結スコープ(LSP/マクロ/AI/Git高度機能等)の再開も含め、ユーザーからの新しい方向付けを確認すること。CIで新設`asan`ジョブが実際にgreenであることも念のため確認する。
+
+> 詳細は`docs/design/build_plan.md`のWI-43セクション、`docs/history/TIMELINE.md`最新セッション参照。
+
+> ---
+
+> # 🎉 最重要 (2026-09-11、historical) — WI-42完了: `measure_frame_hangs_forever_on_hidden_window.md`を解消、WI-41の診断を実装検証で訂正
 
 > **「今後の製造計画を表示せよ」の指示に対し、WI-41で保留していた対応方針をAskUserQuestionでユーザーへ確認。「初回ペイント待ちガード追加」(選択肢1)が選ばれ着手した。**
 
@@ -496,7 +512,7 @@
 
 > **教訓: 前セッション(WI-41)が「真因を確定」と記録していた内容も、実装フェーズで再検証したところ誤りと判明した。** issueの過去の「確定」記録も鵜呑みにせず、実装前に前提を再確認することの重要性を再認識した実例。
 
-> **次回セッション最初にやること:** 2026-08-23合意スコープ内で「今すぐ着手可能」なP1/P2 issueが尽きた状態(P1残り2件はユーザー側アクション待ち、P2残りは全て「待機」)。次にどれへ着手するかは、凍結スコープ(LSP/マクロ/AI/Git高度機能等)の再開も含め、ユーザーからの新しい方向付けを確認すること。
+> **(2026-09-11追記) 本コールアウトの「次回やること」はWI-43着手により上の新しいコールアウトへ差し替え済み。以下は歴史的記録として保持。**
 
 > 詳細は`docs/design/build_plan.md`のWI-42セクション、`docs/history/TIMELINE.md`最新セッション参照。
 
